@@ -8,6 +8,9 @@ backend/.pytest_cache/
 backend/.mypy_cache/
 backend/.ruff_cache/
 
+# Python packaging
+**/*.egg-info/
+
 *.pyc
 *.pyo
 
