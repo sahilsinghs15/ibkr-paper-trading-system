@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from annotated_types import Ge, Gt
+from annotated_types import Ge, Gt, Le
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     ibkr_host: str = "127.0.0.1"
     ibkr_port: Annotated[int, Gt(0)] = 7497
     ibkr_client_id: Annotated[int, Ge(0)] = 1
+    ibkr_connection_timeout: Annotated[int, Gt(0)] = 10
+
+    # IBKR Market Data connection settings
+    ibkr_market_data_type: Annotated[int, Ge(1), Le(4)] = 3
+    ibkr_market_data_symbol: str = "AAPL"
+    ibkr_market_data_sec_type: str = "STK"
+    ibkr_market_data_exchange: str = "SMART"
+    ibkr_market_data_currency: str = "USD"
+    ibkr_market_data_primary_exchange: str | None = None
 
     # Trading
     trading_symbol: str = "RELIANCE"

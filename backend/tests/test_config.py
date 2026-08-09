@@ -19,6 +19,13 @@ class TestConfig:
         assert settings.ibkr_host == "127.0.0.1"
         assert settings.ibkr_port == 7497
         assert settings.ibkr_client_id == 1
+        assert settings.ibkr_connection_timeout == 10
+        assert settings.ibkr_market_data_type == 3
+        assert settings.ibkr_market_data_symbol == "AAPL"
+        assert settings.ibkr_market_data_sec_type == "STK"
+        assert settings.ibkr_market_data_exchange == "SMART"
+        assert settings.ibkr_market_data_currency == "USD"
+        assert settings.ibkr_market_data_primary_exchange is None
         assert settings.candle_timeframe == "5 mins"
         assert settings.strategy_candle_count == 5
         assert settings.order_quantity == 1
