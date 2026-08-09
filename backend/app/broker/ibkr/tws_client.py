@@ -27,6 +27,7 @@ class TWSClient(EWrapper, EClient):
         self._connected_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._market_data_listeners: list[Any] = []
+        self._listeners: list[Any] = []
 
     # ── EWrapper Callbacks ───────────────────────────────────────────
 
@@ -67,6 +68,13 @@ class TWSClient(EWrapper, EClient):
                 errorCode,
                 errorString,
             )
+            for listener in list(self._listeners):
+                try:
+                    listener.on_error(reqId, errorCode, errorString)
+                except AttributeError:
+                    pass
+                except Exception:
+                    logger.exception("Error in onError listener callback")
 
     def connectionClosed(self) -> None:
         """Callback when TWS connection drops unexpectedly or closes."""
@@ -78,6 +86,13 @@ class TWSClient(EWrapper, EClient):
                 listener.on_connection_closed()
             except Exception:
                 logger.exception("Error in connectionClosed listener callback")
+        for listener in list(self._listeners):
+            try:
+                listener.on_connection_closed()
+            except AttributeError:
+                pass
+            except Exception:
+                logger.exception("Error in connectionClosed general listener callback")
 
     def tickPrice(self, reqId: int, tickType: int, price: float, attrib: Any) -> None:
         """Callback received when a market price updates."""
@@ -106,9 +121,61 @@ class TWSClient(EWrapper, EClient):
             except Exception:
                 logger.exception("Error in marketDataType listener callback")
 
+    def accountSummary(
+        self, reqId: int, account: str, tag: str, value: str, currency: str
+    ) -> None:
+        """Callback received when an account summary value is updated."""
+        super().accountSummary(reqId, account, tag, value, currency)
+        for listener in list(self._listeners):
+            try:
+                listener.on_account_summary(reqId, account, tag, value, currency)
+            except AttributeError:
+                pass
+            except Exception:
+                logger.exception("Error in accountSummary listener callback")
+
+    def accountSummaryEnd(self, reqId: int) -> None:
+        """Callback received when account summary values transmission is complete."""
+        super().accountSummaryEnd(reqId)
+        for listener in list(self._listeners):
+            try:
+                listener.on_account_summary_end(reqId)
+            except AttributeError:
+                pass
+            except Exception:
+                logger.exception("Error in accountSummaryEnd listener callback")
+
+    def position(
+        self, account: str, contract: Any, position: float, avgCost: float
+    ) -> None:
+        """Callback received when a position update is reported."""
+        super().position(account, contract, position, avgCost)
+        for listener in list(self._listeners):
+            try:
+                listener.on_position(account, contract, position, avgCost)
+            except AttributeError:
+                pass
+            except Exception:
+                logger.exception("Error in position listener callback")
+
+    def positionEnd(self) -> None:
+        """Callback received when position updates transmission is complete."""
+        super().positionEnd()
+        for listener in list(self._listeners):
+            try:
+                listener.on_position_end()
+            except AttributeError:
+                pass
+            except Exception:
+                logger.exception("Error in positionEnd listener callback")
+
     def register_market_data_listener(self, listener: Any) -> None:
         """Register a listener to receive market data events."""
         self._market_data_listeners.append(listener)
+
+    def register_listener(self, listener: Any) -> None:
+        """Register a general listener to receive TWS wrapper callbacks."""
+        self._listeners.append(listener)
 
     # ── Connection Lifecycle Methods ─────────────────────────────────
 
