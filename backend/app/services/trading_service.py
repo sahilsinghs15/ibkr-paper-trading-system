@@ -3,7 +3,6 @@
 import logging
 
 from app.market_data.candle_builder import CandleBuilder
-from app.models.candle import Candle
 from app.models.market_data import MarketDataEvent
 from app.models.order import Order
 from app.models.signal import Signal
@@ -29,7 +28,10 @@ class TradingService:
         self._candle_builder = candle_builder
         self._strategy = strategy
         self._order_manager = order_manager
-        self._candles: list[Candle] = []
+
+        from app.strategy.candle_strategy_processor import CandleStrategyProcessor
+
+        self._strategy_processor = CandleStrategyProcessor(strategy=strategy)
 
     async def process_market_data(
         self,
@@ -64,19 +66,12 @@ class TradingService:
             completed_candle.close,
             completed_candle.volume,
         )
-        self._candles.append(completed_candle)
 
         try:
-            signal = self._strategy.evaluate(list(self._candles))
+            signal = self._strategy_processor.process_candle(completed_candle)
         except Exception:
             logger.exception("Error evaluating strategy")
             raise
-
-        logger.info(
-            "Strategy generated signal: signal_type=%s reason=%s",
-            signal.signal_type.value,
-            signal.reason,
-        )
 
         try:
             order = await self._order_manager.process_signal(signal)
