@@ -36,6 +36,18 @@ class Settings(BaseSettings):
     strategy_candle_count: Annotated[int, Gt(0)] = 5
     order_quantity: Annotated[int, Gt(0)] = 1
 
+    @property
+    def candle_timeframe_minutes(self) -> int:
+        """Parse candle_timeframe string to get the timeframe in minutes."""
+        if self.candle_timeframe == "5 mins":
+            return 5
+        if self.candle_timeframe.endswith(" mins"):
+            try:
+                return int(self.candle_timeframe.split()[0])
+            except ValueError:
+                pass
+        return 5
+
 
 def get_settings() -> Settings:
     """Create and return a Settings instance.
