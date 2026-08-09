@@ -1,16 +1,20 @@
 """IBKR Broker Adapter implementation."""
 
 import asyncio
+import copy
 import logging
 import threading
 from decimal import Decimal
 from typing import Any
 
+from ibapi.contract import Contract  # type: ignore[import-untyped]
+from ibapi.order import Order as IBOrder  # type: ignore[import-untyped]
+
 from app.broker.base_broker import BaseBroker
 from app.broker.ibkr.tws_client import TWSClient
 from app.core.config import Settings
 from app.models.broker import Margin
-from app.models.order import Order, OrderSide
+from app.models.order import Order, OrderSide, OrderStatus
 from app.models.position import Position
 
 logger = logging.getLogger(__name__)
@@ -27,8 +31,8 @@ class IBKRBroker(BaseBroker):
 
         self._lock = threading.Lock()
 
-        # Counter for reqAccountSummary IDs
-        self._req_id_counter = 1000
+        # Counter for reqAccountSummary IDs (using a high base for segregation)
+        self._req_id_counter = 10000000
 
         # Register self as a listener for callbacks from TWSClient
         self._client.register_listener(self)
@@ -43,6 +47,9 @@ class IBKRBroker(BaseBroker):
             int, tuple[asyncio.Future[Margin], asyncio.AbstractEventLoop]
         ] = {}
         self._margin_data: dict[int, dict[str, Decimal]] = {}
+
+        # Dictionary to track placed orders by ID
+        self._orders: dict[str, Order] = {}
 
     def _require_connected(self) -> None:
         """Check connection state and raise ConnectionError if client is disconnected."""
@@ -123,18 +130,24 @@ class IBKRBroker(BaseBroker):
             self._margin_futures[req_id] = (future, loop)
             self._margin_data[req_id] = {}
 
+        # Register request ID as margin type
+        self._client.register_request_id(req_id, "margin")
+
         # Call reqAccountSummary outside the lock
         tags = "NetLiquidation,AvailableFunds,BuyingPower"
         logger.info("Requesting account summary for reqId=%d...", req_id)
         self._client.reqAccountSummary(req_id, "All", tags)
 
         try:
-            return await asyncio.wait_for(future, timeout=self._timeout)
+            res = await asyncio.wait_for(future, timeout=self._timeout)
+            self._client.unregister_request_id(req_id)
+            return res
         except TimeoutError:
             logger.error("Margin request timed out for reqId=%d.", req_id)
             with self._lock:
                 self._margin_futures.pop(req_id, None)
                 self._margin_data.pop(req_id, None)
+            self._client.unregister_request_id(req_id)
             try:
                 self._client.cancelAccountSummary(req_id)
             except Exception as e:  # noqa: BLE001
@@ -144,11 +157,41 @@ class IBKRBroker(BaseBroker):
             with self._lock:
                 self._margin_futures.pop(req_id, None)
                 self._margin_data.pop(req_id, None)
+            self._client.unregister_request_id(req_id)
             try:
                 self._client.cancelAccountSummary(req_id)
             except Exception as e:  # noqa: BLE001
                 logger.debug("Failed to cancel account summary: %s", e)
             raise
+
+    def _get_next_order_id(self) -> int:
+        """Reserve and return the next valid TWS order ID under lock."""
+        with self._lock:
+            current_id = self._client.next_order_id
+            if current_id is None:
+                raise RuntimeError("No nextValidId received from TWS yet.")
+            self._client.next_order_id = current_id + 1
+            return current_id
+
+    def _map_status(self, ib_status: str) -> OrderStatus:
+        """Map IBKR order status string to domain OrderStatus enum."""
+        status_upper = ib_status.upper()
+        if status_upper in ("PENDINGSUBMIT", "PRESUBMITTED", "APIPENDING"):
+            return OrderStatus.PENDING
+        elif status_upper in ("SUBMITTED", "PENDINGCANCEL"):
+            return OrderStatus.SUBMITTED
+        elif status_upper in ("FILLED",):
+            return OrderStatus.FILLED
+        elif status_upper in ("CANCELLED", "APICANCELLED"):
+            return OrderStatus.CANCELLED
+        elif status_upper in ("INACTIVE", "REJECTED"):
+            return OrderStatus.REJECTED
+        else:
+            logger.warning(
+                "Unknown IBKR order status received: %s. Defaulting to SUBMITTED.",
+                ib_status,
+            )
+            return OrderStatus.SUBMITTED
 
     async def place_order(
         self,
@@ -158,8 +201,105 @@ class IBKRBroker(BaseBroker):
         order_type: str,
         price: Decimal | None = None,
     ) -> Order:
-        """Unimplemented in this read-only phase."""
-        raise NotImplementedError("Order placement is not supported in this phase.")
+        """Place an order with TWS and track its lifecycle."""
+        self._require_connected()
+
+        # Argument validation
+        if not symbol or not symbol.strip():
+            raise ValueError("Symbol must be non-empty.")
+        if quantity <= 0:
+            raise ValueError(f"Quantity must be positive, got {quantity}.")
+
+        # Order type and price validation
+        order_type_upper = order_type.upper()
+        if order_type_upper not in ("MARKET", "LIMIT"):
+            raise ValueError(f"Unsupported order type: {order_type}")
+
+        if order_type_upper == "LIMIT":
+            if price is None:
+                raise ValueError("Price is required for LIMIT orders.")
+            if price <= 0:
+                raise ValueError(f"Limit price must be positive, got {price}.")
+        else:
+            # MARKET order
+            if price is not None:
+                price = None
+
+        # Map Side
+        if side == OrderSide.BUY:
+            action = "BUY"
+        elif side == OrderSide.SELL:
+            action = "SELL"
+        else:
+            raise ValueError(f"Unsupported order side: {side}")
+
+        # Construct Contract
+        contract = Contract()
+        contract.symbol = symbol
+        contract.secType = self._settings.ibkr_market_data_sec_type
+        contract.exchange = self._settings.ibkr_market_data_exchange
+        contract.currency = self._settings.ibkr_market_data_currency
+        if self._settings.ibkr_market_data_primary_exchange:
+            contract.primaryExch = self._settings.ibkr_market_data_primary_exchange
+
+        # Construct IBKR Order
+        ib_order = IBOrder()
+        ib_order.action = action
+        ib_order.totalQuantity = float(quantity)
+
+        if order_type_upper == "LIMIT" and price is not None:
+            ib_order.orderType = "LMT"
+            ib_order.lmtPrice = float(price)
+        else:
+            ib_order.orderType = "MKT"
+
+        ib_order.transmit = True
+
+        # Get next valid order ID
+        tws_order_id = self._get_next_order_id()
+        order_id_str = str(tws_order_id)
+
+        # Construct our domain model Order initially in PENDING state
+        domain_order = Order(
+            order_id=order_id_str,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            order_type=order_type_upper,
+            price=price,
+            status=OrderStatus.PENDING,
+        )
+
+        with self._lock:
+            self._orders[order_id_str] = domain_order
+
+        # Register request ID as an order under the lock
+        self._client.register_request_id(tws_order_id, "order")
+
+        logger.info(
+            "Placing TWS Order: id=%d, symbol=%s, action=%s, qty=%d, type=%s, price=%s",
+            tws_order_id,
+            symbol,
+            action,
+            quantity,
+            ib_order.orderType,
+            price,
+        )
+
+        # Place the order through client outside the lock with cleanup on error
+        try:
+            self._client.placeOrder(tws_order_id, contract, ib_order)
+        except Exception:
+            with self._lock:
+                if (
+                    order_id_str in self._orders
+                    and self._orders[order_id_str].status == OrderStatus.PENDING
+                ):
+                    self._orders.pop(order_id_str, None)
+                    self._client.unregister_request_id(tws_order_id)
+            raise
+
+        return copy.copy(domain_order)
 
     async def modify_order(
         self,
@@ -167,18 +307,116 @@ class IBKRBroker(BaseBroker):
         quantity: int | None = None,
         price: Decimal | None = None,
     ) -> Order:
-        """Unimplemented in this read-only phase."""
-        raise NotImplementedError("Order modification is not supported in this phase.")
+        """Modify an existing open order in TWS by resubmitting with same ID."""
+        self._require_connected()
+
+        # Find the existing order
+        with self._lock:
+            if order_id not in self._orders:
+                raise ValueError(f"Order not found: {order_id}")
+            domain_order = self._orders[order_id]
+
+            # Check if order is terminal
+            if domain_order.status in (
+                OrderStatus.FILLED,
+                OrderStatus.CANCELLED,
+                OrderStatus.REJECTED,
+            ):
+                raise ValueError(
+                    f"Cannot modify order in terminal state: {domain_order.status.value}"
+                )
+
+            # Validate modifications
+            # Quantity must be positive if supplied
+            if quantity is not None:
+                if quantity <= 0:
+                    raise ValueError(f"Quantity must be positive, got {quantity}.")
+                new_qty = quantity
+            else:
+                new_qty = domain_order.quantity
+
+            # Price validation
+            new_price: Decimal | None = None
+            if domain_order.order_type == "LIMIT":
+                if price is not None:
+                    if price <= 0:
+                        raise ValueError(f"Limit price must be positive, got {price}.")
+                    new_price = price
+                else:
+                    new_price = domain_order.price
+            else:
+                # Market order cannot have price modification
+                if price is not None:
+                    raise ValueError("Cannot set price for a MARKET order.")
+                new_price = None
+
+            # Construct contract
+            contract = Contract()
+            contract.symbol = domain_order.symbol
+            contract.secType = self._settings.ibkr_market_data_sec_type
+            contract.exchange = self._settings.ibkr_market_data_exchange
+            contract.currency = self._settings.ibkr_market_data_currency
+            if self._settings.ibkr_market_data_primary_exchange:
+                contract.primaryExch = self._settings.ibkr_market_data_primary_exchange
+
+            # Construct modified TWS Order
+            ib_order = IBOrder()
+            ib_order.action = "BUY" if domain_order.side == OrderSide.BUY else "SELL"
+            ib_order.totalQuantity = float(new_qty)
+
+            if domain_order.order_type == "LIMIT" and new_price is not None:
+                ib_order.orderType = "LMT"
+                ib_order.lmtPrice = float(new_price)
+            else:
+                ib_order.orderType = "MKT"
+
+            ib_order.transmit = True
+
+        # Place the order through client outside the lock using same order ID
+        tws_order_id = int(order_id)
+        logger.info(
+            "Modifying TWS Order: id=%d, symbol=%s, qty=%d, price=%s",
+            tws_order_id,
+            domain_order.symbol,
+            new_qty,
+            new_price,
+        )
+        self._client.placeOrder(tws_order_id, contract, ib_order)
+
+        return copy.copy(domain_order)
 
     async def cancel_order(self, order_id: str) -> Order:
-        """Unimplemented in this read-only phase."""
-        raise NotImplementedError("Order cancellation is not supported in this phase.")
+        """Submit a cancel request to TWS for an existing open order."""
+        self._require_connected()
+
+        with self._lock:
+            if order_id not in self._orders:
+                raise ValueError(f"Order not found: {order_id}")
+            domain_order = self._orders[order_id]
+
+            if domain_order.status in (
+                OrderStatus.FILLED,
+                OrderStatus.CANCELLED,
+                OrderStatus.REJECTED,
+            ):
+                raise ValueError(
+                    f"Cannot cancel order in terminal state: {domain_order.status.value}"
+                )
+
+        tws_order_id = int(order_id)
+        logger.info("Canceling TWS Order: id=%d", tws_order_id)
+
+        # Submit cancel request outside the lock
+        self._client.cancelOrder(tws_order_id)
+
+        with self._lock:
+            return copy.copy(domain_order)
 
     async def get_order_book(self) -> list[Order]:
-        """Unimplemented in this read-only phase."""
-        raise NotImplementedError(
-            "Order book retrieval is not supported in this phase."
-        )
+        """Return copies of all tracked orders."""
+        self._require_connected()
+        with self._lock:
+            return [copy.copy(o) for o in self._orders.values()]
 
     # ── EWrapper general listeners callbacks ─────────────────────────
 
@@ -274,6 +512,7 @@ class IBKRBroker(BaseBroker):
 
         # Cancel account summary subscription for this request
         try:
+            self._client.unregister_request_id(reqId)
             self._client.cancelAccountSummary(reqId)
         except Exception as e:  # noqa: BLE001
             logger.debug("Failed to cancel account summary: %s", e)
@@ -295,11 +534,15 @@ class IBKRBroker(BaseBroker):
         positions_future_to_fail = None
         positions_loop = None
 
+        # Resolve request type from TWSClient registry
+        req_type = self._client.get_request_type(reqId)
+
         with self._lock:
             # If the error is specific to a margin request reqId
-            if reqId in self._margin_futures:
+            if req_type == "margin" and reqId in self._margin_futures:
                 margin_future_to_fail, margin_loop = self._margin_futures.pop(reqId)
                 self._margin_data.pop(reqId, None)
+                self._client.unregister_request_id(reqId)
 
             # If the error is connection level or a general error (reqId is -1 or matches lost connection)
             if (
@@ -310,6 +553,28 @@ class IBKRBroker(BaseBroker):
                 self._positions_future = None
                 self._positions_loop = None
                 self._collected_positions = []
+
+            # Order error correlation: only process if the request type is confirmed as "order"
+            if req_type == "order":
+                order_id_str = str(reqId)
+                if order_id_str in self._orders:
+                    domain_order = self._orders[order_id_str]
+                    if domain_order.status not in (
+                        OrderStatus.FILLED,
+                        OrderStatus.CANCELLED,
+                        OrderStatus.REJECTED,
+                    ):
+                        if errorCode == 202:
+                            domain_order.status = OrderStatus.CANCELLED
+                        else:
+                            domain_order.status = OrderStatus.REJECTED
+                        logger.warning(
+                            "Order %s transitioned to %s due to TWS error %d: %s",
+                            order_id_str,
+                            domain_order.status.value,
+                            errorCode,
+                            errorString,
+                        )
 
         exc = RuntimeError(f"TWS error reqId={reqId} code={errorCode}: {errorString}")
 
@@ -349,3 +614,92 @@ class IBKRBroker(BaseBroker):
 
         for fut, loop in margin_futures_to_fail:
             loop.call_soon_threadsafe(fut.set_exception, exc)
+
+    def on_open_order(
+        self, orderId: int, contract: Any, order: Any, orderState: Any
+    ) -> None:
+        """Handle openOrder callbacks from TWSClient."""
+        order_id_str = str(orderId)
+        with self._lock:
+            if order_id_str in self._orders:
+                domain_order = self._orders[order_id_str]
+
+                # Update quantity and price from confirmed TWS state (P1-2)
+                domain_order.quantity = int(order.totalQuantity)
+                if order.orderType == "LMT":
+                    domain_order.price = Decimal(str(order.lmtPrice))
+
+                ib_status = orderState.status
+                new_status = self._map_status(ib_status)
+
+                # Status protection (P0-1)
+                is_currently_terminal = domain_order.status in (
+                    OrderStatus.FILLED,
+                    OrderStatus.CANCELLED,
+                    OrderStatus.REJECTED,
+                )
+                if not is_currently_terminal:
+                    domain_order.status = new_status
+
+                logger.info(
+                    "Order openOrder status update: id=%s, status=%s (mapped from TWS: %s)",
+                    order_id_str,
+                    domain_order.status.value,
+                    ib_status,
+                )
+
+    def on_order_status(
+        self,
+        orderId: int,
+        status: str,
+        filled: float,
+        remaining: float,
+        avgFillPrice: float,
+        permId: int,
+        parentId: int,
+        lastFillPrice: float,
+        clientId: int,
+        whyHeld: str,
+        mktCapPrice: float,
+    ) -> None:
+        """Handle orderStatus callbacks from TWSClient."""
+        order_id_str = str(orderId)
+        with self._lock:
+            if order_id_str in self._orders:
+                domain_order = self._orders[order_id_str]
+                new_status = self._map_status(status)
+
+                qty_filled = int(filled)
+                qty_remaining = int(remaining)
+
+                # Status protection (P0-1)
+                is_currently_terminal = domain_order.status in (
+                    OrderStatus.FILLED,
+                    OrderStatus.CANCELLED,
+                    OrderStatus.REJECTED,
+                )
+                if not is_currently_terminal:
+                    if qty_filled > 0 and qty_remaining > 0:
+                        domain_order.status = OrderStatus.PARTIALLY_FILLED
+                    else:
+                        domain_order.status = new_status
+
+                # Update execution info monotonically: a stale/out-of-order callback
+                # must never regress already-recorded fill data (P0-1). Only a higher
+                # cumulative filled quantity advances filled_quantity / avg price.
+                if qty_filled > domain_order.filled_quantity:
+                    domain_order.filled_quantity = qty_filled
+                    if avgFillPrice > 0:
+                        domain_order.average_fill_price = Decimal(str(avgFillPrice))
+
+                logger.info(
+                    "Order orderStatus update: id=%s, status=%s, filled=%d, avgPrice=%s",
+                    order_id_str,
+                    domain_order.status.value,
+                    qty_filled,
+                    avgFillPrice,
+                )
+
+    def on_open_order_end(self) -> None:
+        """Handle openOrderEnd callbacks from TWSClient."""
+        logger.debug("Received openOrderEnd from TWS.")

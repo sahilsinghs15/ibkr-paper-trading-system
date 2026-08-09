@@ -261,7 +261,7 @@ class TestCandleStrategyProcessor:
         client.is_connected.return_value = True
 
         adapter = IBKRMarketDataAdapter(client, Settings())
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
         builder = CandleBuilder(timeframe_minutes=5)
         candle_processor = MarketDataCandleProcessor(candle_builder=builder)
@@ -279,20 +279,20 @@ class TestCandleStrategyProcessor:
             # Low price at start
             with mock.patch("app.market_data.ibkr_market_data.datetime") as mock_dt:
                 mock_dt.now.return_value = candle_start
-                adapter.on_tick_price(1000, 4, 100.0 + i)
-                adapter.on_tick_size(1000, 5, 20)
+                adapter.on_tick_price(req_id, 4, 100.0 + i)
+                adapter.on_tick_size(req_id, 5, 20)
 
             # High price at end of candle (bullish)
             with mock.patch("app.market_data.ibkr_market_data.datetime") as mock_dt:
                 mock_dt.now.return_value = candle_start + timedelta(minutes=4)
-                adapter.on_tick_price(1000, 4, 101.0 + i)
-                adapter.on_tick_size(1000, 5, 20)
+                adapter.on_tick_price(req_id, 4, 101.0 + i)
+                adapter.on_tick_size(req_id, 5, 20)
 
         # Final boundary tick to trigger completion of the 5th candle
         with mock.patch("app.market_data.ibkr_market_data.datetime") as mock_dt:
             mock_dt.now.return_value = t0 + timedelta(minutes=25)
-            adapter.on_tick_price(1000, 4, 110.00)
-            adapter.on_tick_size(1000, 5, 10)
+            adapter.on_tick_price(req_id, 4, 110.00)
+            adapter.on_tick_size(req_id, 5, 10)
 
         # Feed all queue events sequentially
         while adapter.queue_size() > 0:

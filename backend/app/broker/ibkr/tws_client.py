@@ -29,6 +29,24 @@ class TWSClient(EWrapper, EClient):
         self._market_data_listeners: list[Any] = []
         self._listeners: list[Any] = []
 
+        self._request_types: dict[int, str] = {}
+        self._registry_lock = threading.Lock()
+
+    def register_request_id(self, req_id: int, req_type: str) -> None:
+        """Register a request ID with its type under lock."""
+        with self._registry_lock:
+            self._request_types[req_id] = req_type
+
+    def unregister_request_id(self, req_id: int) -> None:
+        """Unregister a request ID under lock."""
+        with self._registry_lock:
+            self._request_types.pop(req_id, None)
+
+    def get_request_type(self, req_id: int) -> str | None:
+        """Retrieve the registered type of a request ID under lock."""
+        with self._registry_lock:
+            return self._request_types.get(req_id)
+
     # ── EWrapper Callbacks ───────────────────────────────────────────
 
     def nextValidId(self, orderId: int) -> None:
@@ -169,6 +187,78 @@ class TWSClient(EWrapper, EClient):
             except Exception:
                 logger.exception("Error in positionEnd listener callback")
 
+    def openOrder(
+        self, orderId: int, contract: Any, order: Any, orderState: Any
+    ) -> None:
+        """Callback received when an open order details are updated."""
+        super().openOrder(orderId, contract, order, orderState)
+        for listener in list(self._listeners):
+            try:
+                listener.on_open_order(orderId, contract, order, orderState)
+            except AttributeError:
+                pass
+            except Exception:
+                logger.exception("Error in openOrder listener callback")
+
+    def orderStatus(
+        self,
+        orderId: int,
+        status: str,
+        filled: float,
+        remaining: float,
+        avgFillPrice: float,
+        permId: int,
+        parentId: int,
+        lastFillPrice: float,
+        clientId: int,
+        whyHeld: str,
+        mktCapPrice: float,
+    ) -> None:
+        """Callback received when an order's execution status is updated."""
+        super().orderStatus(
+            orderId,
+            status,
+            filled,
+            remaining,
+            avgFillPrice,
+            permId,
+            parentId,
+            lastFillPrice,
+            clientId,
+            whyHeld,
+            mktCapPrice,
+        )
+        for listener in list(self._listeners):
+            try:
+                listener.on_order_status(
+                    orderId,
+                    status,
+                    filled,
+                    remaining,
+                    avgFillPrice,
+                    permId,
+                    parentId,
+                    lastFillPrice,
+                    clientId,
+                    whyHeld,
+                    mktCapPrice,
+                )
+            except AttributeError:
+                pass
+            except Exception:
+                logger.exception("Error in orderStatus listener callback")
+
+    def openOrderEnd(self) -> None:
+        """Callback received when open orders transmission is complete."""
+        super().openOrderEnd()
+        for listener in list(self._listeners):
+            try:
+                listener.on_open_order_end()
+            except AttributeError:
+                pass
+            except Exception:
+                logger.exception("Error in openOrderEnd listener callback")
+
     def register_market_data_listener(self, listener: Any) -> None:
         """Register a listener to receive market data events."""
         self._market_data_listeners.append(listener)
@@ -249,4 +339,6 @@ class TWSClient(EWrapper, EClient):
 
         self._connected_event.clear()
         self.next_order_id = None
+        with self._registry_lock:
+            self._request_types.clear()
         logger.info("TWS disconnected.")

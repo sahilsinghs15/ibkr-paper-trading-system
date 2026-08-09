@@ -32,7 +32,9 @@ class IBKRMarketDataAdapter:
         self._client = client
         self._settings = settings
         self._queue: queue.Queue[MarketDataEvent] = queue.Queue()
-        self._req_id_counter = 1000  # Unique ID counter for TWS requests
+        self._req_id_counter = (
+            10000000  # Unique ID counter for TWS requests (using high base)
+        )
         self._lock = threading.Lock()
 
         # Active subscription tracking
@@ -235,6 +237,9 @@ class IBKRMarketDataAdapter:
             self._active_req_id = req_id
             self._active_symbol = contract.symbol
 
+            # Register request ID namespace ownership
+            self._client.register_request_id(req_id, "market_data")
+
         # Perform socket calls and configuration updates OUTSIDE the lock!
         mkt_data_type = self._settings.ibkr_market_data_type
         logger.info(
@@ -301,6 +306,7 @@ class IBKRMarketDataAdapter:
                 "Canceling TWS market data subscription for reqId=%d...",
                 req_id_to_cancel,
             )
+            self._client.unregister_request_id(req_id_to_cancel)
             self._client.cancelMktData(req_id_to_cancel)
             logger.info(
                 "Subscription canceled: reqId=%d, symbol=%s.",

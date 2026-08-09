@@ -166,7 +166,7 @@ class TestCandleProcessor:
 
         settings = Settings()
         adapter = IBKRMarketDataAdapter(client, settings)
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
         builder = CandleBuilder(timeframe_minutes=5)
         processor = MarketDataCandleProcessor(candle_builder=builder)
@@ -176,18 +176,18 @@ class TestCandleProcessor:
         with mock.patch("app.market_data.ibkr_market_data.datetime") as mock_dt:
             # 1. First trade update (Sequence A)
             mock_dt.now.return_value = t0
-            adapter.on_tick_price(1000, 4, 100.00)
-            adapter.on_tick_size(1000, 5, 50)
+            adapter.on_tick_price(req_id, 4, 100.00)
+            adapter.on_tick_size(req_id, 5, 50)
 
             # 2. Second trade update (Sequence B)
             mock_dt.now.return_value = t0 + timedelta(minutes=2)
-            adapter.on_tick_size(1000, 5, 30)
-            adapter.on_tick_price(1000, 4, 102.00)
+            adapter.on_tick_size(req_id, 5, 30)
+            adapter.on_tick_price(req_id, 4, 102.00)
 
             # 3. Boundary trade update (Sequence A) - triggers completed candle
             mock_dt.now.return_value = t0 + timedelta(minutes=5)
-            adapter.on_tick_price(1000, 4, 101.00)
-            adapter.on_tick_size(1000, 5, 10)
+            adapter.on_tick_price(req_id, 4, 101.00)
+            adapter.on_tick_size(req_id, 5, 10)
 
         # Drain queue and process
         candles = []
@@ -236,7 +236,7 @@ class TestCandleProcessor:
         client.is_connected.return_value = True
 
         adapter = IBKRMarketDataAdapter(client, Settings())
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
         adapter_builder = CandleBuilder(timeframe_minutes=5)
         adapter_processor = MarketDataCandleProcessor(candle_builder=adapter_builder)
@@ -244,8 +244,8 @@ class TestCandleProcessor:
         for tick in ticks:
             with mock.patch("app.market_data.ibkr_market_data.datetime") as mock_dt:
                 mock_dt.now.return_value = tick.timestamp
-                adapter.on_tick_price(1000, 4, float(tick.price))
-                adapter.on_tick_size(1000, 5, tick.volume)
+                adapter.on_tick_price(req_id, 4, float(tick.price))
+                adapter.on_tick_size(req_id, 5, tick.volume)
 
         # Flush final price
         adapter.cancel_market_data()

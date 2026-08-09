@@ -53,15 +53,16 @@ class TestIBKRMarketData:
 
         req_id = adapter.request_market_data()
 
-        assert req_id == 1000
-        assert adapter._active_req_id == 1000
+        # req_id must be a valid integer
+        assert isinstance(req_id, int)
+        assert adapter._active_req_id == req_id
         assert adapter._active_symbol == settings.ibkr_market_data_symbol
 
         # Verify TWS client EClient methods are invoked correctly
         client.reqMarketDataType.assert_called_once_with(settings.ibkr_market_data_type)
         client.reqMktData.assert_called_once()
         call_args = client.reqMktData.call_args[0]
-        assert call_args[0] == 1000
+        assert call_args[0] == req_id
         contract = call_args[1]
         assert contract.symbol == settings.ibkr_market_data_symbol
 
@@ -97,10 +98,10 @@ class TestIBKRMarketData:
 
         settings = Settings()
         adapter = IBKRMarketDataAdapter(client, settings)
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
         # Callback with tickType 4 (LAST)
-        adapter.on_tick_price(1000, 4, 150.25)
+        adapter.on_tick_price(req_id, 4, 150.25)
 
         # Flushed when price changed or on cancellation
         assert adapter.queue_size() == 0
@@ -120,10 +121,10 @@ class TestIBKRMarketData:
 
         settings = Settings()
         adapter = IBKRMarketDataAdapter(client, settings)
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
         # Callback with tickType 68 (DELAYED_LAST)
-        adapter.on_tick_price(1000, 68, 150.25)
+        adapter.on_tick_price(req_id, 68, 150.25)
 
         assert adapter.queue_size() == 0
         adapter.cancel_market_data()
@@ -152,11 +153,11 @@ class TestIBKRMarketData:
 
         settings = Settings()
         adapter = IBKRMarketDataAdapter(client, settings)
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
         # Bid (1) and Ask (2) should be filtered
-        adapter.on_tick_price(1000, 1, 150.25)
-        adapter.on_tick_price(1000, 2, 150.25)
+        adapter.on_tick_price(req_id, 1, 150.25)
+        adapter.on_tick_price(req_id, 2, 150.25)
         assert adapter.queue_size() == 0
 
     def test_tick_price_ignores_invalid_values(
@@ -168,11 +169,11 @@ class TestIBKRMarketData:
 
         settings = Settings()
         adapter = IBKRMarketDataAdapter(client, settings)
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
         with caplog.at_level(logging.WARNING):
-            adapter.on_tick_price(1000, 4, 0.0)
-            adapter.on_tick_price(1000, 4, -10.5)
+            adapter.on_tick_price(req_id, 4, 0.0)
+            adapter.on_tick_price(req_id, 4, -10.5)
 
         assert adapter.queue_size() == 0
         assert "Ignored non-positive price callback" in caplog.text
@@ -186,10 +187,10 @@ class TestIBKRMarketData:
 
         settings = Settings()
         adapter = IBKRMarketDataAdapter(client, settings)
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
         with caplog.at_level(logging.WARNING):
-            adapter.on_tick_size(1000, 5, -100)
+            adapter.on_tick_size(req_id, 5, -100)
 
         assert adapter.queue_size() == 0
         assert "Ignored negative size callback" in caplog.text
@@ -201,10 +202,10 @@ class TestIBKRMarketData:
 
         settings = Settings()
         adapter = IBKRMarketDataAdapter(client, settings)
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
         with caplog.at_level(logging.INFO):
-            adapter.on_market_data_type(1000, 3)
+            adapter.on_market_data_type(req_id, 3)
 
         assert "TWS confirmed market data type" in caplog.text
 
@@ -215,13 +216,13 @@ class TestIBKRMarketData:
 
         settings = Settings()
         adapter = IBKRMarketDataAdapter(client, settings)
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
         adapter.cancel_market_data()
 
         assert adapter._active_req_id is None
         assert adapter._active_symbol is None
-        client.cancelMktData.assert_called_once_with(1000)
+        client.cancelMktData.assert_called_once_with(req_id)
 
     def test_no_events_after_cancellation(self) -> None:
         """Verify no events are enqueued from callbacks post-cancellation."""
@@ -264,14 +265,14 @@ class TestIBKRMarketData:
         client = mock.Mock(spec=TWSClient)
         client.is_connected.return_value = True
         adapter = IBKRMarketDataAdapter(client, Settings())
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
         # Step 1: price callback
-        adapter.on_tick_price(1000, 4, 100.0)
+        adapter.on_tick_price(req_id, 4, 100.0)
         assert adapter.queue_size() == 0  # Not emitted yet, waiting for size
 
         # Step 2: size callback
-        adapter.on_tick_size(1000, 5, 50)
+        adapter.on_tick_size(req_id, 5, 50)
         assert adapter.queue_size() == 1  # Emitted exactly one event
 
         event = adapter.get_event()
@@ -287,14 +288,14 @@ class TestIBKRMarketData:
         client = mock.Mock(spec=TWSClient)
         client.is_connected.return_value = True
         adapter = IBKRMarketDataAdapter(client, Settings())
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
         # Step 1: size callback
-        adapter.on_tick_size(1000, 5, 50)
+        adapter.on_tick_size(req_id, 5, 50)
         assert adapter.queue_size() == 0  # Not emitted yet, waiting for price
 
         # Step 2: price callback
-        adapter.on_tick_price(1000, 4, 100.0)
+        adapter.on_tick_price(req_id, 4, 100.0)
         assert adapter.queue_size() == 1  # Emitted exactly one event
 
         event = adapter.get_event()
@@ -310,13 +311,13 @@ class TestIBKRMarketData:
         client = mock.Mock(spec=TWSClient)
         client.is_connected.return_value = True
         adapter = IBKRMarketDataAdapter(client, Settings())
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
-        adapter.on_tick_price(1000, 4, 100.0)
+        adapter.on_tick_price(req_id, 4, 100.0)
         assert adapter.queue_size() == 0
 
         # Changing price flushes the pending price update
-        adapter.on_tick_price(1000, 4, 101.0)
+        adapter.on_tick_price(req_id, 4, 101.0)
         assert adapter.queue_size() == 1
 
         event1 = adapter.get_event()
@@ -325,7 +326,7 @@ class TestIBKRMarketData:
         assert event1.volume == 0
 
         # Now size 50 completes the second price update
-        adapter.on_tick_size(1000, 5, 50)
+        adapter.on_tick_size(req_id, 5, 50)
         assert adapter.queue_size() == 1
 
         event2 = adapter.get_event()
@@ -341,13 +342,13 @@ class TestIBKRMarketData:
         client = mock.Mock(spec=TWSClient)
         client.is_connected.return_value = True
         adapter = IBKRMarketDataAdapter(client, Settings())
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
-        adapter.on_tick_size(1000, 5, 50)
-        adapter.on_tick_size(1000, 5, 30)
+        adapter.on_tick_size(req_id, 5, 50)
+        adapter.on_tick_size(req_id, 5, 30)
         assert adapter.queue_size() == 0
 
-        adapter.on_tick_price(1000, 4, 101.0)
+        adapter.on_tick_price(req_id, 4, 101.0)
         assert adapter.queue_size() == 1
 
         event = adapter.get_event()
@@ -363,10 +364,10 @@ class TestIBKRMarketData:
         client = mock.Mock(spec=TWSClient)
         client.is_connected.return_value = True
         adapter = IBKRMarketDataAdapter(client, Settings())
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
-        adapter.on_tick_price(1000, 4, 100.0)
-        adapter.on_tick_size(1000, 5, 50)
+        adapter.on_tick_price(req_id, 4, 100.0)
+        adapter.on_tick_size(req_id, 5, 50)
 
         # Consume the first trade event
         assert adapter.queue_size() == 1
@@ -376,10 +377,10 @@ class TestIBKRMarketData:
         assert event1.volume == 50
 
         # Trigger second price update
-        adapter.on_tick_price(1000, 4, 101.0)
+        adapter.on_tick_price(req_id, 4, 101.0)
         assert adapter.queue_size() == 0  # Stale volume 50 was NOT reused!
 
-        adapter.on_tick_size(1000, 5, 30)
+        adapter.on_tick_size(req_id, 5, 30)
         assert adapter.queue_size() == 1
         event2 = adapter.get_event()
         assert event2 is not None
@@ -396,10 +397,10 @@ class TestIBKRMarketData:
         client = mock.Mock(spec=TWSClient)
         client.is_connected.return_value = True
         adapter = IBKRMarketDataAdapter(client, Settings())
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
         # Cache a pending price update
-        adapter.on_tick_price(1000, 4, 150.00)
+        adapter.on_tick_price(req_id, 4, 150.00)
         assert adapter.queue_size() == 0
 
         # Connection drops
@@ -424,7 +425,7 @@ class TestIBKRMarketData:
 
         # First connection/subscription
         req_id1 = adapter.request_market_data()
-        assert req_id1 == 1000
+        assert isinstance(req_id1, int)
 
         # Disconnection
         adapter.on_connection_closed()
@@ -432,16 +433,16 @@ class TestIBKRMarketData:
 
         # Re-connection and secondary subscription
         req_id2 = adapter.request_market_data()
-        assert req_id2 == 1001  # Newly generated request ID
+        assert req_id2 == req_id1 + 1  # Newly generated request ID
 
     def test_lifecycle_cancel_market_data_flushes_pending(self) -> None:
         """Verify cancel_market_data flushes any pending un-paired price update."""
         client = mock.Mock(spec=TWSClient)
         client.is_connected.return_value = True
         adapter = IBKRMarketDataAdapter(client, Settings())
-        adapter.request_market_data()
+        req_id = adapter.request_market_data()
 
-        adapter.on_tick_price(1000, 4, 150.0)
+        adapter.on_tick_price(req_id, 4, 150.0)
         assert adapter.queue_size() == 0
 
         adapter.cancel_market_data()
