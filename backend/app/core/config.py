@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     app_name: str = "IBKR Paper Trading System"
     environment: str = "development"
     log_level: str = "INFO"
+    broker_mode: str = "mock"  # "mock" or "ibkr"
 
     # IBKR connection
     ibkr_host: str = "127.0.0.1"

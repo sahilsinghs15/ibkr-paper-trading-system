@@ -94,3 +94,63 @@ class MarginSchema(BaseModel):
     equity: Decimal = Field(..., description="Total account equity.")
     available_funds: Decimal = Field(..., description="Funds available for trading.")
     buying_power: Decimal = Field(..., description="Available buying power.")
+
+
+class PlaceOrderRequest(BaseModel):
+    """Request schema for placing a new order."""
+
+    symbol: str = Field(
+        ...,
+        description="Asset symbol to trade.",
+        examples=["AAPL"],
+    )
+    side: OrderSide = Field(..., description="BUY or SELL side.")
+    quantity: int = Field(
+        ...,
+        description="Number of units to trade.",
+        gt=0,
+        examples=[1],
+    )
+    order_type: str = Field(
+        ...,
+        description="Order execution type: MARKET or LIMIT.",
+        examples=["LIMIT"],
+    )
+    price: Decimal | None = Field(
+        None,
+        description="Limit price (required for LIMIT orders).",
+        examples=["150.00"],
+    )
+
+
+class ModifyOrderRequest(BaseModel):
+    """Request schema for modifying an existing order."""
+
+    quantity: int | None = Field(
+        None,
+        description="New quantity (must be positive).",
+        gt=0,
+    )
+    price: Decimal | None = Field(
+        None,
+        description="New limit price.",
+    )
+
+
+class BrokerStatusResponse(BaseModel):
+    """Response schema representing broker connection status."""
+
+    broker_mode: str = Field(..., description="Active broker mode: mock or ibkr.")
+    connected: bool = Field(..., description="Whether the broker is connected.")
+    broker_type: str = Field(
+        ..., description="Concrete broker class name, e.g. MockBroker or IBKRBroker."
+    )
+
+
+class MarketDataSubscriptionResponse(BaseModel):
+    """Response schema for market data subscription operations."""
+
+    subscribed: bool = Field(..., description="Whether subscription is active.")
+    symbol: str | None = Field(None, description="Subscribed symbol, if any.")
+    request_id: int | None = Field(None, description="TWS request ID, if any.")
+
