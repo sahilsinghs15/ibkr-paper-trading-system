@@ -12,7 +12,7 @@ from app.core.config import Settings, get_settings
 class TestConfig:
     def test_default_values(self) -> None:
         """Settings should have safe local-development defaults."""
-        settings = Settings()
+        settings = Settings(_env_file=None)
         assert settings.app_name == "IBKR Paper Trading System"
         assert settings.environment == "development"
         assert settings.log_level == "INFO"

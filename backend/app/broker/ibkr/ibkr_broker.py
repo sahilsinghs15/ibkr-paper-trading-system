@@ -255,6 +255,10 @@ class IBKRBroker(BaseBroker):
 
         ib_order.transmit = True
 
+        # Disable deprecated order attributes that trigger TWS error 10268
+        ib_order.eTradeOnly = False
+        ib_order.firmQuoteOnly = False
+
         # Get next valid order ID
         tws_order_id = self._get_next_order_id()
         order_id_str = str(tws_order_id)
@@ -371,6 +375,10 @@ class IBKRBroker(BaseBroker):
                 ib_order.orderType = "MKT"
 
             ib_order.transmit = True
+
+            # Disable deprecated order attributes that trigger TWS error 10268
+            ib_order.eTradeOnly = False
+            ib_order.firmQuoteOnly = False
 
         # Place the order through client outside the lock using same order ID
         tws_order_id = int(order_id)

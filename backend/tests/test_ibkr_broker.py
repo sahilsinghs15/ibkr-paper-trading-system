@@ -368,6 +368,8 @@ class TestIBKRBroker:
         assert ib_order.totalQuantity == 100.0
         assert ib_order.orderType == "MKT"
         assert ib_order.transmit is True
+        assert ib_order.eTradeOnly is False
+        assert ib_order.firmQuoteOnly is False
 
     async def test_place_order_limit_sell(
         self, broker: IBKRBroker, mock_client: mock.Mock
@@ -398,6 +400,52 @@ class TestIBKRBroker:
         assert ib_order.totalQuantity == 50.0
         assert ib_order.orderType == "LMT"
         assert ib_order.lmtPrice == 250.50
+        assert ib_order.eTradeOnly is False
+        assert ib_order.firmQuoteOnly is False
+
+    async def test_place_order_deprecated_attributes_disabled(
+        self, broker: IBKRBroker, mock_client: mock.Mock
+    ) -> None:
+        """Regression test ensuring IBOrder does not use deprecated eTradeOnly or firmQuoteOnly attributes."""
+        mock_client.next_order_id = 7000
+
+        await broker.place_order(
+            symbol="AAPL",
+            side=OrderSide.BUY,
+            quantity=10,
+            order_type="LIMIT",
+            price=Decimal("150.00"),
+        )
+
+        args = mock_client.placeOrder.call_args[0]
+        ib_order = args[2]
+        # Must be False to prevent TWS error 10268
+        assert ib_order.eTradeOnly is False
+        assert ib_order.firmQuoteOnly is False
+
+    async def test_buy_limit_order_supported_fields(
+        self, broker: IBKRBroker, mock_client: mock.Mock
+    ) -> None:
+        """Verify normal BUY LIMIT order has only supported minimal fields set."""
+        mock_client.next_order_id = 8000
+
+        await broker.place_order(
+            symbol="AAPL",
+            side=OrderSide.BUY,
+            quantity=5,
+            order_type="LIMIT",
+            price=Decimal("175.25"),
+        )
+
+        args = mock_client.placeOrder.call_args[0]
+        ib_order = args[2]
+        assert ib_order.action == "BUY"
+        assert ib_order.totalQuantity == 5.0
+        assert ib_order.orderType == "LMT"
+        assert ib_order.lmtPrice == 175.25
+        assert ib_order.transmit is True
+        assert ib_order.eTradeOnly is False
+        assert ib_order.firmQuoteOnly is False
 
     async def test_place_order_argument_validations(self, broker: IBKRBroker) -> None:
         """Verify invalid place_order arguments raise appropriate errors."""

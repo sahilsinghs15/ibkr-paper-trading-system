@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
 from app.api.routes.health import router as health_router
+from app.api.routes.webhooks import router as webhooks_router
 from app.broker.base_broker import BaseBroker
 from app.core.config import get_settings
 from app.core.logger import setup_logging
@@ -83,7 +84,11 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         market_data_adapter = IBKRMarketDataAdapter(client=client, settings=settings)
 
         fastapi_app.state.market_data_adapter = market_data_adapter
-        logger.info("Active broker: IBKRBroker (TWS %s:%d)", settings.ibkr_host, settings.ibkr_port)
+        logger.info(
+            "Active broker: IBKRBroker (TWS %s:%d)",
+            settings.ibkr_host,
+            settings.ibkr_port,
+        )
     else:
         from app.broker.mock_broker import MockBroker
 
@@ -180,6 +185,9 @@ def create_app() -> FastAPI:
 
     # Register API business routes
     fastapi_app.include_router(api_router, prefix="/api/v1")
+
+    # Register Webhook routes
+    fastapi_app.include_router(webhooks_router, prefix="/api")
 
     # Register health endpoints outside version prefix
     fastapi_app.include_router(health_router)

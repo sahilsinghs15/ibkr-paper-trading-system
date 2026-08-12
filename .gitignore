@@ -22,10 +22,11 @@ backend/.env
 backend/.env.*
 
 # ------------------------
-# Logs
+# Logs & Data
 # ------------------------
 
 backend/logs/
+backend/data/
 *.log
 
 # ------------------------

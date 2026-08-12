@@ -13,8 +13,9 @@ from app.models.broker import BrokerStatus
 
 
 @pytest.fixture
-def client() -> Generator[TestClient, None, None]:
+def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
     """Startup and shutdown lifespan context for FastAPI client."""
+    monkeypatch.setenv("BROKER_MODE", "mock")
     with TestClient(app) as c:
         yield c
 
@@ -415,10 +416,11 @@ def test_get_margin(client: TestClient) -> None:
     assert "buying_power" in data
 
 
-def test_lifecycle_startup_shutdown() -> None:
+def test_lifecycle_startup_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
     """Lifespan manages initialization and disconnect."""
     from fastapi import FastAPI
 
+    monkeypatch.setenv("BROKER_MODE", "mock")
     broker_ref = None
     with TestClient(app) as c:
         # State initialized once on startup and stored
