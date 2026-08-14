@@ -1,104 +1,124 @@
-"""OrderManager — translates strategy Signals into broker order requests.
-
-Responsible for:
-
-    Signal → BaseBroker.place_order()
-
-OrderManager does NOT contain strategy logic, risk management,
-or position accounting.  It is a thin translation layer between
-the strategy output and the broker abstraction.
-"""
+"""OrderManager — application facade orchestrating Signal -> OrderIntent -> RMS -> OMS."""
 
 import logging
+import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
 
-from app.broker.base_broker import BaseBroker
-from app.models.order import Order, OrderSide
 from app.models.signal import Signal, SignalType
+from app.oms.models import OMSOrder
+from app.oms.oms_service import OMSService
+from app.rms.engine import RMSEngine
+from app.rms.models import (
+    OrderAction,
+    OrderIntent,
+    OrderLeg,
+    RMSContext,
+    RMSOutcome,
+    StrategyConfig,
+)
+from app.rms.models import (
+    OrderSide as RMSOrderSide,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class OrderManager:
-    """Translate strategy signals into broker order requests.
+    """Application-level order execution facade.
 
-    Args:
-        broker: A ``BaseBroker`` implementation (injected).
-        symbol: The trading instrument symbol.
-        quantity: Number of units per order.
-        order_type: Order type string (e.g. ``"MARKET"``, ``"LIMIT"``).
+    Translates strategy Signals into OrderIntents, evaluates RMS rules,
+    and submits approved orders to the OMS.
     """
 
     def __init__(
         self,
-        broker: BaseBroker,
-        symbol: str,
-        quantity: int,
+        oms: OMSService | None = None,
+        symbol: str = "RELIANCE",
+        quantity: int = 1,
         order_type: str = "MARKET",
+        price: Decimal = Decimal("100.00"),
+        strategy_id: str = "MODEL_BLUE",
+        rms_engine: RMSEngine | None = None,
+        rms_context: RMSContext | None = None,
     ) -> None:
-        self._broker = broker
+        self._oms = oms
         self._symbol = symbol
         self._quantity = quantity
         self._order_type = order_type
+        self._price = price
+        self._strategy_id = strategy_id
 
-    async def process_signal(self, signal: Signal) -> Order | None:
-        """Process a trading signal and submit an order if appropriate.
+        self._rms_engine = rms_engine or RMSEngine()
+        self._rms_context = rms_context or RMSContext(
+            strategy_configs={
+                strategy_id: StrategyConfig(
+                    strategy_id=strategy_id,
+                    max_open_positions=100,
+                    money_limit_per_symbol=Decimal(10_000_000),
+                )
+            }
+        )
+
+    async def process_signal(self, signal: Signal) -> OMSOrder | None:
+        """Process a trading signal through RMS evaluation and submit to OMS.
 
         Args:
-            signal: A ``Signal`` produced by a strategy.
+            signal: A Signal produced by an external source.
 
         Returns:
-            The ``Order`` returned by the broker for BUY/SELL signals,
-            or ``None`` for HOLD.
-
-        Raises:
-            Any exception raised by ``broker.place_order()`` is
-            propagated after logging context.
+            The resulting OMSOrder object for BUY/SELL signals, or None for HOLD.
         """
         if signal.signal_type == SignalType.HOLD:
             logger.info("HOLD signal received — no order submitted")
             return None
 
-        side = self._resolve_side(signal.signal_type)
+        rms_side = RMSOrderSide.BUY if signal.signal_type == SignalType.BUY else RMSOrderSide.SELL
 
         logger.info(
-            "%s signal received — submitting %s order: symbol=%s qty=%d type=%s",
+            "%s signal received — submitting order: symbol=%s qty=%s type=%s price=%s",
             signal.signal_type.value,
-            side.value,
             self._symbol,
-            self._quantity,
+            str(self._quantity),
             self._order_type,
+            str(self._price),
         )
 
-        try:
-            order = await self._broker.place_order(
-                symbol=self._symbol,
-                side=side,
-                quantity=self._quantity,
+        sig_id = getattr(signal, "signal_id", None) or f"SIG-{uuid.uuid4().hex[:12].upper()}"
+
+        intent = OrderIntent(
+            signal_id=sig_id,
+            strategy_id=self._strategy_id,
+            action=OrderAction.OPEN,
+            legs=[
+                OrderLeg(
+                    symbol=self._symbol,
+                    side=rms_side,
+                    quantity=int(self._quantity) if isinstance(self._quantity, int) else 1,
+                    price=self._price,
+                    contract_month="2026-09",
+                )
+            ],
+            timestamp=signal.timestamp or datetime.now(UTC),
+        )
+
+        # 1. Risk evaluation
+        rms_result = self._rms_engine.evaluate(intent, self._rms_context)
+        if rms_result.outcome != RMSOutcome.PASS:
+            msg = f"RMS check {rms_result.check_number} rejected intent: {rms_result.reason}"
+            logger.warning(msg)
+            raise ValueError(msg)
+
+        # 2. OMS submission
+        if self._oms is not None:
+            exec_res = await self._oms.submit_intent(
+                intent=intent,
+                rms_result=rms_result,
+                limit_price=self._price,
                 order_type=self._order_type,
             )
-        except Exception:
-            logger.exception(
-                "Broker order submission failed: side=%s symbol=%s qty=%d",
-                side.value,
-                self._symbol,
-                self._quantity,
-            )
-            raise
+            if not exec_res.success:
+                raise RuntimeError(f"OMS submission failed: {exec_res.error_message}")
+            return exec_res.order
 
-        logger.info(
-            "%s order submitted: order_id=%s status=%s",
-            side.value,
-            order.order_id,
-            order.status.value,
-        )
-        return order
-
-    @staticmethod
-    def _resolve_side(signal_type: SignalType) -> OrderSide:
-        """Map a non-HOLD SignalType to an OrderSide."""
-        if signal_type == SignalType.BUY:
-            return OrderSide.BUY
-        if signal_type == SignalType.SELL:
-            return OrderSide.SELL
-        msg = f"Unexpected signal type: {signal_type}"
-        raise ValueError(msg)
+        raise RuntimeError("No OMSService configured on OrderManager.")

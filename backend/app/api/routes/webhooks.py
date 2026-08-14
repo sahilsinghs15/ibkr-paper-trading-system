@@ -1,11 +1,11 @@
 """TradingView Webhook router definition."""
 
-from datetime import datetime, timezone
 import json
 import logging
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-import uuid
 
 from fastapi import APIRouter, HTTPException, Request, status
 
@@ -55,7 +55,7 @@ async def receive_tradingview_webhook(request: Request) -> dict[str, str]:
         )
 
     request_id = str(uuid.uuid4())
-    utc_now = datetime.now(timezone.utc)
+    utc_now = datetime.now(UTC)
     received_at = utc_now.isoformat()
 
     capture_data = {

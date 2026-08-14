@@ -1,8 +1,9 @@
 """API integration tests for TradingView webhook endpoint."""
 
-from collections.abc import Generator
 import json
+from collections.abc import Generator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,11 +21,18 @@ def capture_dir(
     return target_dir
 
 
+
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
-    """Startup and shutdown lifespan context for FastAPI TestClient in mock mode."""
-    monkeypatch.setenv("BROKER_MODE", "mock")
-    with TestClient(app) as c:
+    """Startup and shutdown lifespan context for FastAPI TestClient with mocked TWS connection."""
+    with (
+        patch(
+            "app.broker.ibkr.tws_client.TWSClient.connect_and_start",
+            return_value=True,
+        ),
+        patch("app.broker.ibkr.tws_client.TWSClient.disconnect_clean"),
+        TestClient(app) as c,
+    ):
         yield c
 
 

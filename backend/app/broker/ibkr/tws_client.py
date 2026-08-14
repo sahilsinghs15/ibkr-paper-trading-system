@@ -259,6 +259,39 @@ class TWSClient(EWrapper, EClient):
             except Exception:
                 logger.exception("Error in openOrderEnd listener callback")
 
+    def execDetails(self, reqId: int, contract: Any, execution: Any) -> None:
+        """Callback received when an order execution/fill details update."""
+        super().execDetails(reqId, contract, execution)
+        for listener in list(self._listeners):
+            try:
+                listener.on_exec_details(reqId, contract, execution)
+            except AttributeError:
+                pass
+            except Exception:
+                logger.exception("Error in execDetails listener callback")
+
+    def execDetailsEnd(self, reqId: int) -> None:
+        """Callback received when execution details transmission is complete."""
+        super().execDetailsEnd(reqId)
+        for listener in list(self._listeners):
+            try:
+                listener.on_exec_details_end(reqId)
+            except AttributeError:
+                pass
+            except Exception:
+                logger.exception("Error in execDetailsEnd listener callback")
+
+    def commissionReport(self, commissionReport: Any) -> None:
+        """Callback received when commission info is reported for an execution."""
+        super().commissionReport(commissionReport)
+        for listener in list(self._listeners):
+            try:
+                listener.on_commission_report(commissionReport)
+            except AttributeError:
+                pass
+            except Exception:
+                logger.exception("Error in commissionReport listener callback")
+
     def register_market_data_listener(self, listener: Any) -> None:
         """Register a listener to receive market data events."""
         self._market_data_listeners.append(listener)

@@ -1,34 +1,13 @@
-"""API request and response schemas for the paper trading system."""
+"""API request and response schemas for the paper trading execution system."""
 
 from datetime import datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.order import OrderSide, OrderStatus
 from app.models.signal import SignalType
-
-
-class MarketDataEventRequest(BaseModel):
-    """Request schema for submitting a market data event."""
-
-    timestamp: datetime = Field(
-        ...,
-        description="Timezone-aware timestamp of the price update.",
-        examples=["2025-06-15T10:00:00Z"],
-    )
-    price: Decimal = Field(
-        ...,
-        description="Observed asset price.",
-        gt=0,
-        examples=["105.50"],
-    )
-    volume: int = Field(
-        ...,
-        description="Trading volume associated with this update.",
-        ge=0,
-        examples=[100],
-    )
+from app.oms.models import OMSOrderStatus as OrderStatus
+from app.rms.models import OrderSide
 
 
 class SignalSchema(BaseModel):
@@ -56,22 +35,6 @@ class OrderSchema(BaseModel):
     price: Decimal | None = Field(None, description="Limit price if applicable.")
     filled_quantity: int = Field(0, description="Quantity filled so far.")
     average_fill_price: Decimal | None = Field(None, description="Average fill price.")
-
-
-class MarketDataResponse(BaseModel):
-    """Response schema for a market data event submission."""
-
-    candle_completed: bool = Field(
-        ..., description="Whether this event completed a candle."
-    )
-    signal: SignalSchema | None = Field(
-        None,
-        description="The resulting signal if a candle completed.",
-    )
-    order: OrderSchema | None = Field(
-        None,
-        description="The resulting order if a trade was triggered.",
-    )
 
 
 class PositionSchema(BaseModel):
@@ -140,17 +103,8 @@ class ModifyOrderRequest(BaseModel):
 class BrokerStatusResponse(BaseModel):
     """Response schema representing broker connection status."""
 
-    broker_mode: str = Field(..., description="Active broker mode: mock or ibkr.")
+    broker_mode: str = Field(..., description="Active broker environment (ibkr).")
     connected: bool = Field(..., description="Whether the broker is connected.")
     broker_type: str = Field(
-        ..., description="Concrete broker class name, e.g. MockBroker or IBKRBroker."
+        ..., description="Concrete broker class name, e.g. IBKRBroker."
     )
-
-
-class MarketDataSubscriptionResponse(BaseModel):
-    """Response schema for market data subscription operations."""
-
-    subscribed: bool = Field(..., description="Whether subscription is active.")
-    symbol: str | None = Field(None, description="Subscribed symbol, if any.")
-    request_id: int | None = Field(None, description="TWS request ID, if any.")
-
