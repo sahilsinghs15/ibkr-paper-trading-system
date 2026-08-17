@@ -26,11 +26,10 @@ def capture_dir(
 def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
     """Startup and shutdown lifespan context for FastAPI TestClient with mocked TWS connection."""
     with (
-        patch(
-            "app.broker.ibkr.tws_client.TWSClient.connect_and_start",
-            return_value=True,
-        ),
+        patch("app.broker.ibkr.tws_client.TWSClient.connect_and_start", return_value=True),
         patch("app.broker.ibkr.tws_client.TWSClient.disconnect_clean"),
+        patch("app.oms.ibkr_adapter.IBKRExecutionAdapter.is_connected", return_value=True),
+        patch("app.oms.ibkr_adapter.IBKRExecutionAdapter.submit_order", side_effect=lambda o: o),
         TestClient(app) as c,
     ):
         yield c

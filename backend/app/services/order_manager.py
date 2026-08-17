@@ -73,34 +73,53 @@ class OrderManager:
             logger.info("HOLD signal received — no order submitted")
             return None
 
-        rms_side = RMSOrderSide.BUY if signal.signal_type == SignalType.BUY else RMSOrderSide.SELL
+        strat_id = signal.strategy_id or self._strategy_id
+        sig_id = signal.signal_id or f"SIG-{uuid.uuid4().hex[:12].upper()}"
+        target_symbol = signal.symbol or self._symbol
+        target_price = signal.price if signal.price is not None else self._price
+
+        action_val = str(signal.action or "OPEN").upper()
+        order_action = OrderAction.CLOSE if action_val == "CLOSE" else OrderAction.OPEN
+
+        if signal.side:
+            side_str = str(signal.side).upper()
+            rms_side = RMSOrderSide.SELL if side_str in ("SELL", "SHORT") else RMSOrderSide.BUY
+        else:
+            rms_side = RMSOrderSide.BUY if signal.signal_type == SignalType.BUY else RMSOrderSide.SELL
 
         logger.info(
-            "%s signal received — submitting order: symbol=%s qty=%s type=%s price=%s",
+            "%s signal received — submitting order: symbol=%s qty=%s type=%s price=%s action=%s",
             signal.signal_type.value,
-            self._symbol,
+            target_symbol,
             str(self._quantity),
             self._order_type,
-            str(self._price),
+            str(target_price),
+            order_action.value,
         )
-
-        sig_id = getattr(signal, "signal_id", None) or f"SIG-{uuid.uuid4().hex[:12].upper()}"
 
         intent = OrderIntent(
             signal_id=sig_id,
-            strategy_id=self._strategy_id,
-            action=OrderAction.OPEN,
+            strategy_id=strat_id,
+            action=order_action,
             legs=[
                 OrderLeg(
-                    symbol=self._symbol,
+                    symbol=target_symbol,
                     side=rms_side,
                     quantity=int(self._quantity) if isinstance(self._quantity, int) else 1,
-                    price=self._price,
+                    price=target_price,
                     contract_month="2026-09",
                 )
             ],
             timestamp=signal.timestamp or datetime.now(UTC),
         )
+
+        # Ensure strategy config exists in RMS context
+        if strat_id not in self._rms_context.strategy_configs:
+            self._rms_context.strategy_configs[strat_id] = StrategyConfig(
+                strategy_id=strat_id,
+                max_open_positions=100,
+                money_limit_per_symbol=Decimal(10_000_000),
+            )
 
         # 1. Risk evaluation
         rms_result = self._rms_engine.evaluate(intent, self._rms_context)
@@ -114,7 +133,7 @@ class OrderManager:
             exec_res = await self._oms.submit_intent(
                 intent=intent,
                 rms_result=rms_result,
-                limit_price=self._price,
+                limit_price=target_price,
                 order_type=self._order_type,
             )
             if not exec_res.success:
@@ -122,3 +141,4 @@ class OrderManager:
             return exec_res.order
 
         raise RuntimeError("No OMSService configured on OrderManager.")
+
