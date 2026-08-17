@@ -50,10 +50,10 @@ def client_with_execution(mock_oms: OMSService) -> Generator[TestClient, None, N
     ):
         order_manager = OrderManager(
             oms=mock_oms,
-            symbol="EWA",
-            quantity=10,
-            order_type="LIMIT",
-            price=Decimal("25.50"),
+            symbol=None,
+            quantity=None,
+            order_type="MARKET",
+            price=None,
             strategy_id=strategy_id,
             rms_engine=rms_engine,
             rms_context=rms_context,
@@ -73,6 +73,7 @@ def test_1_valid_open_webhook_drives_execution(client_with_execution: TestClient
         "direction": 1,
         "ref_price_a": 25.50,
         "ticker": "EWA",
+        "quantity": 10,
     }
     response = client_with_execution.post("/api/webhooks/tradingview", json=payload)
     assert response.status_code == 200
@@ -111,9 +112,9 @@ def test_2_rms_rejection_blocks_execution(mock_oms: OMSService) -> None:
     ):
         order_manager = OrderManager(
             oms=mock_oms,
-            symbol="EWA",
-            quantity=1,
-            price=Decimal("25.50"),
+            symbol=None,
+            quantity=None,
+            price=None,
             strategy_id=strategy_id,
             rms_engine=rms_engine,
             rms_context=rms_context,
@@ -128,6 +129,7 @@ def test_2_rms_rejection_blocks_execution(mock_oms: OMSService) -> None:
             "trade_id": "REJECT_TRADE_001",
             "ticker": "EWA",
             "ref_price_a": 25.50,
+            "quantity": 1,
         }
         response = c.post("/api/webhooks/tradingview", json=payload)
         assert response.status_code == 200
@@ -139,13 +141,14 @@ def test_2_rms_rejection_blocks_execution(mock_oms: OMSService) -> None:
 
 
 def test_3_rms_pass_submits_intent(client_with_execution: TestClient) -> None:
-    """TEST 3: Valid payload satisfying RMS checks 1, 2, 3, 4, 7, 8 produces RMS PASS and OMS submission."""
+    """TEST 3: Valid payload satisfying RMS checks produces RMS PASS and OMS submission."""
     payload = {
         "strategy": "MODEL_BLUE",
         "action": "OPEN",
         "trade_id": "PASS_TRADE_002",
         "ticker": "EWA",
         "ref_price_a": 25.50,
+        "quantity": 5,
     }
     response = client_with_execution.post("/api/webhooks/tradingview", json=payload)
     assert response.status_code == 200
@@ -153,20 +156,34 @@ def test_3_rms_pass_submits_intent(client_with_execution: TestClient) -> None:
 
 
 def test_4_close_payload_follows_close_path(client_with_execution: TestClient) -> None:
-    """TEST 4: CLOSE payload is processed as OrderAction.CLOSE."""
-    payload = {
+    """TEST 4: CLOSE payload closes an existing active open position."""
+    # First send OPEN to create an active position in memory
+    open_payload = {
+        "strategy": "MODEL_BLUE",
+        "action": "OPEN",
+        "trade_id": "OPEN_TRADE_BEFORE_CLOSE",
+        "ticker": "EWA",
+        "quantity": 10,
+        "ref_price_a": 25.50,
+    }
+    res_open = client_with_execution.post("/api/webhooks/tradingview", json=open_payload)
+    assert res_open.status_code == 200
+
+    # Then send CLOSE
+    close_payload = {
         "strategy": "MODEL_BLUE",
         "action": "CLOSE",
         "trade_id": "CLOSE_TRADE_003",
         "ticker": "EWA",
         "direction": -1,
     }
-    response = client_with_execution.post("/api/webhooks/tradingview", json=payload)
+    response = client_with_execution.post("/api/webhooks/tradingview", json=close_payload)
     assert response.status_code == 200
+    assert response.json()["status"] == "received"
 
     oms: OMSService = app.state.oms
     orders = oms.get_all_orders()
-    assert len(orders) > 0
+    assert len(orders) >= 2
     latest_order = orders[-1]
     assert latest_order.intent.action.value == "CLOSE"
 
@@ -180,3 +197,17 @@ def test_5_malformed_payload_no_execution(client_with_execution: TestClient) -> 
     )
     assert response.status_code == 400
     assert response.json() == {"detail": "Invalid or malformed JSON payload."}
+
+
+def test_6_close_without_open_position_rejected(client_with_execution: TestClient) -> None:
+    """TEST 6: CLOSE signal without an open position is safely rejected without creating a sell order."""
+    close_payload = {
+        "strategy": "MODEL_BLUE",
+        "action": "CLOSE",
+        "trade_id": "UNMATCHED_CLOSE_TRADE",
+        "ticker": "UNOWNED_SYMBOL",
+        "direction": -1,
+    }
+    response = client_with_execution.post("/api/webhooks/tradingview", json=close_payload)
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected_by_rms"

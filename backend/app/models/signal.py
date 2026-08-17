@@ -2,7 +2,9 @@
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
+from typing import Any
 
 
 class SignalType(Enum):
@@ -21,8 +23,23 @@ class Signal:
         signal_type: The action indicated by the signal.
         timestamp: When the signal was generated.
         reason: Human-readable explanation of why the signal was generated.
+        signal_id: Optional unique signal/event identity.
+        strategy_id: Optional strategy identifier.
+        action: Optional trade action ("OPEN" or "CLOSE").
+        symbol: Optional target symbol.
+        side: Optional trade side ("BUY" or "SELL").
+        price: Optional target limit/reference price.
+        raw_payload: Optional raw webhook payload metadata dict.
     """
 
     signal_type: SignalType
     timestamp: datetime
     reason: str
+    signal_id: str | None = None
+    strategy_id: str | None = None
+    action: str = "OPEN"
+    symbol: str | None = None
+    side: str | None = None
+    price: Decimal | None = None
+    quantity: int | None = None
+    raw_payload: dict[str, Any] | None = None

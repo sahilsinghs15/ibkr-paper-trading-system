@@ -131,6 +131,14 @@ async def receive_tradingview_webhook(request: Request) -> dict[str, str]:
         _extract_decimal(raw_price_b) if raw_price_b is not None else None
     )
 
+    raw_qty = payload.get("quantity") or payload.get("qty") or payload.get("position_size")
+    quantity: int | None = None
+    if raw_qty is not None:
+        try:
+            quantity = int(float(str(raw_qty)))
+        except (ValueError, TypeError):
+            quantity = None
+
     # Map payload to domain Signal model
     sig_type_str = str(payload.get("action") or payload.get("signal_type") or "BUY").upper()
     if sig_type_str in ("HOLD",):
@@ -150,6 +158,7 @@ async def receive_tradingview_webhook(request: Request) -> dict[str, str]:
         symbol=pair if pair != "N/A" else None,
         side=side,
         price=ref_price_a if ref_price_a > 0 else None,
+        quantity=quantity,
         raw_payload=capture_data,
     )
 

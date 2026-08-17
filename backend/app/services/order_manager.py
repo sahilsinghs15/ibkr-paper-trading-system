@@ -34,10 +34,10 @@ class OrderManager:
     def __init__(
         self,
         oms: OMSService | None = None,
-        symbol: str = "RELIANCE",
-        quantity: int = 1,
+        symbol: str | None = None,
+        quantity: int | None = None,
         order_type: str = "MARKET",
-        price: Decimal = Decimal("100.00"),
+        price: Decimal | None = None,
         strategy_id: str = "MODEL_BLUE",
         rms_engine: RMSEngine | None = None,
         rms_context: RMSContext | None = None,
@@ -78,6 +78,9 @@ class OrderManager:
         target_symbol = signal.symbol or self._symbol
         target_price = signal.price if signal.price is not None else self._price
 
+        if not target_symbol or target_symbol == "N/A":
+            raise ValueError("MISSING_SYMBOL: Signal payload does not specify a valid symbol/ticker.")
+
         action_val = str(signal.action or "OPEN").upper()
         order_action = OrderAction.CLOSE if action_val == "CLOSE" else OrderAction.OPEN
 
@@ -87,11 +90,32 @@ class OrderManager:
         else:
             rms_side = RMSOrderSide.BUY if signal.signal_type == SignalType.BUY else RMSOrderSide.SELL
 
+        if order_action == OrderAction.OPEN:
+            target_qty = signal.quantity if signal.quantity is not None else self._quantity
+            if target_qty is None or target_qty <= 0:
+                raise ValueError("MISSING_QUANTITY: Signal payload does not specify order quantity.")
+        else:
+            # CLOSE action: Verify active open position exists in memory
+            open_count = self._rms_context.open_positions.get(target_symbol, 0)
+            if open_count <= 0:
+                open_count = self._rms_context.open_positions.get(strat_id, 0)
+            if open_count <= 0:
+                raise ValueError(
+                    f"NO_OPEN_POSITION: Cannot close position for '{target_symbol}': No active open position found in memory."
+                )
+            target_qty = signal.quantity if (signal.quantity is not None and signal.quantity > 0) else open_count
+
+        if self._order_type.upper() == "LIMIT":
+            if target_price is None or target_price <= 0:
+                raise ValueError(
+                    "MISSING_LIMIT_PRICE: Limit price is required and must be positive for LIMIT order type."
+                )
+
         logger.info(
             "%s signal received — submitting order: symbol=%s qty=%s type=%s price=%s action=%s",
             signal.signal_type.value,
             target_symbol,
-            str(self._quantity),
+            str(target_qty),
             self._order_type,
             str(target_price),
             order_action.value,
@@ -105,8 +129,8 @@ class OrderManager:
                 OrderLeg(
                     symbol=target_symbol,
                     side=rms_side,
-                    quantity=int(self._quantity) if isinstance(self._quantity, int) else 1,
-                    price=target_price,
+                    quantity=target_qty,
+                    price=target_price or Decimal(0),
                     contract_month="2026-09",
                 )
             ],
@@ -138,7 +162,21 @@ class OrderManager:
             )
             if not exec_res.success:
                 raise RuntimeError(f"OMS submission failed: {exec_res.error_message}")
+
+            # Update in-memory open position tracking
+            if order_action == OrderAction.OPEN:
+                self._rms_context.open_positions[target_symbol] = (
+                    self._rms_context.open_positions.get(target_symbol, 0) + target_qty
+                )
+                self._rms_context.open_positions[strat_id] = (
+                    self._rms_context.open_positions.get(strat_id, 0) + target_qty
+                )
+            elif order_action == OrderAction.CLOSE:
+                new_sym_qty = max(0, self._rms_context.open_positions.get(target_symbol, 0) - target_qty)
+                new_strat_qty = max(0, self._rms_context.open_positions.get(strat_id, 0) - target_qty)
+                self._rms_context.open_positions[target_symbol] = new_sym_qty
+                self._rms_context.open_positions[strat_id] = new_strat_qty
+
             return exec_res.order
 
         raise RuntimeError("No OMSService configured on OrderManager.")
-
