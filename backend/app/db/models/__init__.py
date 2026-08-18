@@ -3,6 +3,7 @@
 from app.db.models.account import AccountModel, PerSymbolLimitModel
 from app.db.models.basket import BasketModel
 from app.db.models.event import EventLogModel
+from app.db.models.execution import ExecutionModel
 from app.db.models.instrument import InstrumentModel
 from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
@@ -18,6 +19,7 @@ __all__ = [
     "PerSymbolLimitModel",
     "OrderModel",
     "EventLogModel",
+    "ExecutionModel",
     "PositionModel",
     "InstrumentModel",
 ]

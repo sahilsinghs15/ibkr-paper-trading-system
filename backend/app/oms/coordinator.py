@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.db.models.signal import SignalModel
 from app.db.repositories.basket_repository import BasketRepository
 from app.db.repositories.event_repository import EventRepository
+from app.db.repositories.execution_repository import ExecutionRepository
 from app.db.repositories.order_repository import OrderRepository
 from app.instruments.resolver import attach_resolved
 from app.instruments.models import InstrumentResolutionError
@@ -59,6 +60,7 @@ class BasketCoordinator:
         self._cancel_timeout = cancel_timeout
         self._critical: set[tuple[int, str]] = set()
         self._order_baskets: dict[str, Basket] = {}
+        self._active_basket: Basket | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         adapter = getattr(oms, "_adapter", None)
         add_listener = getattr(adapter, "add_order_state_listener", None)
@@ -105,8 +107,23 @@ class BasketCoordinator:
             action=action,
             intended_leg_count=len(intent.legs),
             state=BasketState.EXECUTING,
+            signal_pk=signal_pk,
         )
+        self._active_basket = basket
         await self._persist_basket(basket)
+        await self._event(
+            "BASKET_CREATED",
+            {
+                "account_id": intent.account_id,
+                "trade_id": trade_id,
+                "strategy_id": intent.strategy_id,
+                "action": action,
+                "legs": len(intent.legs),
+            },
+            signal_pk=signal_pk,
+            basket=basket,
+            idempotency_key=f"basket_created:{intent.account_id}:{trade_id}:{action}",
+        )
         await self._event(
             "BASKET_EXECUTING",
             {
@@ -115,6 +132,9 @@ class BasketCoordinator:
                 "strategy_id": intent.strategy_id,
                 "legs": len(intent.legs),
             },
+            signal_pk=signal_pk,
+            basket=basket,
+            idempotency_key=f"basket_executing:{intent.account_id}:{trade_id}:{action}",
         )
 
         submitted: list[OMSOrder] = []
@@ -133,8 +153,11 @@ class BasketCoordinator:
             submitted.append(order)
             self._order_baskets[order.internal_order_id] = basket
             await self._persist_child(order, intent, signal_pk=signal_pk, basket=basket)
+            close = action == "CLOSE"
+            created_kind = "CLOSE_ORDER_CREATED" if close else "ORDER_CREATED"
+            submit_kind = "CLOSE_ORDER_SUBMITTED" if close else "ORDER_SUBMITTED"
             await self._event(
-                "ORDER_CREATED",
+                created_kind,
                 {
                     "account_id": intent.account_id,
                     "trade_id": trade_id,
@@ -143,7 +166,25 @@ class BasketCoordinator:
                     "quantity": order.quantity,
                     "side": order.side.value if hasattr(order.side, "value") else str(order.side),
                 },
+                signal_pk=signal_pk,
+                basket=basket,
+                order=order,
+                idempotency_key=f"order_created:{order.internal_order_id}",
             )
+            if order.ibkr_order_id is not None:
+                await self._event(
+                    submit_kind,
+                    {
+                        "account_id": intent.account_id,
+                        "trade_id": trade_id,
+                        "internal_order_id": order.internal_order_id,
+                        "broker_order_id": str(order.ibkr_order_id),
+                    },
+                    signal_pk=signal_pk,
+                    basket=basket,
+                    order=order,
+                    idempotency_key=f"order_submitted:{order.internal_order_id}",
+                )
             if order.status in (OMSOrderStatus.REJECTED, OMSOrderStatus.ERROR):
                 abort_remaining = True
 
@@ -165,6 +206,9 @@ class BasketCoordinator:
             await self._event(
                 event_kind,
                 {"account_id": intent.account_id, "trade_id": trade_id},
+                signal_pk=signal_pk,
+                basket=basket,
+                idempotency_key=f"{event_kind.lower()}:{intent.account_id}:{trade_id}",
             )
             return BasketExecutionResult(basket=basket, intent=intent, orders=submitted)
 
@@ -173,6 +217,8 @@ class BasketCoordinator:
         await self._event(
             "BASKET_UNWINDING",
             {"account_id": intent.account_id, "trade_id": trade_id},
+            signal_pk=signal_pk,
+            basket=basket,
         )
 
         working = [o for o in submitted if o.status not in _TERMINAL]
@@ -229,6 +275,9 @@ class BasketCoordinator:
         await self._event(
             "BASKET_COMPENSATED",
             {"account_id": intent.account_id, "trade_id": trade_id},
+            signal_pk=signal_pk,
+            basket=basket,
+            idempotency_key=f"basket_compensated:{intent.account_id}:{trade_id}",
         )
         return BasketExecutionResult(
             basket=basket,
@@ -427,6 +476,9 @@ class BasketCoordinator:
                 "trade_id": intent.signal_id,
                 "strategy_id": intent.strategy_id,
             },
+            signal_pk=signal_pk,
+            basket=basket,
+            idempotency_key=f"basket_critical:{intent.account_id}:{intent.signal_id}",
         )
 
     async def _persist_basket(self, basket: Basket) -> None:
@@ -469,6 +521,14 @@ class BasketCoordinator:
                 strategy_id=intent.strategy_id,
                 leg_label=f"L{order.leg_index if order.leg_index is not None else 0}",
             )
+            order_row = await OrderRepository(session).get_by_internal_id(order.internal_order_id)
+            exec_repo = ExecutionRepository(session)
+            for execution in order.executions.values():
+                await exec_repo.upsert(
+                    execution,
+                    order_id=order_row.id if order_row is not None else None,
+                    account_id=intent.account_id,
+                )
 
     async def _ensure_signal_pk(self, session: AsyncSession, intent: OrderIntent) -> int:
         from sqlalchemy import select
@@ -556,6 +616,7 @@ class BasketCoordinator:
             "BROKER_ACK",
             "PARTIAL_FILL",
             "FILL",
+            "COMMISSION",
             "REJECTED",
             "CANCELLED",
             "ERROR",
@@ -571,8 +632,22 @@ class BasketCoordinator:
         except Exception:
             logger.exception("Failed to schedule broker snapshot persist")
 
+    def _event_idempotency_key(self, kind: str, order: OMSOrder | None, detail: dict) -> str | None:
+        if kind == "BROKER_ACK" and order is not None:
+            return f"broker_ack:{order.internal_order_id}"
+        if kind == "FILL" and order is not None:
+            return f"fill:{order.internal_order_id}"
+        if kind == "PARTIAL_FILL" and order is not None:
+            exec_id = order.last_exec_id
+            if exec_id:
+                return f"partial:{exec_id}"
+            return f"partial:{order.internal_order_id}:{order.filled_quantity}"
+        if kind == "COMMISSION" and order is not None and order.last_exec_id:
+            return f"commission:{order.last_exec_id}"
+        return None
+
     async def _persist_broker_snapshot(self, order: OMSOrder, kind: str) -> None:
-        basket = self._order_baskets.get(order.internal_order_id)
+        basket = self._order_baskets.get(order.internal_order_id) or self._active_basket
         if basket is None:
             basket = Basket(
                 account_id=order.intent.account_id,
@@ -584,7 +659,10 @@ class BasketCoordinator:
                 intended_leg_count=len(order.intent.legs),
                 id=order.basket_id,
             )
-        await self._persist_child(order, order.intent, signal_pk=None, basket=basket)
+        signal_pk = basket.signal_pk
+        await self._persist_child(order, order.intent, signal_pk=signal_pk, basket=basket)
+        if kind == "COMMISSION":
+            return
         await self._event(
             kind,
             {
@@ -597,18 +675,42 @@ class BasketCoordinator:
                 "average_fill_price": str(order.average_fill_price)
                 if order.average_fill_price is not None
                 else None,
+                "exec_id": order.last_exec_id,
             },
+            signal_pk=signal_pk,
+            basket=basket,
+            order=order,
+            idempotency_key=self._event_idempotency_key(kind, order, {}),
         )
 
-    async def _event(self, kind: str, detail: dict) -> None:
+    async def _event(
+        self,
+        kind: str,
+        detail: dict,
+        *,
+        signal_pk: int | None = None,
+        basket: Basket | None = None,
+        order: OMSOrder | None = None,
+        idempotency_key: str | None = None,
+    ) -> None:
         if self._session_factory is None:
             return
         try:
             async with self._session_factory() as session, session.begin():
+                order_pk = None
+                if order is not None:
+                    row = await OrderRepository(session).get_by_internal_id(
+                        order.internal_order_id
+                    )
+                    order_pk = row.id if row is not None else None
                 await EventRepository(session).append(
                     process="basket",
                     kind=kind,
                     detail=detail,
+                    signal_id=signal_pk,
+                    order_id=order_pk,
+                    basket_id=basket.id if basket is not None else None,
+                    idempotency_key=idempotency_key,
                 )
         except Exception:
             logger.exception("Failed to write event_log kind=%s", kind)

@@ -11,7 +11,12 @@ from app.db.repositories.signal_repository import SignalRepository
 from app.db.repositories.trade_repository import TradeRepository
 from app.models.model_blue_trade import OpenModelBlueTrade, OpenModelBlueTradeLeg
 from app.models.signal import Signal
-from app.oms.models import OMSOrder, OMSOrderStatus
+from app.oms.models import (
+    OMSOrder,
+    OMSOrderStatus,
+    executions_commission_total,
+    executions_weighted_average,
+)
 from app.services.model_blue.parser import ModelBlueValidationError
 
 SessionFactory = async_sessionmaker[AsyncSession]
@@ -22,7 +27,8 @@ def _exit_marks_from_orders(orders: list[OMSOrder]) -> dict[str, Decimal]:
     for order in orders:
         if getattr(order, "is_compensation", False):
             continue
-        raw = order.average_fill_price or order.last_fill_price
+        derived = executions_weighted_average(getattr(order, "executions", {}) or {})
+        raw = derived or order.average_fill_price or order.last_fill_price
         if raw is None:
             continue
         marks[order.symbol] = raw if isinstance(raw, Decimal) else Decimal(str(raw))
@@ -33,6 +39,13 @@ def _commission_from_orders(orders: list[OMSOrder]) -> Decimal | None:
     total = Decimal(0)
     found = False
     for order in orders:
+        execs = getattr(order, "executions", None) or {}
+        if execs:
+            part = executions_commission_total(execs)
+            if part > 0:
+                found = True
+                total += part
+            continue
         raw = getattr(order, "commission", None)
         if raw is None:
             continue
@@ -63,7 +76,8 @@ def _open_trade_from_fills(
             raise ModelBlueValidationError(
                 f"POSITION_REQUIRES_FILLS: {order.symbol} filled_quantity={qty}."
             )
-        raw = order.average_fill_price or order.last_fill_price
+        derived = executions_weighted_average(getattr(order, "executions", {}) or {})
+        raw = derived or order.average_fill_price or order.last_fill_price
         if raw is None:
             raise ModelBlueValidationError(
                 f"POSITION_REQUIRES_FILLS: {order.symbol} has no fill price."
@@ -167,6 +181,7 @@ class ModelBlueExecutionPersistence:
                     "strategy_id": trade.strategy_id,
                 },
                 signal_id=sig_row.id,
+                idempotency_key=f"position_open:{account.id}:{trade.trade_id}",
             )
 
     async def persist_close(
@@ -208,6 +223,7 @@ class ModelBlueExecutionPersistence:
                     "trade_id": trade_id,
                 },
                 signal_id=sig_row.id,
+                idempotency_key=f"position_close:{resolved}:{trade_id}",
             )
             return closed
 

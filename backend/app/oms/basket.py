@@ -31,6 +31,7 @@ class Basket:
     intended_leg_count: int
     state: BasketState = BasketState.PENDING
     id: int | None = None
+    signal_pk: int | None = None
     orders: list[OMSOrder] = field(default_factory=list)
     compensation_orders: list[OMSOrder] = field(default_factory=list)
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))

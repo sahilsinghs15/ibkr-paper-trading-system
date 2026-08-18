@@ -53,7 +53,7 @@ class OrderModel(Base):
     limit_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
     broker_order_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    fill_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    fill_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     fill_qty: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     filled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

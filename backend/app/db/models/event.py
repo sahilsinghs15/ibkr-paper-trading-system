@@ -30,7 +30,11 @@ class EventLogModel(Base):
     order_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("orders.id"), nullable=True
     )
+    basket_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("baskets.id"), nullable=True
+    )
     kind: Mapped[str] = mapped_column(String, nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
     detail: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
     signal: Mapped["SignalModel | None"] = relationship("SignalModel")

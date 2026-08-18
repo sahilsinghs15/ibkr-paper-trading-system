@@ -12,6 +12,7 @@ from app.db.models import (
     AllocationModel,
     BasketModel,
     EventLogModel,
+    ExecutionModel,
     InstrumentModel,
     OrderModel,
     PerSymbolLimitModel,
@@ -34,9 +35,10 @@ def test_schema_metadata_tables() -> None:
         "orders",
         "event_log",
         "positions",
-        "baskets",
-        "instruments",
-    }
+            "baskets",
+            "instruments",
+            "executions",
+        }
     assert expected_tables.issubset(table_names)
 
 

@@ -76,6 +76,46 @@ class ExecutionTimestamps:
 
 
 @dataclass
+class BrokerExecution:
+    """One IBKR execution/fill. ``exec_id`` is the broker identity when present."""
+
+    exec_id: str
+    internal_order_id: str
+    symbol: str
+    side: str
+    quantity: Decimal
+    price: Decimal
+    broker_order_id: str | None = None
+    commission: Decimal | None = None
+    commission_currency: str | None = None
+    realized_pnl: Decimal | None = None
+    perm_id: int | None = None
+    executed_at: datetime | None = None
+
+
+def executions_weighted_average(executions: dict[str, BrokerExecution]) -> Decimal | None:
+    qty = Decimal(0)
+    notional = Decimal(0)
+    for item in executions.values():
+        if item.quantity <= 0:
+            continue
+        qty += item.quantity
+        notional += item.quantity * item.price
+    if qty <= 0:
+        return None
+    return notional / qty
+
+
+def executions_commission_total(executions: dict[str, BrokerExecution]) -> Decimal:
+    total = Decimal(0)
+    for item in executions.values():
+        if item.commission is None:
+            continue
+        total += item.commission
+    return total
+
+
+@dataclass
 class OMSOrder:
     """Internal order domain representation maintained by OMS."""
 
@@ -99,6 +139,9 @@ class OMSOrder:
     is_compensation: bool = False
     compensation_of_internal_order_id: str | None = None
     commission: Decimal | None = None
+    perm_id: int | None = None
+    executions: dict[str, BrokerExecution] = field(default_factory=dict)
+    last_exec_id: str | None = None
     resolved: ResolvedInstrument | None = None
     timestamps: ExecutionTimestamps = field(default_factory=ExecutionTimestamps)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))

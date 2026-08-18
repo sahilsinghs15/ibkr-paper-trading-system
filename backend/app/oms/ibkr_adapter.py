@@ -14,7 +14,13 @@ from ibapi.order import Order as IBOrder  # type: ignore[import-untyped]
 from app.broker.ibkr.tws_client import TWSClient
 from app.instruments.resolver import ibkr_contract_from_resolved
 from app.instruments.models import InstrumentResolutionError
-from app.oms.models import OMSOrder, OMSOrderStatus
+from app.oms.models import (
+    BrokerExecution,
+    OMSOrder,
+    OMSOrderStatus,
+    executions_commission_total,
+    executions_weighted_average,
+)
 from app.rms.models import OrderSide
 
 logger = logging.getLogger(__name__)
@@ -70,6 +76,12 @@ class IBKRExecutionAdapter:
         ] = {}
         self._state_listeners: list[Any] = []
         self._exec_id_to_order: dict[str, OMSOrder] = {}
+        self._broker_acked: set[str] = set()
+        self._fill_event_emitted: set[str] = set()
+        self._seen_exec_ids: set[str] = set()
+        self._commissioned_exec_ids: set[str] = set()
+        self._pending_commissions: dict[str, Any] = {}
+        self._partial_qty_emitted: dict[str, float] = {}
 
         # Register self as TWSClient listener
         self._client.register_listener(self)
@@ -410,13 +422,18 @@ class IBKRExecutionAdapter:
 
             if order.timestamps.order_status_received_at is None:
                 order.timestamps.order_status_received_at = now
+            if permId:
+                order.perm_id = int(permId)
 
             mapped_status = self._map_ib_status(status)
             qty_filled = float(filled)
             qty_remaining = float(remaining)
 
+            derived = executions_weighted_average(order.executions)
             avg = _usable_price(avgFillPrice, fallback=order.limit_price)
-            if avg is not None:
+            if derived is not None:
+                order.average_fill_price = derived
+            elif avg is not None:
                 order.average_fill_price = avg
             last = _usable_price(lastFillPrice, fallback=None)
             if last is not None:
@@ -442,16 +459,47 @@ class IBKRExecutionAdapter:
             )
 
             self._notify_future_if_terminal(order)
-            emit_kind = None
-            if order.status == OMSOrderStatus.SUBMITTED:
-                emit_kind = "BROKER_ACK"
-            elif order.status == OMSOrderStatus.PARTIALLY_FILLED:
-                emit_kind = "PARTIAL_FILL"
-            elif order.status == OMSOrderStatus.FILLED:
-                emit_kind = "FILL"
+            kinds = self._callback_event_kinds(
+                order, source="orderStatus", exec_id=None, is_new_exec=False
+            )
             captured = order
-        if emit_kind:
+        for emit_kind in kinds:
             self._emit_order_state(captured, emit_kind)
+
+    def _maybe_broker_ack(self, order: OMSOrder) -> str | None:
+        iid = order.internal_order_id
+        if iid in self._broker_acked:
+            return None
+        self._broker_acked.add(iid)
+        return "BROKER_ACK"
+
+    def _callback_event_kinds(
+        self,
+        order: OMSOrder,
+        *,
+        source: str,
+        exec_id: str | None,
+        is_new_exec: bool,
+    ) -> list[str]:
+        kinds: list[str] = []
+        ack = self._maybe_broker_ack(order)
+        if ack:
+            kinds.append(ack)
+        iid = order.internal_order_id
+        if order.status == OMSOrderStatus.FILLED:
+            if iid not in self._fill_event_emitted:
+                self._fill_event_emitted.add(iid)
+                kinds.append("FILL")
+            return kinds
+        if order.status == OMSOrderStatus.PARTIALLY_FILLED:
+            if source == "execDetails" and is_new_exec:
+                kinds.append("PARTIAL_FILL")
+            elif source == "orderStatus" and not order.executions:
+                prev = self._partial_qty_emitted.get(iid, 0.0)
+                if order.filled_quantity > prev:
+                    self._partial_qty_emitted[iid] = order.filled_quantity
+                    kinds.append("PARTIAL_FILL")
+        return kinds
 
     def on_open_order(
         self,
@@ -466,6 +514,8 @@ class IBKRExecutionAdapter:
             return
 
         now = datetime.now(UTC)
+        kinds: list[str] = []
+        captured = None
         with self._lock:
             oms_order = self._orders_by_tws_id.get(orderId)
             if not oms_order:
@@ -490,6 +540,12 @@ class IBKRExecutionAdapter:
             )
 
             self._notify_future_if_terminal(oms_order)
+            kinds = self._callback_event_kinds(
+                oms_order, source="openOrder", exec_id=None, is_new_exec=False
+            )
+            captured = oms_order
+        for emit_kind in kinds:
+            self._emit_order_state(captured, emit_kind)
 
     def on_exec_details(self, reqId: int, contract: Any, execution: Any) -> None:
         """Handle execDetails fill callback from TWSClient."""
@@ -498,6 +554,8 @@ class IBKRExecutionAdapter:
         if tws_order_id is None:
             tws_order_id = reqId
 
+        kinds: list[str] = []
+        captured = None
         with self._lock:
             order = self._orders_by_tws_id.get(tws_order_id)
             if not order:
@@ -505,30 +563,75 @@ class IBKRExecutionAdapter:
 
             order.timestamps.execution_received_at = now
 
-            exec_shares = float(getattr(execution, "shares", 0))
-            exec_price = float(getattr(execution, "price", 0.0))
-            cum_qty = float(getattr(execution, "cumQty", 0))
-            avg_price = float(getattr(execution, "avgPrice", 0.0))
+            exec_shares = Decimal(str(getattr(execution, "shares", 0) or 0))
+            exec_price = _usable_price(getattr(execution, "price", 0.0), fallback=None)
+            cum_qty = float(getattr(execution, "cumQty", 0) or 0)
+            avg_price = _usable_price(getattr(execution, "avgPrice", 0.0), fallback=None)
+            raw_exec_id = str(getattr(execution, "execId", "") or "")
+            exec_id = raw_exec_id or (
+                f"noid:{order.internal_order_id}:{exec_shares}:{exec_price}:{cum_qty}"
+            )
+            is_new_exec = exec_id not in self._seen_exec_ids
+            self._seen_exec_ids.add(exec_id)
+            self._exec_id_to_order[exec_id] = order
 
             if cum_qty > 0:
                 order.filled_quantity = max(order.filled_quantity, cum_qty)
                 order.remaining_quantity = max(0, order.quantity - order.filled_quantity)
+            elif exec_shares > 0:
+                order.filled_quantity = max(
+                    order.filled_quantity, float(sum(e.quantity for e in order.executions.values()) + (exec_shares if is_new_exec else 0))
+                )
+                order.remaining_quantity = max(0, order.quantity - order.filled_quantity)
 
-            if exec_price > 0:
-                order.last_fill_price = Decimal(str(exec_price))
-            if avg_price > 0:
-                order.average_fill_price = Decimal(str(avg_price))
+            if exec_price is not None:
+                order.last_fill_price = exec_price
+            if avg_price is not None:
+                order.average_fill_price = avg_price
 
             if order.filled_quantity >= order.quantity:
                 order.status = OMSOrderStatus.FILLED
+            elif order.filled_quantity > 0:
+                order.status = OMSOrderStatus.PARTIALLY_FILLED
 
-            exec_id = str(getattr(execution, "execId", "") or "")
-            if exec_id:
-                self._exec_id_to_order[exec_id] = order
+            side = str(getattr(execution, "side", "") or order.side.value)
+            if side.upper() in ("BOT", "BUY"):
+                side = "BUY"
+            elif side.upper() in ("SLD", "SELL"):
+                side = "SELL"
+            perm_id = getattr(execution, "permId", None) or order.perm_id
+            if perm_id:
+                order.perm_id = int(perm_id)
+
+            if is_new_exec and exec_price is not None and exec_shares > 0:
+                record = BrokerExecution(
+                    exec_id=exec_id,
+                    internal_order_id=order.internal_order_id,
+                    symbol=order.symbol,
+                    side=side,
+                    quantity=exec_shares,
+                    price=exec_price,
+                    broker_order_id=str(order.ibkr_order_id) if order.ibkr_order_id is not None else None,
+                    perm_id=int(perm_id) if perm_id else None,
+                    executed_at=now,
+                )
+                pending = self._pending_commissions.pop(exec_id, None)
+                if pending is not None:
+                    record.commission = pending["commission"]
+                    record.commission_currency = pending["currency"]
+                    record.realized_pnl = pending.get("realized_pnl")
+                    self._commissioned_exec_ids.add(exec_id)
+                order.executions[exec_id] = record
+                order.last_exec_id = exec_id
+                order.commission = executions_commission_total(order.executions) or None
+                derived = executions_weighted_average(order.executions)
+                if derived is not None:
+                    order.average_fill_price = derived
 
             logger.info(
-                "IBKR execDetails callback: internal_id=%s, exec_shares=%s, exec_price=%.4f, cum_qty=%s, status=%s",
+                "IBKR execDetails callback: internal_id=%s, exec_id=%s, exec_shares=%s, exec_price=%s, cum_qty=%s, status=%s",
                 order.internal_order_id,
+                exec_id,
                 exec_shares,
                 exec_price,
                 cum_qty,
@@ -536,9 +639,12 @@ class IBKRExecutionAdapter:
             )
 
             self._notify_future_if_terminal(order)
-            emit_kind = "FILL" if order.status == OMSOrderStatus.FILLED else "PARTIAL_FILL"
+            kinds = self._callback_event_kinds(
+                order, source="execDetails", exec_id=exec_id, is_new_exec=is_new_exec
+            )
             captured = order
-        self._emit_order_state(captured, emit_kind)
+        for emit_kind in kinds:
+            self._emit_order_state(captured, emit_kind)
 
     def on_exec_details_end(self, reqId: int) -> None:
         """Handle execDetailsEnd callback from TWSClient."""
@@ -547,22 +653,52 @@ class IBKRExecutionAdapter:
     def on_commission_report(self, commissionReport: Any) -> None:
         """Handle commissionReport callback from TWSClient."""
         exec_id = str(getattr(commissionReport, "execId", "") or "")
-        commission = float(getattr(commissionReport, "commission", 0.0) or 0.0)
-        currency = getattr(commissionReport, "currency", "")
+        commission = _usable_price(getattr(commissionReport, "commission", 0.0), fallback=Decimal(0))
+        if commission is None:
+            commission = Decimal(0)
+        currency = str(getattr(commissionReport, "currency", "") or "")
+        raw_pnl = getattr(commissionReport, "realizedPNL", None)
+        if raw_pnl is None:
+            raw_pnl = getattr(commissionReport, "realizedPnl", None)
+        realized = None
+        if raw_pnl is not None:
+            try:
+                candidate = Decimal(str(raw_pnl))
+                if candidate.is_finite() and abs(candidate) < Decimal("1e12"):
+                    realized = candidate
+            except Exception:
+                realized = None
         logger.info(
-            "IBKR commissionReport callback: exec_id=%s, commission=%.2f %s",
+            "IBKR commissionReport callback: exec_id=%s, commission=%s %s",
             exec_id,
             commission,
             currency,
         )
-        if not exec_id or commission <= 0:
+        if not exec_id:
             return
         with self._lock:
+            if exec_id in self._commissioned_exec_ids:
+                return
+            payload = {
+                "commission": commission,
+                "currency": currency,
+                "realized_pnl": realized,
+            }
             order = self._exec_id_to_order.get(exec_id)
             if order is None:
+                self._pending_commissions[exec_id] = payload
                 return
-            existing = getattr(order, "commission", None) or Decimal(0)
-            order.commission = existing + Decimal(str(commission))
+            record = order.executions.get(exec_id)
+            if record is None:
+                self._pending_commissions[exec_id] = payload
+                return
+            record.commission = commission
+            record.commission_currency = currency
+            if realized is not None:
+                record.realized_pnl = realized
+            self._commissioned_exec_ids.add(exec_id)
+            order.last_exec_id = exec_id
+            order.commission = executions_commission_total(order.executions) or None
             captured = order
         self._emit_order_state(captured, "COMMISSION")
 

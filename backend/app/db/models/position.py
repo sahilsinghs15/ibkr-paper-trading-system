@@ -25,18 +25,18 @@ class PositionModel(Base):
     strategy_id: Mapped[str] = mapped_column(String, nullable=False)
     leg_a_symbol: Mapped[str] = mapped_column(String, nullable=False)
     leg_a_signed_qty: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
-    leg_a_entry_mark: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    leg_a_entry_mark: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
     leg_b_symbol: Mapped[str | None] = mapped_column(String, nullable=True)
     leg_b_signed_qty: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
-    leg_b_entry_mark: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    leg_b_entry_mark: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     realised_pnl: Mapped[Decimal] = mapped_column(
-        Numeric(18, 4), nullable=False, default=Decimal(0)
+        Numeric(18, 8), nullable=False, default=Decimal(0)
     )
     commission: Mapped[Decimal] = mapped_column(
-        Numeric(18, 4), nullable=False, default=Decimal(0)
+        Numeric(18, 8), nullable=False, default=Decimal(0)
     )
     live_pnl: Mapped[Decimal] = mapped_column(
-        Numeric(18, 4), nullable=False, default=Decimal(0)
+        Numeric(18, 8), nullable=False, default=Decimal(0)
     )
     target: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     stop: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)

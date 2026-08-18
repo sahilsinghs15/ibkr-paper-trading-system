@@ -8,7 +8,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.order import OrderModel
-from app.oms.models import OMSOrder
+from app.oms.models import OMSOrder, executions_weighted_average
 
 _TERMINAL_ORDER_STATUSES = frozenset({"FILLED", "CANCELLED", "REJECTED", "ERROR"})
 
@@ -55,7 +55,8 @@ class OrderRepository:
         limit_price = order.limit_price if order.limit_price is not None else Decimal(0)
         qty = Decimal(str(order.quantity))
         filled = Decimal(str(order.filled_quantity or 0))
-        fill_price = order.average_fill_price or order.last_fill_price
+        derived = executions_weighted_average(getattr(order, "executions", {}) or {})
+        fill_price = derived or order.average_fill_price or order.last_fill_price
         if fill_price is not None:
             try:
                 if not math.isfinite(float(fill_price)) or abs(float(fill_price)) >= 1e12:

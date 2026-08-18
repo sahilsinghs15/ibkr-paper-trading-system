@@ -23,7 +23,7 @@ from app.db.repositories.signal_repository import (
 from app.models.signal import Signal, SignalType
 from app.oms.basket import BasketState
 from app.oms.coordinator import BasketCoordinator
-from app.oms.models import AccountExecutionOutcome, ExecutionResult, FanoutExecutionResult, OMSOrder
+from app.oms.models import AccountExecutionOutcome, ExecutionResult, FanoutExecutionResult, OMSOrder, executions_weighted_average
 from app.oms.oms_service import OMSService
 from app.rms.engine import RMSEngine
 from app.rms.models import (
@@ -434,14 +434,16 @@ class OrderManager:
                 )
 
         rms_result = self._rms_engine.evaluate(intent, self._rms_context)
-        await self._audit_rms(intent, rms_result)
+        await self._audit_rms(intent, rms_result, signal_pk=inbound_pk)
         if rms_result.outcome != RMSOutcome.PASS:
             msg = f"RMS check {rms_result.check_number} rejected intent: {rms_result.reason}"
             logger.warning(msg)
             raise ValueError(msg)
 
         evaluated_intent = rms_result.intent
-        evaluated_intent = await self._resolve_instruments(evaluated_intent)
+        evaluated_intent = await self._resolve_instruments(
+            evaluated_intent, signal_pk=inbound_pk
+        )
 
         if self._oms is None:
             raise RuntimeError("No OMSService configured on OrderManager.")
@@ -499,7 +501,9 @@ class OrderManager:
         await self._update_runtime_state(evaluated_intent, exec_res, handler=handler, sized_from=signal)
         return exec_res
 
-    async def _audit_rms(self, intent: OrderIntent, rms_result: RMSResult) -> None:
+    async def _audit_rms(
+        self, intent: OrderIntent, rms_result: RMSResult, *, signal_pk: int | None = None
+    ) -> None:
         if self._session_factory is None:
             return
         detail = {
@@ -527,6 +531,11 @@ class OrderManager:
                     process="rms",
                     kind=f"RMS_{rms_result.outcome.value}",
                     detail=detail,
+                    signal_id=signal_pk,
+                    idempotency_key=(
+                        f"rms_{rms_result.outcome.value.lower()}:{intent.account_id}:"
+                        f"{intent.signal_id}"
+                    ),
                 )
         except Exception:
             logger.exception("Failed to persist RMS audit event")
@@ -541,6 +550,10 @@ class OrderManager:
                 continue
             qty = order.filled_quantity
             px = order.average_fill_price or order.last_fill_price or leg.price
+            execs = getattr(order, "executions", None) or {}
+            derived = executions_weighted_average(execs) if execs else None
+            if derived is not None:
+                px = derived
             if not isinstance(px, Decimal):
                 px = Decimal(str(px))
             filled_legs.append(
@@ -650,6 +663,33 @@ class OrderManager:
                     status=status,
                     reject_reason=reject_reason,
                 )
+                action = str(signal.action or "").upper()
+                received_kind = "CLOSE_SIGNAL_RECEIVED" if action == "CLOSE" else "SIGNAL_RECEIVED"
+                await EventRepository(session).append(
+                    process="webhook",
+                    kind=received_kind,
+                    detail={
+                        "trade_id": signal.trade_id or persist_id,
+                        "strategy_id": signal.strategy_id,
+                        "action": action,
+                        "signal_id": persist_id,
+                    },
+                    signal_id=row.id,
+                    idempotency_key=f"{received_kind.lower()}:{row.strategy_id}:{persist_id}",
+                )
+                await EventRepository(session).append(
+                    process="webhook",
+                    kind="SIGNAL_PERSISTED",
+                    detail={
+                        "trade_id": row.trade_id,
+                        "strategy_id": row.strategy_id,
+                        "status": row.status,
+                        "pair": row.pair,
+                        "signal_id": persist_id,
+                    },
+                    signal_id=row.id,
+                    idempotency_key=f"signal_persisted:{row.strategy_id}:{persist_id}:{row.status}",
+                )
                 logger.info(
                     "Persisted inbound signal strategy_id=%s signal_id=%s trade_id=%s "
                     "pair=%s side=%s status=%s raw_payload_keys=%s has_parsed_json=%s",
@@ -689,7 +729,9 @@ class OrderManager:
                 money_limit_per_symbol=existing.money_limit_per_symbol,
             )
 
-    async def _resolve_instruments(self, intent: OrderIntent) -> OrderIntent:
+    async def _resolve_instruments(
+        self, intent: OrderIntent, *, signal_pk: int | None = None
+    ) -> OrderIntent:
         from app.db.repositories.instrument_repository import SnapshotInstrumentCatalog
         from app.instruments.models import InstrumentResolutionError
         from app.instruments.resolver import attach_resolved, ibkr_sec_type
@@ -720,4 +762,40 @@ class OrderManager:
                     f"ZERO_QUANTITY: {leg.symbol} sized to {leg.quantity} after "
                     "instrument size_increment; refusing broker submission."
                 )
+        await self._audit_instruments_resolved(resolved_intent, signal_pk=signal_pk)
         return resolved_intent
+
+    async def _audit_instruments_resolved(
+        self, intent: OrderIntent, *, signal_pk: int | None
+    ) -> None:
+        if self._session_factory is None:
+            return
+        legs = []
+        for index, leg in enumerate(intent.legs):
+            resolved = getattr(leg, "resolved", None)
+            legs.append(
+                {
+                    "index": index,
+                    "symbol": leg.symbol,
+                    "requested_instrument_type": leg.instrument_type,
+                    "sec_type": getattr(resolved, "sec_type", None),
+                    "con_id": getattr(resolved, "con_id", None),
+                    "exchange": getattr(resolved, "exchange", None),
+                    "quantity": str(leg.quantity),
+                }
+            )
+        try:
+            async with self._session_factory() as session, session.begin():
+                await EventRepository(session).append(
+                    process="instruments",
+                    kind="INSTRUMENT_RESOLVED",
+                    detail={
+                        "trade_id": intent.signal_id,
+                        "account_id": intent.account_id,
+                        "legs": legs,
+                    },
+                    signal_id=signal_pk,
+                    idempotency_key=f"instrument_resolved:{intent.account_id}:{intent.signal_id}",
+                )
+        except Exception:
+            logger.exception("Failed to persist INSTRUMENT_RESOLVED event")
