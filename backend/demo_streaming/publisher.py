@@ -83,9 +83,12 @@ class PositionBridge:
             self._status[key] = str(payload.get("status") or "")
             self._last_payload[key] = payload
             emitted.append(record)
-        closed = [key for key in list(self._status) if key not in seen and self._status[key] == "OPEN"]
-        for key in closed:
-            previous = self._last_payload.get(key, {})
+        vanished = [
+            key for key in list(self._status) if key not in seen and self._status[key] == "OPEN"
+        ]
+        closed_from_db = await self._payloads_for_vanished(vanished)
+        for key in vanished:
+            previous = closed_from_db.get(key) or self._last_payload.get(key, {})
             record = {
                 **previous,
                 "event": "POSITION_CLOSED",
@@ -114,6 +117,32 @@ class PositionBridge:
             except Exception:
                 logger.exception("Demo position poll failed; will retry")
             await asyncio.sleep(self._poll_interval)
+
+    async def _payloads_for_vanished(
+        self, keys: list[tuple[int, str, str]]
+    ) -> dict[tuple[int, str, str], dict]:
+        """Re-read CLOSED rows so realised_pnl is not the stale OPEN snapshot."""
+        if not keys:
+            return {}
+        from demo_streaming.snapshot import load_position_with_account
+
+        out: dict[tuple[int, str, str], dict] = {}
+        trades = {(account_id, trade_id) for account_id, trade_id, _symbol in keys}
+        now = datetime.now(UTC)
+        try:
+            async with self._session_factory() as session:
+                for account_id, trade_id in trades:
+                    pair = await load_position_with_account(session, account_id, trade_id)
+                    if pair is None:
+                        continue
+                    position, account = pair
+                    for payload in position_leg_payloads(
+                        position, account, [], [], timestamp=now
+                    ):
+                        out[_key(payload)] = payload
+        except Exception:
+            logger.exception("Failed to reload vanished position rows for CLOSE events")
+        return out
 
     async def _collect(self, session: AsyncSession) -> list[dict]:
         now = datetime.now(UTC)

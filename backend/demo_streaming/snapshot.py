@@ -202,6 +202,21 @@ async def load_position_rows(session: AsyncSession) -> list[tuple[PositionModel,
     return list(result.all())
 
 
+async def load_position_with_account(
+    session: AsyncSession, account_id: int, trade_id: str
+) -> tuple[PositionModel, AccountModel] | None:
+    """Load a position in any risk_state. Used so CLOSE events carry realised P&L."""
+    result = await session.execute(
+        select(PositionModel, AccountModel)
+        .join(AccountModel, AccountModel.id == PositionModel.account_id)
+        .where(
+            PositionModel.account_id == account_id,
+            PositionModel.trade_id == trade_id,
+        )
+    )
+    return result.first()
+
+
 async def load_baskets(session: AsyncSession) -> dict[tuple[int, str], list[BasketModel]]:
     rows = (await session.execute(select(BasketModel))).scalars().all()
     grouped: dict[tuple[int, str], list[BasketModel]] = {}

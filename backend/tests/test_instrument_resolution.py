@@ -318,6 +318,65 @@ def test_pnl_does_not_request_stk_for_unresolved_cfd() -> None:
     client.reqMktData.assert_not_called()
 
 
+def test_pnl_subscribes_cfd_under_demo_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAPER_EXECUTE_STK_AS_CFD", "true")
+    from app.services.pnl import LivePnlService
+
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+    svc = LivePnlService(MagicMock(), client)
+    intent = OrderIntent(
+        signal_id="T-PNL-CFD-DEMO",
+        strategy_id="model_blue",
+        action=OrderAction.OPEN,
+        account_id=1,
+        legs=[
+            OrderLeg(
+                symbol="SIL",
+                side=OrderSide.BUY,
+                quantity=10,
+                price=Decimal("90.64"),
+                contract_month="2026-09",
+                instrument_type="CFD",
+                leg_index=0,
+            ),
+            OrderLeg(
+                symbol="GDX",
+                side=OrderSide.SELL,
+                quantity=10,
+                price=Decimal("91.86"),
+                contract_month="2026-09",
+                instrument_type="CFD",
+                leg_index=1,
+            ),
+        ],
+        timestamp=_TS,
+    )
+    svc.watch_open(intent)
+    assert client.reqMktData.call_count == 2
+    contracts = [call.args[1] for call in client.reqMktData.call_args_list]
+    assert {c.symbol for c in contracts} == {"SIL", "GDX"}
+    assert all(c.secType == "CFD" for c in contracts)
+    assert all(c.secType != "STK" for c in contracts)
+    sil_req = next(rid for rid, mapped in svc._by_req.items() if mapped[2] == "SIL")
+    gdx_req = next(rid for rid, mapped in svc._by_req.items() if mapped[2] == "GDX")
+    svc.on_tick_price(sil_req, 4, 91.64)
+    svc.on_tick_price(gdx_req, 4, 90.86)
+    assert svc._marks[(1, "T-PNL-CFD-DEMO", "SIL")] == Decimal("91.64")
+    assert svc._marks[(1, "T-PNL-CFD-DEMO", "GDX")] == Decimal("90.86")
+    from app.services.pnl import unrealized_pair
+
+    expected = unrealized_pair(
+        leg_a_signed=Decimal("10"),
+        leg_a_entry=Decimal("90.64"),
+        leg_a_mark=Decimal("91.64"),
+        leg_b_signed=Decimal("-10"),
+        leg_b_entry=Decimal("91.86"),
+        leg_b_mark=Decimal("90.86"),
+    )
+    assert expected == Decimal("20.00")
+
+
 def test_discovered_sil_gdx_cfd_conids_are_not_stk() -> None:
     """Paper Gateway discovery: SIL 384919303 / GDX 134771127 are CFD, not STK 211651690/229726316."""
     catalog = InMemoryInstrumentCatalog(
