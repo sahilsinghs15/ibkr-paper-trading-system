@@ -474,20 +474,67 @@ class BasketCoordinator:
         from sqlalchemy import select
         from sqlalchemy.dialects.postgresql import insert
 
-        trade_id = intent.signal_id.split(":UNWIND:")[0]
+        trade_id = intent.signal_id.split(":UNWIND:")[0].split(":CLOSE")[0]
+        persist_id = intent.signal_id.split(":UNWIND:")[0]
+        legs = list(intent.legs or [])
+        pair = ":".join(leg.symbol for leg in legs) if legs else ""
+        if legs:
+            side = (
+                legs[0].side.value if hasattr(legs[0].side, "value") else str(legs[0].side)
+            )
+            ref_a = legs[0].price
+            ref_b = legs[1].price if len(legs) > 1 else None
+        else:
+            side = "N/A"
+            ref_a = Decimal(0)
+            ref_b = None
+        existing = (
+            await session.execute(
+                select(SignalModel).where(
+                    SignalModel.strategy_id == intent.strategy_id,
+                    SignalModel.signal_id == persist_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing.id
+        logger.warning(
+            "Inserting signal FK row without webhook capture: strategy_id=%s "
+            "signal_id=%s pair=%s (original TradingView JSON was not supplied on this path)",
+            intent.strategy_id,
+            persist_id,
+            pair,
+        )
         stmt = (
             insert(SignalModel)
             .values(
                 strategy_id=intent.strategy_id,
-                signal_id=trade_id,
+                signal_id=persist_id,
                 trade_id=trade_id,
                 action=intent.action.value
                 if hasattr(intent.action, "value")
                 else str(intent.action),
-                pair="",
-                side="N/A",
-                ref_price_a=Decimal(0),
-                raw_payload={},
+                pair=pair,
+                side=side,
+                ref_price_a=ref_a,
+                ref_price_b=ref_b,
+                raw_payload={
+                    "source": "oms_signal_fk",
+                    "trade_id": trade_id,
+                    "strategy_id": intent.strategy_id,
+                    "legs": [
+                        {
+                            "symbol": leg.symbol,
+                            "side": leg.side.value
+                            if hasattr(leg.side, "value")
+                            else str(leg.side),
+                            "quantity": str(leg.quantity),
+                            "price": str(leg.price),
+                            "instrument_type": getattr(leg, "instrument_type", None),
+                        }
+                        for leg in legs
+                    ],
+                },
                 status="NEW",
             )
             .on_conflict_do_nothing(constraint="uq_signals_strategy_signal")
@@ -498,7 +545,7 @@ class BasketCoordinator:
             await session.execute(
                 select(SignalModel).where(
                     SignalModel.strategy_id == intent.strategy_id,
-                    SignalModel.signal_id == trade_id,
+                    SignalModel.signal_id == persist_id,
                 )
             )
         ).scalar_one()

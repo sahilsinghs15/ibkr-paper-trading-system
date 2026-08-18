@@ -23,3 +23,6 @@ class InstrumentModel(Base):
     multiplier: Mapped[Decimal] = mapped_column(
         Numeric(18, 4), nullable=False, default=Decimal(1)
     )
+    size_increment: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 8), nullable=True
+    )

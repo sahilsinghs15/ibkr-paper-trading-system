@@ -14,7 +14,12 @@ from app.accounts.router import DatabaseStrategyAccountRouter, StrategyAccountRo
 from app.db.models.account import PerSymbolLimitModel
 from app.db.repositories.event_repository import EventRepository
 from app.db.repositories.position_repository import PositionRepository
-from app.db.repositories.signal_repository import SignalRepository
+from app.db.repositories.signal_repository import (
+    SIGNAL_STATUS_NEW,
+    SIGNAL_STATUS_REJECTED,
+    SignalRepository,
+    persist_signal_id_for,
+)
 from app.models.signal import Signal, SignalType
 from app.oms.basket import BasketState
 from app.oms.coordinator import BasketCoordinator
@@ -49,6 +54,10 @@ from app.services.strategies.registry import StrategyRegistry
 logger = logging.getLogger(__name__)
 
 _STK_CONTRACT_MONTH = "2026-09"
+
+
+def _row_pk(row) -> int | None:
+    return None if row is None else int(row.id)
 
 
 class OrderManager:
@@ -251,6 +260,18 @@ class OrderManager:
             logger.info("HOLD signal received — no order submitted")
             return None
 
+        inbound_row = await self._persist_inbound_signal(signal, status=SIGNAL_STATUS_NEW)
+        try:
+            return await self._process_signal_execution_inner(signal, inbound_row)
+        except ValueError as exc:
+            await self._persist_inbound_signal(
+                signal, status=SIGNAL_STATUS_REJECTED, reject_reason=str(exc)
+            )
+            raise
+
+    async def _process_signal_execution_inner(
+        self, signal: Signal, inbound_row
+    ):
         strat_id = signal.strategy_id or self._strategy_id
         handler = self.registry.get(strat_id)
         if handler is None:
@@ -259,12 +280,14 @@ class OrderManager:
                     f"UNKNOWN_STRATEGY: '{strat_id}' is not registered; "
                     "refusing IBKR submission without a strategy handler."
                 )
-            result = await self._process_legacy_single_name(signal)
+            result = await self._process_legacy_single_name(signal, inbound_pk=_row_pk(inbound_row))
             return FanoutExecutionResult.from_single(result)
 
         if self._account_router is None:
             intent = await handler.build_intent(signal)
-            result = await self._evaluate_and_submit(intent, signal, handler=handler)
+            result = await self._evaluate_and_submit(
+                intent, signal, handler=handler, inbound_pk=_row_pk(inbound_row)
+            )
             return FanoutExecutionResult.from_single(result)
 
         contexts = await self._account_router.resolve(strat_id)
@@ -273,13 +296,16 @@ class OrderManager:
                 f"NO_ELIGIBLE_ACCOUNTS: strategy '{strat_id}' has no enabled "
                 "account subscriptions."
             )
-        return await self._fanout_accounts(signal, handler, contexts)
+        return await self._fanout_accounts(
+            signal, handler, contexts, inbound_pk=_row_pk(inbound_row)
+        )
 
     async def _fanout_accounts(
         self,
         signal: Signal,
         handler: StrategyHandler,
         contexts: list[AccountExecutionContext],
+        inbound_pk: int | None = None,
     ) -> FanoutExecutionResult:
         outcomes: list[AccountExecutionOutcome] = []
         raise_if_single = len(contexts) == 1
@@ -290,7 +316,9 @@ class OrderManager:
             )
             try:
                 intent = await handler.build_intent(signal, account=ctx)
-                result = await self._evaluate_and_submit(intent, signal, handler=handler)
+                result = await self._evaluate_and_submit(
+                    intent, signal, handler=handler, inbound_pk=inbound_pk
+                )
                 outcomes.append(
                     AccountExecutionOutcome(
                         account_id=ctx.account_id,
@@ -318,7 +346,9 @@ class OrderManager:
                 )
         return FanoutExecutionResult(outcomes=outcomes)
 
-    async def _process_legacy_single_name(self, signal: Signal) -> ExecutionResult:
+    async def _process_legacy_single_name(
+        self, signal: Signal, inbound_pk: int | None = None
+    ) -> ExecutionResult:
         strat_id = signal.strategy_id or self._strategy_id
         sig_id = signal.signal_id or f"SIG-{uuid.uuid4().hex[:12].upper()}"
         target_symbol = signal.symbol or self._symbol
@@ -382,7 +412,9 @@ class OrderManager:
             ],
             timestamp=signal.timestamp or datetime.now(UTC),
         )
-        return await self._evaluate_and_submit(intent, signal, handler=None)
+        return await self._evaluate_and_submit(
+            intent, signal, handler=None, inbound_pk=inbound_pk
+        )
 
     async def _evaluate_and_submit(
         self,
@@ -390,6 +422,7 @@ class OrderManager:
         signal: Signal,
         *,
         handler: StrategyHandler | None,
+        inbound_pk: int | None = None,
     ) -> ExecutionResult:
         self._ensure_strategy_config(intent.strategy_id)
 
@@ -429,6 +462,7 @@ class OrderManager:
                 evaluated_intent,
                 rms_result,
                 order_type=self._order_type,
+                signal_pk=inbound_pk,
             )
             child_orders = basket_res.orders or basket_res.compensation_orders
             if not child_orders:
@@ -569,6 +603,72 @@ class OrderManager:
             self._rms_context.open_positions[target_symbol] = new_sym_qty
             self._rms_context.open_positions[strat_id] = new_strat_qty
 
+    async def record_rejected_inbound(
+        self,
+        payload: dict,
+        *,
+        capture_data: dict,
+        reason: str,
+    ) -> None:
+        """Persist a webhook that failed strategy parse, with the original JSON."""
+        if self._session_factory is None:
+            return
+        try:
+            async with self._session_factory() as session, session.begin():
+                row = await SignalRepository(session).record_rejected_payload(
+                    payload, capture_data=capture_data, reason=reason
+                )
+                logger.info(
+                    "Persisted rejected webhook signal_id=%s strategy_id=%s "
+                    "raw_payload_keys=%s reason=%s",
+                    row.signal_id,
+                    row.strategy_id,
+                    list((row.raw_payload or {}).keys()),
+                    reason,
+                )
+        except Exception:
+            logger.exception("Failed to persist rejected TradingView payload")
+
+    async def _persist_inbound_signal(
+        self,
+        signal: Signal,
+        *,
+        status: str,
+        reject_reason: str | None = None,
+    ):
+        if self._session_factory is None:
+            return None
+        persist_id = persist_signal_id_for(signal)
+        if not persist_id:
+            logger.warning("Cannot persist inbound signal without trade_id/signal_id")
+            return None
+        try:
+            async with self._session_factory() as session, session.begin():
+                row = await SignalRepository(session).record_inbound(
+                    signal,
+                    persist_signal_id=persist_id,
+                    status=status,
+                    reject_reason=reject_reason,
+                )
+                logger.info(
+                    "Persisted inbound signal strategy_id=%s signal_id=%s trade_id=%s "
+                    "pair=%s side=%s status=%s raw_payload_keys=%s has_parsed_json=%s",
+                    row.strategy_id,
+                    row.signal_id,
+                    row.trade_id,
+                    row.pair,
+                    row.side,
+                    row.status,
+                    list((row.raw_payload or {}).keys()),
+                    isinstance((row.raw_payload or {}).get("parsed_json"), dict),
+                )
+                return row
+        except Exception:
+            logger.exception(
+                "Failed to persist inbound signal trade_id=%s", signal.trade_id
+            )
+            return None
+
     def _ensure_strategy_config(
         self, strategy_id: str, *, max_open_positions: int | None = None
     ) -> None:
@@ -611,6 +711,13 @@ class OrderManager:
         else:
             snapshot = None
         try:
-            return attach_resolved(intent, catalog=snapshot)
+            resolved_intent = attach_resolved(intent, catalog=snapshot)
         except InstrumentResolutionError as exc:
             raise ValueError(str(exc)) from exc
+        for leg in resolved_intent.legs:
+            if Decimal(str(leg.quantity)) <= 0:
+                raise ValueError(
+                    f"ZERO_QUANTITY: {leg.symbol} sized to {leg.quantity} after "
+                    "instrument size_increment; refusing broker submission."
+                )
+        return resolved_intent

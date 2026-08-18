@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models.instrument import InstrumentModel
@@ -22,6 +23,7 @@ def _to_record(row: InstrumentModel) -> InstrumentRecord:
         currency=row.currency,
         multiplier=row.multiplier,
         underlying_exchange=row.underlying_exchange,
+        size_increment=row.size_increment,
     )
 
 
@@ -48,6 +50,52 @@ class DatabaseInstrumentCatalog:
                 )
             )
             return [_to_record(row) for row in result.scalars().all()]
+
+
+class InstrumentRepository:
+    """Read/write instruments master. Does not invent conIds."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def upsert(self, record: InstrumentRecord) -> InstrumentRecord:
+        if record.trade_conid <= 0:
+            raise ValueError(
+                f"INVALID_CONID: refusing to persist non-positive trade_conid for {record.symbol}."
+            )
+        if record.sec_type.strip().upper() != "CFD":
+            raise ValueError(
+                f"UNSUPPORTED_SEC_TYPE: this upsert is for verified CFD rows, got {record.sec_type}."
+            )
+        md = int(record.market_data_conid or record.trade_conid)
+        values = {
+            "symbol": record.symbol,
+            "sec_type": record.sec_type,
+            "trade_conid": int(record.trade_conid),
+            "market_data_conid": md,
+            "underlying_exchange": record.underlying_exchange or record.exchange,
+            "exchange": record.exchange,
+            "currency": record.currency,
+            "multiplier": record.multiplier,
+            "size_increment": record.size_increment,
+        }
+        stmt = insert(InstrumentModel).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["symbol"],
+            set_={k: values[k] for k in values if k != "symbol"},
+        )
+        await self._session.execute(stmt)
+        await self._session.flush()
+        row = (
+            await self._session.execute(
+                select(InstrumentModel).where(InstrumentModel.symbol == record.symbol)
+            )
+        ).scalar_one()
+        return _to_record(row)
+
+    async def list_all(self) -> Sequence[InstrumentRecord]:
+        result = await self._session.execute(select(InstrumentModel).order_by(InstrumentModel.symbol))
+        return [_to_record(row) for row in result.scalars().all()]
 
 
 class SnapshotInstrumentCatalog:

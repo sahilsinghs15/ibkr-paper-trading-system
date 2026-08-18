@@ -10,6 +10,7 @@ from app.broker.ibkr.tws_client import TWSClient
 from app.instruments.models import InstrumentRecord, InstrumentResolutionError
 from app.instruments.resolver import (
     InMemoryInstrumentCatalog,
+    apply_size_increment,
     attach_resolved,
     ibkr_contract_from_resolved,
     resolve_leg,
@@ -315,3 +316,91 @@ def test_pnl_does_not_request_stk_for_unresolved_cfd() -> None:
     )
     svc.watch_open(intent)
     client.reqMktData.assert_not_called()
+
+
+def test_discovered_sil_gdx_cfd_conids_are_not_stk() -> None:
+    """Paper Gateway discovery: SIL 384919303 / GDX 134771127 are CFD, not STK 211651690/229726316."""
+    catalog = InMemoryInstrumentCatalog(
+        [
+            InstrumentRecord(
+                symbol="SIL",
+                sec_type="CFD",
+                trade_conid=384919303,
+                market_data_conid=384919303,
+                exchange="SMART",
+                currency="USD",
+                multiplier=Decimal(1),
+                underlying_exchange="ARCA",
+                size_increment=Decimal(1),
+            ),
+            InstrumentRecord(
+                symbol="GDX",
+                sec_type="CFD",
+                trade_conid=134771127,
+                market_data_conid=134771127,
+                exchange="SMART",
+                currency="USD",
+                multiplier=Decimal(1),
+                underlying_exchange="ARCA",
+                size_increment=Decimal(1),
+            ),
+        ]
+    )
+    sil = resolve_leg(symbol="SIL", instrument_type="CFD", catalog=catalog)
+    gdx = resolve_leg(symbol="GDX", instrument_type="CFD", catalog=catalog)
+    assert sil.sec_type == "CFD"
+    assert gdx.sec_type == "CFD"
+    assert sil.con_id == 384919303
+    assert gdx.con_id == 134771127
+    assert sil.con_id != 211651690
+    assert gdx.con_id != 229726316
+    assert ibkr_contract_from_resolved(sil).secType == "CFD"
+    assert ibkr_contract_from_resolved(gdx).secType == "CFD"
+
+
+def test_size_increment_numeric_scale_still_whole_lot() -> None:
+    qty = apply_size_increment(Decimal("275.8164"), Decimal("1.00000000"))
+    assert qty == Decimal("275")
+
+
+def test_cfd_size_increment_one_is_valid_for_ibkr_share_cfd() -> None:
+    """IBKR 10318: these US ETF CFDs reject 0.0001; size_increment=1 is required."""
+    catalog = InMemoryInstrumentCatalog(
+        [
+            InstrumentRecord(
+                symbol="SIL",
+                sec_type="CFD",
+                trade_conid=384919303,
+                market_data_conid=384919303,
+                exchange="SMART",
+                currency="USD",
+                multiplier=Decimal(1),
+                size_increment=Decimal("1.00000000"),
+            )
+        ]
+    )
+    intent = OrderIntent(
+        signal_id="T-CFD-INC",
+        strategy_id="model_blue",
+        action=OrderAction.OPEN,
+        legs=[
+            OrderLeg(
+                symbol="SIL",
+                side=OrderSide.BUY,
+                quantity=275.8164,
+                price=Decimal("90.64"),
+                contract_month="2026-09",
+                instrument_type="CFD",
+                leg_index=0,
+            )
+        ],
+        timestamp=_TS,
+    )
+    resolved_intent = attach_resolved(intent, catalog=catalog)
+    assert resolved_intent.legs[0].quantity == 275.0
+    assert resolved_intent.legs[0].resolved is not None
+    assert resolved_intent.legs[0].resolved.sec_type == "CFD"
+    contract = ibkr_contract_from_resolved(resolved_intent.legs[0].resolved)
+    assert contract.secType == "CFD"
+    assert contract.conId == 384919303
+

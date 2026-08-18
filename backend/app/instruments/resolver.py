@@ -11,7 +11,7 @@ Never falls back CFD → STK. Never invents conId.
 from __future__ import annotations
 
 from dataclasses import replace
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Protocol, Sequence
 
 from app.instruments.models import (
@@ -31,6 +31,17 @@ _TYPES_REQUIRING_MASTER = frozenset({"CFD"})
 _EXPIRY_SEC_TYPES = frozenset({"FUT", "FOP", "OPT"})
 _DEFAULT_STK_EXCHANGE = "SMART"
 _DEFAULT_STK_CURRENCY = "USD"
+
+def apply_size_increment(quantity: Decimal, increment: Decimal) -> Decimal:
+    """Round quantity down to a whole number of IBKR size increments.
+
+    ``Decimal('1.00000000')`` from Numeric(18,8) must still yield whole lots, not 8 d.p.
+    """
+    if increment <= 0:
+        raise ValueError("size_increment must be positive")
+    lots = (quantity / increment).to_integral_value(rounding=ROUND_DOWN)
+    return lots * increment
+
 
 def ibkr_contract_from_resolved(resolved: ResolvedInstrument):
     """Build an ibapi Contract from a ResolvedInstrument. Does not guess secType."""
@@ -184,6 +195,7 @@ def _resolve_stk(
         market_data_con_id=_optional_con_id(md_con),
         multiplier=multiplier if multiplier is not None else Decimal(1),
         primary_exchange=(primary or None),
+        size_increment=record.size_increment if record is not None else None,
     )
 
 
@@ -226,6 +238,7 @@ def _resolve_cfd(
         market_data_con_id=_optional_con_id(record.market_data_conid),
         multiplier=multiplier,
         primary_exchange=record.underlying_exchange or None,
+        size_increment=record.size_increment,
     )
 
 
@@ -266,9 +279,20 @@ def attach_resolved(intent, catalog: InstrumentCatalog | None = None):
                 con_id=leg.con_id,
                 catalog=catalog,
             )
+            qty = Decimal(str(leg.quantity))
+            increment = resolved.size_increment
+            if increment is not None and increment > 0:
+                qty = apply_size_increment(qty, increment)
+                if qty <= 0:
+                    failures.append(
+                        f"L{index} {leg.symbol}: quantity {leg.quantity} quantized "
+                        f"to {qty} using size_increment={increment}"
+                    )
+                    continue
             new_legs.append(
                 replace(
                     leg,
+                    quantity=float(qty),
                     resolved=resolved,
                     con_id=resolved.con_id if resolved.con_id is not None else leg.con_id,
                     exchange=resolved.exchange,

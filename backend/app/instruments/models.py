@@ -20,6 +20,7 @@ class InstrumentRecord:
     currency: str
     multiplier: Decimal
     underlying_exchange: str | None = None
+    size_increment: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class ResolvedInstrument:
     market_data_con_id: int | None = None
     multiplier: Decimal = Decimal(1)
     primary_exchange: str | None = None
+    size_increment: Decimal | None = None
 
     def identity_key(self) -> str:
         con = f":{self.con_id}" if self.con_id else ""

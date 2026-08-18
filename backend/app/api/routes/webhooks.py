@@ -100,6 +100,10 @@ async def receive_tradingview_webhook(request: Request) -> dict[str, str]:
             )
     except ValueError as val_err:
         logger.warning("Rejected invalid TradingView payload: %s", val_err)
+        if order_manager is not None:
+            await order_manager.record_rejected_inbound(
+                payload, capture_data=capture_data, reason=str(val_err)
+            )
         return {"status": "rejected", "source": "tradingview"}
 
     if order_manager is not None:
