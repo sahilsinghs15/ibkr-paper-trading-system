@@ -97,11 +97,9 @@ def _mock_adapter() -> IBKRExecutionAdapter:
     client.next_order_id = 200
     client.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=client)
+    from tests.ibkr_test_utils import fill_on_place_order
 
-    def fake_place_order(order_id: int, contract: Any, order: Any) -> None:
-        pass
-
-    client.placeOrder.side_effect = fake_place_order
+    fill_on_place_order(adapter, client)
     return adapter
 
 
@@ -236,7 +234,7 @@ async def test_4_strategy_isolation_skips_model_blue_sizer() -> None:
     assert result is not None
     assert len(result.orders) == 1
     assert result.orders[0].symbol == "SPY"
-    assert result.orders[0].status == OMSOrderStatus.PENDING
+    assert result.orders[0].status == OMSOrderStatus.FILLED
 
     inbound = parse_tradingview_payload(
         {"strategy": "model_red", "symbol": "SPY", "quantity": 1, "price": 100, "action": "OPEN"},

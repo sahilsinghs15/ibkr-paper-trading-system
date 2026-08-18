@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import math
 import threading
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -15,6 +16,19 @@ from app.oms.models import OMSOrder, OMSOrderStatus
 from app.rms.models import OrderSide
 
 logger = logging.getLogger(__name__)
+
+_MAX_SANE_PRICE = 1e12
+
+
+def _usable_price(raw: float, fallback: Decimal | None = None) -> Decimal | None:
+    """Ignore IBKR UNSET (DBL_MAX) and non-finite prices from orderStatus."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 0.0
+    if math.isfinite(value) and 0 < value < _MAX_SANE_PRICE:
+        return Decimal(str(value))
+    return fallback
 
 
 class IBKRExecutionAdapter:
@@ -189,6 +203,33 @@ class IBKRExecutionAdapter:
 
         return order
 
+    def adopt_order(self, order: OMSOrder) -> None:
+        """Register an existing OMS order so later broker callbacks can update it."""
+        with self._lock:
+            self._orders_by_internal_id[order.internal_order_id] = order
+            if order.ibkr_order_id is not None:
+                tws_id = int(order.ibkr_order_id)
+                self._orders_by_tws_id[tws_id] = order
+                self._tws_id_to_internal_id[tws_id] = order.internal_order_id
+
+    def fetch_broker_order_snapshot(self) -> bool:
+        """Ask TWS for open orders. Returns False if broker state cannot be requested."""
+        if not self.is_connected():
+            return False
+        try:
+            req_open = getattr(self._client, "reqOpenOrders", None)
+            if callable(req_open):
+                req_open()
+            req_exec = getattr(self._client, "reqExecutions", None)
+            if callable(req_exec):
+                from ibapi.execution import ExecutionFilter  # type: ignore[import-untyped]
+
+                req_exec(9003, ExecutionFilter())
+            return True
+        except Exception:
+            logger.exception("Failed to request open orders / executions from TWS")
+            return False
+
     async def cancel_order(self, order_or_id: OMSOrder | str) -> OMSOrder:
         """Cancel open order by OMSOrder instance or internal order ID."""
         internal_order_id = (
@@ -300,6 +341,14 @@ class IBKRExecutionAdapter:
         filled = order.filled_quantity
         remaining = order.remaining_quantity
 
+        if mapped_status in (
+            OMSOrderStatus.CANCELLED,
+            OMSOrderStatus.REJECTED,
+            OMSOrderStatus.ERROR,
+        ):
+            order.status = mapped_status
+            return
+
         if filled > 0 and remaining > 0:
             order.status = OMSOrderStatus.PARTIALLY_FILLED
         elif filled >= order.quantity or mapped_status == OMSOrderStatus.FILLED:
@@ -351,10 +400,12 @@ class IBKRExecutionAdapter:
             qty_filled = float(filled)
             qty_remaining = float(remaining)
 
-            if avgFillPrice > 0:
-                order.average_fill_price = Decimal(str(avgFillPrice))
-            if lastFillPrice > 0:
-                order.last_fill_price = Decimal(str(lastFillPrice))
+            avg = _usable_price(avgFillPrice, fallback=order.limit_price)
+            if avg is not None:
+                order.average_fill_price = avg
+            last = _usable_price(lastFillPrice, fallback=None)
+            if last is not None:
+                order.last_fill_price = last
 
             self._apply_mapped_status(
                 order,

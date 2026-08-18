@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -33,6 +34,13 @@ class OrderModel(Base):
     )
     trade_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     internal_order_id: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+    basket_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("baskets.id"), nullable=True
+    )
+    is_compensation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    compensation_of_internal_order_id: Mapped[str | None] = mapped_column(
+        String, nullable=True
+    )
     account_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("accounts.id"), nullable=False
     )

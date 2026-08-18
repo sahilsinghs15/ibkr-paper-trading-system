@@ -123,6 +123,9 @@ def _oms() -> OMSService:
     tws.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=tws)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
+    from tests.ibkr_test_utils import fill_on_place_order
+
+    fill_on_place_order(adapter, tws)
     return OMSService(adapter=adapter)
 
 

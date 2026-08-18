@@ -100,6 +100,9 @@ def client_with_execution() -> Generator[TestClient, None, None]:
     tws.get_request_type.return_value = "order"
 
     adapter = IBKRExecutionAdapter(client=tws)
+    from tests.ibkr_test_utils import fill_on_place_order
+
+    fill_on_place_order(adapter, tws)
     oms = OMSService(adapter=adapter)
     rms_context = RMSContext(
         strategy_configs={

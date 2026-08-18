@@ -1,6 +1,7 @@
 """Database ORM models package."""
 
 from app.db.models.account import AccountModel, PerSymbolLimitModel
+from app.db.models.basket import BasketModel
 from app.db.models.event import EventLogModel
 from app.db.models.instrument import InstrumentModel
 from app.db.models.order import OrderModel
@@ -13,6 +14,7 @@ __all__ = [
     "AccountModel",
     "StrategyModel",
     "AllocationModel",
+    "BasketModel",
     "PerSymbolLimitModel",
     "OrderModel",
     "EventLogModel",

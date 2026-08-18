@@ -94,6 +94,9 @@ class OMSOrder:
     error_message: str | None = None
     parent_signal_id: str | None = None
     leg_index: int | None = None
+    basket_id: int | None = None
+    is_compensation: bool = False
+    compensation_of_internal_order_id: str | None = None
     timestamps: ExecutionTimestamps = field(default_factory=ExecutionTimestamps)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 

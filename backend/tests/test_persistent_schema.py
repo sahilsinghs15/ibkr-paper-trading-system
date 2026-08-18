@@ -10,6 +10,7 @@ from app.db.base import Base
 from app.db.models import (
     AccountModel,
     AllocationModel,
+    BasketModel,
     EventLogModel,
     InstrumentModel,
     OrderModel,
@@ -22,7 +23,7 @@ from app.db.session import create_engine_from_settings
 
 
 def test_schema_metadata_tables() -> None:
-    """Verify that all 9 required domain tables are registered on Base.metadata."""
+    """Verify that all required domain tables are registered on Base.metadata."""
     table_names = set(Base.metadata.tables.keys())
     expected_tables = {
         "signals",
@@ -33,6 +34,7 @@ def test_schema_metadata_tables() -> None:
         "orders",
         "event_log",
         "positions",
+        "baskets",
         "instruments",
     }
     assert expected_tables.issubset(table_names)
@@ -57,6 +59,16 @@ def test_allocations_unique_account_strategy() -> None:
         if hasattr(c, "columns")
     ]
     assert {"account_id", "strategy_id"} in unique_cols
+
+
+def test_baskets_unique_account_trade_action() -> None:
+    table = Base.metadata.tables["baskets"]
+    unique_cols = [
+        set(c.columns.keys())
+        for c in table.constraints
+        if hasattr(c, "columns")
+    ]
+    assert {"account_id", "trade_id", "action"} in unique_cols
 
 
 def test_orders_table_indexes() -> None:

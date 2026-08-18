@@ -2,6 +2,7 @@
 
 import logging
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -14,6 +15,8 @@ from app.db.models.account import PerSymbolLimitModel
 from app.db.repositories.position_repository import PositionRepository
 from app.db.repositories.signal_repository import SignalRepository
 from app.models.signal import Signal, SignalType
+from app.oms.basket import BasketState
+from app.oms.coordinator import BasketCoordinator
 from app.oms.models import AccountExecutionOutcome, ExecutionResult, FanoutExecutionResult, OMSOrder
 from app.oms.oms_service import OMSService
 from app.rms.engine import RMSEngine
@@ -109,6 +112,9 @@ class OrderManager:
         self._model_blue_sizer = self._model_blue_strategy._sizer
         self._model_blue_trades = self._model_blue_strategy._trades
         self.registry = strategy_registry or StrategyRegistry([self._model_blue_strategy])
+        self._baskets: BasketCoordinator | None = None
+        if type(oms) is OMSService:
+            self._baskets = BasketCoordinator(oms, session_factory=session_factory)
 
     async def hydrate_runtime_from_db(self) -> None:
         """Load processed OPEN signals and account-scoped open-position counts."""
@@ -142,6 +148,9 @@ class OrderManager:
                 self._rms_context.per_symbol_limits[(limit.account_id, limit.symbol)] = (
                     limit.money_limit
                 )
+        if self._baskets is not None:
+            await self._baskets.hydrate_critical_from_db()
+            await self._baskets.recover_incomplete_baskets()
 
     def _add_row_exposure(self, row) -> None:
         a_notional = abs(row.leg_a_signed_qty) * row.leg_a_entry_mark
@@ -337,7 +346,40 @@ class OrderManager:
         if self._oms is None:
             raise RuntimeError("No OMSService configured on OrderManager.")
 
+        if (
+            intent.action == OrderAction.OPEN
+            and self._baskets is not None
+            and self._baskets.is_open_blocked(intent.account_id, intent.strategy_id)
+        ):
+            raise ValueError(
+                "BASKET_CRITICAL: new OPENs blocked for account_id="
+                f"{intent.account_id} strategy={intent.strategy_id} until reconciliation."
+            )
+
         use_leg_prices = handler is not None and handler.uses_per_leg_prices()
+        if self._baskets is not None:
+            basket_res = await self._baskets.execute(
+                evaluated_intent,
+                rms_result,
+                order_type=self._order_type,
+            )
+            child_orders = basket_res.orders or basket_res.compensation_orders
+            if not child_orders:
+                raise RuntimeError("Basket coordinator returned no child orders.")
+            exec_res = ExecutionResult(
+                order=child_orders[0],
+                rms_result=rms_result,
+                success=basket_res.success,
+                error_message=None if basket_res.success else basket_res.state.value,
+                orders=list(basket_res.orders) + list(basket_res.compensation_orders),
+            )
+            if basket_res.state in (BasketState.OPEN, BasketState.CLOSED):
+                filled_intent = self._intent_with_fills(evaluated_intent, basket_res.orders)
+                await self._update_runtime_state(
+                    filled_intent, exec_res, handler=handler, sized_from=signal
+                )
+            return exec_res
+
         exec_res = await self._oms.submit_intent(
             intent=evaluated_intent,
             rms_result=rms_result,
@@ -349,6 +391,28 @@ class OrderManager:
 
         await self._update_runtime_state(evaluated_intent, exec_res, handler=handler, sized_from=signal)
         return exec_res
+
+    def _intent_with_fills(self, intent: OrderIntent, orders: list[OMSOrder]) -> OrderIntent:
+        by_index = {o.leg_index: o for o in orders}
+        filled_legs = []
+        for index, leg in enumerate(intent.legs):
+            order = by_index.get(index)
+            if order is None:
+                filled_legs.append(leg)
+                continue
+            qty = order.filled_quantity
+            px = order.average_fill_price or order.last_fill_price or leg.price
+            if not isinstance(px, Decimal):
+                px = Decimal(str(px))
+            filled_legs.append(
+                replace(
+                    leg,
+                    quantity=qty,
+                    price=px,
+                    notional=Decimal(str(qty)) * px,
+                )
+            )
+        return replace(intent, legs=filled_legs)
 
     async def _update_runtime_state(
         self,

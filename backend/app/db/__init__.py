@@ -4,6 +4,7 @@ from app.db.base import Base
 from app.db.models import (
     AccountModel,
     AllocationModel,
+    BasketModel,
     EventLogModel,
     InstrumentModel,
     OrderModel,
@@ -24,6 +25,7 @@ __all__ = [
     "AccountModel",
     "StrategyModel",
     "AllocationModel",
+    "BasketModel",
     "PerSymbolLimitModel",
     "OrderModel",
     "EventLogModel",
