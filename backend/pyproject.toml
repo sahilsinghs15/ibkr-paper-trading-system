@@ -14,6 +14,7 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "sqlalchemy>=2.0.52",
     "uvicorn>=0.52.1",
+    "redis>=5.2.1",
 ]
 
 [project.optional-dependencies]
@@ -26,7 +27,10 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["app*", "demo_streaming*"]
+
+[tool.setuptools.package-data]
+demo_streaming = ["static/*"]
 
 [tool.ruff.lint]
 ignore = ["B008"]

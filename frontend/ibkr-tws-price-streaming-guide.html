@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>TWS API Price Streaming Guide</title>
+  <style>
+    :root {
+      --page: #f4f7fb;
+      --paper: #ffffff;
+      --ink: #172033;
+      --muted: #536178;
+      --line: #dce3ee;
+      --accent: #0957c3;
+      --code-bg: #111827;
+      --code-ink: #e5edf8;
+      --note-bg: #eef5ff;
+      --shadow: 0 18px 50px rgba(21, 36, 61, 0.10);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 17px;
+      line-height: 1.68;
+    }
+
+    main {
+      width: min(920px, calc(100% - 32px));
+      margin: 48px auto;
+      padding: clamp(28px, 5vw, 68px);
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+    }
+
+    p:first-child {
+      margin-top: 0;
+      font-size: clamp(22px, 3vw, 31px);
+      line-height: 1.35;
+      letter-spacing: -0.025em;
+      font-weight: 720;
+    }
+
+    h2 {
+      margin: 2.3em 0 0.55em;
+      padding-top: 0.3em;
+      color: var(--ink);
+      font-size: clamp(22px, 2.5vw, 28px);
+      line-height: 1.3;
+      letter-spacing: -0.02em;
+    }
+
+    h3 {
+      margin: 1.8em 0 0.45em;
+      font-size: 19px;
+      line-height: 1.4;
+    }
+
+    p, ul { margin: 0.8em 0; }
+    ul { padding-left: 1.4em; }
+    li + li { margin-top: 0.2em; }
+
+    a {
+      color: var(--accent);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    code {
+      padding: 0.12em 0.34em;
+      border-radius: 5px;
+      background: #edf1f7;
+      color: #1f3150;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.9em;
+    }
+
+    pre {
+      margin: 1em 0 1.3em;
+      padding: 18px 20px;
+      overflow-x: auto;
+      border-radius: 12px;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      line-height: 1.55;
+      tab-size: 4;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+      font-size: 14px;
+    }
+
+    blockquote {
+      margin: 1.2em 0;
+      padding: 14px 18px;
+      border-left: 4px solid var(--accent);
+      border-radius: 0 10px 10px 0;
+      background: var(--note-bg);
+      color: #243959;
+    }
+
+    table {
+      width: 100%;
+      margin: 1em 0 1.4em;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+
+    th, td {
+      padding: 11px 13px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    tr:last-child th, tr:last-child td { border-bottom: 0; }
+    th { width: 36%; background: #f2f6fb; }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page: #090f1a;
+        --paper: #111a29;
+        --ink: #edf3fb;
+        --muted: #aebbd0;
+        --line: #2c3950;
+        --accent: #7db5ff;
+        --note-bg: #172a45;
+        --shadow: none;
+      }
+      code { background: #202c3f; color: #dbeafe; }
+      blockquote { color: #dbeafe; }
+      th { background: #172235; }
+    }
+
+    @media (max-width: 620px) {
+      main {
+        width: 100%;
+        margin: 0;
+        border: 0;
+        border-radius: 0;
+      }
+    }
+
+    @media print {
+      :root { --page: #fff; --paper: #fff; --ink: #111; --line: #ccc; }
+      body { font-size: 11pt; }
+      main { width: 100%; margin: 0; padding: 0; border: 0; box-shadow: none; }
+      a { color: inherit; }
+      pre { white-space: pre-wrap; word-break: break-word; }
+      h2, h3 { break-after: avoid; }
+      pre, table, blockquote { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <p>In the TWS API, there are several streaming methods, but for your pair-level take-profit/max-loss engine, <code>reqMktData()</code> is the primary method you want.</p>
+
+  <h2>1. <code>reqMktData()</code> — recommended for your risk engine</h2>
+
+  <p>This provides continuous Level 1 market data:</p>
+
+  <ul>
+    <li>Bid</li>
+    <li>Ask</li>
+    <li>Last</li>
+    <li>Bid size</li>
+    <li>Ask size</li>
+    <li>Last size</li>
+    <li>Close</li>
+    <li>Optional mark price and other generic ticks</li>
+  </ul>
+
+  <p>It is a subscription, not a one-time request:</p>
+
+  <pre><code class="language-python">self.reqMktData(
+    reqId=1001,
+    contract=contract,
+    genericTickList="221",
+    snapshot=False,
+    regulatorySnapshot=False,
+    mktDataOptions=[]
+)</code></pre>
+
+  <p>The important parameter is:</p>
+
+  <pre><code class="language-python">snapshot=False</code></pre>
+
+  <p>That keeps the subscription open until you call:</p>
+
+  <pre><code class="language-python">self.cancelMktData(1001)</code></pre>
+
+  <p>IBKR publishes updates through callbacks:</p>
+
+  <pre><code class="language-python">from ibapi.ticktype import TickTypeEnum
+
+def tickPrice(self, reqId, tickType, price, attrib):
+    field = TickTypeEnum.toStr(tickType)
+
+    print(
+        "request:", reqId,
+        "field:", field,
+        "price:", price
+    )
+
+def tickSize(self, reqId, tickType, size):
+    field = TickTypeEnum.toStr(tickType)
+
+    print(
+        "request:", reqId,
+        "field:", field,
+        "size:", size
+    )</code></pre>
+
+  <p><code>reqMktData()</code> is aggregated Level 1 data delivered several times per second, not necessarily every individual exchange tick. It is normally sufficient for monitoring 15 pairs. <a href="https://interactivebrokers.github.io/tws-api/md_request.html">IBKR streaming market-data documentation</a>.</p>
+
+  <h3>ETF example</h3>
+
+  <p>IBKR classifies exchange-traded stocks and ETFs as <code>STK</code>:</p>
+
+  <pre><code class="language-python">from ibapi.contract import Contract
+
+spy = Contract()
+spy.symbol = "SPY"
+spy.secType = "STK"
+spy.exchange = "SMART"
+spy.primaryExchange = "ARCA"
+spy.currency = "USD"
+
+self.reqMktData(
+    1001,
+    spy,
+    "221",
+    False,
+    False,
+    []
+)</code></pre>
+
+  <p>If you already resolved the contract, using its <code>conId</code> is safer:</p>
+
+  <pre><code class="language-python">spy = Contract()
+spy.conId = spy_underlying_conid
+spy.secType = "STK"
+spy.exchange = "SMART"
+spy.currency = "USD"</code></pre>
+
+  <p>Generic tick <code>221</code> requests the IBKR mark price used in TWS P&amp;L calculations. Bid, ask, last and their sizes are part of the normal default tick stream.</p>
+
+  <h2>2. Stock/ETF CFD market data requires the underlying</h2>
+
+  <p>This is the most important CFD peculiarity:</p>
+
+  <blockquote><p>IBKR generally does not provide a separate market-data stream for stock or ETF CFDs. TWS displays the market data of the CFD’s underlying stock or ETF.</p></blockquote>
+
+  <p>Therefore:</p>
+
+  <pre><code>Instrument traded → SPY CFD
+Instrument priced → SPY underlying ETF, secType=STK</code></pre>
+
+  <p>Your instrument record should contain both:</p>
+
+  <pre><code>trade_conid       = SPY CFD conId
+market_data_conid = SPY ETF/STK conId</code></pre>
+
+  <p>Use <code>trade_conid</code> in <code>placeOrder()</code> and <code>market_data_conid</code> in <code>reqMktData()</code>.</p>
+
+  <p>If you request data on the CFD contract, TWS API can invoke:</p>
+
+  <pre><code class="language-python">def rerouteMktDataReq(self, reqId, conId, exchange):
+    print(
+        "CFD request:", reqId,
+        "underlying conId:", conId,
+        "underlying exchange:", exchange
+    )</code></pre>
+
+  <p>The callback identifies the underlying instrument that has market data. <a href="https://interactivebrokers.github.io/tws-api/md_receive.html">IBKR CFD market-data rerouting</a>.</p>
+
+  <p>You can then subscribe explicitly:</p>
+
+  <pre><code class="language-python">def rerouteMktDataReq(self, reqId, conId, exchange):
+    underlying = Contract()
+    underlying.conId = conId
+    underlying.secType = "STK"
+    underlying.exchange = exchange
+    underlying.currency = "USD"
+
+    underlying_req_id = self.allocate_request_id()
+
+    self.reqMktData(
+        underlying_req_id,
+        underlying,
+        "221",
+        False,
+        False,
+        []
+    )</code></pre>
+
+  <p>In production, it is better to discover and cache the underlying <code>conId</code> when qualifying the CFD, rather than waiting for rerouting while a position is live.</p>
+
+  <p>Index CFDs are different and can generally be queried directly as CFDs.</p>
+
+  <h2>3. <code>reqTickByTickData()</code> — individual ticks</h2>
+
+  <p>If you need higher-granularity data than <code>reqMktData()</code>:</p>
+
+  <pre><code class="language-python">self.reqTickByTickData(
+    reqId=2001,
+    contract=spy,
+    tickType="BidAsk",
+    numberOfTicks=0,
+    ignoreSize=True
+)</code></pre>
+
+  <p>Available stream types include:</p>
+
+  <pre><code>Last
+AllLast
+BidAsk
+MidPoint</code></pre>
+
+  <p>Callbacks include:</p>
+
+  <pre><code class="language-python">def tickByTickBidAsk(
+    self,
+    reqId,
+    time,
+    bidPrice,
+    askPrice,
+    bidSize,
+    askSize,
+    tickAttribBidAsk,
+):
+    ...</code></pre>
+
+  <p>and:</p>
+
+  <pre><code class="language-python">def tickByTickAllLast(
+    self,
+    reqId,
+    tickType,
+    time,
+    price,
+    size,
+    tickAttribLast,
+    exchange,
+    specialConditions,
+):
+    ...</code></pre>
+
+  <p>Cancel with:</p>
+
+  <pre><code class="language-python">self.cancelTickByTickData(2001)</code></pre>
+
+  <p>I would not start with tick-by-tick subscriptions for all 30 legs. They have tighter subscription limitations and generate considerably more events. Level 1 <code>reqMktData()</code> is usually enough for pair exits.</p>
+
+  <h2>4. <code>reqRealTimeBars()</code> — five-second OHLC bars</h2>
+
+  <p>This streams five-second bars:</p>
+
+  <pre><code class="language-python">self.reqRealTimeBars(
+    reqId=3001,
+    contract=spy,
+    barSize=5,
+    whatToShow="MIDPOINT",
+    useRTH=False,
+    realTimeBarsOptions=[]
+)</code></pre>
+
+  <p>Callback:</p>
+
+  <pre><code class="language-python">def realtimeBar(
+    self,
+    reqId,
+    time,
+    open_,
+    high,
+    low,
+    close,
+    volume,
+    wap,
+    count,
+):
+    ...</code></pre>
+
+  <p>Cancel with:</p>
+
+  <pre><code class="language-python">self.cancelRealTimeBars(3001)</code></pre>
+
+  <p>This is useful for:</p>
+
+  <ul>
+    <li>monitoring;</li>
+    <li>charts;</li>
+    <li>volatility calculations;</li>
+    <li>five-second signal logic.</li>
+  </ul>
+
+  <p>It is not ideal for stop-loss processing because a five-second bar can arrive too late relative to a fast price move. IBKR currently provides only five-second bars through this method. <a href="https://ibkrcampus.com/campus/ibkr-api-page/twsapi-ref/">IBKR TWS API reference</a>.</p>
+
+  <h2>5. <code>reqMktDepth()</code> — Level 2 order book</h2>
+
+  <p>If you need multiple price levels:</p>
+
+  <pre><code class="language-python">self.reqMktDepth(
+    tickerId=4001,
+    contract=spy,
+    numRows=5,
+    isSmartDepth=True,
+    mktDepthOptions=[]
+)</code></pre>
+
+  <p>Callbacks:</p>
+
+  <pre><code class="language-python">def updateMktDepth(...):
+    ...
+
+def updateMktDepthL2(...):
+    ...</code></pre>
+
+  <p>Cancel with:</p>
+
+  <pre><code class="language-python">self.cancelMktDepth(4001, True)</code></pre>
+
+  <p>This is unnecessary for basic pair P&amp;L. It consumes separate depth entitlements and has tighter limits. Use it only if your execution logic explicitly models order-book liquidity. <a href="https://ibkrcampus.com/docs/tws-api/doc/market-data-live/market-depth-l-2/request-market-depth">IBKR market-depth documentation</a>.</p>
+
+  <h2>6. <code>reqPnLSingle()</code> — streams P&amp;L, not raw prices</h2>
+
+  <p>For an open position:</p>
+
+  <pre><code class="language-python">self.reqPnLSingle(
+    reqId=5001,
+    account="U1234567",
+    modelCode="",
+    conId=spy_cfd_conid
+)</code></pre>
+
+  <p>Callback:</p>
+
+  <pre><code class="language-python">def pnlSingle(
+    self,
+    reqId,
+    pos,
+    dailyPnL,
+    unrealizedPnL,
+    realizedPnL,
+    value,
+):
+    ...</code></pre>
+
+  <p>This gives:</p>
+
+  <ul>
+    <li>Current position</li>
+    <li>Daily P&amp;L</li>
+    <li>Unrealized P&amp;L</li>
+    <li>Realized P&amp;L</li>
+    <li>Market value</li>
+  </ul>
+
+  <p>It updates approximately once per second, but it does not provide bid and ask prices. It is valuable as an independent broker-side P&amp;L check.</p>
+
+  <p>Remember that it reports the consolidated account position for that <code>conId</code>, not the portion allocated to a particular pair.</p>
+
+  <h2>7. Position methods are not price streams</h2>
+
+  <p>These methods help discover positions but should not drive real-time exits:</p>
+
+  <h3><code>reqPositions()</code></h3>
+
+  <pre><code class="language-python">self.reqPositions()</code></pre>
+
+  <p>Callback:</p>
+
+  <pre><code class="language-python">def position(self, account, contract, position, avgCost):
+    ...</code></pre>
+
+  <p>It gives quantity and average cost, but no live price.</p>
+
+  <h3><code>reqAccountUpdates()</code></h3>
+
+  <pre><code class="language-python">self.reqAccountUpdates(True, "U1234567")</code></pre>
+
+  <p>Its <code>updatePortfolio()</code> callback includes <code>marketPrice</code>, market value and P&amp;L, but IBKR documents that unchanged positions may update only at a fixed interval of roughly three minutes. That is too slow for a max-loss trigger.</p>
+
+  <h2>Recommended combination for your OEMS</h2>
+
+  <p>For every open pair:</p>
+
+  <pre><code>CFD conId         → order placement and reqPnLSingle()
+Underlying conId  → reqMktData()</code></pre>
+
+  <p>Subscribe to:</p>
+
+  <pre><code class="language-python">reqMktData(underlying_conid)
+reqPnLSingle(cfd_conid)</code></pre>
+
+  <p>Then maintain:</p>
+
+  <pre><code>Pair P&amp;L from bid/ask and your execution ledger
+        versus
+IBKR P&amp;L from pnlSingle()</code></pre>
+
+  <p>Use the market-data calculation for fast triggers and IBKR’s P&amp;L as a reconciliation/control stream.</p>
+
+  <p>For calculating liquidation P&amp;L:</p>
+
+  <pre><code>Long leg  → value at bid
+Short leg → value at ask</code></pre>
+
+  <p>For example:</p>
+
+  <pre><code class="language-python">def leg_unrealized_pnl(signed_qty, entry_price, bid, ask, multiplier=1):
+    exit_mark = bid if signed_qty &gt; 0 else ask
+    return signed_qty * (exit_mark - entry_price) * multiplier</code></pre>
+
+  <h2>Market-data permission warning</h2>
+
+  <p>CFD trading permission does not automatically include market-data permission for the underlying US ETF or stock. You need the relevant US equity market-data subscription in Client Portal.</p>
+
+  <p>Also confirm the returned data type:</p>
+
+  <pre><code class="language-python">def marketDataType(self, reqId, marketDataType):
+    # 1 live, 2 frozen, 3 delayed, 4 delayed-frozen
+    print(reqId, marketDataType)</code></pre>
+
+  <p>Do not allow delayed data—type <code>3</code> or <code>4</code>—to drive an automated max-loss system. For your 15 pairs, approximately 30 underlying Level 1 subscriptions through <code>reqMktData()</code> are the appropriate starting point.</p>
+</main>
+</body>
+</html>

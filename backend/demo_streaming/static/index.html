@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Paper positions — live demo</title>
+  <style>
+    :root {
+      --page: #f4f7fb;
+      --paper: #ffffff;
+      --ink: #172033;
+      --muted: #536178;
+      --line: #dce3ee;
+      --accent: #0957c3;
+      --good: #0f7b4a;
+      --bad: #b42318;
+      --shadow: 0 18px 50px rgba(21, 36, 61, 0.10);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 15px;
+      line-height: 1.45;
+    }
+    header {
+      padding: 20px 28px 8px;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    h1 { margin: 0; font-size: 22px; letter-spacing: -0.03em; }
+    .muted { color: var(--muted); }
+    .pills { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .pill {
+      border: 1px solid var(--line);
+      background: var(--paper);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+    }
+    .ok { color: var(--good); }
+    .warn { color: var(--bad); }
+    main { padding: 8px 28px 40px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; font-size: 13px; }
+    th { background: #f2f6fb; font-weight: 650; }
+    tr:last-child td { border-bottom: 0; }
+    h2 { margin: 28px 0 10px; font-size: 16px; }
+    .note {
+      margin: 0 28px 16px;
+      padding: 12px 14px;
+      background: #eef5ff;
+      border-left: 4px solid var(--accent);
+      border-radius: 0 10px 10px 0;
+      color: #243959;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page: #090f1a;
+        --paper: #111a29;
+        --ink: #edf3fb;
+        --muted: #aebbd0;
+        --line: #2c3950;
+        --accent: #7db5ff;
+        --shadow: none;
+      }
+      th { background: #172235; }
+      .note { background: #172a45; color: #dbeafe; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Executed positions (demo stream)</h1>
+      <p class="muted">Read-only. Source: existing PostgreSQL positions + Redis Stream <code>positions:stream</code>.</p>
+    </div>
+    <div class="pills">
+      <span class="pill" id="conn">connection: connecting</span>
+      <span class="pill" id="md">market-data: UNAVAILABLE</span>
+      <span class="pill" id="updated">last update: —</span>
+    </div>
+  </header>
+  <p class="note">CFD instrument_type is preserved. Last/mark prices are shown only when the existing application has them; otherwise market-data status is UNAVAILABLE. This page never talks to Redis or IBKR directly.</p>
+  <main>
+    <h2>Active</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th>Trade</th>
+          <th>Position</th>
+          <th>Execution</th>
+          <th>P&amp;L</th>
+        </tr>
+      </thead>
+      <tbody id="active"></tbody>
+    </table>
+    <h2>Recently closed</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th>Trade</th>
+          <th>Position</th>
+          <th>Final P&amp;L</th>
+        </tr>
+      </thead>
+      <tbody id="closed"></tbody>
+    </table>
+  </main>
+  <script>
+    const active = new Map();
+    const closed = new Map();
+    const connEl = document.getElementById("conn");
+    const mdEl = document.getElementById("md");
+    const updatedEl = document.getElementById("updated");
+    let source = null;
+
+    function keyOf(row) {
+      return [row.account_id, row.trade_id, row.symbol].join("|");
+    }
+
+    function dash(v) { return (v === null || v === undefined || v === "") ? "—" : v; }
+
+    function accountCell(row) {
+      return `<div><strong>${dash(row.account_name)}</strong><div class="muted">${dash(row.ibkr_account)} · id ${dash(row.account_id)}</div><div class="muted">${dash(row.strategy_id)}</div></div>`;
+    }
+    function tradeCell(row) {
+      return `<div><code>${dash(row.trade_id)}</code><div class="muted">basket ${dash(row.basket_state)}</div><div class="muted">position ${dash(row.position_state || row.status)}</div></div>`;
+    }
+    function posCell(row) {
+      return `<div><strong>${dash(row.symbol)}</strong> ${dash(row.instrument_type)} ${dash(row.side)}<div class="muted">qty ${dash(row.quantity)} filled ${dash(row.filled_quantity)}</div><div class="muted">entry ${dash(row.entry_price)} mark ${dash(row.mark_price || row.last_price)}</div></div>`;
+    }
+    function execCell(row) {
+      return `<div>${dash(row.order_status)}<div class="muted">broker ${dash(row.broker_order_id)}</div><div class="muted">fill ${dash(row.fill_timestamp)}</div></div>`;
+    }
+    function pnlCell(row) {
+      return `<div>u ${dash(row.unrealized_pnl)}<div class="muted">r ${dash(row.realized_pnl)}</div><div class="muted">comm ${dash(row.commission)}</div></div>`;
+    }
+
+    function render() {
+      const a = document.getElementById("active");
+      const c = document.getElementById("closed");
+      a.innerHTML = "";
+      c.innerHTML = "";
+      for (const row of active.values()) {
+        a.insertAdjacentHTML("beforeend", `<tr><td>${accountCell(row)}</td><td>${tradeCell(row)}</td><td>${posCell(row)}</td><td>${execCell(row)}</td><td>${pnlCell(row)}</td></tr>`);
+      }
+      for (const row of closed.values()) {
+        c.insertAdjacentHTML("beforeend", `<tr><td>${accountCell(row)}</td><td>${tradeCell(row)}</td><td>${posCell(row)}</td><td>${pnlCell(row)}</td></tr>`);
+      }
+      if (!active.size) a.innerHTML = `<tr><td colspan="5" class="muted">No open positions in snapshot/stream.</td></tr>`;
+      if (!closed.size) c.innerHTML = `<tr><td colspan="4" class="muted">No closed events this session.</td></tr>`;
+    }
+
+    function apply(row) {
+      if (!row || !row.symbol) return;
+      const key = keyOf(row);
+      const event = row.event;
+      mdEl.textContent = "market-data: " + (row.market_data_status || "UNAVAILABLE");
+      if (row.market_data_status === "UNAVAILABLE") mdEl.className = "pill warn";
+      else mdEl.className = "pill ok";
+      updatedEl.textContent = "last update: " + (row.timestamp || new Date().toISOString());
+      if (event === "POSITION_CLOSED" || row.status === "CLOSED") {
+        const finalRow = Object.assign({}, active.get(key) || {}, row);
+        active.delete(key);
+        closed.set(key, finalRow);
+      } else {
+        closed.delete(key);
+        active.set(key, Object.assign({}, active.get(key) || {}, row));
+      }
+      render();
+    }
+
+    async function loadSnapshot() {
+      const res = await fetch("/demo/positions", { cache: "no-store" });
+      const data = await res.json();
+      mdEl.textContent = "market-data: " + (data.market_data_status || "UNAVAILABLE");
+      active.clear();
+      for (const row of data.positions || []) apply(row);
+      render();
+    }
+
+    function connect() {
+      if (source) source.close();
+      source = new EventSource("/demo/stream");
+      source.onopen = () => {
+        connEl.textContent = "connection: live";
+        connEl.className = "pill ok";
+      };
+      source.onmessage = (ev) => {
+        try { apply(JSON.parse(ev.data)); } catch (err) { console.warn(err); }
+      };
+      source.onerror = () => {
+        connEl.textContent = "connection: reconnecting";
+        connEl.className = "pill warn";
+        source.close();
+        setTimeout(async () => {
+          try { await loadSnapshot(); } catch (err) { console.warn(err); }
+          connect();
+        }, 1000);
+      };
+    }
+
+    loadSnapshot().then(connect).catch(() => connect());
+  </script>
+</body>
+</html>
