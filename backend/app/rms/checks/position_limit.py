@@ -1,7 +1,14 @@
 """CHECK 7 — OPEN POSITION LIMIT check implementation."""
 
 from app.rms.checks.base import BaseRMSCheck
-from app.rms.models import CheckResult, OrderAction, OrderIntent, RMSContext, RMSOutcome
+from app.rms.models import (
+    CheckResult,
+    OrderAction,
+    OrderIntent,
+    RMSContext,
+    RMSOutcome,
+    open_position_key,
+)
 
 
 class OpenPositionLimitCheck(BaseRMSCheck):
@@ -34,7 +41,7 @@ class OpenPositionLimitCheck(BaseRMSCheck):
                 reason=f"MISSING_STRATEGY_CONFIG: Configuration for strategy '{intent.strategy_id}' not found.",
             )
 
-        current_positions = context.open_positions.get(intent.strategy_id, 0)
+        current_positions = context.open_positions.get(open_position_key(intent), 0)
         max_positions = strategy_cfg.max_open_positions
 
         if current_positions >= max_positions:

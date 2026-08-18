@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from inspect import isawaitable, iscoroutinefunction
 
+from app.accounts.context import AccountExecutionContext
 from app.models.model_blue_trade import OpenModelBlueTrade, OpenModelBlueTradeLeg
 from app.models.signal import Signal
 from app.oms.models import ExecutionResult
@@ -68,12 +69,16 @@ class ModelBlueStrategy(StrategyHandler):
             raw_payload=raw_payload,
         )
 
-    async def build_intent(self, signal: Signal) -> OrderIntent:
+    async def build_intent(
+        self,
+        signal: Signal,
+        account: AccountExecutionContext | None = None,
+    ) -> OrderIntent:
         action_val = str(signal.action or "").upper()
         if action_val == "CLOSE":
-            return await self._build_close_intent(signal)
+            return await self._build_close_intent(signal, account)
         if action_val == "OPEN":
-            return await self._build_open_intent(signal)
+            return await self._build_open_intent(signal, account)
         raise ModelBlueValidationError(
             f"MODEL_BLUE_INVALID_ACTION: action must be OPEN or CLOSE, got '{signal.action}'."
         )
@@ -103,14 +108,21 @@ class ModelBlueStrategy(StrategyHandler):
                 legs=open_legs,
             )
             if self._persistence is not None:
-                await self._persistence.persist_open(signal, trade, exec_res.orders)
+                await self._persistence.persist_open(
+                    signal,
+                    trade,
+                    exec_res.orders,
+                    account_id=intent.account_id,
+                )
             else:
-                await self._trades.record_open(trade)
+                await self._trades.record_open(trade, account_id=intent.account_id)
         elif intent.action == OrderAction.CLOSE:
             if self._persistence is not None:
-                await self._persistence.persist_close(signal, trade_id, exec_res.orders)
+                await self._persistence.persist_close(
+                    signal, trade_id, exec_res.orders, account_id=intent.account_id
+                )
             else:
-                await self._trades.close(trade_id)
+                await self._trades.close(trade_id, account_id=intent.account_id)
 
     async def _resolve_committed(self, strategy_id: str) -> Decimal | None:
         provider = self._committed_capital_provider
@@ -121,17 +133,24 @@ class ModelBlueStrategy(StrategyHandler):
             return await result
         return result
 
-    async def _build_open_intent(self, signal: Signal) -> OrderIntent:
+    async def _build_open_intent(
+        self, signal: Signal, account: AccountExecutionContext | None
+    ) -> OrderIntent:
         trade_id = (signal.trade_id or signal.signal_id or "").strip()
         if not trade_id:
             raise ModelBlueValidationError("MODEL_BLUE_MISSING_TRADE_ID: trade_id is required.")
-        if await self._trades.get(trade_id) is not None:
+        account_id = account.account_id if account is not None else None
+        if await self._trades.get(trade_id, account_id=account_id) is not None:
             raise ModelBlueValidationError(
                 f"MODEL_BLUE_DUPLICATE_OPEN: trade_id '{trade_id}' is already open."
             )
 
         sizer = self._sizer
-        if sizer is None:
+        if account is not None:
+            sizer = ModelBlueSizer(
+                TemporarySettingsCommittedCapitalProvider(account.committed_notional)
+            )
+        elif sizer is None:
             committed = await self._resolve_committed(
                 signal.strategy_id or MODEL_BLUE_STRATEGY_ID
             )
@@ -154,19 +173,25 @@ class ModelBlueStrategy(StrategyHandler):
             strategy_id=MODEL_BLUE_STRATEGY_ID,
             action=OrderAction.OPEN,
             legs=legs,
+            account_id=account.account_id if account is not None else None,
+            ibkr_account=account.ibkr_account if account is not None else None,
             timestamp=signal.timestamp or datetime.now(UTC),
         )
 
-    async def _build_close_intent(self, signal: Signal) -> OrderIntent:
+    async def _build_close_intent(
+        self, signal: Signal, account: AccountExecutionContext | None
+    ) -> OrderIntent:
         trade_id = (signal.trade_id or signal.signal_id or "").strip()
         if not trade_id:
             raise ModelBlueValidationError("MODEL_BLUE_MISSING_TRADE_ID: trade_id is required.")
 
-        open_trade = await self._trades.get(trade_id)
+        account_id = account.account_id if account is not None else None
+        open_trade = await self._trades.get(trade_id, account_id=account_id)
         if open_trade is None:
             raise ModelBlueValidationError(
-                f"NO_OPEN_POSITION: Cannot close Model Blue trade_id '{trade_id}': "
-                "no matching open trade."
+                f"NO_OPEN_POSITION: Cannot close Model Blue trade_id '{trade_id}'"
+                + (f" for account_id={account_id}" if account_id is not None else "")
+                + ": no matching open trade."
             )
 
         close_legs: list[OrderLeg] = []
@@ -192,6 +217,8 @@ class ModelBlueStrategy(StrategyHandler):
             strategy_id=MODEL_BLUE_STRATEGY_ID,
             action=OrderAction.CLOSE,
             legs=close_legs,
+            account_id=account.account_id if account is not None else None,
+            ibkr_account=account.ibkr_account if account is not None else None,
             timestamp=signal.timestamp or datetime.now(UTC),
         )
 

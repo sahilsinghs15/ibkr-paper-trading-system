@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any
 
+from app.accounts.context import AccountExecutionContext
 from app.models.signal import Signal
 from app.oms.models import ExecutionResult
 from app.rms.models import OrderIntent
@@ -28,8 +29,12 @@ class StrategyHandler(ABC):
         """Parse strategy-specific JSON into a domain Signal."""
 
     @abstractmethod
-    async def build_intent(self, signal: Signal) -> OrderIntent:
-        """Size or reconstruct a generic OrderIntent (N legs)."""
+    async def build_intent(
+        self,
+        signal: Signal,
+        account: AccountExecutionContext | None = None,
+    ) -> OrderIntent:
+        """Size or reconstruct a generic OrderIntent (N legs) for one account."""
 
     def uses_per_leg_prices(self) -> bool:
         """When True, OMS uses each OrderLeg.price rather than a single override."""

@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Numeric, String
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -18,6 +18,10 @@ class AccountModel(Base):
     ibkr_account: Mapped[str] = mapped_column(String, nullable=False)
     total_margin: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        CheckConstraint("total_margin > 0", name="ck_accounts_total_margin_positive"),
+    )
 
 
 class PerSymbolLimitModel(Base):

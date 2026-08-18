@@ -5,12 +5,16 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.accounts.context import AccountExecutionContext
+from app.accounts.router import DatabaseStrategyAccountRouter, StrategyAccountRouter
+from app.db.models.account import PerSymbolLimitModel
 from app.db.repositories.position_repository import PositionRepository
 from app.db.repositories.signal_repository import SignalRepository
 from app.models.signal import Signal, SignalType
-from app.oms.models import ExecutionResult, OMSOrder
+from app.oms.models import AccountExecutionOutcome, ExecutionResult, FanoutExecutionResult, OMSOrder
 from app.oms.oms_service import OMSService
 from app.rms.engine import RMSEngine
 from app.rms.models import (
@@ -20,6 +24,9 @@ from app.rms.models import (
     RMSContext,
     RMSOutcome,
     StrategyConfig,
+    duplicate_lookup_key,
+    exposure_key,
+    open_position_key,
 )
 from app.rms.models import (
     OrderSide as RMSOrderSide,
@@ -62,6 +69,7 @@ class OrderManager:
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         persistence: ModelBlueExecutionPersistence | None = None,
         strategy_registry: StrategyRegistry | None = None,
+        account_router: StrategyAccountRouter | None = None,
     ) -> None:
         self._oms = oms
         self._symbol = symbol
@@ -72,6 +80,12 @@ class OrderManager:
         self._session_factory = session_factory
         self._persistence = persistence
         self._committed_capital_provider = committed_capital_provider
+        if account_router is not None:
+            self._account_router = account_router
+        elif session_factory is not None:
+            self._account_router = DatabaseStrategyAccountRouter(session_factory)
+        else:
+            self._account_router = None
 
         self._rms_engine = rms_engine or RMSEngine()
         self._rms_context = rms_context or RMSContext(
@@ -97,17 +111,50 @@ class OrderManager:
         self.registry = strategy_registry or StrategyRegistry([self._model_blue_strategy])
 
     async def hydrate_runtime_from_db(self) -> None:
-        """Load processed OPEN signals and open-position counts into RMS memory."""
+        """Load processed OPEN signals and account-scoped open-position counts."""
         if self._session_factory is None:
             return
         async with self._session_factory() as session:
             processed = await SignalRepository(session).list_processed_open_keys()
             self._rms_context.processed_signals.update(processed)
+            if self._account_router is not None:
+                by_strategy: dict[str, list[str]] = {}
+                for strategy_id, signal_id in processed:
+                    by_strategy.setdefault(strategy_id, []).append(signal_id)
+                for strategy_id, signal_ids in by_strategy.items():
+                    for ctx in await self._account_router.resolve(strategy_id):
+                        for signal_id in signal_ids:
+                            self._rms_context.processed_signals.add(
+                                (ctx.account_id, strategy_id, signal_id)
+                            )
             open_rows = await PositionRepository(session).list_open()
             for row in open_rows:
-                self._rms_context.open_positions[row.strategy_id] = (
-                    self._rms_context.open_positions.get(row.strategy_id, 0) + 1
+                pos_key = (row.account_id, row.strategy_id)
+                self._rms_context.open_positions[pos_key] = (
+                    self._rms_context.open_positions.get(pos_key, 0) + 1
                 )
+                self._rms_context.processed_signals.add(
+                    (row.account_id, row.strategy_id, row.trade_id)
+                )
+                self._add_row_exposure(row)
+            limits = (await session.execute(select(PerSymbolLimitModel))).scalars().all()
+            for limit in limits:
+                self._rms_context.per_symbol_limits[(limit.account_id, limit.symbol)] = (
+                    limit.money_limit
+                )
+
+    def _add_row_exposure(self, row) -> None:
+        a_notional = abs(row.leg_a_signed_qty) * row.leg_a_entry_mark
+        key_a = (row.account_id, row.leg_a_symbol)
+        self._rms_context.symbol_exposures[key_a] = (
+            self._rms_context.symbol_exposures.get(key_a, Decimal(0)) + a_notional
+        )
+        if row.leg_b_symbol and row.leg_b_signed_qty is not None and row.leg_b_entry_mark is not None:
+            b_notional = abs(row.leg_b_signed_qty) * row.leg_b_entry_mark
+            key_b = (row.account_id, row.leg_b_symbol)
+            self._rms_context.symbol_exposures[key_b] = (
+                self._rms_context.symbol_exposures.get(key_b, Decimal(0)) + b_notional
+            )
 
     def parse_inbound_payload(
         self,
@@ -136,19 +183,74 @@ class OrderManager:
             return None
         return result.order
 
-    async def process_signal_execution(self, signal: Signal) -> ExecutionResult | None:
-        """Process a signal and return the full multi-leg ExecutionResult."""
+    async def process_signal_execution(
+        self, signal: Signal
+    ) -> FanoutExecutionResult | ExecutionResult | None:
+        """Process a signal: strategy -> eligible accounts -> per-account size/RMS/OMS."""
         if signal.signal_type == SignalType.HOLD:
             logger.info("HOLD signal received — no order submitted")
             return None
 
         strat_id = signal.strategy_id or self._strategy_id
         handler = self.registry.get(strat_id)
-        if handler is not None:
-            intent = await handler.build_intent(signal)
-            return await self._evaluate_and_submit(intent, signal, handler=handler)
+        if handler is None:
+            result = await self._process_legacy_single_name(signal)
+            return FanoutExecutionResult.from_single(result)
 
-        return await self._process_legacy_single_name(signal)
+        if self._account_router is None:
+            intent = await handler.build_intent(signal)
+            result = await self._evaluate_and_submit(intent, signal, handler=handler)
+            return FanoutExecutionResult.from_single(result)
+
+        contexts = await self._account_router.resolve(strat_id)
+        if not contexts:
+            raise ValueError(
+                f"NO_ELIGIBLE_ACCOUNTS: strategy '{strat_id}' has no enabled "
+                "account subscriptions."
+            )
+        return await self._fanout_accounts(signal, handler, contexts)
+
+    async def _fanout_accounts(
+        self,
+        signal: Signal,
+        handler: StrategyHandler,
+        contexts: list[AccountExecutionContext],
+    ) -> FanoutExecutionResult:
+        outcomes: list[AccountExecutionOutcome] = []
+        raise_if_single = len(contexts) == 1
+        for ctx in contexts:
+            self._ensure_strategy_config(
+                ctx.strategy_id, max_open_positions=ctx.max_open_positions
+            )
+            try:
+                intent = await handler.build_intent(signal, account=ctx)
+                result = await self._evaluate_and_submit(intent, signal, handler=handler)
+                outcomes.append(
+                    AccountExecutionOutcome(
+                        account_id=ctx.account_id,
+                        ibkr_account=ctx.ibkr_account,
+                        result=result,
+                    )
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "Account %s (%s) rejected signal %s: %s",
+                    ctx.account_id,
+                    ctx.ibkr_account,
+                    signal.signal_id,
+                    exc,
+                )
+                if raise_if_single:
+                    raise
+                outcomes.append(
+                    AccountExecutionOutcome(
+                        account_id=ctx.account_id,
+                        ibkr_account=ctx.ibkr_account,
+                        result=None,
+                        error=str(exc),
+                    )
+                )
+        return FanoutExecutionResult(outcomes=outcomes)
 
     async def _process_legacy_single_name(self, signal: Signal) -> ExecutionResult:
         strat_id = signal.strategy_id or self._strategy_id
@@ -258,13 +360,27 @@ class OrderManager:
     ) -> None:
         if handler is not None:
             if intent.action == OrderAction.OPEN:
-                self._rms_context.processed_signals.add((intent.strategy_id, intent.signal_id))
-                self._rms_context.open_positions[intent.strategy_id] = (
-                    self._rms_context.open_positions.get(intent.strategy_id, 0) + 1
+                self._rms_context.processed_signals.add(duplicate_lookup_key(intent))
+                pos_key = open_position_key(intent)
+                self._rms_context.open_positions[pos_key] = (
+                    self._rms_context.open_positions.get(pos_key, 0) + 1
                 )
+                for leg in intent.legs:
+                    exp_key = exposure_key(intent, leg.symbol)
+                    self._rms_context.symbol_exposures[exp_key] = (
+                        self._rms_context.symbol_exposures.get(exp_key, Decimal(0))
+                        + leg.effective_notional
+                    )
             elif intent.action == OrderAction.CLOSE:
-                new_strat_qty = max(0, self._rms_context.open_positions.get(intent.strategy_id, 0) - 1)
-                self._rms_context.open_positions[intent.strategy_id] = new_strat_qty
+                pos_key = open_position_key(intent)
+                new_strat_qty = max(0, self._rms_context.open_positions.get(pos_key, 0) - 1)
+                self._rms_context.open_positions[pos_key] = new_strat_qty
+                for leg in intent.legs:
+                    exp_key = exposure_key(intent, leg.symbol)
+                    remaining = self._rms_context.symbol_exposures.get(exp_key, Decimal(0))
+                    self._rms_context.symbol_exposures[exp_key] = max(
+                        Decimal(0), remaining - leg.effective_notional
+                    )
             await handler.after_submit(sized_from, intent, exec_res)
             return
 
@@ -284,12 +400,22 @@ class OrderManager:
             self._rms_context.open_positions[target_symbol] = new_sym_qty
             self._rms_context.open_positions[strat_id] = new_strat_qty
 
-    def _ensure_strategy_config(self, strategy_id: str) -> None:
+    def _ensure_strategy_config(
+        self, strategy_id: str, *, max_open_positions: int | None = None
+    ) -> None:
         if not strategy_id:
             return
-        if strategy_id not in self._rms_context.strategy_configs:
+        existing = self._rms_context.strategy_configs.get(strategy_id)
+        if existing is None:
             self._rms_context.strategy_configs[strategy_id] = StrategyConfig(
                 strategy_id=strategy_id,
-                max_open_positions=100,
+                max_open_positions=max_open_positions if max_open_positions is not None else 100,
                 money_limit_per_symbol=Decimal(10_000_000),
+            )
+            return
+        if max_open_positions is not None and existing.max_open_positions != max_open_positions:
+            self._rms_context.strategy_configs[strategy_id] = StrategyConfig(
+                strategy_id=strategy_id,
+                max_open_positions=max_open_positions,
+                money_limit_per_symbol=existing.money_limit_per_symbol,
             )

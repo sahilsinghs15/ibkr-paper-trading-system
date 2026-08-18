@@ -19,11 +19,15 @@ class TradeRepository:
         self._session = session
         self._positions = PositionRepository(session)
 
-    async def get_open(self, trade_id: str) -> OpenModelBlueTrade | None:
-        return await self._positions.get_open_trade(trade_id)
+    async def get_open(
+        self, trade_id: str, *, account_id: int | None = None
+    ) -> OpenModelBlueTrade | None:
+        return await self._positions.get_open_trade(trade_id, account_id=account_id)
 
-    async def get_row(self, trade_id: str) -> PositionModel | None:
-        return await self._positions.get_by_trade_id(trade_id)
+    async def get_row(
+        self, trade_id: str, *, account_id: int | None = None
+    ) -> PositionModel | None:
+        return await self._positions.get_by_trade_id(trade_id, account_id=account_id)
 
     async def open_trade(
         self,
@@ -42,6 +46,8 @@ class TradeRepository:
             time_limit=time_limit,
         )
 
-    async def close_trade(self, trade_id: str) -> OpenModelBlueTrade:
-        row = await self._positions.close_trade(trade_id)
+    async def close_trade(
+        self, trade_id: str, *, account_id: int | None = None
+    ) -> OpenModelBlueTrade:
+        row = await self._positions.close_trade(trade_id, account_id=account_id)
         return self._positions.to_open_trade(row)

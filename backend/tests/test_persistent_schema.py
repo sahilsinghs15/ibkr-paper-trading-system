@@ -49,6 +49,16 @@ def test_signals_table_constraints() -> None:
     assert {"strategy_id", "signal_id"} in unique_cols
 
 
+def test_allocations_unique_account_strategy() -> None:
+    table = Base.metadata.tables["allocations"]
+    unique_cols = [
+        set(c.columns.keys())
+        for c in table.constraints
+        if hasattr(c, "columns")
+    ]
+    assert {"account_id", "strategy_id"} in unique_cols
+
+
 def test_orders_table_indexes() -> None:
     """Verify indexes on orders table."""
     table = Base.metadata.tables["orders"]

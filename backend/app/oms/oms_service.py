@@ -71,7 +71,8 @@ class OMSService:
                 orders=[rejected_order],
             )
 
-        if intent.signal_id in self._submitted_signals:
+        duplicate_key = f"{intent.account_id}:{intent.signal_id}"
+        if duplicate_key in self._submitted_signals:
             msg = f"Duplicate intent submission attempt for signal_id: {intent.signal_id}"
             logger.error(msg)
             rejected_order = self._create_rejected_order(
@@ -105,14 +106,18 @@ class OMSService:
                 orders=[rejected_order],
             )
 
-        self._submitted_signals.add(intent.signal_id)
+        self._submitted_signals.add(duplicate_key)
 
         submitted: list[OMSOrder] = []
         first_error: str | None = None
 
         for index, leg in enumerate(intent.legs):
             internal_order_id = self._leg_order_id(
-                intent.signal_id, index, len(intent.legs), override_internal_id
+                intent.signal_id,
+                index,
+                len(intent.legs),
+                override_internal_id,
+                account_id=intent.account_id,
             )
             price = self._leg_limit_price(leg, limit_price, len(intent.legs))
             order = OMSOrder(
@@ -178,14 +183,17 @@ class OMSService:
         index: int,
         leg_count: int,
         override_internal_id: str | None,
+        *,
+        account_id: int | None = None,
     ) -> str:
+        prefix = f"{account_id}-" if account_id is not None else ""
         if override_internal_id is not None:
             if leg_count == 1:
                 return override_internal_id
             return f"{override_internal_id}-L{index}"
         if leg_count == 1:
-            return f"ORD-{signal_id}"
-        return f"ORD-{signal_id}-L{index}"
+            return f"ORD-{prefix}{signal_id}"
+        return f"ORD-{prefix}{signal_id}-L{index}"
 
     def _leg_limit_price(
         self,

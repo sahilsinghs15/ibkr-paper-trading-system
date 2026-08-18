@@ -26,10 +26,15 @@ class DatabaseCommittedCapitalProvider:
         self._session_factory = session_factory
         self._account_id = account_id
 
-    async def get_committed(self, strategy_id: str) -> Decimal | None:
+    async def get_committed(
+        self, strategy_id: str, account_id: int | None = None
+    ) -> Decimal | None:
         if not is_model_blue_strategy(strategy_id):
+            return None
+        resolved = account_id if account_id is not None else self._account_id
+        if resolved is None:
             return None
         async with self._session_factory() as session:
             return await AllocationRepository(session).get_committed_notional(
-                strategy_id, account_id=self._account_id
+                strategy_id, account_id=resolved
             )

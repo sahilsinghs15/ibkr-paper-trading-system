@@ -40,20 +40,38 @@ class PositionRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get_by_trade_id(self, trade_id: str) -> PositionModel | None:
-        result = await self._session.execute(
-            select(PositionModel).where(PositionModel.trade_id == trade_id)
-        )
-        return result.scalar_one_or_none()
-
-    async def get_open_by_trade_id(self, trade_id: str) -> PositionModel | None:
-        result = await self._session.execute(
-            select(PositionModel).where(
-                PositionModel.trade_id == trade_id,
-                PositionModel.risk_state == RISK_STATE_OPEN,
+    async def get_by_trade_id(
+        self, trade_id: str, *, account_id: int | None = None
+    ) -> PositionModel | None:
+        stmt = select(PositionModel).where(PositionModel.trade_id == trade_id)
+        if account_id is not None:
+            stmt = stmt.where(PositionModel.account_id == account_id)
+        result = await self._session.execute(stmt)
+        rows = list(result.scalars().all())
+        if len(rows) > 1:
+            raise ValueError(
+                f"AMBIGUOUS_TRADE_ID: trade_id '{trade_id}' exists on multiple accounts; "
+                "account_id is required."
             )
+        return rows[0] if rows else None
+
+    async def get_open_by_trade_id(
+        self, trade_id: str, *, account_id: int | None = None
+    ) -> PositionModel | None:
+        stmt = select(PositionModel).where(
+            PositionModel.trade_id == trade_id,
+            PositionModel.risk_state == RISK_STATE_OPEN,
         )
-        return result.scalar_one_or_none()
+        if account_id is not None:
+            stmt = stmt.where(PositionModel.account_id == account_id)
+        result = await self._session.execute(stmt)
+        rows = list(result.scalars().all())
+        if len(rows) > 1:
+            raise ValueError(
+                f"AMBIGUOUS_TRADE_ID: open trade_id '{trade_id}' exists on multiple accounts; "
+                "account_id is required."
+            )
+        return rows[0] if rows else None
 
     async def get_open_by_strategy_symbol(
         self, strategy_id: str, symbol: str
@@ -76,8 +94,10 @@ class PositionRepository:
         )
         return list(result.scalars().all())
 
-    async def get_open_trade(self, trade_id: str) -> OpenModelBlueTrade | None:
-        row = await self.get_open_by_trade_id(trade_id)
+    async def get_open_trade(
+        self, trade_id: str, *, account_id: int | None = None
+    ) -> OpenModelBlueTrade | None:
+        row = await self.get_open_by_trade_id(trade_id, account_id=account_id)
         if row is None:
             return None
         return self.to_open_trade(row)
@@ -109,9 +129,12 @@ class PositionRepository:
         # Pair-row schema (DB-3 deferred): Model Blue persistence, not generic N-leg storage.
         if len(trade.legs) != 2:
             raise ValueError("Model Blue position requires exactly two legs.")
-        existing = await self.get_by_trade_id(trade.trade_id)
+        existing = await self.get_by_trade_id(trade.trade_id, account_id=account_id)
         if existing is not None and existing.risk_state == RISK_STATE_OPEN:
-            raise ValueError(f"Open position already exists for trade_id '{trade.trade_id}'.")
+            raise ValueError(
+                f"Open position already exists for trade_id '{trade.trade_id}' "
+                f"account_id={account_id}."
+            )
 
         leg_a, leg_b = trade.legs[0], trade.legs[1]
         if existing is None:
@@ -150,8 +173,10 @@ class PositionRepository:
         await self._session.flush()
         return existing
 
-    async def close_trade(self, trade_id: str) -> PositionModel:
-        row = await self.get_open_by_trade_id(trade_id)
+    async def close_trade(
+        self, trade_id: str, *, account_id: int | None = None
+    ) -> PositionModel:
+        row = await self.get_open_by_trade_id(trade_id, account_id=account_id)
         if row is None:
             raise KeyError(trade_id)
         row.risk_state = RISK_STATE_CLOSED

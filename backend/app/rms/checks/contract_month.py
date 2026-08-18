@@ -116,6 +116,7 @@ class ContractMonthCheck(BaseRMSCheck):
             action=intent.action,
             legs=adjusted_legs,
             account_id=intent.account_id,
+            ibkr_account=intent.ibkr_account,
             timestamp=intent.timestamp,
         )
 

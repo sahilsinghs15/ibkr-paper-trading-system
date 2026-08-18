@@ -18,11 +18,11 @@ class PositionModel(Base):
 
     __tablename__ = "positions"
 
+    account_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("accounts.id"), primary_key=True
+    )
     trade_id: Mapped[str] = mapped_column(String, primary_key=True)
     strategy_id: Mapped[str] = mapped_column(String, nullable=False)
-    account_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("accounts.id"), nullable=False
-    )
     leg_a_symbol: Mapped[str] = mapped_column(String, nullable=False)
     leg_a_signed_qty: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     leg_a_entry_mark: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)

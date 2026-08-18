@@ -128,6 +128,8 @@ class IBKRExecutionAdapter:
         ib_order.transmit = True
         ib_order.eTradeOnly = False
         ib_order.firmQuoteOnly = False
+        if order.intent.ibkr_account:
+            ib_order.account = order.intent.ibkr_account
         return ib_order
 
     async def submit_order(self, order: OMSOrder) -> OMSOrder:

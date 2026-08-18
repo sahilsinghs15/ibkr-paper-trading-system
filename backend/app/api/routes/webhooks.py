@@ -113,6 +113,8 @@ async def receive_tradingview_webhook(request: Request) -> dict[str, str]:
                     [o.internal_order_id for o in execution.orders],
                     symbols,
                 )
+                if getattr(execution, "all_rejected", False) and not execution.orders:
+                    return {"status": "rejected_by_rms", "source": "tradingview"}
         except ValueError as val_err:
             logger.warning("Incoming TradingView signal rejected: %s", val_err)
             return {"status": "rejected_by_rms", "source": "tradingview"}

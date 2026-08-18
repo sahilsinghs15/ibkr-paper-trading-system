@@ -3,7 +3,16 @@
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, Numeric, String
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -43,6 +52,17 @@ class AllocationModel(Base):
     target: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     stop: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     time_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     account: Mapped["AccountModel"] = relationship("AccountModel")
     strategy: Mapped[StrategyModel] = relationship("StrategyModel")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id", "strategy_id", name="uq_allocations_account_strategy"
+        ),
+        CheckConstraint(
+            "alloc_pct >= 0 AND alloc_pct <= 1",
+            name="ck_allocations_alloc_pct_range",
+        ),
+    )

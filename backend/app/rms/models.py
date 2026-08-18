@@ -76,8 +76,30 @@ class OrderIntent:
     strategy_id: str
     action: OrderAction
     legs: list[OrderLeg]
-    account_id: str | None = None
+    account_id: int | None = None
+    ibkr_account: str | None = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+def duplicate_lookup_key(intent: OrderIntent) -> tuple:
+    """Account-scoped duplicate key when account_id is present."""
+    if intent.account_id is not None:
+        return (intent.account_id, intent.strategy_id, intent.signal_id)
+    return (intent.strategy_id, intent.signal_id)
+
+
+def open_position_key(intent: OrderIntent) -> str | tuple[int, str]:
+    """Account-scoped open-count key when account_id is present."""
+    if intent.account_id is not None:
+        return (intent.account_id, intent.strategy_id)
+    return intent.strategy_id
+
+
+def exposure_key(intent: OrderIntent, symbol: str) -> str | tuple[int, str]:
+    """Account-scoped symbol exposure key when account_id is present."""
+    if intent.account_id is not None:
+        return (intent.account_id, symbol)
+    return symbol
 
 
 # Generic aliases: execution pipeline operates on List[TradeLeg], not leg_a/leg_b.
@@ -104,20 +126,23 @@ class RMSContext:
     """Simulated state and configuration context provided to RMS for evaluation.
 
     Attributes:
-        processed_signals: Set of processed (strategy_id, signal_id) tuples for duplicate detection.
+        processed_signals: Duplicate keys. Without account_id: (strategy_id, signal_id).
+            With account: (account_id, strategy_id, signal_id).
         strategy_configs: Dictionary mapping strategy_id to StrategyConfig.
-        open_positions: Dictionary mapping strategy_id to current open position count.
-        symbol_exposures: Dictionary mapping symbol to current monetary exposure.
+        open_positions: Counts keyed by strategy_id or (account_id, strategy_id).
+        symbol_exposures: Exposure keyed by symbol or (account_id, symbol).
+        per_symbol_limits: Account-specific (account_id, symbol) money limits.
         current_time: Evaluation reference timestamp.
         rollover_window_days: Days before contract month expiry during which rollover is active.
         target_rollover_month: Optional explicit next contract month string for rollover adjustments.
         rollover_checker: Optional custom callback to evaluate if a contract month is in rollover.
     """
 
-    processed_signals: set[tuple[str, str]] = field(default_factory=set)
+    processed_signals: set[tuple] = field(default_factory=set)
     strategy_configs: dict[str, StrategyConfig] = field(default_factory=dict)
-    open_positions: dict[str, int] = field(default_factory=dict)
-    symbol_exposures: dict[str, Decimal] = field(default_factory=dict)
+    open_positions: dict[str | tuple[int, str], int] = field(default_factory=dict)
+    symbol_exposures: dict[str | tuple[int, str], Decimal] = field(default_factory=dict)
+    per_symbol_limits: dict[tuple[int, str], Decimal] = field(default_factory=dict)
     current_time: datetime = field(default_factory=lambda: datetime.now(UTC))
     rollover_window_days: int = 7
     target_rollover_month: str | None = None

@@ -9,6 +9,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.accounts.context import AccountExecutionContext
+from app.accounts.router import StaticStrategyAccountRouter
 from app.broker.ibkr.tws_client import TWSClient
 from app.db.models import (
     AccountModel,
@@ -107,6 +109,7 @@ async def _seed_allocation(
             target=Decimal("500.00"),
             stop=Decimal("250.00"),
             time_limit=3600,
+            enabled=True,
         )
     )
     await session.flush()
@@ -123,12 +126,33 @@ def _oms() -> OMSService:
     return OMSService(adapter=adapter)
 
 
+def _static_router(account: AccountModel) -> StaticStrategyAccountRouter:
+    return StaticStrategyAccountRouter(
+        [
+            AccountExecutionContext(
+                account_id=account.id,
+                ibkr_account=account.ibkr_account,
+                strategy_id=MODEL_BLUE_STRATEGY_ID,
+                total_margin=account.total_margin,
+                alloc_pct=Decimal(1),
+                committed_notional=account.total_margin,
+                target=Decimal("500.00"),
+                stop=Decimal("250.00"),
+                time_limit=3600,
+                max_open_positions=10,
+            )
+        ]
+    )
+
+
 def _order_manager(
     factory: async_sessionmaker[AsyncSession],
     oms: OMSService,
     *,
     account_id: int,
+    account: AccountModel | None = None,
 ) -> OrderManager:
+    router = _static_router(account) if account is not None else None
     return OrderManager(
         oms=oms,
         order_type="MARKET",
@@ -149,6 +173,7 @@ def _order_manager(
         model_blue_trade_book=DatabaseModelBlueTradeBook(factory, account_id=account_id),
         session_factory=factory,
         persistence=ModelBlueExecutionPersistence(factory, account_id=account_id),
+        account_router=router,
     )
 
 
@@ -162,7 +187,7 @@ async def test_a_open_persistence_survives_new_session(db_factory: async_session
         account = await _seed_allocation(session)
 
     oms = _oms()
-    manager = _order_manager(db_factory, oms, account_id=account.id)
+    manager = _order_manager(db_factory, oms, account_id=account.id, account=account)
     signal = parse_model_blue_payload(payload, timestamp=_TS, reason="test-a")
     result = await manager.process_signal_execution(signal)
     assert result is not None
@@ -193,13 +218,13 @@ async def test_b_close_recovery_after_new_order_manager(db_factory: async_sessio
         account = await _seed_allocation(session)
 
     oms = _oms()
-    opener = _order_manager(db_factory, oms, account_id=account.id)
+    opener = _order_manager(db_factory, oms, account_id=account.id, account=account)
     await opener.process_signal_execution(
         parse_model_blue_payload(payload, timestamp=_TS, reason="test-b-open")
     )
     del opener
 
-    closer = _order_manager(db_factory, oms, account_id=account.id)
+    closer = _order_manager(db_factory, oms, account_id=account.id, account=account)
     await closer.hydrate_runtime_from_db()
     close_signal = parse_model_blue_payload(
         {
@@ -251,7 +276,7 @@ async def test_c_duplicate_signal_survives_restart(db_factory: async_sessionmake
         )
 
     oms = _oms()
-    manager = _order_manager(db_factory, oms, account_id=account.id)
+    manager = _order_manager(db_factory, oms, account_id=account.id, account=account)
     await manager.hydrate_runtime_from_db()
     payload = {**XLE_XOP_OPEN, "trade_id": trade_id}
     with pytest.raises(ValueError, match="DUPLICATE_SIGNAL"):

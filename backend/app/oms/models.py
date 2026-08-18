@@ -135,3 +135,74 @@ class ExecutionResult:
     def __post_init__(self) -> None:
         if not self.orders:
             self.orders = [self.order]
+
+
+@dataclass
+class AccountExecutionOutcome:
+    """Result of evaluating one account for one inbound signal."""
+
+    account_id: int | None
+    ibkr_account: str | None
+    result: ExecutionResult | None
+    error: str | None = None
+
+    @property
+    def success(self) -> bool:
+        return self.result is not None and self.result.success and self.error is None
+
+
+@dataclass
+class FanoutExecutionResult:
+    """One signal evaluated independently for N account contexts.
+
+    ``orders`` concatenates successful account OMS orders so existing callers
+    that read ``result.orders`` keep working for the single-account case.
+    """
+
+    outcomes: list[AccountExecutionOutcome] = field(default_factory=list)
+
+    @property
+    def order(self) -> OMSOrder | None:
+        for outcome in self.outcomes:
+            if outcome.result is not None and outcome.result.orders:
+                return outcome.result.order
+        return None
+
+    @property
+    def orders(self) -> list[OMSOrder]:
+        collected: list[OMSOrder] = []
+        for outcome in self.outcomes:
+            if outcome.result is not None:
+                collected.extend(outcome.result.orders)
+        return collected
+
+    @property
+    def success(self) -> bool:
+        return any(outcome.success for outcome in self.outcomes)
+
+    @property
+    def error_message(self) -> str | None:
+        for outcome in self.outcomes:
+            if outcome.error:
+                return outcome.error
+            if outcome.result is not None and outcome.result.error_message:
+                return outcome.result.error_message
+        return None
+
+    @property
+    def all_rejected(self) -> bool:
+        return bool(self.outcomes) and not self.success
+
+    @classmethod
+    def from_single(cls, result: ExecutionResult) -> "FanoutExecutionResult":
+        intent = result.order.intent
+        return cls(
+            outcomes=[
+                AccountExecutionOutcome(
+                    account_id=intent.account_id,
+                    ibkr_account=intent.ibkr_account,
+                    result=result,
+                )
+            ]
+        )
+
