@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # Env: MODEL_BLUE_COMMITTED_NOTIONAL
     model_blue_committed_notional: Decimal | None = None
 
+    # TEMPORARY paper/client-demo: requested STK executes as IBKR CFD.
+    # Raw TradingView / persisted signal instrument_type stays STK.
+    # Disable with PAPER_EXECUTE_STK_AS_CFD=false.
+    paper_execute_stk_as_cfd: bool = True
+
     @property
     def candle_timeframe_minutes(self) -> int:
         """Parse candle_timeframe string to get the timeframe in minutes."""

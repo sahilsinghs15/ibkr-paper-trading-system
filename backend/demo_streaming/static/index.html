@@ -3,183 +3,574 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
-  <title>Paper positions — live demo</title>
+  <title>Model Blue — live paper</title>
   <style>
     :root {
-      --page: #f4f7fb;
-      --paper: #ffffff;
-      --ink: #172033;
-      --muted: #536178;
-      --line: #dce3ee;
-      --accent: #0957c3;
-      --good: #0f7b4a;
-      --bad: #b42318;
-      --shadow: 0 18px 50px rgba(21, 36, 61, 0.10);
+      --bg: #07080b;
+      --panel: #0c0e13;
+      --panel-2: #10131a;
+      --line: #1c2330;
+      --ink: #d7deea;
+      --muted: #7d8aa0;
+      --dim: #5a6578;
+      --green: #3ecf8e;
+      --green-bg: rgba(62, 207, 142, 0.10);
+      --red: #ef6b73;
+      --red-bg: rgba(239, 107, 115, 0.10);
+      --amber: #e0b34c;
+      --amber-bg: rgba(224, 179, 76, 0.10);
+      --blue: #6ea8ff;
+      --mono: "IBM Plex Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+      --sans: Inter, ui-sans-serif, system-ui, sans-serif;
     }
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--page);
-      color: var(--ink);
-      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-size: 15px;
-      line-height: 1.45;
-    }
+    html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); }
+    body { min-height: 100vh; font-size: 12px; }
     header {
-      padding: 20px 28px 8px;
       display: flex;
+      align-items: center;
       justify-content: space-between;
       gap: 16px;
-      flex-wrap: wrap;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #080a0e;
     }
-    h1 { margin: 0; font-size: 22px; letter-spacing: -0.03em; }
-    .muted { color: var(--muted); }
-    .pills { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-    .pill {
-      border: 1px solid var(--line);
-      background: var(--paper);
-      border-radius: 999px;
-      padding: 4px 10px;
-      font-size: 12px;
+    .brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+    .brand h1 {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
     }
-    .ok { color: var(--good); }
-    .warn { color: var(--bad); }
-    main { padding: 8px 28px 40px; }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      background: var(--paper);
+    .tag {
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      font-weight: 650;
+    }
+    .acct {
+      font-family: var(--mono);
+      color: var(--blue);
+      font-size: 11px;
+    }
+    .status-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .dot {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      font-weight: 650;
+    }
+    .dot i {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--dim);
+      display: inline-block;
+    }
+    .dot.ok { color: var(--green); }
+    .dot.ok i { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .dot.warn { color: var(--amber); }
+    .dot.warn i { background: var(--amber); }
+    .dot.bad { color: var(--red); }
+    .dot.bad i { background: var(--red); }
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      padding: 8px 14px;
+    }
+    .kpi {
+      background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 12px;
+      border-radius: 6px;
+      padding: 8px 10px;
+    }
+    .kpi label {
+      display: block;
+      color: var(--dim);
+      font-size: 9px;
+      letter-spacing: 0.14em;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .kpi .v {
+      font-family: var(--mono);
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+    }
+    .pnl-pos { color: var(--green); }
+    .pnl-neg { color: var(--red); }
+    .pnl-zero { color: var(--muted); }
+    main { padding: 0 14px 18px; }
+    .section-h {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin: 4px 0 6px;
+    }
+    .section-h h2 {
+      margin: 0;
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .board {
+      border: 1px solid var(--line);
+      border-radius: 6px;
       overflow: hidden;
-      box-shadow: var(--shadow);
+      background: var(--panel);
     }
-    th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; font-size: 13px; }
-    th { background: #f2f6fb; font-weight: 650; }
-    tr:last-child td { border-bottom: 0; }
-    h2 { margin: 28px 0 10px; font-size: 16px; }
-    .note {
-      margin: 0 28px 16px;
-      padding: 12px 14px;
-      background: #eef5ff;
-      border-left: 4px solid var(--accent);
-      border-radius: 0 10px 10px 0;
-      color: #243959;
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      text-align: left;
+      font-size: 9px;
+      letter-spacing: 0.12em;
+      color: var(--dim);
+      font-weight: 700;
+      padding: 6px 8px;
+      background: var(--panel-2);
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
     }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --page: #090f1a;
-        --paper: #111a29;
-        --ink: #edf3fb;
-        --muted: #aebbd0;
-        --line: #2c3950;
-        --accent: #7db5ff;
-        --shadow: none;
-      }
-      th { background: #172235; }
-      .note { background: #172a45; color: #dbeafe; }
+    .trade {
+      border-top: 1px solid var(--line);
+    }
+    .trade:first-child { border-top: 0; }
+    .trade-head td {
+      padding: 7px 8px 2px;
+      vertical-align: middle;
+      background: #0b0d12;
+    }
+    .leg td {
+      padding: 3px 8px 6px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--ink);
+      vertical-align: top;
+    }
+    .sym { font-weight: 700; color: #eef3fb; }
+    .muted { color: var(--muted); }
+    .dim { color: var(--dim); }
+    .badge {
+      display: inline-block;
+      font-family: var(--sans);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      padding: 2px 6px;
+      border-radius: 3px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+    }
+    .b-open, .b-filled { color: var(--green); background: var(--green-bg); border-color: rgba(62,207,142,.28); }
+    .b-exec, .b-partial, .b-closing { color: var(--amber); background: var(--amber-bg); border-color: rgba(224,179,76,.28); }
+    .b-closed { color: var(--muted); }
+    .b-rej, .b-crit { color: var(--red); background: var(--red-bg); border-color: rgba(239,107,115,.28); }
+    .b-comp { color: var(--amber); background: var(--amber-bg); }
+    .empty {
+      padding: 18px 10px;
+      text-align: center;
+      color: var(--dim);
+      letter-spacing: 0.08em;
+      font-size: 11px;
+    }
+    .tid { font-family: var(--mono); font-size: 11px; color: var(--ink); }
+    .right { text-align: right; }
+    .tz-box {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .tz-clock {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--ink);
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+    .tz-clock span { color: var(--muted); margin-left: 6px; }
+    .tz-toggle {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      overflow: hidden;
+      background: var(--panel-2);
+    }
+    .tz-toggle button {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-family: var(--sans);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      padding: 5px 8px;
+      cursor: pointer;
+    }
+    .tz-toggle button.on {
+      background: #182033;
+      color: var(--blue);
+    }
+    @media (max-width: 980px) {
+      .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .hide-sm { display: none; }
     }
   </style>
 </head>
 <body>
   <header>
-    <div>
-      <h1>Executed positions (demo stream)</h1>
-      <p class="muted">Read-only. Source: existing PostgreSQL positions + Redis Stream <code>positions:stream</code>.</p>
+    <div class="brand">
+      <h1 id="strategyLabel">MODEL BLUE</h1>
+      <span class="tag">LIVE PAPER</span>
+      <span class="acct" id="accountLabel">—</span>
     </div>
-    <div class="pills">
-      <span class="pill" id="conn">connection: connecting</span>
-      <span class="pill" id="md">market-data: UNAVAILABLE</span>
-      <span class="pill" id="updated">last update: —</span>
+    <div class="status-row">
+      <span class="dot ok" id="paperDot"><i></i>PAPER</span>
+      <span class="dot warn" id="streamDot"><i></i>STREAM</span>
+      <span class="dot dim" id="lastDot"><i></i>LAST UPDATE —</span>
+      <div class="tz-box">
+        <span class="tz-clock" id="tzClock">—</span>
+        <div class="tz-toggle" role="group" aria-label="Display timezone">
+          <button type="button" id="tzNy" data-tz="America/New_York">NY</button>
+          <button type="button" id="tzIn" data-tz="Asia/Kolkata">IN</button>
+        </div>
+      </div>
     </div>
   </header>
-  <p class="note">CFD instrument_type is preserved. Last/mark prices are shown only when the existing application has them; otherwise market-data status is UNAVAILABLE. This page never talks to Redis or IBKR directly.</p>
+  <section class="kpis">
+    <article class="kpi"><label>OPEN POSITIONS</label><div class="v" id="kpiOpen">0</div></article>
+    <article class="kpi"><label>OPEN P&amp;L</label><div class="v pnl-zero" id="kpiU">—</div></article>
+    <article class="kpi"><label>REALIZED P&amp;L</label><div class="v pnl-zero" id="kpiR">—</div></article>
+    <article class="kpi"><label>ACTIVE TRADES</label><div class="v" id="kpiTrades">0</div></article>
+  </section>
   <main>
-    <h2>Active</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Account</th>
-          <th>Trade</th>
-          <th>Position</th>
-          <th>Execution</th>
-          <th>P&amp;L</th>
-        </tr>
-      </thead>
-      <tbody id="active"></tbody>
-    </table>
-    <h2>Recently closed</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Account</th>
-          <th>Trade</th>
-          <th>Position</th>
-          <th>Final P&amp;L</th>
-        </tr>
-      </thead>
-      <tbody id="closed"></tbody>
-    </table>
+    <div class="section-h"><h2>POSITIONS</h2><span class="muted" id="streamHint">STREAM ● —</span></div>
+    <div class="board">
+      <table>
+        <thead>
+          <tr>
+            <th>STATUS</th>
+            <th id="timeCol">TIME</th>
+            <th>TRADE ID</th>
+            <th>ACCOUNT</th>
+            <th>SYMBOL</th>
+            <th>INSTRUMENT</th>
+            <th>SIDE</th>
+            <th class="right">QTY</th>
+            <th class="right">ENTRY</th>
+            <th class="right">MARK</th>
+            <th class="right">UNREALIZED</th>
+            <th class="right">REALIZED</th>
+            <th>BASKET</th>
+            <th>BROKER</th>
+          </tr>
+        </thead>
+        <tbody id="active"></tbody>
+      </table>
+    </div>
+    <div class="section-h" style="margin-top:14px"><h2>RECENTLY CLOSED</h2></div>
+    <div class="board">
+      <table>
+        <thead>
+          <tr>
+            <th>TRADE ID</th>
+            <th>PAIR</th>
+            <th>ACCOUNT</th>
+            <th id="closeTimeCol">CLOSE TIME</th>
+            <th class="right">REALIZED P&amp;L</th>
+            <th class="right">COMMISSION</th>
+            <th>STATUS</th>
+          </tr>
+        </thead>
+        <tbody id="closed"></tbody>
+      </table>
+    </div>
   </main>
   <script>
+    const TZ_NY = "America/New_York";
+    const TZ_IN = "Asia/Kolkata";
+    const TZ_STORAGE = "modelBlue.displayTimezone";
     const active = new Map();
     const closed = new Map();
-    const connEl = document.getElementById("conn");
-    const mdEl = document.getElementById("md");
-    const updatedEl = document.getElementById("updated");
     let source = null;
+    let lastTs = null;
+    let streamState = "CONNECTING";
+    let displayTz = TZ_NY;
+
+    function loadTimezone() {
+      try {
+        const saved = localStorage.getItem(TZ_STORAGE);
+        if (saved === TZ_NY || saved === TZ_IN) return saved;
+      } catch (_err) { /* ignore */ }
+      return TZ_NY;
+    }
+    function saveTimezone(tz) {
+      try { localStorage.setItem(TZ_STORAGE, tz); } catch (_err) { /* ignore */ }
+    }
+    function tzShortLabel(tz) {
+      return tz === TZ_IN ? "IST" : "ET";
+    }
+    function tzLongLabel(tz) {
+      return tz === TZ_IN ? "India / IST" : "New York / ET";
+    }
+    function formatInTz(date, tz) {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: tz,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+        timeZoneName: "short",
+      }).formatToParts(date);
+      const get = (type) => (parts.find((p) => p.type === type) || {}).value || "";
+      return {
+        date: `${get("year")}-${get("month")}-${get("day")}`,
+        time: `${get("hour")}:${get("minute")}:${get("second")}`,
+        zone: get("timeZoneName") || tzShortLabel(tz),
+      };
+    }
 
     function keyOf(row) {
       return [row.account_id, row.trade_id, row.symbol].join("|");
     }
+    function tradeKey(row) {
+      return [row.account_id, row.trade_id].join("|");
+    }
+    function esc(v) {
+      return String(v ?? "").replace(/[&<>"'`]/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "`": "&#96;"
+      }[c]));
+    }
+    function displayInstrument(v) {
+      const raw = String(v || "").trim().toUpperCase();
+      if (!raw) return "—";
+      // Paper demo executes requested STK as IBKR CFD; dashboard shows execution type.
+      if (raw === "STK") return "CFD";
+      return raw;
+    }
+    function blank(v) {
+      if (v === null || v === undefined || v === "") return "—";
+      return String(v);
+    }
+    function num(v) {
+      if (v === null || v === undefined || v === "") return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    }
+    function fmtNum(v, digits) {
+      const n = num(v);
+      if (n === null) return "—";
+      return n.toLocaleString("en-US", { maximumFractionDigits: digits, minimumFractionDigits: 0 });
+    }
+    function fmtPnl(v) {
+      const n = num(v);
+      if (n === null) return "—";
+      const abs = Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 4 });
+      if (n > 0) return "+" + abs;
+      if (n < 0) return "−" + abs;
+      return "0";
+    }
+    function pnlClass(v) {
+      const n = num(v);
+      if (n === null || n === 0) return "pnl-zero";
+      return n > 0 ? "pnl-pos" : "pnl-neg";
+    }
+    function fmtTime(iso, { withZone } = {}) {
+      if (!iso) return "—";
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return "—";
+      const parts = formatInTz(d, displayTz);
+      const stamp = `${parts.date} ${parts.time}`;
+      return withZone ? `${stamp} ${tzShortLabel(displayTz)}` : stamp;
+    }
+    function tickClock() {
+      const parts = formatInTz(new Date(), displayTz);
+      const el = document.getElementById("tzClock");
+      if (el) el.innerHTML = `${esc(parts.time)} <span>${esc(tzLongLabel(displayTz))}</span>`;
+    }
+    function syncTzButtons() {
+      document.getElementById("tzNy").classList.toggle("on", displayTz === TZ_NY);
+      document.getElementById("tzIn").classList.toggle("on", displayTz === TZ_IN);
+      document.getElementById("timeCol").textContent = "TIME · " + tzShortLabel(displayTz);
+      document.getElementById("closeTimeCol").textContent = "CLOSE TIME · " + tzShortLabel(displayTz);
+    }
+    function setTimezone(tz) {
+      displayTz = tz === TZ_IN ? TZ_IN : TZ_NY;
+      saveTimezone(displayTz);
+      syncTzButtons();
+      tickClock();
+      render();
+    }
+    function badgeClass(label) {
+      const v = String(label || "").toUpperCase();
+      if (v === "OPEN" || v === "FILLED") return "b-open";
+      if (v === "EXECUTING" || v === "PARTIALLY_FILLED" || v === "CLOSING" || v === "UNWINDING") return "b-exec";
+      if (v === "CLOSED") return "b-closed";
+      if (v === "COMPENSATED") return "b-comp";
+      if (v === "REJECTED" || v === "CRITICAL" || v === "ERROR") return "b-rej";
+      return "";
+    }
+    function statusLabel(row) {
+      const event = String(row.event || "").toUpperCase();
+      if (event === "POSITION_PARTIAL_CLOSE" || row.close_in_progress) return "CLOSING";
+      const basket = String(row.basket_state || "").toUpperCase();
+      if (["EXECUTING", "UNWINDING", "COMPENSATED", "CRITICAL"].includes(basket)) return basket;
+      const order = String(row.order_status || "").toUpperCase();
+      if (["PARTIALLY_FILLED", "REJECTED", "ERROR"].includes(order)) return order;
+      return String(row.status || row.position_state || "—").toUpperCase();
+    }
+    function markOf(row) {
+      const mark = blank(row.mark_price);
+      if (mark !== "—") return mark;
+      const last = blank(row.last_price);
+      if (last !== "—") return last;
+      return "—";
+    }
 
-    function dash(v) { return (v === null || v === undefined || v === "") ? "—" : v; }
+    function group(map) {
+      const out = new Map();
+      for (const row of map.values()) {
+        const k = tradeKey(row);
+        if (!out.has(k)) out.set(k, []);
+        out.get(k).push(row);
+      }
+      for (const legs of out.values()) {
+        legs.sort((a, b) => String(a.symbol || "").localeCompare(String(b.symbol || "")));
+      }
+      return out;
+    }
 
-    function accountCell(row) {
-      return `<div><strong>${dash(row.account_name)}</strong><div class="muted">${dash(row.ibkr_account)} · id ${dash(row.account_id)}</div><div class="muted">${dash(row.strategy_id)}</div></div>`;
+    function setDot(el, cls, text) {
+      el.className = "dot " + cls;
+      el.innerHTML = "<i></i>" + esc(text);
     }
-    function tradeCell(row) {
-      return `<div><code>${dash(row.trade_id)}</code><div class="muted">basket ${dash(row.basket_state)}</div><div class="muted">position ${dash(row.position_state || row.status)}</div></div>`;
+
+    function refreshHeader() {
+      const rows = [...active.values(), ...closed.values()];
+      const strategies = [...new Set(rows.map((r) => r.strategy_id).filter(Boolean))];
+      const accounts = [...new Set(rows.map((r) => r.ibkr_account).filter(Boolean))];
+      document.getElementById("strategyLabel").textContent = (strategies[0] || "model_blue").toUpperCase().replaceAll("_", " ");
+      document.getElementById("accountLabel").textContent = accounts[0] || "—";
+      const streamEl = document.getElementById("streamDot");
+      if (streamState === "LIVE") setDot(streamEl, "ok", "STREAM LIVE");
+      else if (streamState === "RECONNECTING") setDot(streamEl, "warn", "STREAM RECONNECTING");
+      else setDot(streamEl, "warn", "STREAM CONNECTING");
+      document.getElementById("lastDot").innerHTML = "<i></i>LAST UPDATE " + (lastTs ? fmtTime(lastTs, { withZone: true }) : "—");
+      document.getElementById("streamHint").textContent = streamState === "LIVE" ? "STREAM ● LIVE" : "STREAM ● " + streamState;
     }
-    function posCell(row) {
-      return `<div><strong>${dash(row.symbol)}</strong> ${dash(row.instrument_type)} ${dash(row.side)}<div class="muted">qty ${dash(row.quantity)} filled ${dash(row.filled_quantity)}</div><div class="muted">entry ${dash(row.entry_price)} mark ${dash(row.mark_price || row.last_price)}</div></div>`;
-    }
-    function execCell(row) {
-      return `<div>${dash(row.order_status)}<div class="muted">broker ${dash(row.broker_order_id)}</div><div class="muted">fill ${dash(row.fill_timestamp)}</div></div>`;
-    }
-    function pnlCell(row) {
-      return `<div>u ${dash(row.unrealized_pnl)}<div class="muted">r ${dash(row.realized_pnl)}</div><div class="muted">comm ${dash(row.commission)}</div></div>`;
+
+    function refreshKpis() {
+      const trades = group(active);
+      document.getElementById("kpiOpen").textContent = String(trades.size);
+      document.getElementById("kpiTrades").textContent = String(trades.size);
+      let u = 0;
+      let r = 0;
+      let uAny = false;
+      let rAny = false;
+      for (const legs of trades.values()) {
+        const row = legs[0];
+        const uv = num(row.unrealized_pnl);
+        const rv = num(row.realized_pnl);
+        if (uv !== null) { u += uv; uAny = true; }
+        if (rv !== null) { r += rv; rAny = true; }
+      }
+      const uEl = document.getElementById("kpiU");
+      const rEl = document.getElementById("kpiR");
+      uEl.textContent = uAny ? fmtPnl(u) : "—";
+      rEl.textContent = rAny ? fmtPnl(r) : "—";
+      uEl.className = "v " + (uAny ? pnlClass(u) : "pnl-zero");
+      rEl.className = "v " + (rAny ? pnlClass(r) : "pnl-zero");
     }
 
     function render() {
       const a = document.getElementById("active");
       const c = document.getElementById("closed");
-      a.innerHTML = "";
-      c.innerHTML = "";
-      for (const row of active.values()) {
-        a.insertAdjacentHTML("beforeend", `<tr><td>${accountCell(row)}</td><td>${tradeCell(row)}</td><td>${posCell(row)}</td><td>${execCell(row)}</td><td>${pnlCell(row)}</td></tr>`);
+      const trades = [...group(active).values()];
+      if (!trades.length) {
+        a.innerHTML = `<tr><td colspan="14" class="empty">No open positions in snapshot/stream.</td></tr>`;
+      } else {
+        a.innerHTML = trades.map((legs) => {
+          const head = legs[0];
+          const st = statusLabel(head);
+          const pair = legs.map((x) => x.symbol).filter(Boolean).join(" / ");
+          const headRow = `<tr class="trade-head">
+            <td><span class="badge ${badgeClass(st)}">${esc(st)}</span></td>
+            <td class="muted">${esc(fmtTime(head.timestamp || head.fill_timestamp))}</td>
+            <td class="tid" colspan="2">${esc(blank(head.trade_id))}<div class="dim">${esc(blank(head.ibkr_account))} · ${esc(blank(head.strategy_id))}</div></td>
+            <td colspan="10" class="muted">${esc(pair)}</td>
+          </tr>`;
+          const legRows = legs.map((row) => `<tr class="leg">
+            <td></td>
+            <td class="dim">${esc(fmtTime(row.fill_timestamp || row.timestamp))}</td>
+            <td class="dim">${esc(blank(row.broker_order_id))}</td>
+            <td class="dim">${esc(blank(row.ibkr_account))}</td>
+            <td class="sym">${esc(blank(row.symbol))}</td>
+            <td>${esc(displayInstrument(row.instrument_type))}</td>
+            <td>${esc(blank(row.side))}</td>
+            <td class="right">${esc(fmtNum(row.filled_quantity ?? row.quantity, 4))}</td>
+            <td class="right">${esc(fmtNum(row.entry_price, 8))}</td>
+            <td class="right">${esc(markOf(row) === "—" ? "—" : fmtNum(markOf(row), 8))}</td>
+            <td class="right ${pnlClass(row.unrealized_pnl)}">${esc(fmtPnl(row.unrealized_pnl))}</td>
+            <td class="right ${pnlClass(row.realized_pnl)}">${esc(fmtPnl(row.realized_pnl))}</td>
+            <td><span class="badge ${badgeClass(row.basket_state)}">${esc(blank(row.basket_state))}</span></td>
+            <td><span class="badge ${badgeClass(row.order_status)}">${esc(blank(row.order_status))}</span></td>
+          </tr>`).join("");
+          return headRow + legRows;
+        }).join("");
       }
-      for (const row of closed.values()) {
-        c.insertAdjacentHTML("beforeend", `<tr><td>${accountCell(row)}</td><td>${tradeCell(row)}</td><td>${posCell(row)}</td><td>${pnlCell(row)}</td></tr>`);
+      const closedTrades = [...group(closed).values()];
+      if (!closedTrades.length) {
+        c.innerHTML = `<tr><td colspan="7" class="empty">No closed events this session.</td></tr>`;
+      } else {
+        c.innerHTML = closedTrades.map((legs) => {
+          const head = legs[0];
+          const pair = legs.map((x) => x.symbol).filter(Boolean).join(" / ");
+          return `<tr class="leg">
+            <td class="tid">${esc(blank(head.trade_id))}</td>
+            <td>${esc(pair || "—")}</td>
+            <td>${esc(blank(head.ibkr_account))}</td>
+            <td>${esc(fmtTime(head.timestamp || head.fill_timestamp))}</td>
+            <td class="right ${pnlClass(head.realized_pnl)}">${esc(fmtPnl(head.realized_pnl))}</td>
+            <td class="right">${esc(fmtNum(head.commission, 8))}</td>
+            <td><span class="badge b-closed">CLOSED</span></td>
+          </tr>`;
+        }).join("");
       }
-      if (!active.size) a.innerHTML = `<tr><td colspan="5" class="muted">No open positions in snapshot/stream.</td></tr>`;
-      if (!closed.size) c.innerHTML = `<tr><td colspan="4" class="muted">No closed events this session.</td></tr>`;
+      refreshKpis();
+      refreshHeader();
     }
 
     function apply(row) {
-      if (!row || !row.symbol) return;
-      const key = keyOf(row);
-      const event = row.event;
-      mdEl.textContent = "market-data: " + (row.market_data_status || "UNAVAILABLE");
-      if (row.market_data_status === "UNAVAILABLE") mdEl.className = "pill warn";
-      else mdEl.className = "pill ok";
-      updatedEl.textContent = "last update: " + (row.timestamp || new Date().toISOString());
-      if (event === "POSITION_CLOSED" || row.status === "CLOSED") {
-        const finalRow = Object.assign({}, active.get(key) || {}, row);
+      if (!row || row.event === "hello" || row.event === "stream_error") {
+        refreshHeader();
+        return;
+      }
+      if (!row.symbol && !row.trade_id) return;
+      if (row.timestamp) lastTs = row.timestamp;
+      const key = row.symbol ? keyOf(row) : tradeKey(row);
+      const event = String(row.event || "").toUpperCase();
+      if (event === "POSITION_CLOSED" || String(row.status || "").toUpperCase() === "CLOSED") {
+        const merged = Object.assign({}, active.get(key) || {}, row);
         active.delete(key);
-        closed.set(key, finalRow);
-      } else {
+        if (row.symbol) closed.set(key, merged);
+        else {
+          for (const [k, v] of [...active.entries()]) {
+            if (String(v.account_id) === String(row.account_id) && v.trade_id === row.trade_id) {
+              active.delete(k);
+              closed.set(k, Object.assign({}, v, row));
+            }
+          }
+        }
+      } else if (row.symbol) {
         closed.delete(key);
         active.set(key, Object.assign({}, active.get(key) || {}, row));
       }
@@ -189,7 +580,6 @@
     async function loadSnapshot() {
       const res = await fetch("/demo/positions", { cache: "no-store" });
       const data = await res.json();
-      mdEl.textContent = "market-data: " + (data.market_data_status || "UNAVAILABLE");
       active.clear();
       for (const row of data.positions || []) apply(row);
       render();
@@ -197,17 +587,19 @@
 
     function connect() {
       if (source) source.close();
+      streamState = "CONNECTING";
+      refreshHeader();
       source = new EventSource("/demo/stream");
       source.onopen = () => {
-        connEl.textContent = "connection: live";
-        connEl.className = "pill ok";
+        streamState = "LIVE";
+        refreshHeader();
       };
       source.onmessage = (ev) => {
         try { apply(JSON.parse(ev.data)); } catch (err) { console.warn(err); }
       };
       source.onerror = () => {
-        connEl.textContent = "connection: reconnecting";
-        connEl.className = "pill warn";
+        streamState = "RECONNECTING";
+        refreshHeader();
         source.close();
         setTimeout(async () => {
           try { await loadSnapshot(); } catch (err) { console.warn(err); }
@@ -216,6 +608,12 @@
       };
     }
 
+    displayTz = loadTimezone();
+    document.getElementById("tzNy").addEventListener("click", () => setTimezone(TZ_NY));
+    document.getElementById("tzIn").addEventListener("click", () => setTimezone(TZ_IN));
+    syncTzButtons();
+    tickClock();
+    setInterval(tickClock, 1000);
     loadSnapshot().then(connect).catch(() => connect());
   </script>
 </body>

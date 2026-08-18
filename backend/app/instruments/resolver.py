@@ -1,24 +1,35 @@
 """Map requested signal instrument_type + optional master row to an IBKR contract.
 
 Explicit IBKR secType policy (requested → IBKR):
-    STK → STK
+    STK → STK   (unless temporary paper demo override maps STK → CFD)
     ETF → STK   (cash ETF is STK at IBKR; not a silent product change to CFD)
-    CFD → CFD   (requires instruments master row with matching sec_type + valid trade_conid)
+    CFD → CFD   (non-demo: requires instruments master row + trade_conid)
 
-Never falls back CFD → STK. Never invents conId.
+Temporary STK_TO_CFD_DEMO path: symbol + secType=CFD + SMART/USD defaults.
+Does not require an instruments row and does not invent conId.
+
+Never falls back CFD → STK.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from decimal import ROUND_DOWN, Decimal
 from typing import Protocol, Sequence
 
+from app.instruments.execution_override import (
+    STK_TO_CFD_DEMO,
+    execution_instrument_type,
+    paper_execute_stk_as_cfd_enabled,
+)
 from app.instruments.models import (
     InstrumentRecord,
     InstrumentResolutionError,
     ResolvedInstrument,
 )
+
+logger = logging.getLogger(__name__)
 
 # Requested payload type → IBKR Contract.secType
 _EXPLICIT_SEC_TYPE: dict[str, str] = {
@@ -124,6 +135,7 @@ def resolve_leg(
     currency: str | None = None,
     con_id: int | None = None,
     catalog: InstrumentCatalog | None = None,
+    apply_demo_override: bool | None = None,
 ) -> ResolvedInstrument:
     """Resolve one leg. ``instrument_type`` is the signal's requested product."""
     symbol_clean = (symbol or "").strip()
@@ -131,35 +143,73 @@ def resolve_leg(
         raise InstrumentResolutionError("MISSING_SYMBOL: cannot resolve a contract without a symbol.")
 
     requested = (instrument_type or "").strip()
-    sec_type = ibkr_sec_type(requested)
-    catalog = catalog or EmptyInstrumentCatalog()
-    matches = list(catalog.find_all(symbol_clean, sec_type))
-    if len(matches) > 1:
-        raise InstrumentResolutionError(
-            f"AMBIGUOUS_INSTRUMENT: {len(matches)} instruments rows for "
-            f"{symbol_clean}/{sec_type}."
-        )
-    record = matches[0] if matches else None
+    demo_on = (
+        paper_execute_stk_as_cfd_enabled()
+        if apply_demo_override is None
+        else apply_demo_override
+    )
+    execution_type, override = execution_instrument_type(
+        requested, enabled=demo_on
+    )
+    sec_type = ibkr_sec_type(execution_type)
 
-    if sec_type in _TYPES_REQUIRING_MASTER:
-        return _resolve_cfd(
+    if demo_on and sec_type == "CFD":
+        if requested.upper() == "STK" and override != STK_TO_CFD_DEMO:
+            raise InstrumentResolutionError(
+                "STK_TO_CFD_DEMO: requested STK did not map to CFD; "
+                "refusing to submit an STK contract."
+            )
+        resolved = _resolve_demo_cfd(
             symbol=symbol_clean,
             requested=requested,
-            sec_type=sec_type,
             market=market,
             currency=currency,
             con_id=con_id,
-            record=record,
         )
-    return _resolve_stk(
-        symbol=symbol_clean,
-        requested=requested,
-        sec_type=sec_type,
-        market=market,
-        currency=currency,
-        con_id=con_id,
-        record=record,
+        if resolved.sec_type != "CFD":
+            raise InstrumentResolutionError(
+                "STK_TO_CFD_DEMO: resolved sec_type is not CFD; "
+                "refusing to submit an STK contract."
+            )
+    else:
+        catalog = catalog or EmptyInstrumentCatalog()
+        matches = list(catalog.find_all(symbol_clean, sec_type))
+        if len(matches) > 1:
+            raise InstrumentResolutionError(
+                f"AMBIGUOUS_INSTRUMENT: {len(matches)} instruments rows for "
+                f"{symbol_clean}/{sec_type}."
+            )
+        record = matches[0] if matches else None
+
+        if sec_type in _TYPES_REQUIRING_MASTER:
+            resolved = _resolve_cfd(
+                symbol=symbol_clean,
+                requested=requested,
+                sec_type=sec_type,
+                market=market,
+                currency=currency,
+                con_id=con_id,
+                record=record,
+            )
+        else:
+            resolved = _resolve_stk(
+                symbol=symbol_clean,
+                requested=requested,
+                sec_type=sec_type,
+                market=market,
+                currency=currency,
+                con_id=con_id,
+                record=record,
+            )
+    logger.info(
+        "Model Blue instrument resolution: symbol=%s requested_type=%s "
+        "resolved_type=%s override=%s",
+        resolved.symbol,
+        resolved.requested_instrument_type,
+        resolved.sec_type,
+        override or "none",
     )
+    return resolved
 
 
 def _resolve_stk(
@@ -196,6 +246,36 @@ def _resolve_stk(
         multiplier=multiplier if multiplier is not None else Decimal(1),
         primary_exchange=(primary or None),
         size_increment=record.size_increment if record is not None else None,
+    )
+
+
+def _resolve_demo_cfd(
+    *,
+    symbol: str,
+    requested: str,
+    market: str | None,
+    currency: str | None,
+    con_id: int | None,
+) -> ResolvedInstrument:
+    """Temporary paper path: IBKR CFD from symbol + secType, no catalog/conId."""
+    exchange = (market or "").strip() or _DEFAULT_STK_EXCHANGE
+    ccy = (currency or "").strip() or _DEFAULT_STK_CURRENCY
+    if not exchange or not ccy:
+        raise InstrumentResolutionError(
+            f"INSTRUMENT_RESOLUTION_FAILED: CFD {symbol} needs exchange and currency; "
+            "refusing to submit an STK contract."
+        )
+    return ResolvedInstrument(
+        symbol=symbol,
+        requested_instrument_type=requested.upper(),
+        sec_type="CFD",
+        exchange=exchange,
+        currency=ccy,
+        con_id=_optional_con_id(con_id),
+        market_data_con_id=None,
+        multiplier=Decimal(1),
+        primary_exchange=None,
+        size_increment=None,
     )
 
 
@@ -261,7 +341,12 @@ def _require_con_id(raw: int | None, symbol: str) -> int:
     return value
 
 
-def attach_resolved(intent, catalog: InstrumentCatalog | None = None):
+def attach_resolved(
+    intent,
+    catalog: InstrumentCatalog | None = None,
+    *,
+    apply_demo_override: bool | None = None,
+):
     """Resolve every leg or raise. Does not submit. Used before basket/OMS."""
     from app.rms.models import OrderIntent, OrderLeg
 
@@ -278,6 +363,7 @@ def attach_resolved(intent, catalog: InstrumentCatalog | None = None):
                 currency=leg.currency,
                 con_id=leg.con_id,
                 catalog=catalog,
+                apply_demo_override=apply_demo_override,
             )
             qty = Decimal(str(leg.quantity))
             increment = resolved.size_increment

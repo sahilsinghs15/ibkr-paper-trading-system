@@ -86,7 +86,8 @@ def _open_trade_from_fills(
         resolved = getattr(order, "resolved", None)
         itype = None
         if resolved is not None:
-            itype = resolved.requested_instrument_type
+            # Persist the executed IBKR product, not the TradingView requested type.
+            itype = resolved.sec_type
         elif order.leg_index is not None and order.intent.legs:
             if 0 <= order.leg_index < len(order.intent.legs):
                 itype = order.intent.legs[order.leg_index].instrument_type

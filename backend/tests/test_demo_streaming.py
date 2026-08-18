@@ -127,3 +127,20 @@ async def test_bridge_does_not_replay_baseline_then_emits_close() -> None:
     assert emitted
     assert emitted[0]["event"] == "POSITION_CLOSED"
     assert emitted[0]["instrument_type"] == "CFD"
+
+
+def test_demo_ui_timezone_and_no_market_data_warning() -> None:
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[1] / "demo_streaming" / "static" / "index.html").read_text()
+    assert "America/New_York" in html
+    assert "Asia/Kolkata" in html
+    assert "modelBlue.displayTimezone" in html
+    assert "id=\"tzNy\"" in html
+    assert "id=\"tzIn\"" in html
+    assert "MARKET DATA" not in html
+    assert "mdDot" not in html
+    assert "PAPER" in html
+    assert "streamDot" in html
+    assert "if (raw === \"STK\") return \"CFD\"" in html
+

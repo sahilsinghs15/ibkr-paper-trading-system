@@ -733,6 +733,7 @@ class OrderManager:
         self, intent: OrderIntent, *, signal_pk: int | None = None
     ) -> OrderIntent:
         from app.db.repositories.instrument_repository import SnapshotInstrumentCatalog
+        from app.instruments.execution_override import execution_instrument_type
         from app.instruments.models import InstrumentResolutionError
         from app.instruments.resolver import attach_resolved, ibkr_sec_type
 
@@ -741,7 +742,10 @@ class OrderManager:
         if catalog is not None:
             for leg in intent.legs:
                 try:
-                    sec = ibkr_sec_type(leg.instrument_type)
+                    execution_type, _override = execution_instrument_type(
+                        leg.instrument_type
+                    )
+                    sec = ibkr_sec_type(execution_type)
                 except InstrumentResolutionError:
                     continue
                 finder = getattr(catalog, "find_all_async", None)
@@ -770,15 +774,32 @@ class OrderManager:
     ) -> None:
         if self._session_factory is None:
             return
+        from app.instruments.execution_override import execution_instrument_type
+
         legs = []
         for index, leg in enumerate(intent.legs):
             resolved = getattr(leg, "resolved", None)
+            requested = getattr(
+                resolved, "requested_instrument_type", None
+            ) or leg.instrument_type
+            resolved_type = getattr(resolved, "sec_type", None)
+            _exec, override = execution_instrument_type(requested)
+            logger.info(
+                "Model Blue instrument resolution: symbol=%s requested_type=%s "
+                "resolved_type=%s override=%s",
+                leg.symbol,
+                requested,
+                resolved_type,
+                override or "none",
+            )
             legs.append(
                 {
                     "index": index,
                     "symbol": leg.symbol,
-                    "requested_instrument_type": leg.instrument_type,
-                    "sec_type": getattr(resolved, "sec_type", None),
+                    "requested_instrument_type": requested,
+                    "resolved_instrument_type": resolved_type,
+                    "sec_type": resolved_type,
+                    "override": override,
                     "con_id": getattr(resolved, "con_id", None),
                     "exchange": getattr(resolved, "exchange", None),
                     "quantity": str(leg.quantity),
