@@ -4,14 +4,13 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from app.models.signal import Signal, SignalType
 from app.schemas.webhook import TradingViewWebhookResponse
+from app.services.strategies.inbound import parse_tradingview_payload
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +19,6 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 WEBHOOK_CAPTURE_DIR = (
     Path(__file__).resolve().parents[3] / "data" / "tradingview_webhooks"
 )
-
-
-def _extract_decimal(val: Any, default: Decimal = Decimal(0)) -> Decimal:
-    """Safely extract a Decimal value from payload data."""
-    if val is None:
-        return default
-    try:
-        return Decimal(str(val))
-    except (InvalidOperation, ValueError, TypeError):
-        return default
 
 
 @router.post(
@@ -93,100 +82,48 @@ async def receive_tradingview_webhook(request: Request) -> dict[str, str]:
         payload,
     )
 
-    # Signal field extraction
-    strategy_id = str(
-        payload.get("strategy")
-        or payload.get("strategy_id")
-        or "default_strategy"
-    )
-    raw_signal_id = (
-        payload.get("signal_id")
-        or payload.get("trade_id")
-        or request_id
-    )
-    signal_id = str(raw_signal_id)
-
-    action = str(
-        payload.get("action")
-        or payload.get("signal_type")
-        or "OPEN"
-    ).upper()
-    pair = str(
-        payload.get("pair")
-        or payload.get("ticker")
-        or payload.get("symbol")
-        or "N/A"
-    )
-    side = str(
-        payload.get("side")
-        or payload.get("direction")
-        or "BUY"
-    ).upper()
-
-    ref_price_a = _extract_decimal(
-        payload.get("ref_price_a", payload.get("price"))
-    )
-    raw_price_b = payload.get("ref_price_b")
-    ref_price_b = (
-        _extract_decimal(raw_price_b) if raw_price_b is not None else None
-    )
-
-    raw_qty = payload.get("quantity") or payload.get("qty") or payload.get("position_size")
-    quantity: int | None = None
-    if raw_qty is not None:
-        try:
-            quantity = int(float(str(raw_qty)))
-        except (ValueError, TypeError):
-            quantity = None
-
-    # Map payload to domain Signal model
-    sig_type_str = str(payload.get("action") or payload.get("signal_type") or "BUY").upper()
-    if sig_type_str in ("HOLD",):
-        sig_type = SignalType.HOLD
-    elif sig_type_str in ("SELL", "SHORT", "CLOSE"):
-        sig_type = SignalType.SELL
-    else:
-        sig_type = SignalType.BUY
-
-    domain_signal = Signal(
-        signal_type=sig_type,
-        timestamp=utc_now,
-        reason=f"TradingView webhook request_id={request_id}",
-        signal_id=signal_id,
-        strategy_id=strategy_id,
-        action=action,
-        symbol=pair if pair != "N/A" else None,
-        side=side,
-        price=ref_price_a if ref_price_a > 0 else None,
-        quantity=quantity,
-        raw_payload=capture_data,
-    )
-
-    # Process signal through OrderManager -> RMS -> OMS pipeline
     order_manager = getattr(request.app.state, "order_manager", None)
+    try:
+        if order_manager is not None:
+            domain_signal = order_manager.parse_inbound_payload(
+                payload,
+                timestamp=utc_now,
+                request_id=request_id,
+                capture_data=capture_data,
+            )
+        else:
+            domain_signal = parse_tradingview_payload(
+                payload,
+                timestamp=utc_now,
+                request_id=request_id,
+                capture_data=capture_data,
+            )
+    except ValueError as val_err:
+        logger.warning("Rejected invalid TradingView payload: %s", val_err)
+        return {"status": "rejected", "source": "tradingview"}
+
     if order_manager is not None:
         try:
-            order = await order_manager.process_signal(domain_signal)
-            if order is not None:
+            execution = await order_manager.process_signal_execution(domain_signal)
+            if execution is not None:
+                symbols = [o.symbol for o in execution.orders]
                 logger.info(
-                    "Signal successfully processed by OrderManager -> RMS -> OMS: order_id=%s, ibkr_id=%s",
-                    order.internal_order_id,
-                    order.ibkr_order_id,
+                    "Signal processed by OrderManager -> RMS -> OMS: signal_id=%s orders=%s symbols=%s",
+                    domain_signal.signal_id,
+                    [o.internal_order_id for o in execution.orders],
+                    symbols,
                 )
         except ValueError as val_err:
-            logger.warning("RMS check rejected incoming TradingView signal: %s", val_err)
+            logger.warning("Incoming TradingView signal rejected: %s", val_err)
             return {"status": "rejected_by_rms", "source": "tradingview"}
         except (ConnectionError, RuntimeError) as conn_err:
             logger.warning("Signal ingested but broker submission unconfirmed: %s", conn_err)
             return {"status": "received", "source": "tradingview"}
         except Exception as exc:
-            logger.exception("Error processing signal through OrderManager pipeline: %s", exc)
+            logger.exception("Error processing signal through OrderManager pipeline")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Execution pipeline error: {exc}",
             ) from exc
 
     return {"status": "received", "source": "tradingview"}
-
-
-

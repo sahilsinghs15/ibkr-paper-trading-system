@@ -29,6 +29,10 @@ class TestConfig:
         assert settings.candle_timeframe == "5 mins"
         assert settings.strategy_candle_count == 5
         assert settings.order_quantity == 1
+        assert settings.model_blue_committed_notional is None
+        assert settings.database_url == (
+            "postgresql+asyncpg://root:root123@localhost:5433/ibkr_trading"
+        )
 
     def test_environment_override(self) -> None:
         """Environment variables should override defaults."""

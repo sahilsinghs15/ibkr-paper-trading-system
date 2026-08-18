@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -134,10 +135,61 @@ async def test_oms_accepts_rms_pass(
     res = await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)
 
     assert res.success is True
-    assert res.order.status == OMSOrderStatus.SUBMITTED
+    assert res.order.status == OMSOrderStatus.PENDING
     assert res.order.symbol == "EWA"
     assert res.order.quantity == 1
     assert res.order.ibkr_order_id == 100
+    assert len(res.orders) == 1
+    mock_adapter._client.placeOrder.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_oms_submits_every_intent_leg(
+    mock_adapter: IBKRExecutionAdapter,
+) -> None:
+    """OMS must submit both legs of a two-leg Model Blue intent independently."""
+    intent = OrderIntent(
+        signal_id="MBG-XLE-XOP-OPEN",
+        strategy_id="model_blue",
+        action=OrderAction.OPEN,
+        legs=[
+            OrderLeg(
+                symbol="XLE",
+                side=OrderSide.BUY,
+                quantity=399.4248,
+                price=Decimal("62.59"),
+                contract_month="2026-09",
+            ),
+            OrderLeg(
+                symbol="XOP",
+                side=OrderSide.SELL,
+                quantity=93.0625,
+                price=Decimal("183.34"),
+                contract_month="2026-09",
+            ),
+        ],
+        timestamp=datetime.now(UTC),
+    )
+    rms_result = RMSResult(
+        outcome=RMSOutcome.PASS,
+        intent=intent,
+        original_intent=intent,
+        timestamp=datetime.now(UTC),
+    )
+    oms = OMSService(adapter=mock_adapter)
+    res = await oms.submit_intent(intent=intent, rms_result=rms_result)
+
+    assert res.success is True
+    assert len(res.orders) == 2
+    assert [o.symbol for o in res.orders] == ["XLE", "XOP"]
+    assert [o.side for o in res.orders] == [OrderSide.BUY, OrderSide.SELL]
+    assert res.orders[0].parent_signal_id == "MBG-XLE-XOP-OPEN"
+    assert res.orders[1].parent_signal_id == "MBG-XLE-XOP-OPEN"
+    assert mock_adapter._client.placeOrder.call_count == 2
+    submitted_symbols = [
+        call.args[1].symbol for call in mock_adapter._client.placeOrder.call_args_list
+    ]
+    assert submitted_symbols == ["XLE", "XOP"]
 
 
 @pytest.mark.asyncio
@@ -417,4 +469,197 @@ async def test_wait_for_terminal_or_fill_timeout(
 
     working_order = await mock_adapter.wait_for_terminal_or_fill(order.internal_order_id, timeout=0.05)
     assert working_order.internal_order_id == order.internal_order_id
-    assert working_order.status == OMSOrderStatus.SUBMITTED
+    assert working_order.status == OMSOrderStatus.PENDING
+
+
+def _fire_order_status(adapter: IBKRExecutionAdapter, tws_id: int, status: str, **kwargs: Any) -> None:
+    adapter.on_order_status(
+        orderId=tws_id,
+        status=status,
+        filled=kwargs.get("filled", 0.0),
+        remaining=kwargs.get("remaining", 1.0),
+        avgFillPrice=kwargs.get("avgFillPrice", 0.0),
+        permId=1,
+        parentId=0,
+        lastFillPrice=kwargs.get("lastFillPrice", 0.0),
+        clientId=1,
+        whyHeld="",
+        mktCapPrice=0.0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_place_order_does_not_claim_submitted(
+    mock_adapter: IBKRExecutionAdapter,
+    sample_intent: OrderIntent,
+    pass_rms_result: RMSResult,
+) -> None:
+    oms = OMSService(adapter=mock_adapter)
+    res = await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)
+    mock_adapter._client.placeOrder.assert_called_once()
+    assert res.order.status == OMSOrderStatus.PENDING
+    assert res.order.status is not OMSOrderStatus.SUBMITTED
+
+
+@pytest.mark.asyncio
+async def test_broker_status_pending_submit_and_presubmitted(
+    mock_adapter: IBKRExecutionAdapter,
+    sample_intent: OrderIntent,
+    pass_rms_result: RMSResult,
+) -> None:
+    oms = OMSService(adapter=mock_adapter)
+    order = (await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)).order
+    tws_id = int(order.ibkr_order_id)  # type: ignore[arg-type]
+
+    _fire_order_status(mock_adapter, tws_id, "PendingSubmit")
+    assert oms.get_order(order.internal_order_id).status == OMSOrderStatus.PENDING  # type: ignore[union-attr]
+
+    _fire_order_status(mock_adapter, tws_id, "PreSubmitted")
+    assert oms.get_order(order.internal_order_id).status == OMSOrderStatus.PENDING  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_broker_status_submitted(
+    mock_adapter: IBKRExecutionAdapter,
+    sample_intent: OrderIntent,
+    pass_rms_result: RMSResult,
+) -> None:
+    oms = OMSService(adapter=mock_adapter)
+    order = (await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)).order
+    tws_id = int(order.ibkr_order_id)  # type: ignore[arg-type]
+    _fire_order_status(mock_adapter, tws_id, "Submitted")
+    assert oms.get_order(order.internal_order_id).status == OMSOrderStatus.SUBMITTED  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_broker_status_partially_filled_string(
+    mock_adapter: IBKRExecutionAdapter,
+    sample_intent: OrderIntent,
+    pass_rms_result: RMSResult,
+) -> None:
+    oms = OMSService(adapter=mock_adapter)
+    order = (await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)).order
+    tws_id = int(order.ibkr_order_id)  # type: ignore[arg-type]
+    _fire_order_status(mock_adapter, tws_id, "PartiallyFilled", filled=0.4, remaining=0.6)
+    assert oms.get_order(order.internal_order_id).status == OMSOrderStatus.PARTIALLY_FILLED  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_broker_status_cancelled_and_rejected(
+    mock_adapter: IBKRExecutionAdapter,
+    sample_intent: OrderIntent,
+    pass_rms_result: RMSResult,
+) -> None:
+    oms = OMSService(adapter=mock_adapter)
+    cancelled = (await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)).order
+    tws_id = int(cancelled.ibkr_order_id)  # type: ignore[arg-type]
+    _fire_order_status(mock_adapter, tws_id, "Cancelled")
+    assert oms.get_order(cancelled.internal_order_id).status == OMSOrderStatus.CANCELLED  # type: ignore[union-attr]
+
+    intent2 = OrderIntent(
+        signal_id="SIG_TEST_002",
+        strategy_id="MODEL_BLUE",
+        action=OrderAction.OPEN,
+        legs=sample_intent.legs,
+        timestamp=datetime.now(UTC),
+    )
+    rms2 = RMSResult(
+        outcome=RMSOutcome.PASS,
+        intent=intent2,
+        original_intent=intent2,
+        timestamp=datetime.now(UTC),
+    )
+    rejected = (await oms.submit_intent(intent=intent2, rms_result=rms2)).order
+    tws_id2 = int(rejected.ibkr_order_id)  # type: ignore[arg-type]
+    _fire_order_status(mock_adapter, tws_id2, "Inactive")
+    assert oms.get_order(rejected.internal_order_id).status == OMSOrderStatus.REJECTED  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_api_error_321_is_error(
+    mock_adapter: IBKRExecutionAdapter,
+    sample_intent: OrderIntent,
+    pass_rms_result: RMSResult,
+) -> None:
+    oms = OMSService(adapter=mock_adapter)
+    order = (await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)).order
+    tws_id = int(order.ibkr_order_id)  # type: ignore[arg-type]
+    mock_adapter._client.get_request_type.return_value = "order"
+    mock_adapter.on_error(reqId=tws_id, errorCode=321, errorString="Error 321: read-only API")
+    stored = oms.get_order(order.internal_order_id)
+    assert stored is not None
+    assert stored.status == OMSOrderStatus.ERROR
+    assert "321" in (stored.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_on_open_order_updates_existing_oms_order(
+    mock_adapter: IBKRExecutionAdapter,
+    sample_intent: OrderIntent,
+    pass_rms_result: RMSResult,
+) -> None:
+    oms = OMSService(adapter=mock_adapter)
+    order = (await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)).order
+    tws_id = int(order.ibkr_order_id)  # type: ignore[arg-type]
+    before_count = len(oms.get_all_orders())
+    before_adapter = len(mock_adapter._orders_by_tws_id)
+
+    mock_adapter.on_open_order(
+        tws_id,
+        MagicMock(),
+        MagicMock(),
+        SimpleNamespace(status="Submitted"),
+    )
+
+    stored = oms.get_order(order.internal_order_id)
+    assert stored is not None
+    assert stored is order
+    assert stored.status == OMSOrderStatus.SUBMITTED
+    assert len(oms.get_all_orders()) == before_count
+    assert len(mock_adapter._orders_by_tws_id) == before_adapter
+
+
+@pytest.mark.asyncio
+async def test_callback_during_place_order_finds_registered_order(
+    sample_intent: OrderIntent,
+    pass_rms_result: RMSResult,
+) -> None:
+    """openOrder/orderStatus during placeOrder must locate the pre-registered OMSOrder."""
+    client = MagicMock(spec=TWSClient)
+    client.is_connected.return_value = True
+    client.next_order_id = 500
+    client.get_request_type.return_value = "order"
+    adapter = IBKRExecutionAdapter(client=client)
+
+    def immediate_broker_ack(order_id: int, contract: Any, ib_order: Any) -> None:
+        assert order_id in adapter._orders_by_tws_id
+        adapter.on_open_order(
+            order_id,
+            contract,
+            ib_order,
+            SimpleNamespace(status="Submitted"),
+        )
+        adapter.on_order_status(
+            orderId=order_id,
+            status="Submitted",
+            filled=0.0,
+            remaining=1.0,
+            avgFillPrice=0.0,
+            permId=1,
+            parentId=0,
+            lastFillPrice=0.0,
+            clientId=1,
+            whyHeld="",
+            mktCapPrice=0.0,
+        )
+
+    client.placeOrder.side_effect = immediate_broker_ack
+    oms = OMSService(adapter=adapter)
+    res = await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)
+
+    assert res.success is True
+    assert res.order.status == OMSOrderStatus.SUBMITTED
+    assert res.order.ibkr_order_id == 500
+    assert adapter._orders_by_tws_id[500] is res.order
+    assert len(adapter._orders_by_tws_id) == 1
+

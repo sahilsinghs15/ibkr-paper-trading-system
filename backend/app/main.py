@@ -13,7 +13,11 @@ from app.api.routes.webhooks import router as webhooks_router
 from app.broker.ibkr.tws_client import TWSClient
 from app.core.config import get_settings
 from app.core.logger import setup_logging
+from app.db.session import AsyncSessionLocal
 from app.oms import IBKRExecutionAdapter, OMSService
+from app.services.model_blue.db_allocation import DatabaseCommittedCapitalProvider
+from app.services.model_blue.db_trade_book import DatabaseModelBlueTradeBook
+from app.services.model_blue.persistence import ModelBlueExecutionPersistence
 from app.services.order_manager import OrderManager
 
 logger = logging.getLogger(__name__)
@@ -40,12 +44,21 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     )
     oms = OMSService(adapter=ibkr_adapter)
 
+    persistence = ModelBlueExecutionPersistence(AsyncSessionLocal)
     order_manager = OrderManager(
         oms=oms,
         symbol=settings.trading_symbol,
         quantity=settings.order_quantity,
         order_type="MARKET",
+        committed_capital_provider=DatabaseCommittedCapitalProvider(AsyncSessionLocal),
+        model_blue_trade_book=DatabaseModelBlueTradeBook(AsyncSessionLocal),
+        session_factory=AsyncSessionLocal,
+        persistence=persistence,
     )
+    try:
+        await order_manager.hydrate_runtime_from_db()
+    except Exception:
+        logger.exception("Failed to hydrate Model Blue/RMS runtime state from PostgreSQL.")
 
     # Establish TWS connection session
     success = client.connect_and_start(

@@ -11,6 +11,7 @@ from app.rms.models import (
     RMSOutcome,
     RMSResult,
     StrategyConfig,
+    TradeLeg,
 )
 
 __all__ = [
@@ -24,5 +25,6 @@ __all__ = [
     "RMSOutcome",
     "RMSResult",
     "StrategyConfig",
+    "TradeLeg",
     "get_default_checks",
 ]
