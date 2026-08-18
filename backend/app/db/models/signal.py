@@ -19,6 +19,7 @@ class SignalModel(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     strategy_id: Mapped[str] = mapped_column(String, nullable=False)
     signal_id: Mapped[str] = mapped_column(String, nullable=False)
+    trade_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     action: Mapped[str] = mapped_column(String, nullable=False)
     pair: Mapped[str] = mapped_column(String, nullable=False)
     side: Mapped[str] = mapped_column(String, nullable=False)

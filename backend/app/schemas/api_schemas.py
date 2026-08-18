@@ -28,12 +28,12 @@ class OrderSchema(BaseModel):
     order_id: str = Field(..., description="Unique order identifier.")
     symbol: str = Field(..., description="Asset symbol.")
     side: OrderSide = Field(..., description="BUY or SELL side.")
-    quantity: int = Field(..., description="Order quantity.")
+    quantity: float = Field(..., description="Order quantity.")
     order_type: str = Field(..., description="Order execution type.")
     status: OrderStatus = Field(..., description="Current status of the order.")
     timestamp: datetime = Field(..., description="Order placement timestamp.")
     price: Decimal | None = Field(None, description="Limit price if applicable.")
-    filled_quantity: int = Field(0, description="Quantity filled so far.")
+    filled_quantity: float = Field(0, description="Quantity filled so far.")
     average_fill_price: Decimal | None = Field(None, description="Average fill price.")
 
 

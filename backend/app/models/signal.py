@@ -1,6 +1,6 @@
 """Signal domain model representing a trading signal from strategy evaluation."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
@@ -16,8 +16,25 @@ class SignalType(Enum):
 
 
 @dataclass(frozen=True)
+class SignalLeg:
+    """One pre-size strategy leg. Generic fields first; strategy extras optional.
+
+    Model Blue uses ``weight`` and ignores ``payload_side`` when sizing.
+    Future strategies may omit weight and store extras in ``metadata``.
+    """
+
+    symbol: str
+    instrument_type: str
+    weight: float | None
+    price: Decimal
+    payload_side: str | None = None
+    leg_index: int | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
 class Signal:
-    """A trading signal produced by strategy evaluation.
+    """A trading signal produced by strategy evaluation or an external webhook.
 
     Attributes:
         signal_type: The action indicated by the signal.
@@ -26,9 +43,14 @@ class Signal:
         signal_id: Optional unique signal/event identity.
         strategy_id: Optional strategy identifier.
         action: Optional trade action ("OPEN" or "CLOSE").
-        symbol: Optional target symbol.
-        side: Optional trade side ("BUY" or "SELL").
-        price: Optional target limit/reference price.
+        symbol: Optional target symbol (legacy single-name path only).
+        side: Optional trade side ("BUY" or "SELL") for legacy single-name path.
+        price: Optional target limit/reference price (legacy single-name path).
+        quantity: Optional order quantity (legacy single-name path only).
+        trade_id: Originating trade identity (OPEN and CLOSE share this value).
+        direction: Optional strategy direction (Model Blue uses +1 / -1).
+        market: Optional routing venue from the payload (e.g. SMART).
+        legs: Parsed strategy legs; empty on CLOSE for Model Blue.
         raw_payload: Optional raw webhook payload metadata dict.
     """
 
@@ -42,4 +64,8 @@ class Signal:
     side: str | None = None
     price: Decimal | None = None
     quantity: int | None = None
+    trade_id: str | None = None
+    direction: int | None = None
+    market: str | None = None
+    legs: tuple[SignalLeg, ...] = field(default_factory=tuple)
     raw_payload: dict[str, Any] | None = None

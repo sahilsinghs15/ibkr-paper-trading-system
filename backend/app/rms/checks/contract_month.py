@@ -1,5 +1,6 @@
 """CHECK 4 — CONTRACT MONTH check implementation."""
 
+from dataclasses import replace
 from datetime import datetime
 
 from app.rms.checks.base import BaseRMSCheck
@@ -72,7 +73,7 @@ class ContractMonthCheck(BaseRMSCheck):
                 outcome=RMSOutcome.PASS,
             )
 
-        # Check if leg contract months are mismatched
+        # Canonical month is the first leg; every leg is then aligned to one month.
         first_month = intent.legs[0].contract_month
         mismatched_legs = any(leg.contract_month != first_month for leg in intent.legs)
 
@@ -105,20 +106,9 @@ class ContractMonthCheck(BaseRMSCheck):
         else:
             target_month = first_month
 
-        # Construct adjusted legs with target contract month
-        adjusted_legs: list[OrderLeg] = []
-        for leg in intent.legs:
-            adjusted_legs.append(
-                OrderLeg(
-                    symbol=leg.symbol,
-                    side=leg.side,
-                    quantity=leg.quantity,
-                    price=leg.price,
-                    contract_month=target_month,
-                    con_id=leg.con_id,
-                    notional=leg.notional,
-                )
-            )
+        adjusted_legs: list[OrderLeg] = [
+            replace(leg, contract_month=target_month) for leg in intent.legs
+        ]
 
         adjusted_intent = OrderIntent(
             signal_id=intent.signal_id,
@@ -131,7 +121,7 @@ class ContractMonthCheck(BaseRMSCheck):
 
         reason_msg = (
             f"CONTRACT_MONTH_ROLLOVER: Adjusted contract month from '{first_month}' "
-            f"to '{target_month}' for both legs."
+            f"to '{target_month}' for all legs."
         )
 
         return CheckResult(

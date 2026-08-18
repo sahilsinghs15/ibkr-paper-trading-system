@@ -82,16 +82,18 @@ class OMSOrder:
     intent: OrderIntent
     symbol: str
     side: OrderSide
-    quantity: int
+    quantity: float
     ibkr_order_id: int | str | None = None
     status: OMSOrderStatus = OMSOrderStatus.PENDING
-    filled_quantity: int = 0
-    remaining_quantity: int = 0
+    filled_quantity: float = 0
+    remaining_quantity: float = 0
     average_fill_price: Decimal | None = None
     last_fill_price: Decimal | None = None
     limit_price: Decimal | None = None
     order_type: str = "LIMIT"
     error_message: str | None = None
+    parent_signal_id: str | None = None
+    leg_index: int | None = None
     timestamps: ExecutionTimestamps = field(default_factory=ExecutionTimestamps)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -128,3 +130,8 @@ class ExecutionResult:
     rms_result: RMSResult
     success: bool
     error_message: str | None = None
+    orders: list[OMSOrder] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.orders:
+            self.orders = [self.order]

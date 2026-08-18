@@ -1,5 +1,6 @@
 """Application configuration loaded from environment variables."""
 
+from decimal import Decimal
 from typing import Annotated
 
 from annotated_types import Ge, Gt, Le
@@ -26,6 +27,11 @@ class Settings(BaseSettings):
     environment: str = "development"
     log_level: str = "INFO"
 
+    # Database
+    database_url: str = (
+        "postgresql+asyncpg://root:root123@localhost:5433/ibkr_trading"
+    )
+
     # IBKR connection
     ibkr_host: str = "127.0.0.1"
     ibkr_port: Annotated[int, Gt(0)] = 7497
@@ -45,6 +51,13 @@ class Settings(BaseSettings):
     candle_timeframe: str = "5 mins"
     strategy_candle_count: Annotated[int, Gt(0)] = 5
     order_quantity: Annotated[int, Gt(0)] = 1
+
+    # TEMPORARY paper-testing Model Blue base-leg committed notional (USD).
+    # Not live-account allocation and not a production financial default.
+    # Unset/None => Model Blue OPEN is rejected (no invented size).
+    # Replace later with database/OEMS CommittedCapitalProvider.
+    # Env: MODEL_BLUE_COMMITTED_NOTIONAL
+    model_blue_committed_notional: Decimal | None = None
 
     @property
     def candle_timeframe_minutes(self) -> int:

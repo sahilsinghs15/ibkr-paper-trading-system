@@ -16,8 +16,8 @@ class OMSService:
 
     Responsible for:
       1. Validating RMS PASS status on incoming OrderIntents.
-      2. Constructing internal OMSOrder representations.
-      3. Submitting orders through an injected IBKRExecutionAdapter.
+      2. Constructing internal OMSOrder representations for every intent leg.
+      3. Submitting each leg through an injected IBKRExecutionAdapter.
       4. Managing order lifecycle state and timestamp instrumentation.
     """
 
@@ -45,22 +45,11 @@ class OMSService:
     ) -> ExecutionResult:
         """Process an OrderIntent that has undergone RMS evaluation.
 
-        Args:
-            intent: The target OrderIntent.
-            rms_result: The evaluation result returned by RMS.
-            override_internal_id: Optional explicit internal order ID (e.g. for testing).
-            limit_price: Optional limit price override; if None, derived from order leg.
-            order_type: Order type string ("LIMIT" or "MARKET").
-
-        Returns:
-            ExecutionResult containing OMSOrder state and RMS evaluation details.
-
-        Raises:
-            ValueError: If the OrderIntent has not passed RMS evaluation or duplicate signal ID.
+        Submits every intent leg as an independent broker order sharing
+        the same parent signal_id / trade identity.
         """
         oms_received_at = datetime.now(UTC)
 
-        # 1. Reject submission if RMS outcome is not PASS
         if rms_result.outcome != RMSOutcome.PASS:
             logger.warning(
                 "OMS rejected intent %s: RMS outcome is %s (reason: %s)",
@@ -68,7 +57,6 @@ class OMSService:
                 rms_result.outcome.value,
                 rms_result.reason,
             )
-            # Construct a rejected internal order for auditing
             rejected_order = self._create_rejected_order(
                 intent=intent,
                 reason=f"RMS check failed with outcome {rms_result.outcome.value}: {rms_result.reason}",
@@ -80,9 +68,9 @@ class OMSService:
                 rms_result=rms_result,
                 success=False,
                 error_message=rejected_order.error_message,
+                orders=[rejected_order],
             )
 
-        # 2. Check duplicate submission attempt by signal_id
         if intent.signal_id in self._submitted_signals:
             msg = f"Duplicate intent submission attempt for signal_id: {intent.signal_id}"
             logger.error(msg)
@@ -97,12 +85,9 @@ class OMSService:
                 rms_result=rms_result,
                 success=False,
                 error_message=msg,
+                orders=[rejected_order],
             )
 
-        # Mark signal_id as submitted
-        self._submitted_signals.add(intent.signal_id)
-
-        # 3. Derive order parameters from intent leg
         if not intent.legs:
             msg = f"OrderIntent {intent.signal_id} has no legs."
             logger.error(msg)
@@ -117,60 +102,100 @@ class OMSService:
                 rms_result=rms_result,
                 success=False,
                 error_message=msg,
+                orders=[rejected_order],
             )
 
-        primary_leg: OrderLeg = intent.legs[0]
-        internal_order_id = override_internal_id or f"ORD-{intent.signal_id}"
-        price = limit_price if limit_price is not None else primary_leg.price
+        self._submitted_signals.add(intent.signal_id)
 
-        # 4. Construct internal OMSOrder representation
-        order = OMSOrder(
-            internal_order_id=internal_order_id,
-            intent=intent,
-            symbol=primary_leg.symbol,
-            side=primary_leg.side,
-            quantity=primary_leg.quantity,
-            limit_price=price,
-            order_type=order_type,
-            status=OMSOrderStatus.PENDING,
+        submitted: list[OMSOrder] = []
+        first_error: str | None = None
+
+        for index, leg in enumerate(intent.legs):
+            internal_order_id = self._leg_order_id(
+                intent.signal_id, index, len(intent.legs), override_internal_id
+            )
+            price = self._leg_limit_price(leg, limit_price, len(intent.legs))
+            order = OMSOrder(
+                internal_order_id=internal_order_id,
+                intent=intent,
+                symbol=leg.symbol,
+                side=leg.side,
+                quantity=float(leg.quantity),
+                limit_price=price,
+                order_type=order_type,
+                status=OMSOrderStatus.PENDING,
+                parent_signal_id=intent.signal_id,
+                leg_index=index,
+            )
+            order.timestamps.intent_created_at = intent.timestamp
+            order.timestamps.rms_started_at = rms_result.timestamp
+            order.timestamps.rms_completed_at = rms_result.timestamp
+            order.timestamps.oms_received_at = oms_received_at
+            self._orders[internal_order_id] = order
+
+            logger.info(
+                "OMS created internal order %s for signal %s leg %d/%d: %s %s %s @ %s",
+                internal_order_id,
+                intent.signal_id,
+                index + 1,
+                len(intent.legs),
+                order.side.value,
+                order.quantity,
+                order.symbol,
+                price,
+            )
+
+            try:
+                order = await self._adapter.submit_order(order)
+                self._orders[internal_order_id] = order
+            except Exception as e:
+                logger.exception(
+                    "Failed to submit order %s (leg %d) to broker adapter",
+                    internal_order_id,
+                    index,
+                )
+                order.status = OMSOrderStatus.ERROR
+                order.error_message = str(e)
+                if first_error is None:
+                    first_error = str(e)
+
+            submitted.append(order)
+
+        success = first_error is None and all(
+            o.status not in (OMSOrderStatus.REJECTED, OMSOrderStatus.ERROR) for o in submitted
+        )
+        return ExecutionResult(
+            order=submitted[0],
+            rms_result=rms_result,
+            success=success,
+            error_message=first_error,
+            orders=submitted,
         )
 
-        # Record timestamps
-        order.timestamps.intent_created_at = intent.timestamp
-        order.timestamps.rms_started_at = rms_result.timestamp  # Best available reference
-        order.timestamps.rms_completed_at = rms_result.timestamp
-        order.timestamps.oms_received_at = oms_received_at
+    def _leg_order_id(
+        self,
+        signal_id: str,
+        index: int,
+        leg_count: int,
+        override_internal_id: str | None,
+    ) -> str:
+        if override_internal_id is not None:
+            if leg_count == 1:
+                return override_internal_id
+            return f"{override_internal_id}-L{index}"
+        if leg_count == 1:
+            return f"ORD-{signal_id}"
+        return f"ORD-{signal_id}-L{index}"
 
-        self._orders[internal_order_id] = order
-
-        logger.info(
-            "OMS created internal order %s for signal %s: %s %d %s @ %s",
-            internal_order_id,
-            intent.signal_id,
-            order.side.value,
-            order.quantity,
-            order.symbol,
-            price,
-        )
-
-        # 5. Submit through IBKR Execution Adapter
-        try:
-            order = await self._adapter.submit_order(order)
-            return ExecutionResult(
-                order=order,
-                rms_result=rms_result,
-                success=order.status not in (OMSOrderStatus.REJECTED, OMSOrderStatus.ERROR),
-            )
-        except Exception as e:
-            logger.exception("Failed to submit order %s to broker adapter", internal_order_id)
-            order.status = OMSOrderStatus.ERROR
-            order.error_message = str(e)
-            return ExecutionResult(
-                order=order,
-                rms_result=rms_result,
-                success=False,
-                error_message=str(e),
-            )
+    def _leg_limit_price(
+        self,
+        leg: OrderLeg,
+        limit_price: Decimal | None,
+        leg_count: int,
+    ) -> Decimal | None:
+        if limit_price is not None and leg_count == 1:
+            return limit_price
+        return leg.price
 
     def _create_rejected_order(
         self,
@@ -179,11 +204,15 @@ class OMSService:
         oms_received_at: datetime,
         override_internal_id: str | None = None,
     ) -> OMSOrder:
-        """Construct a REJECTED OMSOrder record when submission is declined."""
+        """Construct a REJECTED OMSOrder audit row when submission is declined.
+
+        Uses the first leg only as a display snapshot; successful submission
+        still iterates every intent.leg independently.
+        """
         primary_leg = intent.legs[0] if intent.legs else None
         symbol = primary_leg.symbol if primary_leg else "UNKNOWN"
         side = primary_leg.side if primary_leg else None
-        qty = primary_leg.quantity if primary_leg else 0
+        qty = float(primary_leg.quantity) if primary_leg else 0.0
 
         internal_id = override_internal_id or f"ORD-REJ-{intent.signal_id}"
         order = OMSOrder(
@@ -194,6 +223,8 @@ class OMSService:
             quantity=qty,
             status=OMSOrderStatus.REJECTED,
             error_message=reason,
+            parent_signal_id=intent.signal_id,
+            leg_index=0 if primary_leg else None,
         )
         order.timestamps.intent_created_at = intent.timestamp
         order.timestamps.oms_received_at = oms_received_at

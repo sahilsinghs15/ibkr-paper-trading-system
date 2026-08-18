@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
+from typing import Any
 
 
 class OrderAction(Enum):
@@ -32,32 +33,30 @@ class RMSOutcome(Enum):
 
 @dataclass(frozen=True)
 class OrderLeg:
-    """Represents a single leg of an order intent.
+    """Generic execution leg. RMS, OMS, and IBKR iterate ``intent.legs`` for N >= 1.
 
-    Attributes:
-        symbol: The instrument symbol (e.g., 'AAPL', 'RELIANCE').
-        side: BUY or SELL.
-        quantity: Order quantity (must be positive).
-        price: Unit price.
-        contract_month: Expiry/contract month formatted as 'YYYY-MM' (e.g., '2026-09').
-        con_id: Optional IBKR contract identifier.
-        notional: Optional explicit notional value; if None, computed as quantity * price.
+    Strategy-specific fields (for example Model Blue weight) stay optional so
+    they are not required of every future strategy.
     """
 
     symbol: str
     side: OrderSide
-    quantity: int
+    quantity: float
     price: Decimal
     contract_month: str
     con_id: int | None = None
     notional: Decimal | None = None
+    instrument_type: str | None = None
+    weight: float | None = None
+    leg_index: int | None = None
+    metadata: dict[str, Any] | None = None
 
     @property
     def effective_notional(self) -> Decimal:
         """Calculate effective notional amount for the leg."""
         if self.notional is not None:
             return self.notional
-        return Decimal(self.quantity) * self.price
+        return Decimal(str(self.quantity)) * self.price
 
 
 @dataclass(frozen=True)
@@ -79,6 +78,10 @@ class OrderIntent:
     legs: list[OrderLeg]
     account_id: str | None = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+# Generic aliases: execution pipeline operates on List[TradeLeg], not leg_a/leg_b.
+TradeLeg = OrderLeg
 
 
 @dataclass(frozen=True)

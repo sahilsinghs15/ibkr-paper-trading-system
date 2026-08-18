@@ -159,7 +159,7 @@ class IBKRExecutionAdapter:
         self._client.register_request_id(tws_order_id, "order")
 
         logger.info(
-            "Submitting order to IBKR TWS: internal_id=%s, tws_id=%d, symbol=%s, action=%s, qty=%d, limit_price=%s",
+            "Submitting order to IBKR TWS: internal_id=%s, tws_id=%d, symbol=%s, action=%s, qty=%s, limit_price=%s",
             order.internal_order_id,
             tws_order_id,
             order.symbol,
@@ -169,9 +169,16 @@ class IBKRExecutionAdapter:
         )
 
         try:
+            # Maps are registered above so openOrder/orderStatus cannot race
+            # placeOrder() on a TWS thread (or a synchronous mock callback).
             self._client.placeOrder(tws_order_id, contract, ib_order)
-            order.status = OMSOrderStatus.SUBMITTED
             order.timestamps.ibkr_submit_completed_at = datetime.now(UTC)
+            if order.status == OMSOrderStatus.PENDING:
+                logger.info(
+                    "placeOrder sent; waiting for IBKR confirmation: internal_id=%s tws_id=%d",
+                    order.internal_order_id,
+                    tws_order_id,
+                )
         except Exception as e:
             order.status = OMSOrderStatus.ERROR
             order.error_message = f"Failed to place order with TWS: {e}"
@@ -246,21 +253,59 @@ class IBKRExecutionAdapter:
 
     # ── EWrapper Listener Callbacks ───────────────────────────────────
 
+    _TERMINAL_STATUSES = (
+        OMSOrderStatus.FILLED,
+        OMSOrderStatus.CANCELLED,
+        OMSOrderStatus.REJECTED,
+        OMSOrderStatus.ERROR,
+    )
+
     def _map_ib_status(self, ib_status: str) -> OMSOrderStatus:
-        """Map IBKR order status string to internal OMSOrderStatus."""
-        status_upper = ib_status.upper()
+        """Map IBKR orderStatus / orderState.status to internal OMSOrderStatus."""
+        status_upper = ib_status.upper().replace(" ", "")
         if status_upper in ("PENDINGSUBMIT", "PRESUBMITTED", "APIPENDING"):
             return OMSOrderStatus.PENDING
-        elif status_upper in ("SUBMITTED", "PENDINGCANCEL"):
+        if status_upper in ("SUBMITTED", "PENDINGCANCEL"):
             return OMSOrderStatus.SUBMITTED
-        elif status_upper in ("FILLED",):
+        if status_upper in ("PARTIALLYFILLED",):
+            return OMSOrderStatus.PARTIALLY_FILLED
+        if status_upper in ("FILLED",):
             return OMSOrderStatus.FILLED
-        elif status_upper in ("CANCELLED", "APICANCELLED"):
+        if status_upper in ("CANCELLED", "APICANCELLED"):
             return OMSOrderStatus.CANCELLED
-        elif status_upper in ("INACTIVE", "REJECTED"):
+        if status_upper in ("INACTIVE", "REJECTED"):
             return OMSOrderStatus.REJECTED
+        return OMSOrderStatus.PENDING
+
+    def _apply_mapped_status(
+        self,
+        order: OMSOrder,
+        mapped_status: OMSOrderStatus,
+        *,
+        qty_filled: float | None = None,
+        qty_remaining: float | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        """Apply broker-mapped status without regressing a terminal order."""
+        if order.status in self._TERMINAL_STATUSES:
+            return
+
+        if qty_filled is not None:
+            order.filled_quantity = max(order.filled_quantity, float(qty_filled))
+        if qty_remaining is not None:
+            order.remaining_quantity = float(qty_remaining)
+
+        filled = order.filled_quantity
+        remaining = order.remaining_quantity
+
+        if filled > 0 and remaining > 0:
+            order.status = OMSOrderStatus.PARTIALLY_FILLED
+        elif filled >= order.quantity or mapped_status == OMSOrderStatus.FILLED:
+            order.status = OMSOrderStatus.FILLED
+            if order.timestamps.execution_received_at is None:
+                order.timestamps.execution_received_at = now or datetime.now(UTC)
         else:
-            return OMSOrderStatus.SUBMITTED
+            order.status = mapped_status
 
     def _notify_future_if_terminal(self, order: OMSOrder) -> None:
         """Resolve waiting future if order reached a terminal state."""
@@ -301,35 +346,24 @@ class IBKRExecutionAdapter:
                 order.timestamps.order_status_received_at = now
 
             mapped_status = self._map_ib_status(status)
-            qty_filled = int(filled)
-            qty_remaining = int(remaining)
-
-            order.filled_quantity = max(order.filled_quantity, qty_filled)
-            order.remaining_quantity = qty_remaining
+            qty_filled = float(filled)
+            qty_remaining = float(remaining)
 
             if avgFillPrice > 0:
                 order.average_fill_price = Decimal(str(avgFillPrice))
             if lastFillPrice > 0:
                 order.last_fill_price = Decimal(str(lastFillPrice))
 
-            # Lifecycle status transition logic
-            if order.status not in (
-                OMSOrderStatus.FILLED,
-                OMSOrderStatus.CANCELLED,
-                OMSOrderStatus.REJECTED,
-                OMSOrderStatus.ERROR,
-            ):
-                if qty_filled > 0 and qty_remaining > 0:
-                    order.status = OMSOrderStatus.PARTIALLY_FILLED
-                elif qty_filled >= order.quantity or mapped_status == OMSOrderStatus.FILLED:
-                    order.status = OMSOrderStatus.FILLED
-                    if order.timestamps.execution_received_at is None:
-                        order.timestamps.execution_received_at = now
-                else:
-                    order.status = mapped_status
+            self._apply_mapped_status(
+                order,
+                mapped_status,
+                qty_filled=qty_filled,
+                qty_remaining=qty_remaining,
+                now=now,
+            )
 
             logger.info(
-                "IBKR orderStatus callback: internal_id=%s, tws_id=%d, raw_status=%s, mapped=%s, filled=%d, rem=%d, avgPrice=%s",
+                "IBKR orderStatus callback: internal_id=%s, tws_id=%d, raw_status=%s, mapped=%s, filled=%s, rem=%s, avgPrice=%s",
                 order.internal_order_id,
                 orderId,
                 status,
@@ -340,6 +374,44 @@ class IBKRExecutionAdapter:
             )
 
             self._notify_future_if_terminal(order)
+
+    def on_open_order(
+        self,
+        orderId: int,
+        contract: Any,
+        order: Any,
+        orderState: Any,
+    ) -> None:
+        """Handle openOrder: apply broker orderState.status onto the existing OMSOrder."""
+        raw_status = str(getattr(orderState, "status", "") or "")
+        if not raw_status:
+            return
+
+        now = datetime.now(UTC)
+        with self._lock:
+            oms_order = self._orders_by_tws_id.get(orderId)
+            if not oms_order:
+                logger.debug(
+                    "Ignoring openOrder for unknown tws_id=%s (no duplicate OMS order created)",
+                    orderId,
+                )
+                return
+
+            if oms_order.timestamps.order_status_received_at is None:
+                oms_order.timestamps.order_status_received_at = now
+
+            mapped_status = self._map_ib_status(raw_status)
+            self._apply_mapped_status(oms_order, mapped_status, now=now)
+
+            logger.info(
+                "IBKR openOrder callback: internal_id=%s, tws_id=%d, raw_status=%s, mapped=%s",
+                oms_order.internal_order_id,
+                orderId,
+                raw_status,
+                oms_order.status.value,
+            )
+
+            self._notify_future_if_terminal(oms_order)
 
     def on_exec_details(self, reqId: int, contract: Any, execution: Any) -> None:
         """Handle execDetails fill callback from TWSClient."""
@@ -355,9 +427,9 @@ class IBKRExecutionAdapter:
 
             order.timestamps.execution_received_at = now
 
-            exec_shares = int(getattr(execution, "shares", 0))
+            exec_shares = float(getattr(execution, "shares", 0))
             exec_price = float(getattr(execution, "price", 0.0))
-            cum_qty = int(getattr(execution, "cumQty", 0))
+            cum_qty = float(getattr(execution, "cumQty", 0))
             avg_price = float(getattr(execution, "avgPrice", 0.0))
 
             if cum_qty > 0:
@@ -373,7 +445,7 @@ class IBKRExecutionAdapter:
                 order.status = OMSOrderStatus.FILLED
 
             logger.info(
-                "IBKR execDetails callback: internal_id=%s, exec_shares=%d, exec_price=%.4f, cum_qty=%d, status=%s",
+                "IBKR execDetails callback: internal_id=%s, exec_shares=%s, exec_price=%.4f, cum_qty=%s, status=%s",
                 order.internal_order_id,
                 exec_shares,
                 exec_price,

@@ -1,7 +1,8 @@
-"""Integration tests verifying real TradingView Webhook -> Signal -> OrderManager -> RMS -> OMS execution path."""
+"""Integration tests: TradingView Model Blue webhook -> sizer -> RMS -> OMS -> IBKR adapter."""
 
 from collections.abc import Generator
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,203 +12,311 @@ from app.broker.ibkr.tws_client import TWSClient
 from app.main import app
 from app.oms import IBKRExecutionAdapter, OMSService
 from app.rms import RMSContext, RMSEngine
-from app.rms.models import StrategyConfig
+from app.rms.models import OrderSide, StrategyConfig
+from app.services.model_blue.allocation import TemporarySettingsCommittedCapitalProvider
 from app.services.order_manager import OrderManager
 
+_COMMITTED = Decimal(25000)
+_MODEL_BLUE = "model_blue"
+
+
+def _qty(notional: Decimal, price: Decimal) -> float:
+    return float((notional / price).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
+
+
+XLE_XOP_OPEN: dict[str, Any] = {
+    "market": "SMART",
+    "strategy": "model_blue",
+    "action": "OPEN",
+    "trade_id": "MBG-AMEX:XLE-AMEX:XOP-20260817T1550",
+    "direction": 1,
+    "ts": "2026-08-17T15:55:00-04:00",
+    "buckets": [
+        {
+            "underlying": "XLE",
+            "legs": [
+                {
+                    "instrument_type": "STK",
+                    "side": "BUY",
+                    "weight": 0.5943,
+                    "price": 62.59,
+                }
+            ],
+        },
+        {
+            "underlying": "XOP",
+            "legs": [
+                {
+                    "instrument_type": "STK",
+                    "side": "SELL",
+                    "weight": -0.4057,
+                    "price": 183.34,
+                }
+            ],
+        },
+    ],
+}
+
+HYG_LQD_OPEN: dict[str, Any] = {
+    "market": "SMART",
+    "strategy": "model_blue",
+    "action": "OPEN",
+    "trade_id": "MBG-AMEX:HYG-AMEX:LQD-20260817T1315",
+    "direction": -1,
+    "ts": "2026-08-17T13:20:00-04:00",
+    "buckets": [
+        {
+            "underlying": "HYG",
+            "legs": [
+                {
+                    "instrument_type": "STK",
+                    "side": "SELL",
+                    "weight": -0.6978,
+                    "price": 79.65,
+                }
+            ],
+        },
+        {
+            "underlying": "LQD",
+            "legs": [
+                {
+                    "instrument_type": "STK",
+                    "side": "BUY",
+                    "weight": 0.3022,
+                    "price": 105.79,
+                }
+            ],
+        },
+    ],
+}
+
 
 @pytest.fixture
-def mock_oms() -> OMSService:
-    """Fixture providing an OMSService instance with a mocked IBKR adapter."""
-    client = MagicMock(spec=TWSClient)
-    client.is_connected.return_value = True
-    client.next_order_id = 100
-    adapter = IBKRExecutionAdapter(client=client)
-    return OMSService(adapter=adapter)
+def client_with_execution() -> Generator[TestClient, None, None]:
+    """TestClient with Model Blue sizing wired and a mocked TWS placeOrder."""
+    tws = MagicMock(spec=TWSClient)
+    tws.is_connected.return_value = True
+    tws.next_order_id = 100
+    tws.get_request_type.return_value = "order"
 
-
-@pytest.fixture
-def client_with_execution(mock_oms: OMSService) -> Generator[TestClient, None, None]:
-    """TestClient fixture with an active OrderManager wired on app.state."""
-    strategy_id = "MODEL_BLUE"
-    rms_engine = RMSEngine()
+    adapter = IBKRExecutionAdapter(client=tws)
+    oms = OMSService(adapter=adapter)
     rms_context = RMSContext(
         strategy_configs={
-            strategy_id: StrategyConfig(
-                strategy_id=strategy_id,
+            _MODEL_BLUE: StrategyConfig(
+                strategy_id=_MODEL_BLUE,
                 max_open_positions=10,
                 money_limit_per_symbol=Decimal(1_000_000),
             )
         }
     )
+    order_manager = OrderManager(
+        oms=oms,
+        symbol=None,
+        quantity=None,
+        order_type="MARKET",
+        price=None,
+        strategy_id=_MODEL_BLUE,
+        rms_engine=RMSEngine(),
+        rms_context=rms_context,
+        committed_capital_provider=TemporarySettingsCommittedCapitalProvider(_COMMITTED),
+    )
 
     with (
         patch("app.broker.ibkr.tws_client.TWSClient.connect_and_start", return_value=True),
         patch("app.broker.ibkr.tws_client.TWSClient.disconnect_clean"),
-        patch("app.broker.ibkr.tws_client.TWSClient.is_connected", return_value=True),
         patch("app.oms.ibkr_adapter.IBKRExecutionAdapter.is_connected", return_value=True),
-        patch("app.oms.ibkr_adapter.IBKRExecutionAdapter.submit_order", side_effect=lambda o: o),
         TestClient(app) as c,
     ):
-        order_manager = OrderManager(
-            oms=mock_oms,
-            symbol=None,
-            quantity=None,
-            order_type="MARKET",
-            price=None,
-            strategy_id=strategy_id,
-            rms_engine=rms_engine,
-            rms_context=rms_context,
-        )
         app.state.order_manager = order_manager
-        app.state.oms = mock_oms
+        app.state.oms = oms
+        app.state.ibkr_adapter = adapter
         yield c
 
 
-def test_1_valid_open_webhook_drives_execution(client_with_execution: TestClient) -> None:
-    """TEST 1: Valid OPEN webhook payload drives Signal -> OrderManager -> RMS PASS -> OMS."""
-    payload = {
-        "market": "SMART",
-        "strategy": "MODEL_BLUE",
-        "action": "OPEN",
-        "trade_id": "MBG-EWA-EWC-20260814T1525_OPEN",
-        "direction": 1,
-        "ref_price_a": 25.50,
-        "ticker": "EWA",
-        "quantity": 10,
-    }
-    response = client_with_execution.post("/api/webhooks/tradingview", json=payload)
+def _orders(client: TestClient) -> list[Any]:
+    oms: OMSService = app.state.oms
+    return oms.get_all_orders()
+
+
+def test_1_model_blue_open_direction_plus_one(client_with_execution: TestClient) -> None:
+    """TEST 1: XLE/XOP OPEN +1 sizes both legs and submits two IBKR orders."""
+    response = client_with_execution.post("/api/webhooks/tradingview", json=XLE_XOP_OPEN)
     assert response.status_code == 200
     assert response.json()["status"] == "received"
 
-    # Verify OMS order was created
-    oms: OMSService = app.state.oms
-    orders = oms.get_all_orders()
-    assert len(orders) > 0
-    latest_order = orders[-1]
-    assert latest_order.symbol == "EWA"
-    assert latest_order.intent.action.value == "OPEN"
+    orders = _orders(client_with_execution)
+    assert len(orders) == 2
+    by_symbol = {o.symbol: o for o in orders}
+    assert set(by_symbol) == {"XLE", "XOP"}
+    assert "RELIANCE" not in by_symbol
+
+    xop_target = _COMMITTED * Decimal("0.4057") / Decimal("0.5943")
+    assert by_symbol["XLE"].side == OrderSide.BUY
+    assert by_symbol["XOP"].side == OrderSide.SELL
+    assert by_symbol["XLE"].quantity == pytest.approx(_qty(_COMMITTED, Decimal("62.59")))
+    assert by_symbol["XOP"].quantity == pytest.approx(_qty(xop_target, Decimal("183.34")))
+    assert by_symbol["XLE"].quantity != 1
+    assert by_symbol["XOP"].quantity != 1
+
+    intent = orders[0].intent
+    assert len(intent.legs) == 2
+    assert {leg.symbol for leg in intent.legs} == {"XLE", "XOP"}
+    assert orders[0].parent_signal_id == orders[1].parent_signal_id == XLE_XOP_OPEN["trade_id"]
+
+    tws = app.state.ibkr_adapter._client
+    assert tws.placeOrder.call_count == 2
+    placed = [call.args[1].symbol for call in tws.placeOrder.call_args_list]
+    assert placed == ["XLE", "XOP"]
 
 
-def test_2_rms_rejection_blocks_execution(mock_oms: OMSService) -> None:
-    """TEST 2: Payload triggering RMS rejection (money limit exceeded) returns rejection and places NO OMS order."""
-    strategy_id = "REJECT_STRAT"
-    rms_engine = RMSEngine()
+def test_2_model_blue_open_direction_minus_one(client_with_execution: TestClient) -> None:
+    """TEST 2: HYG/LQD OPEN -1 uses weight × direction, not payload side."""
+    response = client_with_execution.post("/api/webhooks/tradingview", json=HYG_LQD_OPEN)
+    assert response.status_code == 200
+    assert response.json()["status"] == "received"
+
+    orders = _orders(client_with_execution)
+    by_symbol = {o.symbol: o for o in orders}
+    assert by_symbol["HYG"].side == OrderSide.BUY
+    assert by_symbol["LQD"].side == OrderSide.SELL
+    assert len(orders) == 2
+    tws = app.state.ibkr_adapter._client
+    assert tws.placeOrder.call_count == 2
+
+
+def test_3_model_blue_close_uses_in_memory_trade(client_with_execution: TestClient) -> None:
+    """TEST 3: CLOSE with only trade_id flattens both stored legs without re-sizing."""
+    open_res = client_with_execution.post("/api/webhooks/tradingview", json=XLE_XOP_OPEN)
+    assert open_res.json()["status"] == "received"
+    open_orders = {o.symbol: o.quantity for o in _orders(client_with_execution)}
+
+    close_payload = {
+        "market": "SMART",
+        "strategy": "model_blue",
+        "action": "CLOSE",
+        "trade_id": XLE_XOP_OPEN["trade_id"],
+        "direction": 1,
+        "ts": "2026-08-17T15:20:50-04:00",
+    }
+    close_res = client_with_execution.post("/api/webhooks/tradingview", json=close_payload)
+    assert close_res.status_code == 200
+    assert close_res.json()["status"] == "received"
+
+    all_orders = _orders(client_with_execution)
+    assert len(all_orders) == 4
+    close_orders = [o for o in all_orders if o.intent.action.value == "CLOSE"]
+    assert len(close_orders) == 2
+    close_by_symbol = {o.symbol: o for o in close_orders}
+    assert close_by_symbol["XLE"].side == OrderSide.SELL
+    assert close_by_symbol["XOP"].side == OrderSide.BUY
+    assert close_by_symbol["XLE"].quantity == open_orders["XLE"]
+    assert close_by_symbol["XOP"].quantity == open_orders["XOP"]
+    assert "quantity" not in close_payload
+    assert "buckets" not in close_payload
+
+
+def test_4_unknown_close_rejected(client_with_execution: TestClient) -> None:
+    """TEST 4: CLOSE for an unknown trade_id is rejected and creates no sell orders."""
+    payload = {
+        "market": "SMART",
+        "strategy": "model_blue",
+        "action": "CLOSE",
+        "trade_id": "MBG-AMEX:EWA-AMEX:EWC-UNKNOWN",
+        "direction": 1,
+    }
+    response = client_with_execution.post("/api/webhooks/tradingview", json=payload)
+    assert response.status_code == 200
+    assert response.json()["status"] in {"rejected", "rejected_by_rms"}
+    assert _orders(client_with_execution) == []
+
+
+def test_5_invalid_open_rejected(client_with_execution: TestClient) -> None:
+    """TEST 5: Invalid OPEN shapes are rejected cleanly."""
+    cases = [
+        {**XLE_XOP_OPEN, "buckets": []},
+        {**XLE_XOP_OPEN, "buckets": [XLE_XOP_OPEN["buckets"][0]]},
+        {
+            **XLE_XOP_OPEN,
+            "buckets": [
+                {"underlying": "XLE", "legs": [{"instrument_type": "STK", "side": "BUY", "price": 62.59}]},
+                XLE_XOP_OPEN["buckets"][1],
+            ],
+        },
+        {
+            **XLE_XOP_OPEN,
+            "buckets": [
+                {"underlying": "XLE", "legs": [{"instrument_type": "STK", "side": "BUY", "weight": 0.5}]},
+                XLE_XOP_OPEN["buckets"][1],
+            ],
+        },
+        {
+            **XLE_XOP_OPEN,
+            "buckets": [
+                {"underlying": "", "legs": [{"instrument_type": "STK", "side": "BUY", "weight": 0.5, "price": 10}]},
+                XLE_XOP_OPEN["buckets"][1],
+            ],
+        },
+    ]
+    for payload in cases:
+        response = client_with_execution.post("/api/webhooks/tradingview", json=payload)
+        assert response.status_code == 200
+        assert response.json()["status"] == "rejected"
+        assert _orders(client_with_execution) == []
+
+
+def test_6_no_financial_fallbacks(client_with_execution: TestClient) -> None:
+    """TEST 6: Invalid Model Blue OPEN must not emit RELIANCE, quantity=1, or invented price."""
+    payload = {
+        "strategy": "model_blue",
+        "action": "OPEN",
+        "trade_id": "MBG-FALLBACK-CHECK",
+        "direction": 1,
+    }
+    response = client_with_execution.post("/api/webhooks/tradingview", json=payload)
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"
+    orders = _orders(client_with_execution)
+    assert orders == []
+    assert all(o.symbol != "RELIANCE" for o in orders)
+    assert all(o.quantity != 1 for o in orders)
+
+
+def test_rms_rejection_blocks_model_blue_execution() -> None:
+    """RMS money-per-stock still rejects oversized Model Blue notionals."""
+    tws = MagicMock(spec=TWSClient)
+    tws.is_connected.return_value = True
+    tws.next_order_id = 100
+    adapter = IBKRExecutionAdapter(client=tws)
+    oms = OMSService(adapter=adapter)
     rms_context = RMSContext(
         strategy_configs={
-            strategy_id: StrategyConfig(
-                strategy_id=strategy_id,
+            _MODEL_BLUE: StrategyConfig(
+                strategy_id=_MODEL_BLUE,
                 max_open_positions=10,
-                money_limit_per_symbol=Decimal("5.00"),  # $5 limit -> $25.50 order exceeds budget and is rejected by RMS Check 8
+                money_limit_per_symbol=Decimal("5.00"),
             )
         }
     )
-
+    order_manager = OrderManager(
+        oms=oms,
+        quantity=None,
+        symbol=None,
+        strategy_id=_MODEL_BLUE,
+        rms_engine=RMSEngine(),
+        rms_context=rms_context,
+        committed_capital_provider=TemporarySettingsCommittedCapitalProvider(_COMMITTED),
+    )
     with (
         patch("app.broker.ibkr.tws_client.TWSClient.connect_and_start", return_value=True),
         patch("app.broker.ibkr.tws_client.TWSClient.disconnect_clean"),
-        patch("app.broker.ibkr.tws_client.TWSClient.is_connected", return_value=True),
         patch("app.oms.ibkr_adapter.IBKRExecutionAdapter.is_connected", return_value=True),
-        patch("app.oms.ibkr_adapter.IBKRExecutionAdapter.submit_order", side_effect=lambda o: o),
         TestClient(app) as c,
     ):
-        order_manager = OrderManager(
-            oms=mock_oms,
-            symbol=None,
-            quantity=None,
-            price=None,
-            strategy_id=strategy_id,
-            rms_engine=rms_engine,
-            rms_context=rms_context,
-        )
         app.state.order_manager = order_manager
-        app.state.oms = mock_oms
-
-        initial_orders_count = len(mock_oms.get_all_orders())
-        payload = {
-            "strategy": strategy_id,
-            "action": "OPEN",
-            "trade_id": "REJECT_TRADE_001",
-            "ticker": "EWA",
-            "ref_price_a": 25.50,
-            "quantity": 1,
-        }
-        response = c.post("/api/webhooks/tradingview", json=payload)
+        app.state.oms = oms
+        response = c.post("/api/webhooks/tradingview", json=XLE_XOP_OPEN)
         assert response.status_code == 200
-        res_data = response.json()
-        assert res_data["status"] == "rejected_by_rms"
-
-        # NO new OMS order submitted
-        assert len(mock_oms.get_all_orders()) == initial_orders_count
-
-
-def test_3_rms_pass_submits_intent(client_with_execution: TestClient) -> None:
-    """TEST 3: Valid payload satisfying RMS checks produces RMS PASS and OMS submission."""
-    payload = {
-        "strategy": "MODEL_BLUE",
-        "action": "OPEN",
-        "trade_id": "PASS_TRADE_002",
-        "ticker": "EWA",
-        "ref_price_a": 25.50,
-        "quantity": 5,
-    }
-    response = client_with_execution.post("/api/webhooks/tradingview", json=payload)
-    assert response.status_code == 200
-    assert response.json()["status"] == "received"
-
-
-def test_4_close_payload_follows_close_path(client_with_execution: TestClient) -> None:
-    """TEST 4: CLOSE payload closes an existing active open position."""
-    # First send OPEN to create an active position in memory
-    open_payload = {
-        "strategy": "MODEL_BLUE",
-        "action": "OPEN",
-        "trade_id": "OPEN_TRADE_BEFORE_CLOSE",
-        "ticker": "EWA",
-        "quantity": 10,
-        "ref_price_a": 25.50,
-    }
-    res_open = client_with_execution.post("/api/webhooks/tradingview", json=open_payload)
-    assert res_open.status_code == 200
-
-    # Then send CLOSE
-    close_payload = {
-        "strategy": "MODEL_BLUE",
-        "action": "CLOSE",
-        "trade_id": "CLOSE_TRADE_003",
-        "ticker": "EWA",
-        "direction": -1,
-    }
-    response = client_with_execution.post("/api/webhooks/tradingview", json=close_payload)
-    assert response.status_code == 200
-    assert response.json()["status"] == "received"
-
-    oms: OMSService = app.state.oms
-    orders = oms.get_all_orders()
-    assert len(orders) >= 2
-    latest_order = orders[-1]
-    assert latest_order.intent.action.value == "CLOSE"
-
-
-def test_5_malformed_payload_no_execution(client_with_execution: TestClient) -> None:
-    """TEST 5: Malformed JSON payload returns HTTP 400 with no execution."""
-    response = client_with_execution.post(
-        "/api/webhooks/tradingview",
-        content="{malformed_json",
-        headers={"Content-Type": "application/json"},
-    )
-    assert response.status_code == 400
-    assert response.json() == {"detail": "Invalid or malformed JSON payload."}
-
-
-def test_6_close_without_open_position_rejected(client_with_execution: TestClient) -> None:
-    """TEST 6: CLOSE signal without an open position is safely rejected without creating a sell order."""
-    close_payload = {
-        "strategy": "MODEL_BLUE",
-        "action": "CLOSE",
-        "trade_id": "UNMATCHED_CLOSE_TRADE",
-        "ticker": "UNOWNED_SYMBOL",
-        "direction": -1,
-    }
-    response = client_with_execution.post("/api/webhooks/tradingview", json=close_payload)
-    assert response.status_code == 200
-    assert response.json()["status"] == "rejected_by_rms"
+        assert response.json()["status"] == "rejected_by_rms"
+        assert oms.get_all_orders() == []
+        assert tws.placeOrder.call_count == 0
