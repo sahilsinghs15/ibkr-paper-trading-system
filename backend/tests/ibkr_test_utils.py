@@ -16,7 +16,11 @@ def fill_on_place_order(adapter: Any, client: Any) -> None:
 
     def fake_place_order(order_id: int, contract: Any, order: Any) -> None:
         qty = float(getattr(order, "totalQuantity", 0) or 0)
-        px = _fill_px(order)
+        oms = adapter._orders_by_tws_id.get(order_id)
+        if oms is not None and oms.limit_price is not None:
+            px = float(oms.limit_price)
+        else:
+            px = _fill_px(order)
         adapter.on_order_status(
             order_id, "Filled", qty, 0.0, px, 0, 0, px, 1, "", 0.0
         )

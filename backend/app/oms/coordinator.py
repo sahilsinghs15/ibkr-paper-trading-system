@@ -13,6 +13,8 @@ from app.db.models.signal import SignalModel
 from app.db.repositories.basket_repository import BasketRepository
 from app.db.repositories.event_repository import EventRepository
 from app.db.repositories.order_repository import OrderRepository
+from app.instruments.resolver import attach_resolved
+from app.instruments.models import InstrumentResolutionError
 from app.oms.basket import Basket, BasketExecutionResult, BasketState
 from app.oms.models import OMSOrder, OMSOrderStatus
 from app.oms.oms_service import OMSService
@@ -56,6 +58,12 @@ class BasketCoordinator:
         self._fill_timeout = fill_timeout
         self._cancel_timeout = cancel_timeout
         self._critical: set[tuple[int, str]] = set()
+        self._order_baskets: dict[str, Basket] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
+        adapter = getattr(oms, "_adapter", None)
+        add_listener = getattr(adapter, "add_order_state_listener", None)
+        if callable(add_listener):
+            add_listener(self._on_broker_order_state)
 
     def is_open_blocked(self, account_id: int | None, strategy_id: str) -> bool:
         if account_id is None:
@@ -83,6 +91,11 @@ class BasketCoordinator:
         order_type: str,
         signal_pk: int | None = None,
     ) -> BasketExecutionResult:
+        self._loop = asyncio.get_running_loop()
+        try:
+            intent = attach_resolved(intent)
+        except InstrumentResolutionError as exc:
+            raise ValueError(str(exc)) from exc
         trade_id = intent.signal_id
         action = intent.action.value if hasattr(intent.action, "value") else str(intent.action)
         basket = Basket(
@@ -118,7 +131,19 @@ class BasketCoordinator:
                 order_type=order_type,
             )
             submitted.append(order)
+            self._order_baskets[order.internal_order_id] = basket
             await self._persist_child(order, intent, signal_pk=signal_pk, basket=basket)
+            await self._event(
+                "ORDER_CREATED",
+                {
+                    "account_id": intent.account_id,
+                    "trade_id": trade_id,
+                    "internal_order_id": order.internal_order_id,
+                    "symbol": order.symbol,
+                    "quantity": order.quantity,
+                    "side": order.side.value if hasattr(order.side, "value") else str(order.side),
+                },
+            )
             if order.status in (OMSOrderStatus.REJECTED, OMSOrderStatus.ERROR):
                 abort_remaining = True
 
@@ -329,6 +354,7 @@ class BasketCoordinator:
                 action=OrderAction.CLOSE,
                 account_id=original.account_id,
                 ibkr_account=original.ibkr_account,
+                market=original.market,
                 legs=[
                     OrderLeg(
                         symbol=order.symbol,
@@ -337,6 +363,10 @@ class BasketCoordinator:
                         price=price if isinstance(price, Decimal) else Decimal(str(price)),
                         contract_month=orig_leg.contract_month,
                         instrument_type=orig_leg.instrument_type,
+                        con_id=orig_leg.con_id,
+                        exchange=orig_leg.exchange,
+                        currency=orig_leg.currency,
+                        resolved=orig_leg.resolved,
                         leg_index=0,
                     )
                 ],
@@ -356,8 +386,20 @@ class BasketCoordinator:
                 child.compensation_of_internal_order_id = order.internal_order_id
                 child.basket_id = basket.id
                 created.append(child)
+                self._order_baskets[child.internal_order_id] = basket
                 await self._persist_child(
                     child, original, signal_pk=signal_pk, basket=basket, compensation=True
+                )
+                await self._event(
+                    "COMPENSATION",
+                    {
+                        "account_id": original.account_id,
+                        "trade_id": original.signal_id,
+                        "internal_order_id": child.internal_order_id,
+                        "of": order.internal_order_id,
+                        "quantity": child.quantity,
+                        "symbol": child.symbol,
+                    },
                 )
                 if child.status in (OMSOrderStatus.REJECTED, OMSOrderStatus.ERROR):
                     raise RuntimeError(
@@ -430,8 +472,28 @@ class BasketCoordinator:
 
     async def _ensure_signal_pk(self, session: AsyncSession, intent: OrderIntent) -> int:
         from sqlalchemy import select
+        from sqlalchemy.dialects.postgresql import insert
 
         trade_id = intent.signal_id.split(":UNWIND:")[0]
+        stmt = (
+            insert(SignalModel)
+            .values(
+                strategy_id=intent.strategy_id,
+                signal_id=trade_id,
+                trade_id=trade_id,
+                action=intent.action.value
+                if hasattr(intent.action, "value")
+                else str(intent.action),
+                pair="",
+                side="N/A",
+                ref_price_a=Decimal(0),
+                raw_payload={},
+                status="NEW",
+            )
+            .on_conflict_do_nothing(constraint="uq_signals_strategy_signal")
+        )
+        await session.execute(stmt)
+        await session.flush()
         existing = (
             await session.execute(
                 select(SignalModel).where(
@@ -439,23 +501,57 @@ class BasketCoordinator:
                     SignalModel.signal_id == trade_id,
                 )
             )
-        ).scalar_one_or_none()
-        if existing is not None:
-            return existing.id
-        row = SignalModel(
-            strategy_id=intent.strategy_id,
-            signal_id=trade_id,
-            trade_id=trade_id,
-            action=intent.action.value if hasattr(intent.action, "value") else str(intent.action),
-            pair="",
-            side="N/A",
-            ref_price_a=Decimal(0),
-            raw_payload={},
-            status="NEW",
+        ).scalar_one()
+        return existing.id
+
+    def _on_broker_order_state(self, order: OMSOrder, kind: str) -> None:
+        if kind not in (
+            "BROKER_ACK",
+            "PARTIAL_FILL",
+            "FILL",
+            "REJECTED",
+            "CANCELLED",
+            "ERROR",
+        ):
+            return
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._persist_broker_snapshot(order, kind), loop
+            )
+        except Exception:
+            logger.exception("Failed to schedule broker snapshot persist")
+
+    async def _persist_broker_snapshot(self, order: OMSOrder, kind: str) -> None:
+        basket = self._order_baskets.get(order.internal_order_id)
+        if basket is None:
+            basket = Basket(
+                account_id=order.intent.account_id,
+                trade_id=order.intent.signal_id.split(":UNWIND:")[0],
+                strategy_id=order.intent.strategy_id,
+                action=order.intent.action.value
+                if hasattr(order.intent.action, "value")
+                else str(order.intent.action),
+                intended_leg_count=len(order.intent.legs),
+                id=order.basket_id,
+            )
+        await self._persist_child(order, order.intent, signal_pk=None, basket=basket)
+        await self._event(
+            kind,
+            {
+                "account_id": order.intent.account_id,
+                "trade_id": order.intent.signal_id.split(":UNWIND:")[0],
+                "internal_order_id": order.internal_order_id,
+                "broker_order_id": str(order.ibkr_order_id) if order.ibkr_order_id else None,
+                "status": order.status.value,
+                "filled_quantity": order.filled_quantity,
+                "average_fill_price": str(order.average_fill_price)
+                if order.average_fill_price is not None
+                else None,
+            },
         )
-        session.add(row)
-        await session.flush()
-        return row.id
 
     async def _event(self, kind: str, detail: dict) -> None:
         if self._session_factory is None:

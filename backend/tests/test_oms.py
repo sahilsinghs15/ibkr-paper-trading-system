@@ -41,6 +41,7 @@ def sample_intent() -> OrderIntent:
                 quantity=1,
                 price=Decimal("25.00"),
                 contract_month="2026-09",
+                instrument_type="STK",
             )
         ],
         timestamp=datetime.now(UTC),
@@ -159,6 +160,7 @@ async def test_oms_submits_every_intent_leg(
                 quantity=399.4248,
                 price=Decimal("62.59"),
                 contract_month="2026-09",
+                instrument_type="STK",
             ),
             OrderLeg(
                 symbol="XOP",
@@ -166,6 +168,7 @@ async def test_oms_submits_every_intent_leg(
                 quantity=93.0625,
                 price=Decimal("183.34"),
                 contract_month="2026-09",
+                instrument_type="STK",
             ),
         ],
         timestamp=datetime.now(UTC),
@@ -190,6 +193,10 @@ async def test_oms_submits_every_intent_leg(
         call.args[1].symbol for call in mock_adapter._client.placeOrder.call_args_list
     ]
     assert submitted_symbols == ["XLE", "XOP"]
+    xle_ib = mock_adapter._client.placeOrder.call_args_list[0].args[2]
+    xop_ib = mock_adapter._client.placeOrder.call_args_list[1].args[2]
+    assert xle_ib.totalQuantity == 399.4248
+    assert xop_ib.totalQuantity == 93.0625
 
 
 @pytest.mark.asyncio
@@ -234,9 +241,12 @@ def test_ibkr_order_and_contract_conversion(mock_adapter: IBKRExecutionAdapter, 
         quantity=5,
         limit_price=Decimal("25.50"),
         order_type="LIMIT",
+        resolved=__import__("app.instruments.resolver", fromlist=["resolve_leg"]).resolve_leg(
+            symbol="EWA", instrument_type="STK"
+        ),
     )
 
-    contract = mock_adapter._build_ibkr_contract(order.symbol)
+    contract = mock_adapter._build_ibkr_contract(order)
     assert contract.symbol == "EWA"
     assert contract.secType == "STK"
     assert contract.exchange == "SMART"
@@ -333,6 +343,7 @@ async def test_partial_fill_handling(
                 quantity=10,
                 price=Decimal("25.00"),
                 contract_month="2026-09",
+                instrument_type="STK",
             )
         ],
         timestamp=datetime.now(UTC),
@@ -411,6 +422,48 @@ async def test_broker_rejection_handling(
     assert rej_order is not None
     assert rej_order.status == OMSOrderStatus.REJECTED
     assert "Order rejected" in (rej_order.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_fractional_share_api_error_is_rejected(
+    mock_adapter: IBKRExecutionAdapter,
+    sample_intent: OrderIntent,
+    pass_rms_result: RMSResult,
+) -> None:
+    oms = OMSService(adapter=mock_adapter)
+    res = await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)
+    order = res.order
+    tws_id = int(order.ibkr_order_id)  # type: ignore[arg-type]
+    mock_adapter.on_error(
+        reqId=tws_id,
+        errorCode=10243,
+        errorString="Fractional-sized order cannot be placed via API.",
+    )
+    rej = oms.get_order(order.internal_order_id)
+    assert rej is not None
+    assert rej.status == OMSOrderStatus.REJECTED
+    assert "10243" in (rej.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_10243_unblocks_wait_without_timeout(
+    mock_adapter: IBKRExecutionAdapter,
+    sample_intent: OrderIntent,
+    pass_rms_result: RMSResult,
+) -> None:
+    oms = OMSService(adapter=mock_adapter)
+    res = await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)
+    order = res.order
+    tws_id = int(order.ibkr_order_id)  # type: ignore[arg-type]
+    mock_adapter.on_error(
+        reqId=tws_id,
+        errorCode=10243,
+        errorString="Fractional-sized order cannot be placed via API.",
+    )
+    waited = await mock_adapter.wait_for_terminal_or_fill(
+        order.internal_order_id, timeout=0.05
+    )
+    assert waited.status == OMSOrderStatus.REJECTED
 
 
 def test_timestamp_collection_and_durations() -> None:
@@ -662,4 +715,91 @@ async def test_callback_during_place_order_finds_registered_order(
     assert res.order.ibkr_order_id == 500
     assert adapter._orders_by_tws_id[500] is res.order
     assert len(adapter._orders_by_tws_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_10243_does_not_overwrite_filled(
+    mock_adapter: IBKRExecutionAdapter,
+    sample_intent: OrderIntent,
+    pass_rms_result: RMSResult,
+) -> None:
+    oms = OMSService(adapter=mock_adapter)
+    res = await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)
+    tws_id = int(res.order.ibkr_order_id)  # type: ignore[arg-type]
+    mock_adapter.on_order_status(
+        tws_id, "Filled", 1.0, 0.0, 25.0, 0, 0, 25.0, 1, "", 0.0
+    )
+    assert oms.get_order(res.order.internal_order_id).status == OMSOrderStatus.FILLED
+    mock_adapter.on_error(
+        reqId=tws_id,
+        errorCode=10243,
+        errorString="Fractional-sized order cannot be placed via API.",
+    )
+    filled = oms.get_order(res.order.internal_order_id)
+    assert filled is not None
+    assert filled.status == OMSOrderStatus.FILLED
+
+
+@pytest.mark.asyncio
+async def test_399_and_2109_are_non_terminal_warnings(
+    mock_adapter: IBKRExecutionAdapter,
+    sample_intent: OrderIntent,
+    pass_rms_result: RMSResult,
+) -> None:
+    oms = OMSService(adapter=mock_adapter)
+    res = await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)
+    tws_id = int(res.order.ibkr_order_id)  # type: ignore[arg-type]
+    mock_adapter._client.get_request_type.return_value = "order"
+    mock_adapter.on_error(
+        reqId=tws_id,
+        errorCode=399,
+        errorString="Order Message: Warning: held until RTH",
+    )
+    pending = oms.get_order(res.order.internal_order_id)
+    assert pending is not None
+    assert pending.status == OMSOrderStatus.PENDING
+    mock_adapter.on_error(
+        reqId=tws_id,
+        errorCode=2109,
+        errorString='Order Event Warning: Attribute "Outside Regular Trading Hours" is ignored. PlaceOrder is now being processed.',
+    )
+    still = oms.get_order(res.order.internal_order_id)
+    assert still is not None
+    assert still.status == OMSOrderStatus.PENDING
+    mock_adapter.on_order_status(
+        tws_id, "Submitted", 0.0, 1.0, 0.0, 0, 0, 0.0, 1, "", 0.0
+    )
+    assert oms.get_order(res.order.internal_order_id).status == OMSOrderStatus.SUBMITTED
+
+
+@pytest.mark.asyncio
+async def test_201_is_rejected_and_202_is_cancelled(
+    mock_adapter: IBKRExecutionAdapter,
+    sample_intent: OrderIntent,
+    pass_rms_result: RMSResult,
+) -> None:
+    oms = OMSService(adapter=mock_adapter)
+    first = (await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)).order
+    tws_id = int(first.ibkr_order_id)  # type: ignore[arg-type]
+    mock_adapter._client.get_request_type.return_value = "order"
+    mock_adapter.on_error(reqId=tws_id, errorCode=201, errorString="Order rejected")
+    assert oms.get_order(first.internal_order_id).status == OMSOrderStatus.REJECTED
+
+    intent2 = OrderIntent(
+        signal_id="SIG_202",
+        strategy_id="MODEL_BLUE",
+        action=OrderAction.OPEN,
+        legs=sample_intent.legs,
+        timestamp=datetime.now(UTC),
+    )
+    rms2 = RMSResult(
+        outcome=RMSOutcome.PASS,
+        intent=intent2,
+        original_intent=intent2,
+        timestamp=datetime.now(UTC),
+    )
+    second = (await oms.submit_intent(intent=intent2, rms_result=rms2)).order
+    tws2 = int(second.ibkr_order_id)  # type: ignore[arg-type]
+    mock_adapter.on_error(reqId=tws2, errorCode=202, errorString="Order Canceled")
+    assert oms.get_order(second.internal_order_id).status == OMSOrderStatus.CANCELLED
 

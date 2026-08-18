@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.accounts.context import AccountExecutionContext
 from app.accounts.router import DatabaseStrategyAccountRouter, StrategyAccountRouter
 from app.db.models.account import PerSymbolLimitModel
+from app.db.repositories.event_repository import EventRepository
 from app.db.repositories.position_repository import PositionRepository
 from app.db.repositories.signal_repository import SignalRepository
 from app.models.signal import Signal, SignalType
@@ -26,6 +27,7 @@ from app.rms.models import (
     OrderLeg,
     RMSContext,
     RMSOutcome,
+    RMSResult,
     StrategyConfig,
     duplicate_lookup_key,
     exposure_key,
@@ -112,9 +114,20 @@ class OrderManager:
         self._model_blue_sizer = self._model_blue_strategy._sizer
         self._model_blue_trades = self._model_blue_strategy._trades
         self.registry = strategy_registry or StrategyRegistry([self._model_blue_strategy])
+        self._live_pnl = None
         self._baskets: BasketCoordinator | None = None
+        self._instrument_catalog = None
+        if session_factory is not None:
+            from app.db.repositories.instrument_repository import DatabaseInstrumentCatalog
+
+            self._instrument_catalog = DatabaseInstrumentCatalog(session_factory)
         if type(oms) is OMSService:
-            self._baskets = BasketCoordinator(oms, session_factory=session_factory)
+            self._baskets = BasketCoordinator(
+                oms,
+                session_factory=session_factory,
+                fill_timeout=90.0,
+                cancel_timeout=30.0,
+            )
 
     async def hydrate_runtime_from_db(self) -> None:
         """Load processed OPEN signals and account-scoped open-position counts."""
@@ -151,6 +164,44 @@ class OrderManager:
         if self._baskets is not None:
             await self._baskets.hydrate_critical_from_db()
             await self._baskets.recover_incomplete_baskets()
+
+    async def hydrate_live_pnl(self) -> None:
+        """Re-subscribe market data for OPEN positions after TWS is available.
+
+        Does not submit orders. Skips CFD legs that cannot resolve without master data.
+        """
+        if self._live_pnl is None or self._session_factory is None:
+            return
+        async with self._session_factory() as session:
+            open_rows = await PositionRepository(session).list_open()
+        if not open_rows:
+            return
+        snapshot = None
+        catalog = getattr(self, "_instrument_catalog", None)
+        if catalog is not None:
+            from app.db.repositories.instrument_repository import SnapshotInstrumentCatalog
+            from app.instruments.models import InstrumentResolutionError
+            from app.instruments.resolver import ibkr_sec_type
+
+            rows = []
+            for position in open_rows:
+                for symbol, raw_type in (
+                    (position.leg_a_symbol, getattr(position, "leg_a_instrument_type", None)),
+                    (position.leg_b_symbol, getattr(position, "leg_b_instrument_type", None)),
+                ):
+                    if not symbol:
+                        continue
+                    try:
+                        sec = ibkr_sec_type(raw_type)
+                    except InstrumentResolutionError:
+                        continue
+                    finder = getattr(catalog, "find_all_async", None)
+                    if callable(finder):
+                        rows.extend(await finder(symbol, sec))
+                    else:
+                        rows.extend(list(catalog.find_all(symbol, sec)))
+            snapshot = SnapshotInstrumentCatalog(rows)
+        self._live_pnl.hydrate_from_position_rows(open_rows, catalog=snapshot)
 
     def _add_row_exposure(self, row) -> None:
         a_notional = abs(row.leg_a_signed_qty) * row.leg_a_entry_mark
@@ -203,6 +254,11 @@ class OrderManager:
         strat_id = signal.strategy_id or self._strategy_id
         handler = self.registry.get(strat_id)
         if handler is None:
+            if self._account_router is not None:
+                raise ValueError(
+                    f"UNKNOWN_STRATEGY: '{strat_id}' is not registered; "
+                    "refusing IBKR submission without a strategy handler."
+                )
             result = await self._process_legacy_single_name(signal)
             return FanoutExecutionResult.from_single(result)
 
@@ -228,8 +284,9 @@ class OrderManager:
         outcomes: list[AccountExecutionOutcome] = []
         raise_if_single = len(contexts) == 1
         for ctx in contexts:
-            self._ensure_strategy_config(
-                ctx.strategy_id, max_open_positions=ctx.max_open_positions
+            self._ensure_strategy_config(ctx.strategy_id)
+            self._rms_context.account_open_limits[(ctx.account_id, ctx.strategy_id)] = (
+                ctx.max_open_positions
             )
             try:
                 intent = await handler.build_intent(signal, account=ctx)
@@ -319,6 +376,7 @@ class OrderManager:
                     quantity=target_qty,
                     price=target_price or Decimal(0),
                     contract_month=_STK_CONTRACT_MONTH,
+                    instrument_type="STK",
                     leg_index=0,
                 )
             ],
@@ -335,13 +393,22 @@ class OrderManager:
     ) -> ExecutionResult:
         self._ensure_strategy_config(intent.strategy_id)
 
+        for leg in intent.legs:
+            if Decimal(str(leg.quantity)) <= 0:
+                raise ValueError(
+                    f"ZERO_QUANTITY: {leg.symbol} sized to {leg.quantity}; "
+                    "refusing broker submission."
+                )
+
         rms_result = self._rms_engine.evaluate(intent, self._rms_context)
+        await self._audit_rms(intent, rms_result)
         if rms_result.outcome != RMSOutcome.PASS:
             msg = f"RMS check {rms_result.check_number} rejected intent: {rms_result.reason}"
             logger.warning(msg)
             raise ValueError(msg)
 
         evaluated_intent = rms_result.intent
+        evaluated_intent = await self._resolve_instruments(evaluated_intent)
 
         if self._oms is None:
             raise RuntimeError("No OMSService configured on OrderManager.")
@@ -378,6 +445,12 @@ class OrderManager:
                 await self._update_runtime_state(
                     filled_intent, exec_res, handler=handler, sized_from=signal
                 )
+                if self._live_pnl is not None and intent.account_id is not None:
+                    trade_key = evaluated_intent.signal_id.split(":CLOSE")[0].split(":UNWIND:")[0]
+                    if basket_res.state == BasketState.OPEN:
+                        self._live_pnl.watch_open(filled_intent)
+                    else:
+                        self._live_pnl.unwatch(intent.account_id, trade_key)
             return exec_res
 
         exec_res = await self._oms.submit_intent(
@@ -391,6 +464,38 @@ class OrderManager:
 
         await self._update_runtime_state(evaluated_intent, exec_res, handler=handler, sized_from=signal)
         return exec_res
+
+    async def _audit_rms(self, intent: OrderIntent, rms_result: RMSResult) -> None:
+        if self._session_factory is None:
+            return
+        detail = {
+            "account_id": intent.account_id,
+            "ibkr_account": intent.ibkr_account,
+            "trade_id": intent.signal_id,
+            "strategy_id": intent.strategy_id,
+            "action": intent.action.value if hasattr(intent.action, "value") else str(intent.action),
+            "outcome": rms_result.outcome.value,
+            "reason": rms_result.reason,
+            "check_number": rms_result.check_number,
+            "checks": [
+                {
+                    "number": item.check_number,
+                    "name": item.check_name,
+                    "outcome": item.outcome.value,
+                    "reason": item.reason,
+                }
+                for item in rms_result.check_results
+            ],
+        }
+        try:
+            async with self._session_factory() as session, session.begin():
+                await EventRepository(session).append(
+                    process="rms",
+                    kind=f"RMS_{rms_result.outcome.value}",
+                    detail=detail,
+                )
+        except Exception:
+            logger.exception("Failed to persist RMS audit event")
 
     def _intent_with_fills(self, intent: OrderIntent, orders: list[OMSOrder]) -> OrderIntent:
         by_index = {o.leg_index: o for o in orders}
@@ -483,3 +588,29 @@ class OrderManager:
                 max_open_positions=max_open_positions,
                 money_limit_per_symbol=existing.money_limit_per_symbol,
             )
+
+    async def _resolve_instruments(self, intent: OrderIntent) -> OrderIntent:
+        from app.db.repositories.instrument_repository import SnapshotInstrumentCatalog
+        from app.instruments.models import InstrumentResolutionError
+        from app.instruments.resolver import attach_resolved, ibkr_sec_type
+
+        rows = []
+        catalog = getattr(self, "_instrument_catalog", None)
+        if catalog is not None:
+            for leg in intent.legs:
+                try:
+                    sec = ibkr_sec_type(leg.instrument_type)
+                except InstrumentResolutionError:
+                    continue
+                finder = getattr(catalog, "find_all_async", None)
+                if callable(finder):
+                    rows.extend(await finder(leg.symbol, sec))
+                else:
+                    rows.extend(list(catalog.find_all(leg.symbol, sec)))
+            snapshot = SnapshotInstrumentCatalog(rows)
+        else:
+            snapshot = None
+        try:
+            return attach_resolved(intent, catalog=snapshot)
+        except InstrumentResolutionError as exc:
+            raise ValueError(str(exc)) from exc

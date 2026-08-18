@@ -94,7 +94,7 @@ class ModelBlueStrategy(StrategyHandler):
             open_legs = tuple(
                 OpenModelBlueTradeLeg(
                     symbol=leg.symbol,
-                    instrument_type=leg.instrument_type or "STK",
+                    instrument_type=leg.instrument_type,
                     side=leg.side,
                     quantity=Decimal(str(leg.quantity)),
                     price=leg.price,
@@ -175,6 +175,7 @@ class ModelBlueStrategy(StrategyHandler):
             legs=legs,
             account_id=account.account_id if account is not None else None,
             ibkr_account=account.ibkr_account if account is not None else None,
+            market=signal.market,
             timestamp=signal.timestamp or datetime.now(UTC),
         )
 
@@ -219,6 +220,7 @@ class ModelBlueStrategy(StrategyHandler):
             legs=close_legs,
             account_id=account.account_id if account is not None else None,
             ibkr_account=account.ibkr_account if account is not None else None,
+            market=signal.market,
             timestamp=signal.timestamp or datetime.now(UTC),
         )
 

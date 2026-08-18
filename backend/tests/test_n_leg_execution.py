@@ -65,6 +65,7 @@ def _leg(symbol: str, index: int, notional: Decimal = Decimal("200")) -> OrderLe
         price=price,
         contract_month="2026-09",
         notional=notional,
+        instrument_type="STK",
         leg_index=index,
     )
 

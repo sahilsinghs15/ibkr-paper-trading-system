@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
 
+from app.instruments.models import ResolvedInstrument
 from app.rms.models import OrderIntent, OrderSide, RMSResult
 
 
@@ -97,6 +98,8 @@ class OMSOrder:
     basket_id: int | None = None
     is_compensation: bool = False
     compensation_of_internal_order_id: str | None = None
+    commission: Decimal | None = None
+    resolved: ResolvedInstrument | None = None
     timestamps: ExecutionTimestamps = field(default_factory=ExecutionTimestamps)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 

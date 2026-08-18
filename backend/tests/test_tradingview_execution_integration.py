@@ -1,7 +1,7 @@
 """Integration tests: TradingView Model Blue webhook -> sizer -> RMS -> OMS -> IBKR adapter."""
 
 from collections.abc import Generator
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -21,7 +21,7 @@ _MODEL_BLUE = "model_blue"
 
 
 def _qty(notional: Decimal, price: Decimal) -> float:
-    return float((notional / price).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
+    return float((notional / price).quantize(Decimal("1"), rounding=ROUND_DOWN))
 
 
 XLE_XOP_OPEN: dict[str, Any] = {

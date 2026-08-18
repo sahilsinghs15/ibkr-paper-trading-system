@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.signal import SignalModel
@@ -52,9 +53,6 @@ class SignalRepository:
         status: str = SIGNAL_STATUS_PROCESSED,
     ) -> SignalModel:
         """Insert or update a processed signal row."""
-        existing = await self.get_by_strategy_signal(
-            signal.strategy_id or "", persist_signal_id
-        )
         now = datetime.now(UTC)
         pair = ":".join(leg.symbol for leg in signal.legs) if signal.legs else ""
         side = str(signal.direction) if signal.direction is not None else (signal.side or "")
@@ -62,27 +60,36 @@ class SignalRepository:
         price_a = signal.legs[0].price if signal.legs else (signal.price or Decimal(0))
         price_b = signal.legs[1].price if len(signal.legs) > 1 else None
         payload: dict[str, Any] = signal.raw_payload if isinstance(signal.raw_payload, dict) else {}
-
-        if existing is None:
-            row = SignalModel(
-                strategy_id=signal.strategy_id or "",
-                signal_id=persist_signal_id,
-                trade_id=signal.trade_id or persist_signal_id,
-                action=str(signal.action or "").upper(),
-                pair=pair or (signal.symbol or "N/A"),
-                side=side or "N/A",
-                ref_price_a=price_a,
-                ref_price_b=price_b,
-                raw_payload=payload,
-                status=status,
-                processed_at=now if status == SIGNAL_STATUS_PROCESSED else None,
+        values = {
+            "strategy_id": signal.strategy_id or "",
+            "signal_id": persist_signal_id,
+            "trade_id": signal.trade_id or persist_signal_id,
+            "action": str(signal.action or "").upper(),
+            "pair": pair or (signal.symbol or "N/A"),
+            "side": side or "N/A",
+            "ref_price_a": price_a,
+            "ref_price_b": price_b,
+            "raw_payload": payload,
+            "status": status,
+            "processed_at": now if status == SIGNAL_STATUS_PROCESSED else None,
+        }
+        stmt = (
+            insert(SignalModel)
+            .values(**values)
+            .on_conflict_do_update(
+                constraint="uq_signals_strategy_signal",
+                set_={
+                    "trade_id": values["trade_id"],
+                    "status": status,
+                    "processed_at": values["processed_at"],
+                },
             )
-            self._session.add(row)
-            await self._session.flush()
-            return row
-
-        existing.trade_id = signal.trade_id or existing.trade_id
-        existing.status = status
-        existing.processed_at = now if status == SIGNAL_STATUS_PROCESSED else existing.processed_at
+        )
+        await self._session.execute(stmt)
         await self._session.flush()
-        return existing
+        row = await self.get_by_strategy_signal(signal.strategy_id or "", persist_signal_id)
+        if row is None:
+            raise RuntimeError(
+                f"Failed to persist signal {persist_signal_id} for {signal.strategy_id}."
+            )
+        return row

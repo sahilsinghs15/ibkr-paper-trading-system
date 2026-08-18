@@ -47,7 +47,9 @@ class TradeRepository:
         )
 
     async def close_trade(
-        self, trade_id: str, *, account_id: int | None = None
+        self, trade_id: str, *, account_id: int | None = None, exit_marks: dict[str, Decimal] | None = None, commission: Decimal | None = None
     ) -> OpenModelBlueTrade:
-        row = await self._positions.close_trade(trade_id, account_id=account_id)
+        row = await self._positions.close_trade(
+            trade_id, account_id=account_id, exit_marks=exit_marks, commission=commission
+        )
         return self._positions.to_open_trade(row)

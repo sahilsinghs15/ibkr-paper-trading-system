@@ -1,7 +1,7 @@
 """Unit tests for production Model Blue parser and sizer (no reference helper)."""
 
 from datetime import UTC, datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_DOWN, Decimal
 
 import pytest
 
@@ -19,7 +19,7 @@ _TS = datetime(2026, 8, 17, 19, 55, tzinfo=UTC)
 
 
 def _qty(notional: Decimal, price: Decimal) -> Decimal:
-    return (notional / price).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    return (notional / price).quantize(Decimal("1"), rounding=ROUND_DOWN)
 
 
 def test_parser_preserves_both_open_legs() -> None:
@@ -103,6 +103,8 @@ def test_sizer_direction_plus_one_uses_weight_times_direction() -> None:
     xop_target = _COMMITTED * Decimal("0.4057") / base_w
     assert xle.side == OrderSide.BUY
     assert xop.side == OrderSide.SELL
+    assert xle.quantity == Decimal("399")
+    assert xop.quantity == Decimal("93")
     assert xle.quantity == _qty(_COMMITTED, Decimal("62.59"))
     assert xop.quantity == _qty(xop_target, Decimal("183.34"))
     assert xle.quantity != Decimal(1)
@@ -163,3 +165,126 @@ def test_sizer_does_not_size_close() -> None:
     sizer = ModelBlueSizer(TemporarySettingsCommittedCapitalProvider(_COMMITTED))
     with pytest.raises(ModelBlueValidationError, match="does not size CLOSE"):
         sizer.size_open(signal)
+
+
+def test_sizer_rejects_stk_below_one_share() -> None:
+    signal = Signal(
+        signal_type=SignalType.BUY,
+        timestamp=_TS,
+        reason="test",
+        strategy_id="model_blue",
+        action="OPEN",
+        trade_id="T5",
+        direction=1,
+        legs=(
+            SignalLeg("XLE", "STK", 0.5, Decimal("25000"), payload_side=None),
+            SignalLeg("XOP", "STK", -0.5, Decimal("10"), payload_side=None),
+        ),
+    )
+    sizer = ModelBlueSizer(TemporarySettingsCommittedCapitalProvider(Decimal("100")))
+    with pytest.raises(ModelBlueValidationError, match="MIN_SHARE"):
+        sizer.size_open(signal)
+
+
+def test_parser_missing_instrument_type_does_not_become_stk() -> None:
+    payload = {
+        "market": "SMART",
+        "strategy": "model_blue",
+        "action": "OPEN",
+        "trade_id": "T-NO-TYPE",
+        "direction": 1,
+        "buckets": [
+            {
+                "underlying": "SIL",
+                "legs": [{"side": "BUY", "weight": 0.5, "price": 90.64}],
+            },
+            {
+                "underlying": "GDX",
+                "legs": [
+                    {"instrument_type": "STK", "side": "SELL", "weight": -0.5, "price": 91.86}
+                ],
+            },
+        ],
+    }
+    with pytest.raises(ModelBlueValidationError, match="MISSING_INSTRUMENT_TYPE"):
+        parse_model_blue_payload(payload, timestamp=_TS, reason="t")
+
+
+def test_parser_preserves_instrument_type_side_weight_price() -> None:
+    payload = {
+        "market": "SMART",
+        "strategy": "model_blue",
+        "action": "OPEN",
+        "trade_id": "T-SIL-GDX",
+        "direction": 1,
+        "buckets": [
+            {
+                "underlying": "SIL",
+                "legs": [
+                    {"instrument_type": "STK", "side": "BUY", "weight": 0.5019, "price": 90.64}
+                ],
+            },
+            {
+                "underlying": "GDX",
+                "legs": [
+                    {
+                        "instrument_type": "STK",
+                        "side": "SELL",
+                        "weight": -0.4981,
+                        "price": 91.86,
+                    }
+                ],
+            },
+        ],
+    }
+    signal = parse_model_blue_payload(payload, timestamp=_TS, reason="t")
+    assert signal.strategy_id == "model_blue"
+    assert signal.trade_id == "T-SIL-GDX"
+    assert signal.market == "SMART"
+    assert signal.legs[0].instrument_type == "STK"
+    assert signal.legs[0].payload_side == "BUY"
+    assert signal.legs[0].weight == 0.5019
+    assert signal.legs[0].price == Decimal("90.64")
+    assert signal.legs[1].instrument_type == "STK"
+    assert signal.legs[1].payload_side == "SELL"
+
+
+def test_sizer_floors_stk_example_quantities() -> None:
+    signal = Signal(
+        signal_type=SignalType.BUY,
+        timestamp=_TS,
+        reason="t",
+        strategy_id="model_blue",
+        action="OPEN",
+        trade_id="T-FLOOR",
+        direction=1,
+        legs=(
+            SignalLeg("XLE", "STK", 0.5943, Decimal("62.59"), payload_side="BUY"),
+            SignalLeg("XOP", "STK", -0.4057, Decimal("183.34"), payload_side="SELL"),
+        ),
+    )
+    sizer = ModelBlueSizer(TemporarySettingsCommittedCapitalProvider(Decimal(25000)))
+    xle, xop = sizer.size_open(signal)
+    assert xle.quantity == Decimal(399)
+    assert xop.quantity == Decimal(93)
+
+
+def test_sizer_does_not_floor_cfd() -> None:
+    signal = Signal(
+        signal_type=SignalType.BUY,
+        timestamp=_TS,
+        reason="t",
+        strategy_id="model_blue",
+        action="OPEN",
+        trade_id="T-CFD-QTY",
+        direction=1,
+        legs=(
+            SignalLeg("SIL", "CFD", 0.5, Decimal("90.64"), payload_side="BUY"),
+            SignalLeg("GDX", "CFD", -0.5, Decimal("91.86"), payload_side="SELL"),
+        ),
+    )
+    sizer = ModelBlueSizer(TemporarySettingsCommittedCapitalProvider(Decimal(25000)))
+    sil, gdx = sizer.size_open(signal)
+    assert sil.quantity != sil.quantity.to_integral_value()
+    assert gdx.quantity != gdx.quantity.to_integral_value()
+    assert sil.quantity == (Decimal(25000) / Decimal("90.64")).quantize(Decimal("0.0001"))

@@ -32,8 +32,8 @@ def test_contract_month_normal_period_passes_unchanged() -> None:
         strategy_id="MODEL_BLUE",
         action=OrderAction.OPEN,
         legs=[
-            OrderLeg(symbol="RELIANCE", side=OrderSide.BUY, quantity=100, price=Decimal(2500), contract_month="2026-09"),
-            OrderLeg(symbol="TCS", side=OrderSide.SELL, quantity=50, price=Decimal(3500), contract_month="2026-09"),
+            OrderLeg(symbol="RELIANCE", side=OrderSide.BUY, quantity=100, price=Decimal(2500), contract_month="2026-09", instrument_type="FUT"),
+            OrderLeg(symbol="TCS", side=OrderSide.SELL, quantity=50, price=Decimal(3500), contract_month="2026-09", instrument_type="FUT"),
         ],
     )
     result = check.evaluate(intent, context)
@@ -53,8 +53,8 @@ def test_contract_month_rollover_period_adjusts_both_legs() -> None:
         strategy_id="MODEL_BLUE",
         action=OrderAction.OPEN,
         legs=[
-            OrderLeg(symbol="RELIANCE", side=OrderSide.BUY, quantity=100, price=Decimal(2500), contract_month="2026-09"),
-            OrderLeg(symbol="TCS", side=OrderSide.SELL, quantity=50, price=Decimal(3500), contract_month="2026-09"),
+            OrderLeg(symbol="RELIANCE", side=OrderSide.BUY, quantity=100, price=Decimal(2500), contract_month="2026-09", instrument_type="FUT"),
+            OrderLeg(symbol="TCS", side=OrderSide.SELL, quantity=50, price=Decimal(3500), contract_month="2026-09", instrument_type="FUT"),
         ],
     )
     result = check.evaluate(intent, context)
@@ -76,8 +76,8 @@ def test_contract_month_mismatched_legs_normalized() -> None:
         strategy_id="MODEL_BLUE",
         action=OrderAction.OPEN,
         legs=[
-            OrderLeg(symbol="RELIANCE", side=OrderSide.BUY, quantity=100, price=Decimal(2500), contract_month="2026-09"),
-            OrderLeg(symbol="TCS", side=OrderSide.SELL, quantity=50, price=Decimal(3500), contract_month="2026-10"),
+            OrderLeg(symbol="RELIANCE", side=OrderSide.BUY, quantity=100, price=Decimal(2500), contract_month="2026-09", instrument_type="FUT"),
+            OrderLeg(symbol="TCS", side=OrderSide.SELL, quantity=50, price=Decimal(3500), contract_month="2026-10", instrument_type="FUT"),
         ],
     )
     result = check.evaluate(intent, context)
@@ -99,7 +99,7 @@ def test_contract_month_configurable_rollover_checker() -> None:
         strategy_id="MODEL_BLUE",
         action=OrderAction.OPEN,
         legs=[
-            OrderLeg(symbol="RELIANCE", side=OrderSide.BUY, quantity=100, price=Decimal(2500), contract_month="2026-09"),
+            OrderLeg(symbol="RELIANCE", side=OrderSide.BUY, quantity=100, price=Decimal(2500), contract_month="2026-09", instrument_type="FUT"),
         ],
     )
     result = check.evaluate(intent, context)

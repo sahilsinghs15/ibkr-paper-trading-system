@@ -43,6 +43,12 @@ class OpenPositionLimitCheck(BaseRMSCheck):
 
         current_positions = context.open_positions.get(open_position_key(intent), 0)
         max_positions = strategy_cfg.max_open_positions
+        if intent.account_id is not None:
+            account_limit = context.account_open_limits.get(
+                (intent.account_id, intent.strategy_id)
+            )
+            if account_limit is not None:
+                max_positions = account_limit
 
         if current_positions >= max_positions:
             return CheckResult(

@@ -5,7 +5,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.instruments.models import ResolvedInstrument
 
 
 class OrderAction(Enum):
@@ -50,6 +53,9 @@ class OrderLeg:
     weight: float | None = None
     leg_index: int | None = None
     metadata: dict[str, Any] | None = None
+    exchange: str | None = None
+    currency: str | None = None
+    resolved: "ResolvedInstrument | None" = None
 
     @property
     def effective_notional(self) -> Decimal:
@@ -78,6 +84,7 @@ class OrderIntent:
     legs: list[OrderLeg]
     account_id: int | None = None
     ibkr_account: str | None = None
+    market: str | None = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -143,6 +150,7 @@ class RMSContext:
     open_positions: dict[str | tuple[int, str], int] = field(default_factory=dict)
     symbol_exposures: dict[str | tuple[int, str], Decimal] = field(default_factory=dict)
     per_symbol_limits: dict[tuple[int, str], Decimal] = field(default_factory=dict)
+    account_open_limits: dict[tuple[int, str], int] = field(default_factory=dict)
     current_time: datetime = field(default_factory=lambda: datetime.now(UTC))
     rollover_window_days: int = 7
     target_rollover_month: str | None = None

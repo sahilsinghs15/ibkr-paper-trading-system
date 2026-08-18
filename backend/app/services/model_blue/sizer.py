@@ -1,18 +1,21 @@
-"""Production Model Blue pair sizer (US ETF/STK, fractional shares).
+"""Production Model Blue pair sizer (US ETF/STK).
+
+IBKR API rejects fractional STK orders (error 10243), so STK quantities are
+whole shares rounded down so notional never exceeds the allocated target.
 
 Reimplements the intended Model Blue pair rules in-process:
 - exactly two legs; first leg is the capital anchor
 - execution side = sign(weight * direction)
 - base target notional = committed
 - other target notional = committed * abs(weight) / abs(base_weight)
-- quantity = round(target_notional / price, 4)
+- quantity = floor(target_notional / price) whole shares for STK (IBKR API)
 - reject if any leg notional is below MIN_ORDER_NOTIONAL
 
 Does not import or wrap the reference helper file.
 """
 
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 
 from app.models.signal import Signal
 from app.rms.models import OrderSide
@@ -24,6 +27,7 @@ from app.services.model_blue.parser import (
 
 MIN_ORDER_NOTIONAL = Decimal(100)
 _QTY_QUANTUM = Decimal("0.0001")
+_STK_QTY_QUANTUM = Decimal("1")
 
 
 @dataclass(frozen=True)
@@ -118,7 +122,18 @@ class ModelBlueSizer:
             raise ModelBlueValidationError(
                 f"MODEL_BLUE_INVALID_PRICE: {symbol} price must be positive."
             )
-        quantity = (target_notional / price).quantize(_QTY_QUANTUM, rounding=ROUND_HALF_UP)
+        if (instrument_type or "STK").upper() in ("STK", "ETF"):
+            quantity = (target_notional / price).quantize(
+                _STK_QTY_QUANTUM, rounding=ROUND_DOWN
+            )
+            if quantity < 1:
+                raise ModelBlueValidationError(
+                    f"MODEL_BLUE_MIN_SHARE: {symbol} sizes below 1 share at price {price}."
+                )
+        else:
+            quantity = (target_notional / price).quantize(
+                _QTY_QUANTUM, rounding=ROUND_HALF_UP
+            )
         notional = quantity * price
         if notional < MIN_ORDER_NOTIONAL:
             raise ModelBlueValidationError(

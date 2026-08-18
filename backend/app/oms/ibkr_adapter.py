@@ -12,6 +12,8 @@ from ibapi.contract import Contract  # type: ignore[import-untyped]
 from ibapi.order import Order as IBOrder  # type: ignore[import-untyped]
 
 from app.broker.ibkr.tws_client import TWSClient
+from app.instruments.resolver import ibkr_contract_from_resolved
+from app.instruments.models import InstrumentResolutionError
 from app.oms.models import OMSOrder, OMSOrderStatus
 from app.rms.models import OrderSide
 
@@ -66,9 +68,22 @@ class IBKRExecutionAdapter:
         self._fill_futures: dict[
             str, tuple[asyncio.Future[OMSOrder], asyncio.AbstractEventLoop]
         ] = {}
+        self._state_listeners: list[Any] = []
+        self._exec_id_to_order: dict[str, OMSOrder] = {}
 
         # Register self as TWSClient listener
         self._client.register_listener(self)
+
+    def add_order_state_listener(self, listener: Any) -> None:
+        """Register a callback(order, event_kind) for broker state changes."""
+        self._state_listeners.append(listener)
+
+    def _emit_order_state(self, order: OMSOrder, kind: str) -> None:
+        for listener in list(self._state_listeners):
+            try:
+                listener(order, kind)
+            except Exception:
+                logger.exception("Order state listener failed kind=%s", kind)
 
     def is_connected(self) -> bool:
         """Return True if connected to TWS and initial handshake completed."""
@@ -113,14 +128,14 @@ class IBKRExecutionAdapter:
             self._client.next_order_id = current_id + 1
             return current_id
 
-    def _build_ibkr_contract(self, symbol: str) -> Contract:
-        """Construct standard IBKR Contract model for US Equities / ETFs."""
-        contract = Contract()
-        contract.symbol = symbol
-        contract.secType = self._sec_type
-        contract.exchange = self._exchange
-        contract.currency = self._currency
-        return contract
+    def _build_ibkr_contract(self, order: OMSOrder) -> Contract:
+        """Build IBKR Contract from the already-resolved instrument on the OMS order."""
+        resolved = order.resolved
+        if resolved is None:
+            raise InstrumentResolutionError(
+                "MISSING_RESOLVED_CONTRACT: adapter will not guess STK/SMART/USD."
+            )
+        return ibkr_contract_from_resolved(resolved)
 
     def _build_ibkr_order(self, order: OMSOrder) -> IBOrder:
         """Convert internal OMSOrder to IBKR IBOrder model."""
@@ -162,7 +177,7 @@ class IBKRExecutionAdapter:
         tws_order_id = self._get_next_tws_order_id()
         order.ibkr_order_id = tws_order_id
 
-        contract = self._build_ibkr_contract(order.symbol)
+        contract = self._build_ibkr_contract(order)
         ib_order = self._build_ibkr_order(order)
 
         order.timestamps.ibkr_submit_started_at = datetime.now(UTC)
@@ -427,6 +442,16 @@ class IBKRExecutionAdapter:
             )
 
             self._notify_future_if_terminal(order)
+            emit_kind = None
+            if order.status == OMSOrderStatus.SUBMITTED:
+                emit_kind = "BROKER_ACK"
+            elif order.status == OMSOrderStatus.PARTIALLY_FILLED:
+                emit_kind = "PARTIAL_FILL"
+            elif order.status == OMSOrderStatus.FILLED:
+                emit_kind = "FILL"
+            captured = order
+        if emit_kind:
+            self._emit_order_state(captured, emit_kind)
 
     def on_open_order(
         self,
@@ -497,6 +522,10 @@ class IBKRExecutionAdapter:
             if order.filled_quantity >= order.quantity:
                 order.status = OMSOrderStatus.FILLED
 
+            exec_id = str(getattr(execution, "execId", "") or "")
+            if exec_id:
+                self._exec_id_to_order[exec_id] = order
+
             logger.info(
                 "IBKR execDetails callback: internal_id=%s, exec_shares=%s, exec_price=%.4f, cum_qty=%s, status=%s",
                 order.internal_order_id,
@@ -507,6 +536,9 @@ class IBKRExecutionAdapter:
             )
 
             self._notify_future_if_terminal(order)
+            emit_kind = "FILL" if order.status == OMSOrderStatus.FILLED else "PARTIAL_FILL"
+            captured = order
+        self._emit_order_state(captured, emit_kind)
 
     def on_exec_details_end(self, reqId: int) -> None:
         """Handle execDetailsEnd callback from TWSClient."""
@@ -514,8 +546,8 @@ class IBKRExecutionAdapter:
 
     def on_commission_report(self, commissionReport: Any) -> None:
         """Handle commissionReport callback from TWSClient."""
-        exec_id = getattr(commissionReport, "execId", None)
-        commission = float(getattr(commissionReport, "commission", 0.0))
+        exec_id = str(getattr(commissionReport, "execId", "") or "")
+        commission = float(getattr(commissionReport, "commission", 0.0) or 0.0)
         currency = getattr(commissionReport, "currency", "")
         logger.info(
             "IBKR commissionReport callback: exec_id=%s, commission=%.2f %s",
@@ -523,6 +555,22 @@ class IBKRExecutionAdapter:
             commission,
             currency,
         )
+        if not exec_id or commission <= 0:
+            return
+        with self._lock:
+            order = self._exec_id_to_order.get(exec_id)
+            if order is None:
+                return
+            existing = getattr(order, "commission", None) or Decimal(0)
+            order.commission = existing + Decimal(str(commission))
+            captured = order
+        self._emit_order_state(captured, "COMMISSION")
+
+    # IBKR docs: 399 = "Order Message" warning (e.g. held until RTH); order remains working.
+    # 2109 = "Outside RTH ignored ... PlaceOrder is now being processed."
+    _NON_TERMINAL_WARNING_CODES = frozenset({399, 2109})
+    # True order failures. 10243 = fractional STK via API.
+    _ORDER_REJECTION_CODES = frozenset({200, 201, 10147, 10148, 10243})
 
     def on_error(self, reqId: int, errorCode: int, errorString: str) -> None:
         """Handle TWS error callback."""
@@ -531,18 +579,29 @@ class IBKRExecutionAdapter:
         with self._lock:
             order = self._orders_by_tws_id.get(reqId) if req_type == "order" or reqId in self._orders_by_tws_id else None
 
-            if order:
+            if order and order.status in self._TERMINAL_STATUSES:
+                captured = None
+            elif order:
                 # Code 202 is Order Canceled by user/system
                 if errorCode == 202:
                     order.status = OMSOrderStatus.CANCELLED
                     order.error_message = f"Canceled: {errorString}"
-                elif errorCode in (201, 10147, 10148, 2109, 200, 399):
-                    # Order rejections or failures
+                elif errorCode in self._ORDER_REJECTION_CODES:
+                    # Checked before 10xxx warning range so 10243 stays REJECTED.
                     order.status = OMSOrderStatus.REJECTED
                     order.error_message = f"TWS Error {errorCode}: {errorString}"
-                elif (errorCode >= 2000 and errorCode < 3000) or (errorCode >= 10000 and errorCode < 11000):
-                    # Informational status notifications or preset warnings (e.g. 10349 TIF set to DAY)
-                    logger.info("TWS Status info for order %s: %d %s", order.internal_order_id, errorCode, errorString)
+                elif (
+                    errorCode in self._NON_TERMINAL_WARNING_CODES
+                    or (errorCode >= 2000 and errorCode < 3000)
+                    or (errorCode >= 10000 and errorCode < 11000)
+                ):
+                    # Warnings: order remains working. Must not REJECT (would compensate).
+                    logger.info(
+                        "TWS Status info for order %s: %d %s",
+                        order.internal_order_id,
+                        errorCode,
+                        errorString,
+                    )
                     return
                 else:
                     order.status = OMSOrderStatus.ERROR
@@ -557,6 +616,11 @@ class IBKRExecutionAdapter:
                 )
 
                 self._notify_future_if_terminal(order)
+                captured = order
+            else:
+                captured = None
+        if captured is not None:
+            self._emit_order_state(captured, captured.status.value)
 
     def on_connection_closed(self) -> None:
         """Handle TWS connection dropped callback."""
@@ -567,6 +631,7 @@ class IBKRExecutionAdapter:
                     OMSOrderStatus.FILLED,
                     OMSOrderStatus.CANCELLED,
                     OMSOrderStatus.REJECTED,
+                    OMSOrderStatus.ERROR,
                 ):
                     order.status = OMSOrderStatus.ERROR
                     order.error_message = "Connection closed unexpectedly"

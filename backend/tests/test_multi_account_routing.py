@@ -1,7 +1,7 @@
 """Multi-account strategy routing: Signal -> Strategy -> eligible Accounts."""
 
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import uuid4
@@ -170,8 +170,8 @@ async def test_6_and_7_independent_sizing_different_alloc_pct() -> None:
     xle_a = next(o for o in by_acct[41] if o.symbol == "XLE")
     xle_b = next(o for o in by_acct[42] if o.symbol == "XLE")
     assert xle_a.quantity != xle_b.quantity
-    expected_a = float((Decimal(25000) / _XLE).quantize(Decimal("0.0001")))
-    expected_b = float((Decimal(20000) / _XLE).quantize(Decimal("0.0001")))
+    expected_a = float((Decimal(25000) / _XLE).quantize(Decimal("1"), rounding=ROUND_DOWN))
+    expected_b = float((Decimal(20000) / _XLE).quantize(Decimal("1"), rounding=ROUND_DOWN))
     assert xle_a.quantity == pytest.approx(expected_a)
     assert xle_b.quantity == pytest.approx(expected_b)
 
@@ -275,11 +275,8 @@ async def test_17_unknown_strategy_does_not_route_to_model_blue() -> None:
         capture_data={},
     )
     assert inbound.strategy_id == "model_red"
-    result = await manager.process_signal_execution(inbound)
-    assert result is not None
-    assert len(result.orders) == 1
-    assert result.orders[0].symbol == "SPY"
-    assert result.orders[0].intent.account_id is None
+    with pytest.raises(ValueError, match="UNKNOWN_STRATEGY"):
+        await manager.process_signal_execution(inbound)
 
 
 @pytest.mark.asyncio
@@ -605,12 +602,31 @@ async def test_11_positions_isolated_by_account_id(
             await pos.get_by_trade_id(trade_id)
 
     async with db_factory() as session, session.begin():
+        from app.db.models.basket import BasketModel
+        from app.db.models.event import EventLogModel
         from app.db.models.order import OrderModel
         from app.db.models.position import PositionModel
         from app.db.models.signal import SignalModel
 
+        signal_ids = [
+            row.id
+            for row in (
+                await session.execute(select(SignalModel).where(SignalModel.signal_id == trade_id))
+            ).scalars()
+        ]
+        if signal_ids:
+            for row in (
+                await session.execute(
+                    select(EventLogModel).where(EventLogModel.signal_id.in_(signal_ids))
+                )
+            ).scalars():
+                await session.delete(row)
         for row in (
             await session.execute(select(OrderModel).where(OrderModel.trade_id == trade_id))
+        ).scalars():
+            await session.delete(row)
+        for row in (
+            await session.execute(select(BasketModel).where(BasketModel.trade_id == trade_id))
         ).scalars():
             await session.delete(row)
         for row in (

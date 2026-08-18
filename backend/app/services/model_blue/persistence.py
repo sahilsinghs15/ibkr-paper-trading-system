@@ -1,17 +1,100 @@
 """Persist Model Blue execution state (signal + pair position + per-leg orders) atomically."""
 
+from decimal import Decimal
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.repositories.allocation_repository import AllocationRepository
+from app.db.repositories.event_repository import EventRepository
 from app.db.repositories.order_repository import OrderRepository
 from app.db.repositories.signal_repository import SignalRepository
 from app.db.repositories.trade_repository import TradeRepository
-from app.models.model_blue_trade import OpenModelBlueTrade
+from app.models.model_blue_trade import OpenModelBlueTrade, OpenModelBlueTradeLeg
 from app.models.signal import Signal
-from app.oms.models import OMSOrder
+from app.oms.models import OMSOrder, OMSOrderStatus
 from app.services.model_blue.parser import ModelBlueValidationError
 
 SessionFactory = async_sessionmaker[AsyncSession]
+
+
+def _exit_marks_from_orders(orders: list[OMSOrder]) -> dict[str, Decimal]:
+    marks: dict[str, Decimal] = {}
+    for order in orders:
+        if getattr(order, "is_compensation", False):
+            continue
+        raw = order.average_fill_price or order.last_fill_price
+        if raw is None:
+            continue
+        marks[order.symbol] = raw if isinstance(raw, Decimal) else Decimal(str(raw))
+    return marks
+
+
+def _commission_from_orders(orders: list[OMSOrder]) -> Decimal | None:
+    total = Decimal(0)
+    found = False
+    for order in orders:
+        raw = getattr(order, "commission", None)
+        if raw is None:
+            continue
+        found = True
+        total += raw if isinstance(raw, Decimal) else Decimal(str(raw))
+    return total if found and total > 0 else None
+
+
+def _open_trade_from_fills(
+    trade: OpenModelBlueTrade, orders: list[OMSOrder]
+) -> OpenModelBlueTrade:
+    """Build the pair row from actual FILLED broker quantities and avg prices."""
+    fill_orders = [o for o in orders if not getattr(o, "is_compensation", False)]
+    fill_orders.sort(key=lambda o: (o.leg_index is None, o.leg_index or 0))
+    if len(fill_orders) != 2:
+        raise ModelBlueValidationError(
+            "POSITION_REQUIRES_FILLS: Model Blue OPEN persists only after both "
+            f"legs are filled (got {len(fill_orders)} child orders)."
+        )
+    legs: list[OpenModelBlueTradeLeg] = []
+    for order in fill_orders:
+        if order.status != OMSOrderStatus.FILLED:
+            raise ModelBlueValidationError(
+                f"POSITION_REQUIRES_FILLS: {order.symbol} status={order.status.value}."
+            )
+        qty = Decimal(str(order.filled_quantity))
+        if qty <= 0:
+            raise ModelBlueValidationError(
+                f"POSITION_REQUIRES_FILLS: {order.symbol} filled_quantity={qty}."
+            )
+        raw = order.average_fill_price or order.last_fill_price
+        if raw is None:
+            raise ModelBlueValidationError(
+                f"POSITION_REQUIRES_FILLS: {order.symbol} has no fill price."
+            )
+        price = raw if isinstance(raw, Decimal) else Decimal(str(raw))
+        resolved = getattr(order, "resolved", None)
+        itype = None
+        if resolved is not None:
+            itype = resolved.requested_instrument_type
+        elif order.leg_index is not None and order.intent.legs:
+            if 0 <= order.leg_index < len(order.intent.legs):
+                itype = order.intent.legs[order.leg_index].instrument_type
+        if not itype:
+            raise ModelBlueValidationError(
+                f"POSITION_REQUIRES_INSTRUMENT_TYPE: {order.symbol} fill has no instrument_type."
+            )
+        legs.append(
+            OpenModelBlueTradeLeg(
+                symbol=order.symbol,
+                instrument_type=itype,
+                side=order.side,
+                quantity=qty,
+                price=price,
+            )
+        )
+    return OpenModelBlueTrade(
+        trade_id=trade.trade_id,
+        strategy_id=trade.strategy_id,
+        direction=trade.direction,
+        legs=tuple(legs),
+    )
 
 
 class ModelBlueExecutionPersistence:
@@ -48,6 +131,7 @@ class ModelBlueExecutionPersistence:
         account_id: int | None = None,
     ) -> None:
         resolved = self._account_id_from(orders, account_id)
+        trade = _open_trade_from_fills(trade, orders)
         async with self._session_factory() as session, session.begin():
             account, allocation = await self._require_account_allocation(
                 session, trade.strategy_id, resolved
@@ -64,6 +148,8 @@ class ModelBlueExecutionPersistence:
             )
             order_repo = OrderRepository(session)
             for index, order in enumerate(orders):
+                if getattr(order, "is_compensation", False):
+                    continue
                 await order_repo.record_oms_order(
                     order,
                     signal_pk=sig_row.id,
@@ -72,6 +158,16 @@ class ModelBlueExecutionPersistence:
                     strategy_id=trade.strategy_id,
                     leg_label=f"L{index}",
                 )
+            await EventRepository(session).append(
+                process="position",
+                kind="POSITION_OPEN",
+                detail={
+                    "account_id": account.id,
+                    "trade_id": trade.trade_id,
+                    "strategy_id": trade.strategy_id,
+                },
+                signal_id=sig_row.id,
+            )
 
     async def persist_close(
         self,
@@ -84,13 +180,18 @@ class ModelBlueExecutionPersistence:
         resolved = self._account_id_from(orders, account_id)
         async with self._session_factory() as session, session.begin():
             closed = await TradeRepository(session).close_trade(
-                trade_id, account_id=resolved
+                trade_id,
+                account_id=resolved,
+                exit_marks=_exit_marks_from_orders(orders),
+                commission=_commission_from_orders(orders),
             )
             sig_row = await SignalRepository(session).record_processed(
                 signal, persist_signal_id=f"{trade_id}:CLOSE"
             )
             order_repo = OrderRepository(session)
             for index, order in enumerate(orders):
+                if getattr(order, "is_compensation", False):
+                    continue
                 await order_repo.record_oms_order(
                     order,
                     signal_pk=sig_row.id,
@@ -99,6 +200,15 @@ class ModelBlueExecutionPersistence:
                     strategy_id=closed.strategy_id,
                     leg_label=f"L{index}",
                 )
+            await EventRepository(session).append(
+                process="position",
+                kind="POSITION_CLOSE",
+                detail={
+                    "account_id": resolved,
+                    "trade_id": trade_id,
+                },
+                signal_id=sig_row.id,
+            )
             return closed
 
     async def _require_account_allocation(

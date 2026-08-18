@@ -58,6 +58,7 @@ def _leg(symbol: str, index: int, qty: float = 100.0, side: OrderSide = OrderSid
         price=Decimal("10"),
         contract_month="2026-09",
         notional=Decimal(str(qty)) * Decimal("10"),
+        instrument_type="STK",
         leg_index=index,
     )
 
@@ -123,6 +124,15 @@ class PlaceScript:
                     1,
                     "",
                     0.0,
+                )
+            elif step == "warn399_then_fill":
+                adapter.on_error(
+                    order_id,
+                    399,
+                    "Order Message: Warning: Your order will not be placed at the exchange until RTH.",
+                )
+                adapter.on_order_status(
+                    order_id, "Filled", qty, 0.0, px, 0, 0, px, 1, "", 0.0
                 )
             elif step == "error":
                 raise RuntimeError("placeOrder failed")
@@ -493,3 +503,86 @@ async def test_critical_blocks_order_manager_open() -> None:
     )
     with pytest.raises(ValueError, match="BASKET_CRITICAL"):
         await manager._evaluate_and_submit(intent, signal, handler=None)
+
+
+@pytest.mark.asyncio
+async def test_warning_399_does_not_reject_or_compensate() -> None:
+    oms, _adapter, _script = _wired(PlaceScript(["warn399_then_fill", "warn399_then_fill"]))
+    intent = _intent(["XLE", "XOP"], trade_id="T-399")
+    result = await _coord(oms).execute(intent, _pass(intent), order_type="MARKET")
+    assert result.state == BasketState.OPEN
+    assert result.success is True
+    assert result.compensation_orders == []
+    assert [o.status for o in result.orders] == [OMSOrderStatus.FILLED, OMSOrderStatus.FILLED]
+
+
+@pytest.mark.asyncio
+async def test_both_legs_partial_compensates_actual_quantities() -> None:
+    oms, _adapter, script = _wired(PlaceScript(["partial:40", "partial:25"]))
+    intent = _intent(["XLE", "XOP"], trade_id="T-BOTH-PART", qtys=[100.0, 100.0])
+    result = await _coord(oms).execute(intent, _pass(intent), order_type="MARKET")
+    assert result.state == BasketState.COMPENSATED
+    assert result.success is False
+    by_sym = {c.symbol: c.quantity for c in result.compensation_orders}
+    assert by_sym == {"XLE": 40.0, "XOP": 25.0}
+    assert 100.0 not in by_sym.values()
+    assert script.cancel_ids
+
+
+@pytest.mark.asyncio
+async def test_cancel_acknowledgement_failure_is_critical() -> None:
+    oms, adapter, _script = _wired(PlaceScript(["fill", "pending"]))
+    adapter._client.cancelOrder.side_effect = RuntimeError("cancel ack failed")
+    intent = _intent(["XLE", "XOP"], trade_id="T-CANCEL-FAIL", account_id=11)
+    result = await _coord(oms).execute(intent, _pass(intent), order_type="MARKET")
+    assert result.state == BasketState.CRITICAL
+    assert result.success is False
+    assert oms._adapter._client.cancelOrder.side_effect is not None
+
+
+@pytest.mark.asyncio
+async def test_restart_unwinding_basket_is_critical() -> None:
+    engine = create_engine_from_settings()
+    factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+    trade_id = f"T-UNWIND-{uuid4().hex[:8]}"
+    try:
+        async with factory() as session, session.begin():
+            account = AccountModel(
+                name=f"unwind-{uuid4().hex[:8]}",
+                ibkr_account=f"DU{uuid4().hex[:8]}",
+                total_margin=Decimal("100000"),
+                enabled=True,
+            )
+            session.add(account)
+            await session.flush()
+            session.add(
+                BasketModel(
+                    account_id=account.id,
+                    trade_id=trade_id,
+                    strategy_id=_STRAT,
+                    action="OPEN",
+                    state=BasketState.UNWINDING.value,
+                    intended_leg_count=2,
+                )
+            )
+            account_id = account.id
+
+        tws = MagicMock(spec=TWSClient)
+        tws.is_connected.return_value = False
+        adapter = IBKRExecutionAdapter(client=tws)
+        adapter.is_connected = lambda: False  # type: ignore[method-assign]
+        coord = BasketCoordinator(OMSService(adapter=adapter), session_factory=factory)
+        await coord.recover_incomplete_baskets()
+        assert coord.is_open_blocked(account_id, _STRAT) is True
+        async with factory() as session:
+            row = (
+                await session.execute(
+                    select(BasketModel).where(
+                        BasketModel.account_id == account_id,
+                        BasketModel.trade_id == trade_id,
+                    )
+                )
+            ).scalar_one()
+            assert row.state == BasketState.CRITICAL.value
+    finally:
+        await engine.dispose()

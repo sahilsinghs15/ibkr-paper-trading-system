@@ -79,7 +79,7 @@ def test_engine_applies_adjust_and_continues() -> None:
         strategy_id="MODEL_BLUE",
         action=OrderAction.OPEN,
         legs=[
-            OrderLeg(symbol="RELIANCE", side=OrderSide.BUY, quantity=100, price=Decimal(2500), contract_month="2026-09"),
+            OrderLeg(symbol="RELIANCE", side=OrderSide.BUY, quantity=100, price=Decimal(2500), contract_month="2026-09", instrument_type="FUT"),
         ],
     )
     result = engine.evaluate(intent, context)

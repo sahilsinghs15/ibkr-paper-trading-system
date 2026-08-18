@@ -4,6 +4,10 @@ import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from dataclasses import replace
+
+from app.instruments.models import InstrumentResolutionError
+from app.instruments.resolver import resolve_leg
 from app.oms.ibkr_adapter import IBKRExecutionAdapter
 from app.oms.models import ExecutionResult, OMSOrder, OMSOrderStatus
 from app.rms.models import OrderIntent, OrderLeg, RMSOutcome, RMSResult
@@ -206,9 +210,37 @@ class OMSService:
             account_id=intent.account_id,
         )
         price = self._leg_limit_price(leg, limit_price, len(intent.legs))
+        try:
+            resolved = leg.resolved or resolve_leg(
+                symbol=leg.symbol,
+                instrument_type=leg.instrument_type,
+                market=intent.market or leg.exchange,
+                currency=leg.currency,
+                con_id=leg.con_id,
+            )
+        except InstrumentResolutionError as exc:
+            order = OMSOrder(
+                internal_order_id=internal_order_id,
+                intent=intent,
+                symbol=leg.symbol,
+                side=leg.side,
+                quantity=float(leg.quantity),
+                limit_price=price,
+                order_type=order_type,
+                status=OMSOrderStatus.REJECTED,
+                error_message=str(exc),
+                parent_signal_id=intent.signal_id,
+                leg_index=index,
+            )
+            order.timestamps.intent_created_at = intent.timestamp
+            order.timestamps.rms_started_at = rms_result.timestamp
+            order.timestamps.rms_completed_at = rms_result.timestamp
+            order.timestamps.oms_received_at = oms_received_at
+            self._orders[internal_order_id] = order
+            return order
         order = OMSOrder(
             internal_order_id=internal_order_id,
-            intent=intent,
+            intent=replace(intent, legs=list(intent.legs)),
             symbol=leg.symbol,
             side=leg.side,
             quantity=float(leg.quantity),
@@ -217,6 +249,7 @@ class OMSService:
             status=OMSOrderStatus.PENDING,
             parent_signal_id=intent.signal_id,
             leg_index=index,
+            resolved=resolved,
         )
         order.timestamps.intent_created_at = intent.timestamp
         order.timestamps.rms_started_at = rms_result.timestamp

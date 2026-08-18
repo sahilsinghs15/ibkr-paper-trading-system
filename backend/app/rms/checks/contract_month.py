@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from app.rms.checks.base import BaseRMSCheck
+from app.instruments.resolver import is_expiry_instrument
 from app.rms.models import (
     CheckResult,
     OrderAction,
@@ -73,9 +74,21 @@ class ContractMonthCheck(BaseRMSCheck):
                 outcome=RMSOutcome.PASS,
             )
 
-        # Canonical month is the first leg; every leg is then aligned to one month.
-        first_month = intent.legs[0].contract_month
-        mismatched_legs = any(leg.contract_month != first_month for leg in intent.legs)
+        expiry_legs = [
+            leg for leg in intent.legs if is_expiry_instrument(leg.instrument_type)
+        ]
+        if not expiry_legs:
+            return CheckResult(
+                check_number=self.check_number,
+                check_name=self.check_name,
+                outcome=RMSOutcome.PASS,
+            )
+
+        # Canonical month is the first expiry leg; remaining expiry legs align to it.
+        first_month = expiry_legs[0].contract_month
+        mismatched_legs = any(
+            leg.contract_month != first_month for leg in expiry_legs
+        )
 
         # Check rollover condition for OPEN intents
         should_rollover = False
@@ -117,6 +130,7 @@ class ContractMonthCheck(BaseRMSCheck):
             legs=adjusted_legs,
             account_id=intent.account_id,
             ibkr_account=intent.ibkr_account,
+            market=intent.market,
             timestamp=intent.timestamp,
         )
 

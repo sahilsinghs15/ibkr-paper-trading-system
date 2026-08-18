@@ -1,7 +1,7 @@
 """DB-2 persistence: Model Blue trades survive new sessions/OrderManager instances."""
 
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -252,6 +252,7 @@ async def test_b_close_recovery_after_new_order_manager(db_factory: async_sessio
         assert row is not None
         assert row.risk_state == "CLOSED"
         assert row.closed_at is not None
+        assert row.realised_pnl is not None
 
 
 @pytest.mark.asyncio
@@ -313,7 +314,7 @@ async def test_d_allocation_is_authoritative_for_sizer(db_factory: async_session
         ),
     )
     xle, _xop = sizer.size_open(signal)
-    expected_qty = (_COMMITTED / Decimal("62.59")).quantize(Decimal("0.0001"))
+    expected_qty = (_COMMITTED / Decimal("62.59")).quantize(Decimal("1"), rounding=ROUND_DOWN)
     assert xle.quantity == expected_qty
 
     missing = DatabaseCommittedCapitalProvider(db_factory, account_id=account.id + 10_000_000)

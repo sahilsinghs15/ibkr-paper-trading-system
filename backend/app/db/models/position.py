@@ -41,6 +41,8 @@ class PositionModel(Base):
     target: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     stop: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     time_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    leg_a_instrument_type: Mapped[str] = mapped_column(String, nullable=False, default="STK")
+    leg_b_instrument_type: Mapped[str | None] = mapped_column(String, nullable=True)
     opened_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

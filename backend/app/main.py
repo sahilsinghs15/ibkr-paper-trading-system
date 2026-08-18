@@ -19,6 +19,7 @@ from app.services.model_blue.db_allocation import DatabaseCommittedCapitalProvid
 from app.services.model_blue.db_trade_book import DatabaseModelBlueTradeBook
 from app.services.model_blue.persistence import ModelBlueExecutionPersistence
 from app.services.order_manager import OrderManager
+from app.services.pnl import LivePnlService
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         session_factory=AsyncSessionLocal,
         persistence=persistence,
     )
+    order_manager._live_pnl = LivePnlService(AsyncSessionLocal, client)
     try:
         await order_manager.hydrate_runtime_from_db()
     except Exception:
@@ -69,6 +71,11 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     )
     if not success:
         logger.warning("Initial TWS connection attempt unconfirmed; execution adapter will auto-reconnect on active traffic.")
+    else:
+        try:
+            await order_manager.hydrate_live_pnl()
+        except Exception:
+            logger.exception("Failed to re-subscribe live P&L for open positions.")
 
     # Store references on application state for dependency lookup
     fastapi_app.state.client = client
