@@ -14,7 +14,8 @@ from app.broker.ibkr.tws_client import TWSClient
 from app.core.config import get_settings
 from app.core.logger import setup_logging
 from app.db.session import AsyncSessionLocal
-from app.oms import IBKRExecutionAdapter, OMSService
+from app.oms.ibkr_adapter import IBKRExecutionAdapter
+from app.oms.oms_service import OMSService
 from app.services.model_blue.db_allocation import DatabaseCommittedCapitalProvider
 from app.services.model_blue.db_trade_book import DatabaseModelBlueTradeBook
 from app.services.model_blue.persistence import ModelBlueExecutionPersistence

@@ -7,7 +7,8 @@ from fastapi.testclient import TestClient
 
 from app.broker.ibkr.tws_client import TWSClient
 from app.main import create_app
-from app.oms import IBKRExecutionAdapter, OMSService
+from app.oms.ibkr_adapter import IBKRExecutionAdapter
+from app.oms.oms_service import OMSService
 from app.services.order_manager import OrderManager
 
 

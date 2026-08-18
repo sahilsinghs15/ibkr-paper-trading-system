@@ -23,7 +23,8 @@ from app.db.repositories.position_repository import PositionRepository
 from app.db.repositories.signal_repository import SignalRepository
 from app.db.session import create_engine_from_settings
 from app.models.signal import Signal, SignalLeg, SignalType
-from app.oms import IBKRExecutionAdapter, OMSService
+from app.oms.ibkr_adapter import IBKRExecutionAdapter
+from app.oms.oms_service import OMSService
 from app.rms import RMSContext, RMSEngine
 from app.rms.models import OrderSide, StrategyConfig
 from app.services.model_blue.allocation import TemporarySettingsCommittedCapitalProvider
