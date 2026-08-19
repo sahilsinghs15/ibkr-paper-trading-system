@@ -9,6 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 
+from app.core.logger import bind_log_context, clear_log_context
 from app.schemas.webhook import TradingViewWebhookResponse
 from app.services.strategies.inbound import parse_tradingview_payload
 
@@ -56,6 +57,22 @@ async def receive_tradingview_webhook(request: Request) -> dict[str, str]:
         )
 
     request_id = str(uuid.uuid4())
+    bind_log_context(request_id=request_id)
+    try:
+        return await _process_tradingview_webhook(
+            request, payload, raw_body=raw_body, request_id=request_id
+        )
+    finally:
+        clear_log_context()
+
+
+async def _process_tradingview_webhook(
+    request: Request,
+    payload: dict[str, Any],
+    *,
+    raw_body: str,
+    request_id: str,
+) -> dict[str, str]:
     utc_now = datetime.now(UTC)
     received_at = utc_now.isoformat()
 
@@ -104,7 +121,14 @@ async def receive_tradingview_webhook(request: Request) -> dict[str, str]:
             await order_manager.record_rejected_inbound(
                 payload, capture_data=capture_data, reason=str(val_err)
             )
-        return {"status": "rejected", "source": "tradingview"}
+        response = {"status": "rejected", "source": "tradingview"}
+        logger.info("Webhook HTTP response status=%s", response["status"])
+        return response
+
+    bind_log_context(
+        signal_id=domain_signal.signal_id,
+        trade_id=domain_signal.trade_id or domain_signal.signal_id,
+    )
 
     if order_manager is not None:
         try:
@@ -119,18 +143,29 @@ async def receive_tradingview_webhook(request: Request) -> dict[str, str]:
                     symbols,
                 )
                 if getattr(execution, "all_rejected", False) and not execution.orders:
-                    return {"status": "rejected_by_rms", "source": "tradingview"}
+                    response = {"status": "rejected_by_rms", "source": "tradingview"}
+                    logger.info("Webhook HTTP response status=%s", response["status"])
+                    return response
                 if not getattr(execution, "success", False):
-                    return {
+                    response = {
                         "status": "execution_incomplete",
                         "source": "tradingview",
                     }
+                    logger.info("Webhook HTTP response status=%s", response["status"])
+                    return response
         except ValueError as val_err:
             logger.warning("Incoming TradingView signal rejected: %s", val_err)
-            return {"status": "rejected_by_rms", "source": "tradingview"}
+            response = {"status": "rejected_by_rms", "source": "tradingview"}
+            logger.info("Webhook HTTP response status=%s", response["status"])
+            return response
         except (ConnectionError, RuntimeError) as conn_err:
             logger.warning("Signal ingested but broker submission unconfirmed: %s", conn_err)
-            return {"status": "received", "source": "tradingview"}
+            response = {"status": "received", "source": "tradingview"}
+            logger.info(
+                "Webhook HTTP response status=%s (broker submission unconfirmed)",
+                response["status"],
+            )
+            return response
         except Exception as exc:
             logger.exception("Error processing signal through OrderManager pipeline")
             raise HTTPException(
@@ -138,4 +173,6 @@ async def receive_tradingview_webhook(request: Request) -> dict[str, str]:
                 detail=f"Execution pipeline error: {exc}",
             ) from exc
 
-    return {"status": "received", "source": "tradingview"}
+    response = {"status": "received", "source": "tradingview"}
+    logger.info("Webhook HTTP response status=%s", response["status"])
+    return response

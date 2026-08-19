@@ -1,0 +1,13 @@
+---
+description: Frontend is a Vite React PnL dashboard; demo SSE is on :8010
+globs: app/frontend/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Frontend PnL dashboard
+
+- `src/` is a read-only live PnL UI (snapshot + SSE). Prefer declared deps: axios, zustand, react-query, react-router-dom, lightweight-charts, Tailwind — before adding new packages.
+- Vite proxies `/demo` → `http://127.0.0.1:8010`. Production: `npm run build` then `demo_streaming` serves `frontend/dist`.
+- Remote access: `DEMO_STREAM_HOST=0.0.0.0` on `:8010` + AWS SG TCP 8010. Keep ngrok on `:8000` for webhooks only.
+- Main FastAPI has no CORS/WebSocket. Do not invent a browser WS client against `app.main` without a backend endpoint.
+- Details: `app/docs/frontend.md`.

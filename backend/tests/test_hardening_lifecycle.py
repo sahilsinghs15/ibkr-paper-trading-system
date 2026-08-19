@@ -301,10 +301,10 @@ async def test_live_pnl_hydrates_open_stk_and_skips_unresolved_cfd() -> None:
                     account_id=account_id,
                     trade_id=trade_cfd,
                     strategy_id=MODEL_BLUE_STRATEGY_ID,
-                    leg_a_symbol="SIL",
+                    leg_a_symbol="ZZZCFDA",
                     leg_a_signed_qty=Decimal("10"),
                     leg_a_entry_mark=Decimal("90.64"),
-                    leg_b_symbol="GDX",
+                    leg_b_symbol="ZZZCFDB",
                     leg_b_signed_qty=Decimal("-10"),
                     leg_b_entry_mark=Decimal("91.86"),
                     leg_a_instrument_type="CFD",
@@ -387,6 +387,7 @@ async def test_close_uses_open_fill_qty_and_realized_pnl() -> None:
                     target=Decimal("500"),
                     stop=Decimal("250"),
                     time_limit=3600,
+                    max_open_positions=10,
                     enabled=True,
                 )
             )

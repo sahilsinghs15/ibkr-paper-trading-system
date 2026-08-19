@@ -318,6 +318,82 @@ def test_pnl_does_not_request_stk_for_unresolved_cfd() -> None:
     client.reqMktData.assert_not_called()
 
 
+def test_demo_cfd_uses_catalog_conid_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAPER_EXECUTE_STK_AS_CFD", "true")
+    catalog = InMemoryInstrumentCatalog([_cfd_record("XLE", 888888)])
+    resolved = resolve_leg(symbol="XLE", instrument_type="STK", catalog=catalog)
+    assert resolved.sec_type == "CFD"
+    assert resolved.con_id == 888888
+    contract = ibkr_contract_from_resolved(resolved)
+    assert contract.secType == "CFD"
+    assert contract.conId == 888888
+
+
+def test_ibkr_market_data_contract_prefers_market_data_conid() -> None:
+    from app.instruments.models import ResolvedInstrument
+    from app.instruments.resolver import ibkr_market_data_contract_from_resolved
+
+    resolved = ResolvedInstrument(
+        symbol="XLE",
+        requested_instrument_type="CFD",
+        sec_type="CFD",
+        exchange="SMART",
+        currency="USD",
+        con_id=111,
+        market_data_con_id=222,
+    )
+    contract = ibkr_market_data_contract_from_resolved(resolved)
+    assert contract.secType == "CFD"
+    assert contract.conId == 222
+
+
+def test_pnl_subscribes_cfd_with_conid_from_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAPER_EXECUTE_STK_AS_CFD", "true")
+    from app.services.pnl import LivePnlService
+
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+    catalog = InMemoryInstrumentCatalog(
+        [
+            InstrumentRecord(
+                symbol="XLE",
+                sec_type="CFD",
+                trade_conid=777777,
+                market_data_conid=777777,
+                exchange="SMART",
+                currency="USD",
+                multiplier=Decimal(1),
+            )
+        ]
+    )
+    svc = LivePnlService(MagicMock(), client)
+    svc._catalog = catalog
+    intent = OrderIntent(
+        signal_id="T-PNL-CFD-CONID",
+        strategy_id="model_blue",
+        action=OrderAction.OPEN,
+        account_id=1,
+        legs=[
+            OrderLeg(
+                symbol="XLE",
+                side=OrderSide.BUY,
+                quantity=10,
+                price=Decimal("63.67"),
+                contract_month="2026-09",
+                instrument_type="CFD",
+                leg_index=0,
+            )
+        ],
+        timestamp=_TS,
+    )
+    svc.watch_open(intent)
+    client.reqMktData.assert_called_once()
+    contract = client.reqMktData.call_args.args[1]
+    assert contract.secType == "CFD"
+    assert contract.conId == 777777
+    assert contract.secType != "STK"
+
+
 def test_pnl_subscribes_cfd_under_demo_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PAPER_EXECUTE_STK_AS_CFD", "true")
     from app.services.pnl import LivePnlService
@@ -375,6 +451,62 @@ def test_pnl_subscribes_cfd_under_demo_override(monkeypatch: pytest.MonkeyPatch)
         leg_b_mark=Decimal("90.86"),
     )
     assert expected == Decimal("20.00")
+
+
+def test_pnl_uses_cfd_bid_ask_mid_when_last_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAPER_EXECUTE_STK_AS_CFD", "true")
+    from app.services.pnl import LivePnlService, unrealized_pair
+
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+    svc = LivePnlService(MagicMock(), client)
+    intent = OrderIntent(
+        signal_id="T-PNL-CFD-MID",
+        strategy_id="model_blue",
+        action=OrderAction.OPEN,
+        account_id=1,
+        legs=[
+            OrderLeg(
+                symbol="XLE",
+                side=OrderSide.BUY,
+                quantity=392,
+                price=Decimal("63.67"),
+                contract_month="2026-09",
+                instrument_type="CFD",
+                leg_index=0,
+            ),
+            OrderLeg(
+                symbol="XOP",
+                side=OrderSide.SELL,
+                quantity=91,
+                price=Decimal("185.35"),
+                contract_month="2026-09",
+                instrument_type="CFD",
+                leg_index=1,
+            ),
+        ],
+        timestamp=_TS,
+    )
+    svc.watch_open(intent)
+    xle_req = next(rid for rid, mapped in svc._by_req.items() if mapped[2] == "XLE")
+    xop_req = next(rid for rid, mapped in svc._by_req.items() if mapped[2] == "XOP")
+    svc.on_tick_price(xle_req, 1, 63.70)
+    svc.on_tick_price(xle_req, 2, 63.72)
+    svc.on_tick_price(xop_req, 66, 185.20)
+    svc.on_tick_price(xop_req, 67, 185.24)
+    assert svc._marks[(1, "T-PNL-CFD-MID", "XLE")] == Decimal("63.71")
+    assert svc._marks[(1, "T-PNL-CFD-MID", "XOP")] == Decimal("185.22")
+    expected = unrealized_pair(
+        leg_a_signed=Decimal("392"),
+        leg_a_entry=Decimal("63.67"),
+        leg_a_mark=Decimal("63.71"),
+        leg_b_signed=Decimal("-91"),
+        leg_b_entry=Decimal("185.35"),
+        leg_b_mark=Decimal("185.22"),
+    )
+    assert expected == Decimal("27.51")
+    svc.on_tick_price(xle_req, 4, 63.80)
+    assert svc._marks[(1, "T-PNL-CFD-MID", "XLE")] == Decimal("63.80")
 
 
 def test_discovered_sil_gdx_cfd_conids_are_not_stk() -> None:

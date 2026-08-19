@@ -83,6 +83,13 @@ class PositionBridge:
             self._status[key] = str(payload.get("status") or "")
             self._last_payload[key] = payload
             emitted.append(record)
+            logger.info(
+                "Demo stream published: event=%s account_id=%s trade_id=%s symbol=%s",
+                event,
+                key[0],
+                key[1],
+                key[2],
+            )
         vanished = [
             key for key in list(self._status) if key not in seen and self._status[key] == "OPEN"
         ]

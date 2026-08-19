@@ -1,75 +1,55 @@
-# React + TypeScript + Vite
+# Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Vite + React 19 + TypeScript **live PnL dashboard**. Reads the demo stream (`/demo/positions` + SSE `/demo/stream`). Does not place orders.
 
-Currently, two official plugins are available:
+## Docs
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Agent-oriented frontend facts: [`../docs/frontend.md`](../docs/frontend.md).
 
-## React Compiler
+## Requirements
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- **Node.js ≥ 20** (Vite 8). System Node 18 is too old for `npm run build`.
 
-## Expanding the ESLint configuration
+## Local dev (proxy to demo)
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+```bash
+# Terminal A — Redis + Postgres required
+cd /home/tradingapp/app/backend
+.venv/bin/python -m demo_streaming
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+# Terminal B
+cd /home/tradingapp/app/frontend
+npm install
+npm run dev
+# http://127.0.0.1:5173/  (proxies /demo → :8010)
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Production build (served by `:8010`)
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```bash
+cd /home/tradingapp/app/frontend
+npm run build
+# writes dist/; demo_streaming GET / serves it
 ```
+
+Remote via server IP:
+
+```bash
+cd /home/tradingapp/app/backend
+DEMO_STREAM_HOST=0.0.0.0 .venv/bin/python -m demo_streaming
+# AWS SG: inbound TCP 8010 from your IP
+# http://PUBLIC_IP:8010/
+```
+
+Keep `./ngrok http 8000` for TradingView only. Do not tunnel the dashboard through the webhook URL.
+
+## HTML fallback
+
+`positions-demo.html` (byte-identical to `backend/demo_streaming/static/index.html`) is used when `frontend/dist` is missing.
+
+## Declared deps
+
+| Package | Role |
+|---------|------|
+| `axios`, `zustand` | Snapshot + live state |
+| `@tanstack/react-query`, `react-router-dom`, `lightweight-charts`, `tailwindcss` | Declared; unused in this pass |

@@ -14,6 +14,7 @@ Reimplements the intended Model Blue pair rules in-process:
 Does not import or wrap the reference helper file.
 """
 
+import logging
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 
@@ -24,6 +25,8 @@ from app.services.model_blue.parser import (
     ModelBlueValidationError,
     is_model_blue_strategy,
 )
+
+logger = logging.getLogger(__name__)
 
 MIN_ORDER_NOTIONAL = Decimal(100)
 _QTY_QUANTUM = Decimal("0.0001")
@@ -105,6 +108,19 @@ class ModelBlueSizer:
             price=hedge.price,
             direction=signal.direction,
             target_notional=committed * Decimal(str(abs(hedge.weight))) / Decimal(str(base_weight)),
+        )
+        logger.info(
+            "Model Blue size_open: trade_id=%s committed=%s legs=[(%s %s qty=%s notional=%s), (%s %s qty=%s notional=%s)]",
+            signal.trade_id or signal.signal_id,
+            committed,
+            sized_base.symbol,
+            sized_base.side.value,
+            sized_base.quantity,
+            sized_base.notional,
+            sized_hedge.symbol,
+            sized_hedge.side.value,
+            sized_hedge.quantity,
+            sized_hedge.notional,
         )
         return sized_base, sized_hedge
 

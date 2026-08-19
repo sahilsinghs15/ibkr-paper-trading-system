@@ -1,10 +1,13 @@
 """Parse real TradingView Model Blue webhook payloads into domain Signals."""
 
+import logging
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.models.signal import Signal, SignalLeg, SignalType
+
+logger = logging.getLogger(__name__)
 
 MODEL_BLUE_STRATEGY_ID = "model_blue"
 
@@ -50,6 +53,12 @@ def parse_model_blue_payload(
     market = str(payload.get("market") or "").strip() or None
 
     if action == "CLOSE":
+        logger.info(
+            "Model Blue parse CLOSE: trade_id=%s direction=%s market=%s",
+            trade_id,
+            direction,
+            market,
+        )
         return Signal(
             signal_type=SignalType.SELL,
             timestamp=timestamp,
@@ -65,6 +74,13 @@ def parse_model_blue_payload(
         )
 
     legs = _parse_open_legs(payload.get("buckets"))
+    logger.info(
+        "Model Blue parse OPEN: trade_id=%s direction=%s market=%s legs=%s",
+        trade_id,
+        direction,
+        market,
+        [(leg.symbol, leg.instrument_type, leg.weight, str(leg.price)) for leg in legs],
+    )
     return Signal(
         signal_type=SignalType.BUY,
         timestamp=timestamp,

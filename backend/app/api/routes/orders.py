@@ -1,10 +1,14 @@
 """Orders endpoint router querying OMSService."""
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import get_oms
 from app.oms.oms_service import OMSService
 from app.schemas.api_schemas import OrderSchema
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["orders"])
 
@@ -48,10 +52,17 @@ async def cancel_order(
     oms: OMSService = Depends(get_oms),
 ) -> OrderSchema:
     """Submit a cancel request for an open order through the OMS."""
+    logger.info("HTTP cancel order request: order_id=%s", order_id)
     try:
         order = await oms.cancel_order(order_id)
+        logger.info(
+            "HTTP cancel order result: order_id=%s status=%s",
+            order_id,
+            order.status.value,
+        )
         return OrderSchema.model_validate(order)
     except ValueError as e:
+        logger.warning("HTTP cancel order failed: order_id=%s error=%s", order_id, e)
         if "not found" in str(e).lower():
             raise HTTPException(status_code=404, detail=str(e))
         raise HTTPException(status_code=400, detail=str(e))

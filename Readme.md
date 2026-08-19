@@ -1,18 +1,30 @@
 # IBKR Paper Trading System
 
-## Tech Stack
+## Docs for agents
 
-- FastAPI
-- Native IBKR TWS API
-- React
-- TypeScript
-- WebSocket
+Start at [`AGENTS.md`](AGENTS.md). In-depth topics: [`docs/`](docs/). Target architecture (not current code): [`../Execution_System_Architecture.md`](../Execution_System_Architecture.md).
 
-## Features
+## Current status (code, not aspirational)
 
-- Connect to IBKR Paper Trading
-- Live Market Data
-- Five Candle Strategy
-- Paper Order Execution
-- Live Dashboard
-- Structured Logging
+- **Backend:** FastAPI paper execution — TradingView webhook → Model Blue → RMS (checks 2/3/4/7/8) → basket OMS → IBKR TWS, with Postgres persistence.
+- **Frontend:** Vite + React TypeScript **live PnL dashboard** (snapshot + SSE). Build with Node ≥ 20; served from `demo_streaming` on `:8010`.
+- **Remote dashboard:** `DEMO_STREAM_HOST=0.0.0.0` + AWS SG TCP 8010 → `http://PUBLIC_IP:8010/`. Keep ngrok on `:8000` for TradingView only.
+- **Not in main app:** WebSocket, CORS, MockBroker / `BROKER_MODE`, dashboard auth.
+
+## Tech in use
+
+- FastAPI + IBKR TWS API (`ibapi`)
+- PostgreSQL (SQLAlchemy / Alembic)
+- React + TypeScript (PnL UI)
+- Demo stream: Redis Streams + SSE (separate process)
+
+## Features that exist in code
+
+- Connect to IBKR (default paper port `7497`; not live-port blocked)
+- TradingView webhook ingestion and execution
+- Model Blue sizing / multi-account DB routing
+- Paper order execution via OMS + basket coordinator
+- Structured logging to `storage/logs/trading-YYYY-MM-DD.log` (daily files)
+- Read-only live PnL dashboard (React + HTML fallback on `:8010`)
+
+See [`docs/gaps.md`](docs/gaps.md) for what is explicitly not implemented.

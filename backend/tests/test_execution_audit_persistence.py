@@ -134,6 +134,7 @@ async def _ensure_model_blue_alloc(factory, account_id: int) -> None:
                 target=Decimal("500"),
                 stop=Decimal("250"),
                 time_limit=3600,
+                max_open_positions=10,
                 enabled=True,
             )
         )

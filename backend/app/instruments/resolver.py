@@ -72,6 +72,15 @@ def ibkr_contract_from_resolved(resolved: ResolvedInstrument):
     return contract
 
 
+def ibkr_market_data_contract_from_resolved(resolved: ResolvedInstrument):
+    """Build IBKR Contract for market-data subscribe (prefers market_data_con_id)."""
+    contract = ibkr_contract_from_resolved(resolved)
+    md_con = resolved.market_data_con_id or resolved.con_id
+    if md_con:
+        contract.conId = md_con
+    return contract
+
+
 class InstrumentCatalog(Protocol):
     """Lookup instruments by symbol and IBKR sec_type. Does not invent rows."""
 
@@ -159,13 +168,31 @@ def resolve_leg(
                 "STK_TO_CFD_DEMO: requested STK did not map to CFD; "
                 "refusing to submit an STK contract."
             )
-        resolved = _resolve_demo_cfd(
-            symbol=symbol_clean,
-            requested=requested,
-            market=market,
-            currency=currency,
-            con_id=con_id,
-        )
+        catalog = catalog or EmptyInstrumentCatalog()
+        matches = list(catalog.find_all(symbol_clean, "CFD"))
+        if len(matches) > 1:
+            raise InstrumentResolutionError(
+                f"AMBIGUOUS_INSTRUMENT: {len(matches)} instruments rows for "
+                f"{symbol_clean}/CFD."
+            )
+        if len(matches) == 1:
+            resolved = _resolve_cfd(
+                symbol=symbol_clean,
+                requested=requested,
+                sec_type=sec_type,
+                market=market,
+                currency=currency,
+                con_id=con_id,
+                record=matches[0],
+            )
+        else:
+            resolved = _resolve_demo_cfd(
+                symbol=symbol_clean,
+                requested=requested,
+                market=market,
+                currency=currency,
+                con_id=con_id,
+            )
         if resolved.sec_type != "CFD":
             raise InstrumentResolutionError(
                 "STK_TO_CFD_DEMO: resolved sec_type is not CFD; "
@@ -203,11 +230,13 @@ def resolve_leg(
             )
     logger.info(
         "Model Blue instrument resolution: symbol=%s requested_type=%s "
-        "resolved_type=%s override=%s",
+        "resolved_type=%s override=%s con_id=%s exchange=%s",
         resolved.symbol,
         resolved.requested_instrument_type,
         resolved.sec_type,
         override or "none",
+        resolved.con_id,
+        resolved.exchange,
     )
     return resolved
 

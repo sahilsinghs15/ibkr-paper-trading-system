@@ -1,5 +1,7 @@
 # Developer Execution Guide
 
+> **Stale for agents:** Prefer [`../../AGENTS.md`](../../AGENTS.md) and [`../../docs/`](../../docs/). Several “not implemented” bullets below are outdated (for example account/position Postgres models and multi-account routing **do** exist in code). This file is kept as a human-oriented historical map; do not use it as the source of truth for what is implemented.
+
 Practical architecture, navigation, and developer operations guide for the IBKR Paper Trading System backend.
 
 ---

@@ -14,8 +14,8 @@ from app.db.repositories.basket_repository import BasketRepository
 from app.db.repositories.event_repository import EventRepository
 from app.db.repositories.execution_repository import ExecutionRepository
 from app.db.repositories.order_repository import OrderRepository
-from app.instruments.resolver import attach_resolved
 from app.instruments.models import InstrumentResolutionError
+from app.instruments.resolver import attach_resolved
 from app.oms.basket import Basket, BasketExecutionResult, BasketState
 from app.oms.models import OMSOrder, OMSOrderStatus
 from app.oms.oms_service import OMSService
@@ -124,6 +124,14 @@ class BasketCoordinator:
             basket=basket,
             idempotency_key=f"basket_created:{intent.account_id}:{trade_id}:{action}",
         )
+        logger.info(
+            "BASKET_CREATED: account_id=%s trade_id=%s strategy_id=%s action=%s legs=%d",
+            intent.account_id,
+            trade_id,
+            intent.strategy_id,
+            action,
+            len(intent.legs),
+        )
         await self._event(
             "BASKET_EXECUTING",
             {
@@ -135,6 +143,12 @@ class BasketCoordinator:
             signal_pk=signal_pk,
             basket=basket,
             idempotency_key=f"basket_executing:{intent.account_id}:{trade_id}:{action}",
+        )
+        logger.info(
+            "BASKET_EXECUTING: account_id=%s trade_id=%s legs=%d",
+            intent.account_id,
+            trade_id,
+            len(intent.legs),
         )
 
         submitted: list[OMSOrder] = []
@@ -171,6 +185,15 @@ class BasketCoordinator:
                 order=order,
                 idempotency_key=f"order_created:{order.internal_order_id}",
             )
+            logger.info(
+                "%s: internal_order_id=%s symbol=%s side=%s qty=%s status=%s",
+                created_kind,
+                order.internal_order_id,
+                order.symbol,
+                order.side.value if hasattr(order.side, "value") else order.side,
+                order.quantity,
+                order.status.value,
+            )
             if order.ibkr_order_id is not None:
                 await self._event(
                     submit_kind,
@@ -185,12 +208,39 @@ class BasketCoordinator:
                     order=order,
                     idempotency_key=f"order_submitted:{order.internal_order_id}",
                 )
+                logger.info(
+                    "%s: internal_order_id=%s broker_order_id=%s symbol=%s",
+                    submit_kind,
+                    order.internal_order_id,
+                    order.ibkr_order_id,
+                    order.symbol,
+                )
             if order.status in (OMSOrderStatus.REJECTED, OMSOrderStatus.ERROR):
                 abort_remaining = True
 
         await self._wait_terminals(submitted, timeout=self._fill_timeout)
         for order in submitted:
             await self._persist_child(order, intent, signal_pk=signal_pk, basket=basket)
+
+        completeness = [
+            {
+                "leg_index": o.leg_index,
+                "internal_order_id": o.internal_order_id,
+                "symbol": o.symbol,
+                "status": o.status.value,
+                "intended_qty": float(intent.legs[o.leg_index].quantity)
+                if o.leg_index is not None and o.leg_index < len(intent.legs)
+                else None,
+                "filled_qty": o.filled_quantity,
+            }
+            for o in submitted
+        ]
+        logger.info(
+            "Basket fill wait complete: trade_id=%s complete=%s legs=%s",
+            trade_id,
+            self._basket_complete(intent, submitted),
+            completeness,
+        )
 
         if self._basket_complete(intent, submitted):
             basket.orders = submitted
@@ -210,6 +260,13 @@ class BasketCoordinator:
                 basket=basket,
                 idempotency_key=f"{event_kind.lower()}:{intent.account_id}:{trade_id}",
             )
+            logger.info(
+                "%s: account_id=%s trade_id=%s orders=%d",
+                event_kind,
+                intent.account_id,
+                trade_id,
+                len(submitted),
+            )
             return BasketExecutionResult(basket=basket, intent=intent, orders=submitted)
 
         basket.state = BasketState.UNWINDING
@@ -219,6 +276,12 @@ class BasketCoordinator:
             {"account_id": intent.account_id, "trade_id": trade_id},
             signal_pk=signal_pk,
             basket=basket,
+        )
+        logger.warning(
+            "BASKET_UNWINDING: account_id=%s trade_id=%s incomplete legs=%s",
+            intent.account_id,
+            trade_id,
+            completeness,
         )
 
         working = [o for o in submitted if o.status not in _TERMINAL]
@@ -279,6 +342,12 @@ class BasketCoordinator:
             basket=basket,
             idempotency_key=f"basket_compensated:{intent.account_id}:{trade_id}",
         )
+        logger.info(
+            "BASKET_COMPENSATED: account_id=%s trade_id=%s compensation_orders=%d",
+            intent.account_id,
+            trade_id,
+            len(compensation),
+        )
         return BasketExecutionResult(
             basket=basket,
             intent=intent,
@@ -316,6 +385,11 @@ class BasketCoordinator:
                         "trade_id": row.trade_id,
                         "reason": "broker_snapshot_unavailable",
                     },
+                )
+                logger.warning(
+                    "BASKET_RECOVER_CRITICAL: account_id=%s trade_id=%s reason=broker_snapshot_unavailable",
+                    row.account_id,
+                    row.trade_id,
                 )
                 continue
             # Broker snapshot requested; without deterministic fill application
@@ -450,6 +524,14 @@ class BasketCoordinator:
                         "symbol": child.symbol,
                     },
                 )
+                logger.info(
+                    "COMPENSATION: of=%s new=%s symbol=%s qty=%s side=%s",
+                    order.internal_order_id,
+                    child.internal_order_id,
+                    child.symbol,
+                    child.quantity,
+                    child.side.value if hasattr(child.side, "value") else child.side,
+                )
                 if child.status in (OMSOrderStatus.REJECTED, OMSOrderStatus.ERROR):
                     raise RuntimeError(
                         f"Compensation submit failed for {order.internal_order_id}: {child.error_message}"
@@ -479,6 +561,12 @@ class BasketCoordinator:
             signal_pk=signal_pk,
             basket=basket,
             idempotency_key=f"basket_critical:{intent.account_id}:{intent.signal_id}",
+        )
+        logger.error(
+            "BASKET_CRITICAL: account_id=%s trade_id=%s strategy_id=%s — new OPENs blocked",
+            intent.account_id,
+            intent.signal_id,
+            intent.strategy_id,
         )
 
     async def _persist_basket(self, basket: Basket) -> None:

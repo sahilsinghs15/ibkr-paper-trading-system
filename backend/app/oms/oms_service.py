@@ -178,6 +178,17 @@ class OMSService:
             if rms_result.outcome != RMSOutcome.PASS:
                 raise ValueError("RMS must PASS before submitting a basket leg.")
             self._submitted_signals.add(duplicate_key)
+        leg = intent.legs[index]
+        logger.info(
+            "OMS submit_one_leg handoff: signal_id=%s leg=%d/%d symbol=%s side=%s qty=%s order_type=%s",
+            intent.signal_id,
+            index + 1,
+            len(intent.legs),
+            leg.symbol,
+            leg.side.value if hasattr(leg.side, "value") else leg.side,
+            leg.quantity,
+            order_type,
+        )
         return await self._submit_leg(
             intent=intent,
             rms_result=rms_result,

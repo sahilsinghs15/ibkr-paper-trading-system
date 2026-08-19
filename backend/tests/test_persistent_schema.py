@@ -125,6 +125,7 @@ async def test_schema_crud_operations() -> None:
                 target=Decimal("500.00"),
                 stop=Decimal("250.00"),
                 time_limit=3600,
+                max_open_positions=10,
             )
             session.add(alloc)
             await session.commit()

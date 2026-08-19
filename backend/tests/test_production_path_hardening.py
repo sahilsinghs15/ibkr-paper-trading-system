@@ -362,6 +362,7 @@ async def test_same_trade_id_two_accounts_two_positions() -> None:
                         target=Decimal("500"),
                         stop=Decimal("250"),
                         time_limit=3600,
+                        max_open_positions=10,
                         enabled=True,
                     )
                 )

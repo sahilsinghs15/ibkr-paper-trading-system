@@ -3,6 +3,7 @@
 Does not size, evaluate RMS, submit OMS, or call IBKR.
 """
 
+import logging
 from collections.abc import Sequence
 from decimal import Decimal
 from typing import Protocol
@@ -13,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.accounts.context import AccountExecutionContext
 from app.db.models.account import AccountModel
 from app.db.models.strategy import AllocationModel, StrategyModel
+
+logger = logging.getLogger(__name__)
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -32,7 +35,22 @@ class StaticStrategyAccountRouter:
 
     async def resolve(self, strategy_id: str) -> list[AccountExecutionContext]:
         wanted = (strategy_id or "").strip()
-        return [ctx for ctx in self._contexts if ctx.strategy_id == wanted]
+        contexts = [ctx for ctx in self._contexts if ctx.strategy_id == wanted]
+        logger.info(
+            "Account router (static) resolved strategy_id=%s accounts=%d: %s",
+            wanted,
+            len(contexts),
+            [
+                {
+                    "account_id": c.account_id,
+                    "ibkr_account": c.ibkr_account,
+                    "committed_notional": str(c.committed_notional),
+                    "alloc_pct": str(c.alloc_pct),
+                }
+                for c in contexts
+            ],
+        )
+        return contexts
 
 
 class DatabaseStrategyAccountRouter:
@@ -80,9 +98,24 @@ class DatabaseStrategyAccountRouter:
                     target=allocation.target,
                     stop=allocation.stop,
                     time_limit=allocation.time_limit,
-                    max_open_positions=strategy.max_open_positions,
+                    max_open_positions=allocation.max_open_positions,
                 )
             )
+        logger.info(
+            "Account router resolved strategy_id=%s accounts=%d: %s",
+            wanted,
+            len(contexts),
+            [
+                {
+                    "account_id": c.account_id,
+                    "ibkr_account": c.ibkr_account,
+                    "committed_notional": str(c.committed_notional),
+                    "alloc_pct": str(c.alloc_pct),
+                    "max_open_positions": c.max_open_positions,
+                }
+                for c in contexts
+            ],
+        )
         return contexts
 
 
@@ -103,5 +136,5 @@ def context_from_rows(
         target=allocation.target,
         stop=allocation.stop,
         time_limit=allocation.time_limit,
-        max_open_positions=strategy.max_open_positions,
+        max_open_positions=allocation.max_open_positions,
     )

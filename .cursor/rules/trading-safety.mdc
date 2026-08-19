@@ -1,0 +1,12 @@
+---
+description: Trading safety invariants for the paper execution app
+alwaysApply: true
+---
+
+# Trading safety
+
+- Default IBKR port is paper (`7497`). Live ports (`7496`, `4001`) are **not** blocked by code — never assume they are.
+- `POST /api/webhooks/tradingview` **executes** through OrderManager → RMS → OMS → IBKR when wired. It is not capture-only.
+- Do not invent flatten-all / kill-switch / pause HTTP APIs; they are not in the routers.
+- Do not treat `Execution_System_Architecture.md` or the Postman guide as the current API or process layout.
+- Prefer `app/AGENTS.md` + `app/docs/` for current behavior. See `app/docs/safety.md` and `app/docs/gaps.md`.

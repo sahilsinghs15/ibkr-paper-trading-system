@@ -390,6 +390,7 @@ async def test_db_router_respects_enabled_flags(
             target=Decimal("500"),
             stop=Decimal("250"),
             time_limit=3600,
+            max_open_positions=10,
             enabled=True,
         )
         alloc_off_acct = AllocationModel(
@@ -399,6 +400,7 @@ async def test_db_router_respects_enabled_flags(
             target=Decimal("500"),
             stop=Decimal("250"),
             time_limit=3600,
+            max_open_positions=10,
             enabled=True,
         )
         disabled_sub = AccountModel(
@@ -416,6 +418,7 @@ async def test_db_router_respects_enabled_flags(
             target=Decimal("500"),
             stop=Decimal("250"),
             time_limit=3600,
+            max_open_positions=10,
             enabled=False,
         )
         session.add_all([alloc_on, alloc_off_acct, alloc_sub_off])
@@ -555,6 +558,7 @@ async def test_11_positions_isolated_by_account_id(
                     target=Decimal("500"),
                     stop=Decimal("250"),
                     time_limit=3600,
+                    max_open_positions=10,
                     enabled=True,
                 )
             )
@@ -639,3 +643,67 @@ async def test_11_positions_isolated_by_account_id(
             await session.execute(select(SignalModel).where(SignalModel.signal_id == trade_id))
         ).scalars():
             await session.delete(row)
+
+
+@pytest.mark.asyncio
+async def test_router_uses_allocation_max_open_not_strategy(
+    db_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Check 7 cap comes from allocations.max_open_positions (per account)."""
+    suffix = uuid4().hex[:8]
+    strategy_id = f"CAP_{suffix}"
+    async with db_factory() as session, session.begin():
+        strategy = StrategyModel(
+            strategy_id=strategy_id,
+            legs=2,
+            expression="CFD",
+            max_open_positions=99,
+            weight_source="payload",
+            enabled=True,
+        )
+        account = AccountModel(
+            name=f"cap-{suffix}",
+            ibkr_account=f"DUCAP{suffix}",
+            total_margin=Decimal(100000),
+            enabled=True,
+        )
+        session.add_all([strategy, account])
+        await session.flush()
+        session.add(
+            AllocationModel(
+                account_id=account.id,
+                strategy_id=strategy_id,
+                alloc_pct=Decimal("0.10"),
+                target=Decimal("500"),
+                stop=Decimal("250"),
+                time_limit=3600,
+                max_open_positions=4,
+                enabled=True,
+            )
+        )
+        account_id = account.id
+
+    router = DatabaseStrategyAccountRouter(db_factory)
+    contexts = await router.resolve(strategy_id)
+    assert len(contexts) == 1
+    assert contexts[0].max_open_positions == 4
+    assert contexts[0].max_open_positions != 99
+
+    async with db_factory() as session, session.begin():
+        for row in (
+            await session.execute(
+                select(AllocationModel).where(AllocationModel.account_id == account_id)
+            )
+        ).scalars():
+            await session.delete(row)
+        for row in (
+            await session.execute(select(AccountModel).where(AccountModel.id == account_id))
+        ).scalars():
+            await session.delete(row)
+        for row in (
+            await session.execute(
+                select(StrategyModel).where(StrategyModel.strategy_id == strategy_id)
+            )
+        ).scalars():
+            await session.delete(row)
+

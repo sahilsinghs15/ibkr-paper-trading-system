@@ -1,5 +1,6 @@
 """RMS Engine implementation orchestrating sequential check evaluation."""
 
+import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
@@ -10,6 +11,8 @@ from app.rms.checks.money_per_stock import MoneyPerStockCheck
 from app.rms.checks.position_limit import OpenPositionLimitCheck
 from app.rms.checks.strategy import StrategyCheck
 from app.rms.models import CheckResult, OrderIntent, RMSContext, RMSOutcome, RMSResult
+
+logger = logging.getLogger(__name__)
 
 
 def get_default_checks() -> list[BaseRMSCheck]:
@@ -60,12 +63,39 @@ class RMSEngine:
         """
         current_intent = order_intent
         check_results: list[CheckResult] = []
+        action = (
+            order_intent.action.value
+            if hasattr(order_intent.action, "value")
+            else str(order_intent.action)
+        )
+        logger.info(
+            "RMS evaluate start: signal_id=%s strategy_id=%s action=%s account_id=%s legs=%d",
+            order_intent.signal_id,
+            order_intent.strategy_id,
+            action,
+            order_intent.account_id,
+            len(order_intent.legs),
+        )
 
         for check in self.checks:
             result = check.evaluate(current_intent, context)
             check_results.append(result)
+            logger.info(
+                "RMS check %s (%s): outcome=%s reason=%s",
+                result.check_number,
+                result.check_name,
+                result.outcome.value,
+                result.reason,
+            )
 
             if result.outcome in (RMSOutcome.REJECT, RMSOutcome.HALT):
+                logger.info(
+                    "RMS evaluate final: outcome=%s check=%s reason=%s signal_id=%s",
+                    result.outcome.value,
+                    result.check_number,
+                    result.reason,
+                    order_intent.signal_id,
+                )
                 return RMSResult(
                     outcome=result.outcome,
                     intent=current_intent,
@@ -79,6 +109,11 @@ class RMSEngine:
             if result.outcome == RMSOutcome.ADJUST and result.adjusted_intent is not None:
                 current_intent = result.adjusted_intent
 
+        logger.info(
+            "RMS evaluate final: outcome=PASS signal_id=%s checks=%d",
+            order_intent.signal_id,
+            len(check_results),
+        )
         return RMSResult(
             outcome=RMSOutcome.PASS,
             intent=current_intent,

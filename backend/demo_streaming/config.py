@@ -17,6 +17,7 @@ class DemoStreamSettings(BaseSettings):
     demo_stream_port: int = 8010
     demo_poll_interval_ms: int = 250
     demo_stream_name: str = "positions:stream"
+    trading_api_url: str = "http://127.0.0.1:8000"
 
 
 def get_demo_settings() -> DemoStreamSettings:

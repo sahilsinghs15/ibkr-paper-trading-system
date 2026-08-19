@@ -52,6 +52,7 @@ class AllocationModel(Base):
     target: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     stop: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     time_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_open_positions: Mapped[int] = mapped_column(Integer, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     account: Mapped["AccountModel"] = relationship("AccountModel")

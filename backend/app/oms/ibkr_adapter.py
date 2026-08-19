@@ -202,12 +202,19 @@ class IBKRExecutionAdapter:
         self._client.register_request_id(tws_order_id, "order")
 
         logger.info(
-            "Submitting order to IBKR TWS: internal_id=%s, tws_id=%d, symbol=%s, action=%s, qty=%s, limit_price=%s",
+            "Submitting order to IBKR TWS: internal_id=%s, tws_id=%d, symbol=%s, "
+            "secType=%s, conId=%s, exchange=%s, account=%s, action=%s, qty=%s, "
+            "order_type=%s, limit_price=%s",
             order.internal_order_id,
             tws_order_id,
             order.symbol,
+            getattr(contract, "secType", None),
+            getattr(contract, "conId", None) or None,
+            getattr(contract, "exchange", None),
+            getattr(ib_order, "account", None) or order.intent.ibkr_account,
             ib_order.action,
             order.quantity,
+            order.order_type,
             order.limit_price,
         )
 
@@ -448,7 +455,8 @@ class IBKRExecutionAdapter:
             )
 
             logger.info(
-                "IBKR orderStatus callback: internal_id=%s, tws_id=%d, raw_status=%s, mapped=%s, filled=%s, rem=%s, avgPrice=%s",
+                "IBKR orderStatus callback: internal_id=%s, tws_id=%d, raw_status=%s, "
+                "mapped=%s, filled=%s, rem=%s, avgPrice=%s, whyHeld=%s",
                 order.internal_order_id,
                 orderId,
                 status,
@@ -456,6 +464,7 @@ class IBKRExecutionAdapter:
                 qty_filled,
                 qty_remaining,
                 avgFillPrice,
+                whyHeld or "",
             )
 
             self._notify_future_if_terminal(order)

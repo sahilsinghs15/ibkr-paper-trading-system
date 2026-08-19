@@ -1,5 +1,6 @@
 """Persist Model Blue execution state (signal + pair position + per-leg orders) atomically."""
 
+import logging
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -18,6 +19,8 @@ from app.oms.models import (
     executions_weighted_average,
 )
 from app.services.model_blue.parser import ModelBlueValidationError
+
+logger = logging.getLogger(__name__)
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -184,6 +187,15 @@ class ModelBlueExecutionPersistence:
                 signal_id=sig_row.id,
                 idempotency_key=f"position_open:{account.id}:{trade.trade_id}",
             )
+        logger.info(
+            "POSITION_OPEN persisted: account_id=%s trade_id=%s legs=%s",
+            resolved,
+            trade.trade_id,
+            [
+                (leg.symbol, leg.side.value if hasattr(leg.side, "value") else leg.side, str(leg.quantity), str(leg.price))
+                for leg in trade.legs
+            ],
+        )
 
     async def persist_close(
         self,
@@ -225,6 +237,12 @@ class ModelBlueExecutionPersistence:
                 },
                 signal_id=sig_row.id,
                 idempotency_key=f"position_close:{resolved}:{trade_id}",
+            )
+            logger.info(
+                "POSITION_CLOSE persisted: account_id=%s trade_id=%s exit_marks=%s",
+                resolved,
+                trade_id,
+                {k: str(v) for k, v in _exit_marks_from_orders(orders).items()},
             )
             return closed
 

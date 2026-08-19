@@ -110,6 +110,7 @@ async def _seed_allocation(
             target=Decimal("500.00"),
             stop=Decimal("250.00"),
             time_limit=3600,
+            max_open_positions=10,
             enabled=True,
         )
     )

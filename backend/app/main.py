@@ -84,6 +84,19 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     fastapi_app.state.oms = oms
     fastapi_app.state.order_manager = order_manager
 
+    critical_count = 0
+    baskets = getattr(order_manager, "_baskets", None)
+    if baskets is not None:
+        critical_count = len(getattr(baskets, "_critical", set()) or set())
+    logger.info(
+        "Startup hydrate summary: processed_signals=%d open_position_keys=%d critical_baskets=%d ibkr=%s:%d",
+        len(order_manager._rms_context.processed_signals),
+        len(order_manager._rms_context.open_positions),
+        critical_count,
+        settings.ibkr_host,
+        settings.ibkr_port,
+    )
+
     logger.info(
         "Active execution pipeline: IBKRExecutionAdapter & OMSService (TWS %s:%d)",
         settings.ibkr_host,

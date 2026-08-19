@@ -3,6 +3,7 @@
 Generic RMS/OMS/IBKR never see Model Blue pair semantics — only OrderIntent.legs.
 """
 
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from inspect import isawaitable, iscoroutinefunction
@@ -30,6 +31,8 @@ from app.services.model_blue.trade_book import (
     ModelBlueTradeBook,
 )
 from app.services.strategies.handler import StrategyHandler
+
+logger = logging.getLogger(__name__)
 
 _STK_CONTRACT_MONTH = "2026-09"
 
@@ -168,7 +171,7 @@ class ModelBlueStrategy(StrategyHandler):
                 f"MODEL_BLUE_INVALID_LEG_COUNT: OPEN requires exactly 2 legs, got {len(legs)}."
             )
 
-        return OrderIntent(
+        intent = OrderIntent(
             signal_id=trade_id,
             strategy_id=MODEL_BLUE_STRATEGY_ID,
             action=OrderAction.OPEN,
@@ -178,6 +181,17 @@ class ModelBlueStrategy(StrategyHandler):
             market=signal.market,
             timestamp=signal.timestamp or datetime.now(UTC),
         )
+        logger.info(
+            "Model Blue OPEN intent: trade_id=%s account_id=%s ibkr_account=%s legs=%s",
+            trade_id,
+            intent.account_id,
+            intent.ibkr_account,
+            [
+                (leg.symbol, leg.side.value, leg.quantity, str(leg.notional))
+                for leg in intent.legs
+            ],
+        )
+        return intent
 
     async def _build_close_intent(
         self, signal: Signal, account: AccountExecutionContext | None
@@ -213,6 +227,15 @@ class ModelBlueStrategy(StrategyHandler):
                 )
             )
 
+        logger.info(
+            "Model Blue CLOSE intent: trade_id=%s account_id=%s legs=%s",
+            trade_id,
+            account_id,
+            [
+                (leg.symbol, leg.side.value, leg.quantity, str(leg.price))
+                for leg in close_legs
+            ],
+        )
         return OrderIntent(
             signal_id=f"{trade_id}:CLOSE",
             strategy_id=MODEL_BLUE_STRATEGY_ID,

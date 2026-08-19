@@ -20,6 +20,7 @@ from app.db.repositories.signal_repository import (
     SignalRepository,
     persist_signal_id_for,
 )
+from app.core.logger import bind_log_context
 from app.models.signal import Signal, SignalType
 from app.oms.basket import BasketState
 from app.oms.coordinator import BasketCoordinator
@@ -166,18 +167,42 @@ class OrderManager:
                 )
                 self._add_row_exposure(row)
             limits = (await session.execute(select(PerSymbolLimitModel))).scalars().all()
-            for limit in limits:
-                self._rms_context.per_symbol_limits[(limit.account_id, limit.symbol)] = (
-                    limit.money_limit
-                )
+            self._apply_symbol_limits(limits)
         if self._baskets is not None:
             await self._baskets.hydrate_critical_from_db()
             await self._baskets.recover_incomplete_baskets()
+        critical_count = len(getattr(self._baskets, "_critical", set()) or set())
+        logger.info(
+            "Hydrated runtime from DB: processed_signals=%d open_position_keys=%d critical_baskets=%d",
+            len(self._rms_context.processed_signals),
+            len(self._rms_context.open_positions),
+            critical_count,
+        )
+
+    def _apply_symbol_limits(self, limits: list) -> None:
+        """Replace in-memory per-symbol money limits from DB rows."""
+        self._rms_context.per_symbol_limits.clear()
+        for limit in limits:
+            self._rms_context.per_symbol_limits[(limit.account_id, limit.symbol)] = (
+                limit.money_limit
+            )
+
+    async def reload_rms_limits(self) -> None:
+        """Reload per-symbol money limits from Postgres into RMSContext."""
+        if self._session_factory is None:
+            return
+        async with self._session_factory() as session:
+            limits = (await session.execute(select(PerSymbolLimitModel))).scalars().all()
+            self._apply_symbol_limits(limits)
+        logger.info(
+            "Reloaded RMS per_symbol_limits: count=%d",
+            len(self._rms_context.per_symbol_limits),
+        )
 
     async def hydrate_live_pnl(self) -> None:
         """Re-subscribe market data for OPEN positions after TWS is available.
 
-        Does not submit orders. Skips CFD legs that cannot resolve without master data.
+        Does not submit orders. Backfills missing CFD master rows when TWS is up.
         """
         if self._live_pnl is None or self._session_factory is None:
             return
@@ -185,14 +210,13 @@ class OrderManager:
             open_rows = await PositionRepository(session).list_open()
         if not open_rows:
             return
-        snapshot = None
         catalog = getattr(self, "_instrument_catalog", None)
         if catalog is not None:
-            from app.db.repositories.instrument_repository import SnapshotInstrumentCatalog
+            from app.instruments.cfd_discover import ensure_cfd_instruments_for_symbols
             from app.instruments.models import InstrumentResolutionError
             from app.instruments.resolver import ibkr_sec_type
 
-            rows = []
+            symbols: list[str] = []
             for position in open_rows:
                 for symbol, raw_type in (
                     (position.leg_a_symbol, getattr(position, "leg_a_instrument_type", None)),
@@ -201,15 +225,28 @@ class OrderManager:
                     if not symbol:
                         continue
                     try:
-                        sec = ibkr_sec_type(raw_type)
+                        if ibkr_sec_type(raw_type or "STK") == "CFD":
+                            symbols.append(symbol)
                     except InstrumentResolutionError:
                         continue
-                    finder = getattr(catalog, "find_all_async", None)
-                    if callable(finder):
-                        rows.extend(await finder(symbol, sec))
-                    else:
-                        rows.extend(list(catalog.find_all(symbol, sec)))
-            snapshot = SnapshotInstrumentCatalog(rows)
+            if symbols:
+                await ensure_cfd_instruments_for_symbols(
+                    symbols=symbols,
+                    client=self._tws_client(),
+                    session_factory=self._session_factory,
+                    catalog=catalog,
+                )
+        snapshot = await self._instrument_snapshot_for_legs(
+            [
+                (row.leg_a_symbol, getattr(row, "leg_a_instrument_type", None))
+                for row in open_rows
+            ]
+            + [
+                (row.leg_b_symbol, getattr(row, "leg_b_instrument_type", None))
+                for row in open_rows
+                if row.leg_b_symbol
+            ]
+        )
         self._live_pnl.hydrate_from_position_rows(open_rows, catalog=snapshot)
 
     def _add_row_exposure(self, row) -> None:
@@ -260,6 +297,10 @@ class OrderManager:
             logger.info("HOLD signal received — no order submitted")
             return None
 
+        bind_log_context(
+            signal_id=signal.signal_id,
+            trade_id=signal.trade_id or signal.signal_id,
+        )
         inbound_row = await self._persist_inbound_signal(signal, status=SIGNAL_STATUS_NEW)
         try:
             return await self._process_signal_execution_inner(signal, inbound_row)
@@ -292,6 +333,10 @@ class OrderManager:
 
         contexts = await self._account_router.resolve(strat_id)
         if not contexts:
+            logger.warning(
+                "NO_ELIGIBLE_ACCOUNTS: strategy '%s' has no enabled account subscriptions",
+                strat_id,
+            )
             raise ValueError(
                 f"NO_ELIGIBLE_ACCOUNTS: strategy '{strat_id}' has no enabled "
                 "account subscriptions."
@@ -310,6 +355,7 @@ class OrderManager:
         outcomes: list[AccountExecutionOutcome] = []
         raise_if_single = len(contexts) == 1
         for ctx in contexts:
+            bind_log_context(account_id=str(ctx.account_id))
             self._ensure_strategy_config(ctx.strategy_id)
             self._rms_context.account_open_limits[(ctx.account_id, ctx.strategy_id)] = (
                 ctx.max_open_positions
@@ -325,6 +371,12 @@ class OrderManager:
                         ibkr_account=ctx.ibkr_account,
                         result=result,
                     )
+                )
+                logger.info(
+                    "Fanout account outcome: account_id=%s success=%s orders=%d",
+                    ctx.account_id,
+                    getattr(result, "success", None),
+                    len(result.orders) if result is not None else 0,
                 )
             except ValueError as exc:
                 logger.warning(
@@ -453,6 +505,12 @@ class OrderManager:
             and self._baskets is not None
             and self._baskets.is_open_blocked(intent.account_id, intent.strategy_id)
         ):
+            logger.warning(
+                "BASKET_CRITICAL gate blocked OPEN: account_id=%s strategy_id=%s trade_id=%s",
+                intent.account_id,
+                intent.strategy_id,
+                intent.signal_id,
+            )
             raise ValueError(
                 "BASKET_CRITICAL: new OPENs blocked for account_id="
                 f"{intent.account_id} strategy={intent.strategy_id} until reconciliation."
@@ -692,13 +750,16 @@ class OrderManager:
                 )
                 logger.info(
                     "Persisted inbound signal strategy_id=%s signal_id=%s trade_id=%s "
-                    "pair=%s side=%s status=%s raw_payload_keys=%s has_parsed_json=%s",
+                    "pair=%s side=%s status=%s db_pk=%s reject_reason=%s "
+                    "raw_payload_keys=%s has_parsed_json=%s",
                     row.strategy_id,
                     row.signal_id,
                     row.trade_id,
                     row.pair,
                     row.side,
                     row.status,
+                    row.id,
+                    reject_reason,
                     list((row.raw_payload or {}).keys()),
                     isinstance((row.raw_payload or {}).get("parsed_json"), dict),
                 )
@@ -732,30 +793,36 @@ class OrderManager:
     async def _resolve_instruments(
         self, intent: OrderIntent, *, signal_pk: int | None = None
     ) -> OrderIntent:
-        from app.db.repositories.instrument_repository import SnapshotInstrumentCatalog
+        from app.instruments.cfd_discover import ensure_cfd_instruments_for_symbols
         from app.instruments.execution_override import execution_instrument_type
         from app.instruments.models import InstrumentResolutionError
         from app.instruments.resolver import attach_resolved, ibkr_sec_type
 
-        rows = []
         catalog = getattr(self, "_instrument_catalog", None)
-        if catalog is not None:
+        if catalog is not None and self._session_factory is not None:
+            cfd_symbols: list[str] = []
             for leg in intent.legs:
                 try:
                     execution_type, _override = execution_instrument_type(
                         leg.instrument_type
                     )
-                    sec = ibkr_sec_type(execution_type)
+                    if ibkr_sec_type(execution_type) != "CFD":
+                        continue
                 except InstrumentResolutionError:
                     continue
-                finder = getattr(catalog, "find_all_async", None)
-                if callable(finder):
-                    rows.extend(await finder(leg.symbol, sec))
-                else:
-                    rows.extend(list(catalog.find_all(leg.symbol, sec)))
-            snapshot = SnapshotInstrumentCatalog(rows)
-        else:
-            snapshot = None
+                cfd_symbols.append(leg.symbol)
+            if cfd_symbols:
+                await ensure_cfd_instruments_for_symbols(
+                    symbols=cfd_symbols,
+                    client=self._tws_client(),
+                    session_factory=self._session_factory,
+                    catalog=catalog,
+                    market=intent.market,
+                )
+
+        snapshot = await self._instrument_snapshot_for_legs(
+            [(leg.symbol, leg.instrument_type) for leg in intent.legs]
+        )
         try:
             resolved_intent = attach_resolved(intent, catalog=snapshot)
         except InstrumentResolutionError as exc:
@@ -768,6 +835,38 @@ class OrderManager:
                 )
         await self._audit_instruments_resolved(resolved_intent, signal_pk=signal_pk)
         return resolved_intent
+
+    def _tws_client(self):
+        oms = self._oms
+        adapter = getattr(oms, "adapter", None) if oms is not None else None
+        return getattr(adapter, "_client", None)
+
+    async def _instrument_snapshot_for_legs(
+        self, leg_specs: list[tuple[str | None, str | None]]
+    ):
+        from app.db.repositories.instrument_repository import SnapshotInstrumentCatalog
+        from app.instruments.execution_override import execution_instrument_type
+        from app.instruments.models import InstrumentResolutionError
+        from app.instruments.resolver import ibkr_sec_type
+
+        catalog = getattr(self, "_instrument_catalog", None)
+        if catalog is None:
+            return None
+        rows = []
+        for symbol, raw_type in leg_specs:
+            if not symbol:
+                continue
+            try:
+                execution_type, _override = execution_instrument_type(raw_type)
+                sec = ibkr_sec_type(execution_type)
+            except InstrumentResolutionError:
+                continue
+            finder = getattr(catalog, "find_all_async", None)
+            if callable(finder):
+                rows.extend(await finder(symbol, sec))
+            else:
+                rows.extend(list(catalog.find_all(symbol, sec)))
+        return SnapshotInstrumentCatalog(rows) if rows else SnapshotInstrumentCatalog([])
 
     async def _audit_instruments_resolved(
         self, intent: OrderIntent, *, signal_pk: int | None
@@ -786,11 +885,14 @@ class OrderManager:
             _exec, override = execution_instrument_type(requested)
             logger.info(
                 "Model Blue instrument resolution: symbol=%s requested_type=%s "
-                "resolved_type=%s override=%s",
+                "resolved_type=%s override=%s con_id=%s exchange=%s qty=%s",
                 leg.symbol,
                 requested,
                 resolved_type,
                 override or "none",
+                getattr(resolved, "con_id", None),
+                getattr(resolved, "exchange", None),
+                leg.quantity,
             )
             legs.append(
                 {

@@ -1,0 +1,14 @@
+---
+description: Backend Python conventions for the FastAPI trading app
+globs: app/backend/**/*.py
+alwaysApply: false
+---
+
+# Backend Python
+
+- Wire long-lived services only in `app/main.py` lifespan onto `app.state`.
+- Read config via `get_settings()`; `Settings` has no `BROKER_MODE` — do not reintroduce MockBroker unless implementing it end-to-end.
+- Main HTTP surface is health + TradingView webhook + orders list/get/cancel only. Add routes through existing router patterns.
+- Redis is demo-stream only; do not assume Redis on the trading path.
+- Durable state goes through Postgres models/repos. OMS HTTP reads are in-memory.
+- Current facts: `app/docs/backend-*.md`. Ignore `backend/main.py` (hello stub).

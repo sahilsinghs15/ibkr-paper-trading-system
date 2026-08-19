@@ -32,6 +32,11 @@ class TWSClient(EWrapper, EClient):
         self._request_types: dict[int, str] = {}
         self._registry_lock = threading.Lock()
 
+        self._contract_details_lock = threading.Lock()
+        self._contract_details_events: dict[int, threading.Event] = {}
+        self._contract_details_results: dict[int, list[Any]] = {}
+        self._next_contract_details_req = 60000
+
     def register_request_id(self, req_id: int, req_type: str) -> None:
         """Register a request ID with its type under lock."""
         with self._registry_lock:
@@ -138,6 +143,36 @@ class TWSClient(EWrapper, EClient):
                 listener.on_market_data_type(reqId, marketDataType)
             except Exception:
                 logger.exception("Error in marketDataType listener callback")
+
+    def contractDetails(self, reqId: int, contractDetails: Any) -> None:
+        """Callback receiving a single ContractDetails result."""
+        super().contractDetails(reqId, contractDetails)
+        with self._contract_details_lock:
+            if reqId not in self._contract_details_events:
+                return
+            self._contract_details_results.setdefault(reqId, []).append(contractDetails)
+        for listener in list(self._listeners):
+            try:
+                listener.on_contract_details(reqId, contractDetails)
+            except AttributeError:
+                pass
+            except Exception:
+                logger.exception("Error in contractDetails listener callback")
+
+    def contractDetailsEnd(self, reqId: int) -> None:
+        """Callback indicating contract details transmission is complete."""
+        super().contractDetailsEnd(reqId)
+        with self._contract_details_lock:
+            event = self._contract_details_events.get(reqId)
+            if event is not None:
+                event.set()
+        for listener in list(self._listeners):
+            try:
+                listener.on_contract_details_end(reqId)
+            except AttributeError:
+                pass
+            except Exception:
+                logger.exception("Error in contractDetailsEnd listener callback")
 
     def accountSummary(
         self, reqId: int, account: str, tag: str, value: str, currency: str
@@ -300,6 +335,44 @@ class TWSClient(EWrapper, EClient):
         """Register a general listener to receive TWS wrapper callbacks."""
         self._listeners.append(listener)
 
+    def request_contract_details(
+        self, contract: Any, *, timeout: float = 5.0
+    ) -> list[Any]:
+        """Request IBKR contract details and block until complete or timeout."""
+        if not self.is_connected():
+            logger.warning("request_contract_details: TWS not connected")
+            return []
+        with self._contract_details_lock:
+            req_id = self._next_contract_details_req
+            self._next_contract_details_req += 1
+            event = threading.Event()
+            self._contract_details_events[req_id] = event
+            self._contract_details_results[req_id] = []
+        self.register_request_id(req_id, "contract_details")
+        try:
+            self.reqContractDetails(req_id, contract)
+        except Exception:
+            logger.exception("reqContractDetails failed for reqId=%d", req_id)
+            self._clear_contract_details_request(req_id)
+            return []
+        completed = event.wait(timeout=timeout)
+        with self._contract_details_lock:
+            results = list(self._contract_details_results.get(req_id, []))
+        self._clear_contract_details_request(req_id)
+        if not completed:
+            logger.warning(
+                "request_contract_details timed out after %.1fs reqId=%d",
+                timeout,
+                req_id,
+            )
+        return results
+
+    def _clear_contract_details_request(self, req_id: int) -> None:
+        with self._contract_details_lock:
+            self._contract_details_events.pop(req_id, None)
+            self._contract_details_results.pop(req_id, None)
+        self.unregister_request_id(req_id)
+
     # ── Connection Lifecycle Methods ─────────────────────────────────
 
     def is_connected(self) -> bool:
@@ -374,4 +447,9 @@ class TWSClient(EWrapper, EClient):
         self.next_order_id = None
         with self._registry_lock:
             self._request_types.clear()
+        with self._contract_details_lock:
+            for event in self._contract_details_events.values():
+                event.set()
+            self._contract_details_events.clear()
+            self._contract_details_results.clear()
         logger.info("TWS disconnected.")
