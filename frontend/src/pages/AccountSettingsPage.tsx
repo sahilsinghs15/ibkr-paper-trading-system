@@ -393,257 +393,261 @@ export function AccountSettingsPage() {
       ) : null}
 
       {account ? (
-        <>
-          {/* Account Margin & Enable Configuration */}
-          <section className="settings-card">
-            <div className="settings-block">
-              <div className="settings-block-h">
-                <h2>ACCOUNT CONFIGURATION</h2>
-                <label className="toggle-row">
-                  <input
-                    type="checkbox"
-                    checked={enabled}
-                    onChange={(e) => setEnabled(e.target.checked)}
-                  />
-                  <span>{enabled ? 'Enabled' : 'Disabled'}</span>
-                </label>
-              </div>
-
-              <div className="settings-grid">
-                <label className="field">
-                  <span>Account Name</span>
-                  <input className="inline-input" type="text" value={account.name} disabled />
-                </label>
-
-                <label className="field">
-                  <span>Total Margin</span>
-                  <div className="money-field">
-                    <span className="money-prefix">$</span>
+        <div className="settings-dashboard-grid">
+          <div className="settings-column">
+            {/* Account Margin & Enable Configuration */}
+            <section className="settings-card">
+              <div className="settings-block">
+                <div className="settings-block-h">
+                  <h2>ACCOUNT CONFIGURATION</h2>
+                  <label className="toggle-row">
                     <input
-                      type="number"
-                      min="0"
-                      step="1000"
-                      value={margin}
-                      onChange={(e) => setMargin(e.target.value)}
+                      type="checkbox"
+                      checked={enabled}
+                      onChange={(e) => setEnabled(e.target.checked)}
                     />
-                  </div>
-                  <span className="field-hint">{fmtUsd(margin)}</span>
-                </label>
+                    <span>{enabled ? 'Enabled' : 'Disabled'}</span>
+                  </label>
+                </div>
 
-                <button
-                  type="button"
-                  className="btn primary"
-                  disabled={accountMutation.isPending}
-                  onClick={() => accountMutation.mutate()}
-                >
-                  Save Changes
-                </button>
+                <div className="settings-grid">
+                  <label className="field">
+                    <span>Account Name</span>
+                    <input className="inline-input" type="text" value={account.name} disabled />
+                  </label>
+
+                  <label className="field">
+                    <span>Total Margin</span>
+                    <div className="money-field">
+                      <span className="money-prefix">$</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1000"
+                        value={margin}
+                        onChange={(e) => setMargin(e.target.value)}
+                      />
+                    </div>
+                    <span className="field-hint">{fmtUsd(margin)}</span>
+                  </label>
+
+                  <button
+                    type="button"
+                    className="btn primary"
+                    disabled={accountMutation.isPending}
+                    onClick={() => accountMutation.mutate()}
+                  >
+                    Save Changes
+                  </button>
+                </div>
               </div>
-            </div>
-          </section>
+            </section>
 
-          {/* Strategy Allocations */}
-          {account.allocations.map((a) => {
-            const draft = drafts[a.id] || {
-              allocPct: pctFromDecimal(a.alloc_pct),
-              enabled: a.enabled,
-              maxOpenPositions: a.max_open_positions,
-            }
-            const committed =
-              (parseFloat(account.total_margin) * (draft.enabled ? draft.allocPct : 0)) / 100
+            {/* Strategy Allocations */}
+            {account.allocations.map((a) => {
+              const draft = drafts[a.id] || {
+                allocPct: pctFromDecimal(a.alloc_pct),
+                enabled: a.enabled,
+                maxOpenPositions: a.max_open_positions,
+              }
+              const committed =
+                (parseFloat(account.total_margin) * (draft.enabled ? draft.allocPct : 0)) / 100
 
-            return (
-              <section key={a.id} className="settings-card">
-                <div className="settings-block">
-                  <div className="settings-block-h">
-                    <h2>MODEL BLUE ALLOCATION</h2>
-                    <span className={`alloc-sum ${sumOver ? 'over' : ''}`}>
-                      Enabled total {fmtPct(enabledSum)}
-                    </span>
-                  </div>
-
-                  <div className="alloc-card">
-                    <div className="alloc-card-h">
-                      <h3>{displayStrategy(a.strategy_id)}</h3>
-                      <label className="toggle-row">
-                        <input
-                          type="checkbox"
-                          checked={draft.enabled}
-                          onChange={(e) => updateDraft(a.id, { enabled: e.target.checked })}
-                        />
-                        <span>{draft.enabled ? 'Enabled' : 'Disabled'}</span>
-                      </label>
+              return (
+                <section key={a.id} className="settings-card">
+                  <div className="settings-block">
+                    <div className="settings-block-h">
+                      <h2>MODEL BLUE ALLOCATION</h2>
+                      <span className={`alloc-sum ${sumOver ? 'over' : ''}`}>
+                        Enabled total {fmtPct(enabledSum)}
+                      </span>
                     </div>
 
-                    <div className="settings-grid">
-                      <label className="field">
-                        <span>Allocation</span>
-                        <div className="money-field">
+                    <div className="alloc-card">
+                      <div className="alloc-card-h">
+                        <h3>{displayStrategy(a.strategy_id)}</h3>
+                        <label className="toggle-row">
                           <input
+                            type="checkbox"
+                            checked={draft.enabled}
+                            onChange={(e) => updateDraft(a.id, { enabled: e.target.checked })}
+                          />
+                          <span>{draft.enabled ? 'Enabled' : 'Disabled'}</span>
+                        </label>
+                      </div>
+
+                      <div className="settings-grid">
+                        <label className="field">
+                          <span>Allocation</span>
+                          <div className="money-field">
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              step="1"
+                              value={draft.allocPct}
+                              onChange={(e) =>
+                                updateDraft(a.id, { allocPct: parseFloat(e.target.value) || 0 })
+                              }
+                            />
+                            <span className="money-suffix">%</span>
+                          </div>
+                          <span className="field-hint">
+                            Committed: {fmtUsd(String(committed))}
+                          </span>
+                        </label>
+
+                        <label className="field">
+                          <span>Max Open Positions</span>
+                          <input
+                            className="inline-input narrow"
                             type="number"
-                            min="0"
-                            max="100"
+                            min="1"
                             step="1"
-                            value={draft.allocPct}
+                            value={draft.maxOpenPositions}
                             onChange={(e) =>
-                              updateDraft(a.id, { allocPct: parseFloat(e.target.value) || 0 })
+                              updateDraft(a.id, {
+                                maxOpenPositions: parseInt(e.target.value, 10) || 1,
+                              })
                             }
                           />
-                          <span className="money-suffix">%</span>
-                        </div>
-                        <span className="field-hint">
-                          Committed: {fmtUsd(String(committed))}
-                        </span>
-                      </label>
+                        </label>
 
-                      <label className="field">
-                        <span>Max Open Positions</span>
-                        <input
-                          className="inline-input narrow"
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={draft.maxOpenPositions}
-                          onChange={(e) =>
-                            updateDraft(a.id, {
-                              maxOpenPositions: parseInt(e.target.value, 10) || 1,
-                            })
-                          }
-                        />
-                      </label>
-
-                      <button
-                        type="button"
-                        className="btn primary"
-                        disabled={allocationMutation.isPending}
-                        onClick={() => allocationMutation.mutate({ id: a.id, draft })}
-                      >
-                        Save Allocation
-                      </button>
+                        <button
+                          type="button"
+                          className="btn primary"
+                          disabled={allocationMutation.isPending}
+                          onClick={() => allocationMutation.mutate({ id: a.id, draft })}
+                        >
+                          Save Allocation
+                        </button>
+                      </div>
                     </div>
                   </div>
+                </section>
+              )
+            })}
+
+            {/* Auto Square-Off & Retry */}
+            <ExecutionSettingsCard />
+          </div>
+
+          <div className="settings-column">
+            {/* Per-Symbol Money Limits */}
+            <section className="settings-card">
+              <div className="settings-block">
+                <div className="settings-block-h">
+                  <h2>PER-SYMBOL MONEY LIMITS</h2>
                 </div>
-              </section>
-            )
-          })}
+                <p className="field-hint">
+                  Limits max notional across all positions for a specific symbol on account{' '}
+                  <span className="mono">{cleanAccount}</span>.
+                </p>
 
-          {/* Auto Square-Off & Retry */}
-          <ExecutionSettingsCard />
-
-          {/* Per-Symbol Money Limits */}
-          <section className="settings-card">
-            <div className="settings-block">
-              <div className="settings-block-h">
-                <h2>PER-SYMBOL MONEY LIMITS</h2>
-              </div>
-              <p className="field-hint">
-                Limits max notional across all positions for a specific symbol on account{' '}
-                <span className="mono">{cleanAccount}</span>.
-              </p>
-
-              <div style={{ marginTop: 12, overflowX: 'auto' }}>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>SYMBOL</th>
-                      <th>MONEY LIMIT</th>
-                      <th style={{ textAlign: 'right' }}>ACTION</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {account.symbol_limits.map((lim) => (
-                      <tr key={lim.symbol}>
-                        <td className="mono bold">{lim.symbol}</td>
-                        <td className="mono">{fmtUsd(lim.money_limit)}</td>
-                        <td style={{ textAlign: 'right' }}>
-                          <button
-                            type="button"
-                            className="btn danger"
-                            disabled={deleteLimitMutation.isPending}
-                            onClick={() => deleteLimitMutation.mutate(lim.symbol)}
-                          >
-                            Remove
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                    {account.symbol_limits.length === 0 ? (
+                <div style={{ marginTop: 12, overflowX: 'auto' }}>
+                  <table>
+                    <thead>
                       <tr>
-                        <td colSpan={3} className="empty">
-                          No symbol limits configured.
-                        </td>
+                        <th>SYMBOL</th>
+                        <th>MONEY LIMIT</th>
+                        <th style={{ textAlign: 'right' }}>ACTION</th>
                       </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {account.symbol_limits.map((lim) => (
+                        <tr key={lim.symbol}>
+                          <td className="mono bold">{lim.symbol}</td>
+                          <td className="mono">{fmtUsd(lim.money_limit)}</td>
+                          <td style={{ textAlign: 'right' }}>
+                            <button
+                              type="button"
+                              className="btn danger"
+                              disabled={deleteLimitMutation.isPending}
+                              onClick={() => deleteLimitMutation.mutate(lim.symbol)}
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {account.symbol_limits.length === 0 ? (
+                        <tr>
+                          <td colSpan={3} className="empty">
+                            No symbol limits configured.
+                          </td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
 
-              <div className="settings-grid" style={{ marginTop: 12 }}>
-                <label className="field">
-                  <span>Symbol</span>
-                  <input
-                    className="inline-input"
-                    type="text"
-                    placeholder="e.g. SIL"
-                    value={newSymbol}
-                    onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
-                  />
-                </label>
-                <label className="field">
-                  <span>Money Limit ($)</span>
-                  <div className="money-field">
-                    <span className="money-prefix">$</span>
+                <div className="settings-grid" style={{ marginTop: 12 }}>
+                  <label className="field">
+                    <span>Symbol</span>
                     <input
-                      type="number"
-                      min="1"
-                      step="1000"
-                      placeholder="25000"
-                      value={newLimit}
-                      onChange={(e) => setNewLimit(e.target.value)}
+                      className="inline-input"
+                      type="text"
+                      placeholder="e.g. SIL"
+                      value={newSymbol}
+                      onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
                     />
-                  </div>
-                </label>
-                <button
-                  type="button"
-                  className="btn primary"
-                  disabled={!newSymbol.trim() || !newLimit.trim() || limitMutation.isPending}
-                  onClick={() =>
-                    limitMutation.mutate({
-                      symbol: newSymbol.trim(),
-                      limit: newLimit.trim(),
-                    })
-                  }
-                >
-                  + Add Limit
-                </button>
+                  </label>
+                  <label className="field">
+                    <span>Money Limit ($)</span>
+                    <div className="money-field">
+                      <span className="money-prefix">$</span>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1000"
+                        placeholder="25000"
+                        value={newLimit}
+                        onChange={(e) => setNewLimit(e.target.value)}
+                      />
+                    </div>
+                  </label>
+                  <button
+                    type="button"
+                    className="btn primary"
+                    disabled={!newSymbol.trim() || !newLimit.trim() || limitMutation.isPending}
+                    onClick={() =>
+                      limitMutation.mutate({
+                        symbol: newSymbol.trim(),
+                        limit: newLimit.trim(),
+                      })
+                    }
+                  >
+                    + Add Limit
+                  </button>
+                </div>
               </div>
-            </div>
-          </section>
+            </section>
 
-          {/* Emergency / Kill Switch */}
-          <section className="settings-card danger-card">
-            <div className="settings-block">
-              <div className="settings-block-h">
-                <h2>EMERGENCY / KILL SWITCH</h2>
-              </div>
-              <p className="field-hint" style={{ color: 'var(--ink)' }}>
-                Close every currently open position for account{' '}
-                <span className="mono bold">{cleanAccount}</span>.
-              </p>
+            {/* Emergency / Kill Switch */}
+            <section className="settings-card danger-card">
+              <div className="settings-block">
+                <div className="settings-block-h">
+                  <h2>EMERGENCY / KILL SWITCH</h2>
+                </div>
+                <p className="field-hint" style={{ color: 'var(--ink)' }}>
+                  Close every currently open position for account{' '}
+                  <span className="mono bold">{cleanAccount}</span>.
+                </p>
 
-              <div style={{ marginTop: 12 }}>
-                <button
-                  type="button"
-                  className="btn danger"
-                  style={{ padding: '10px 16px', fontSize: '11px' }}
-                  onClick={() => setIsKillSwitchOpen(true)}
-                >
-                  ⚠️ SQUARE OFF ALL POSITIONS
-                </button>
+                <div style={{ marginTop: 12 }}>
+                  <button
+                    type="button"
+                    className="btn danger"
+                    style={{ padding: '10px 16px', fontSize: '11px' }}
+                    onClick={() => setIsKillSwitchOpen(true)}
+                  >
+                    ⚠️ SQUARE OFF ALL POSITIONS
+                  </button>
+                </div>
               </div>
-            </div>
-          </section>
-        </>
+            </section>
+          </div>
+        </div>
       ) : null}
 
       {message ? <p className="settings-msg ok">{message}</p> : null}

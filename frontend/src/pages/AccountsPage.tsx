@@ -571,7 +571,7 @@ export function AccountsPage() {
 
           {data ? (
             <div style={{ marginTop: 12, overflowX: 'auto' }}>
-              <table>
+              <table className="accounts-table">
                 <thead>
                   <tr>
                     <th>ACCOUNT</th>
@@ -612,13 +612,7 @@ export function AccountsPage() {
                         <td className="mono">{fmtUsd(acc.total_margin)}</td>
                         <td className="dim">{allocSummary}</td>
                         <td style={{ textAlign: 'right' }}>
-                          <div
-                            style={{
-                              display: 'inline-flex',
-                              gap: 6,
-                              justifyContent: 'flex-end',
-                            }}
-                          >
+                          <div className="accounts-actions">
                             <button
                               type="button"
                               className="btn primary"

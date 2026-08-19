@@ -144,7 +144,72 @@ body,
 }
 
 .page {
-  padding: 10px 16px 20px;
+  padding: 14px 20px 24px;
+  max-width: 1440px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 1440px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.settings-dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  width: 100%;
+}
+
+@media (min-width: 1024px) {
+  .settings-dashboard-grid {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+}
+
+.settings-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.accounts-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.accounts-table th,
+.accounts-table td {
+  padding: 8px 10px;
+}
+
+.accounts-table th:nth-child(1) { width: 14%; }
+.accounts-table th:nth-child(2) { width: 12%; }
+.accounts-table th:nth-child(3) { width: 10%; }
+.accounts-table th:nth-child(4) { width: 12%; }
+.accounts-table th:nth-child(5) { width: 22%; }
+.accounts-table th:nth-child(6) { width: 30%; text-align: right; }
+
+.accounts-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.settings-card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 0;
 }
 
 .kpis {
@@ -417,13 +482,6 @@ thead th {
 .app-nav a.on {
   background: #182033;
   color: var(--blue);
-}
-
-.settings-page {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-width: 920px;
 }
 
 .settings-card {
