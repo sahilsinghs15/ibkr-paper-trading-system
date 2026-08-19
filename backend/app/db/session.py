@@ -9,6 +9,9 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+import os
+import sys
+
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
@@ -17,11 +20,22 @@ from app.core.config import get_settings
 def create_engine_from_settings() -> AsyncEngine:
     """Create and return an AsyncEngine instance configured with Settings."""
     settings = get_settings()
+    is_testing = "pytest" in sys.modules or os.getenv("PYTEST_CURRENT_TEST") is not None
+    if is_testing:
+        return create_async_engine(
+            settings.database_url,
+            echo=False,
+            pool_pre_ping=True,
+            poolclass=NullPool,
+        )
     return create_async_engine(
         settings.database_url,
         echo=False,
         pool_pre_ping=True,
-        poolclass=NullPool,
+        pool_size=10,
+        max_overflow=20,
+        pool_timeout=30,
+        pool_recycle=1800,
     )
 
 
