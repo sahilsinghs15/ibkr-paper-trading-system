@@ -3,8 +3,8 @@
 from dataclasses import replace
 from datetime import datetime
 
-from app.rms.checks.base import BaseRMSCheck
 from app.instruments.resolver import is_expiry_instrument
+from app.rms.checks.base import BaseRMSCheck
 from app.rms.models import (
     CheckResult,
     OrderAction,

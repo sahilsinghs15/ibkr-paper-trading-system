@@ -12,8 +12,8 @@ from ibapi.contract import Contract  # type: ignore[import-untyped]
 from ibapi.order import Order as IBOrder  # type: ignore[import-untyped]
 
 from app.broker.ibkr.tws_client import TWSClient
-from app.instruments.resolver import ibkr_contract_from_resolved
 from app.instruments.models import InstrumentResolutionError
+from app.instruments.resolver import ibkr_contract_from_resolved
 from app.oms.models import (
     BrokerExecution,
     OMSOrder,
@@ -21,6 +21,7 @@ from app.oms.models import (
     executions_commission_total,
     executions_weighted_average,
 )
+from app.oms.submit_pacer import OrderSubmitPacer
 from app.rms.models import OrderSide
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ class IBKRExecutionAdapter:
         sec_type: str = "STK",
         exchange: str = "SMART",
         currency: str = "USD",
+        submit_pacer: OrderSubmitPacer | None = None,
     ) -> None:
         """Initialize IBKR Execution Adapter with connection config and state tracking."""
         self._client = client or TWSClient()
@@ -62,6 +64,7 @@ class IBKRExecutionAdapter:
         self._sec_type = sec_type
         self._exchange = exchange
         self._currency = currency
+        self._submit_pacer = submit_pacer
 
         self._lock = threading.Lock()
 
@@ -180,6 +183,9 @@ class IBKRExecutionAdapter:
             order.error_message = "TWS connection unavailable"
             raise ConnectionError("Cannot submit order: TWS is not connected.")
 
+        if self._submit_pacer is not None:
+            order.pacer_delayed = await self._submit_pacer.acquire()
+
         with self._lock:
             if order.internal_order_id in self._orders_by_internal_id:
                 raise ValueError(
@@ -256,7 +262,9 @@ class IBKRExecutionAdapter:
                 req_open()
             req_exec = getattr(self._client, "reqExecutions", None)
             if callable(req_exec):
-                from ibapi.execution import ExecutionFilter  # type: ignore[import-untyped]
+                from ibapi.execution import (
+                    ExecutionFilter,  # type: ignore[import-untyped]
+                )
 
                 req_exec(9003, ExecutionFilter())
             return True

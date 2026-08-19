@@ -16,8 +16,11 @@ from app.db.repositories.signal_repository import (
     persist_signal_id_for,
 )
 from app.db.session import create_engine_from_settings
-from app.models.signal import Signal, SignalLeg, SignalType
-from app.services.model_blue.parser import MODEL_BLUE_STRATEGY_ID, parse_model_blue_payload
+from app.models.signal import Signal, SignalType
+from app.services.model_blue.parser import (
+    MODEL_BLUE_STRATEGY_ID,
+    parse_model_blue_payload,
+)
 from app.services.strategies.inbound import parse_tradingview_payload
 
 _TS = datetime(2026, 8, 18, 16, 0, tzinfo=UTC)

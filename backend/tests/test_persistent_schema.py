@@ -1,21 +1,18 @@
 """Unit tests for Phase 2 persistent PostgreSQL database schema."""
 
+import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.base import Base
 from app.db.models import (
     AccountModel,
     AllocationModel,
-    BasketModel,
     EventLogModel,
-    ExecutionModel,
     InstrumentModel,
     OrderModel,
-    PerSymbolLimitModel,
     PositionModel,
     SignalModel,
     StrategyModel,
@@ -91,9 +88,11 @@ async def test_schema_crud_operations() -> None:
     try:
         async with session_factory() as session:
             # 1. Create Account
+            test_id = uuid.uuid4().hex[:6]
+            # 1. Create Account
             acct = AccountModel(
-                name="Test Account 1",
-                ibkr_account="DU123456",
+                name=f"Test Account {test_id}",
+                ibkr_account=f"DU{test_id}",
                 total_margin=Decimal("100000.00"),
                 enabled=True,
             )
@@ -104,7 +103,7 @@ async def test_schema_crud_operations() -> None:
 
             # 2. Create Strategy
             strat = StrategyModel(
-                strategy_id="MODEL_BLUE",
+                strategy_id=f"STRAT_{test_id}",
                 legs=2,
                 expression="CFD",
                 max_open_positions=10,

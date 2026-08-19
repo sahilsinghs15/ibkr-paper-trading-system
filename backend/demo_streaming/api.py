@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from demo_streaming.snapshot import (
     load_baskets,
+    load_closed_position_rows,
     load_orders,
     load_position_rows,
     position_leg_payloads,
@@ -104,6 +105,27 @@ def create_demo_app(
             )
         return JSONResponse({"positions": payload, "market_data_status": "UNAVAILABLE"})
 
+    @app.get("/demo/closed-positions")
+    async def closed_positions(account_id: int | None = None) -> JSONResponse:
+        now = datetime.now(UTC)
+        async with session_factory() as session:
+            rows = await load_closed_position_rows(session, account_id=account_id)
+            baskets = await load_baskets(session)
+            orders = await load_orders(session)
+        payload = []
+        for position, account in rows:
+            key = (position.account_id, position.trade_id)
+            payload.extend(
+                position_leg_payloads(
+                    position,
+                    account,
+                    baskets.get(key, []),
+                    orders.get(key, []),
+                    timestamp=now,
+                )
+            )
+        return JSONResponse({"closed_positions": payload})
+
     @app.get("/demo/stream")
     async def sse(request: Request) -> StreamingResponse:
         async def events():
@@ -147,7 +169,7 @@ def create_demo_app(
 
     @app.api_route(
         "/api/v1/config/{full_path:path}",
-        methods=["GET", "PATCH", "PUT", "DELETE"],
+        methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
     )
     async def proxy_config_api(request: Request, full_path: str) -> Response:
         """Forward config CRUD to the trading API for same-origin dashboard saves."""
@@ -178,11 +200,10 @@ def create_demo_app(
         )
 
     @app.get("/")
-    async def index() -> FileResponse:
-        return _spa_index()
-
+    @app.get("/accounts")
     @app.get("/settings")
-    async def settings_spa() -> FileResponse:
+    @app.get("/account/{path:path}")
+    async def index() -> FileResponse:
         return _spa_index()
 
     @app.get("/favicon.svg")

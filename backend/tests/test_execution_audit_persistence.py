@@ -17,8 +17,8 @@ from app.db.models.event import EventLogModel
 from app.db.models.execution import ExecutionModel
 from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
-from app.db.models.strategy import AllocationModel, StrategyModel
 from app.db.models.signal import SignalModel
+from app.db.models.strategy import AllocationModel, StrategyModel
 from app.db.repositories.execution_repository import (
     total_commission,
     weighted_average_price,
@@ -30,9 +30,20 @@ from app.oms.ibkr_adapter import IBKRExecutionAdapter
 from app.oms.models import OMSOrderStatus
 from app.oms.oms_service import OMSService
 from app.rms import RMSContext, RMSEngine
-from app.rms.models import OrderAction, OrderIntent, OrderLeg, OrderSide, RMSOutcome, RMSResult, StrategyConfig
+from app.rms.models import (
+    OrderAction,
+    OrderIntent,
+    OrderLeg,
+    OrderSide,
+    RMSOutcome,
+    RMSResult,
+    StrategyConfig,
+)
 from app.services.model_blue.db_trade_book import DatabaseModelBlueTradeBook
-from app.services.model_blue.parser import MODEL_BLUE_STRATEGY_ID, parse_model_blue_payload
+from app.services.model_blue.parser import (
+    MODEL_BLUE_STRATEGY_ID,
+    parse_model_blue_payload,
+)
 from app.services.model_blue.persistence import ModelBlueExecutionPersistence
 from app.services.order_manager import OrderManager
 from tests.test_hardening_lifecycle import _ctx, _open_payload
@@ -99,7 +110,7 @@ async def _new_account(factory) -> int:
         account = AccountModel(
             name=f"ex-{uuid4().hex[:8]}",
             ibkr_account=f"DU{uuid4().hex[:8]}",
-            total_margin=Decimal("100000"),
+            total_margin=Decimal(100000),
             enabled=True,
         )
         session.add(account)
@@ -131,8 +142,8 @@ async def _ensure_model_blue_alloc(factory, account_id: int) -> None:
                 account_id=account_id,
                 strategy_id=MODEL_BLUE_STRATEGY_ID,
                 alloc_pct=Decimal("0.25"),
-                target=Decimal("500"),
-                stop=Decimal("250"),
+                target=Decimal(500),
+                stop=Decimal(250),
                 time_limit=3600,
                 max_open_positions=10,
                 enabled=True,
@@ -257,7 +268,7 @@ async def test_multiple_partial_executions_weighted_average_and_commission_once(
             assert total_commission(rows) == Decimal("1.375")
             avg = weighted_average_price(rows)
             assert avg is not None
-            expected = (Decimal("140") * Decimal("87.97") + Decimal("135") * Decimal("87.89")) / Decimal("275")
+            expected = (Decimal(140) * Decimal("87.97") + Decimal(135) * Decimal("87.89")) / Decimal(275)
             assert avg == expected
             assert order.commission == Decimal("1.375")
     finally:
@@ -309,7 +320,7 @@ async def test_event_lifecycle_links_and_idempotent_callbacks() -> None:
             account = AccountModel(
                 name=f"aud-{uuid4().hex[:8]}",
                 ibkr_account=f"DU{uuid4().hex[:8]}",
-                total_margin=Decimal("100000"),
+                total_margin=Decimal(100000),
                 enabled=True,
             )
             session.add(account)
@@ -333,7 +344,7 @@ async def test_event_lifecycle_links_and_idempotent_callbacks() -> None:
                 }
             ),
             account_router=StaticStrategyAccountRouter(
-                [_ctx(account_id, "DU-AUD", total=Decimal("100000"), pct=Decimal("0.25"))]
+                [_ctx(account_id, "DU-AUD", total=Decimal(100000), pct=Decimal("0.25"))]
             ),
             session_factory=factory,
             persistence=ModelBlueExecutionPersistence(factory),
@@ -394,8 +405,8 @@ async def test_persisted_executions_reproduce_realized_pnl() -> None:
     sil_close = Decimal("87.930727")
     gdx_open = Decimal("90.0200")
     gdx_close = Decimal("89.7200")
-    sil_qty = Decimal("275")
-    gdx_qty = Decimal("-270")
+    sil_qty = Decimal(275)
+    gdx_qty = Decimal(-270)
     commission = Decimal("2.725")
     gross = sil_qty * (sil_close - sil_open) + gdx_qty * (gdx_close - gdx_open)
     net = gross - commission
@@ -409,13 +420,13 @@ async def test_persisted_executions_reproduce_realized_pnl() -> None:
             account = AccountModel(
                 name=f"pnl-{uuid4().hex[:8]}",
                 ibkr_account=f"DU{uuid4().hex[:8]}",
-                total_margin=Decimal("100000"),
+                total_margin=Decimal(100000),
                 enabled=True,
             )
             session.add(account)
             await session.flush()
-            from app.db.models.signal import SignalModel
             from app.db.models.order import OrderModel as OM
+            from app.db.models.signal import SignalModel
 
             sig = SignalModel(
                 strategy_id=MODEL_BLUE_STRATEGY_ID,
@@ -457,11 +468,11 @@ async def test_persisted_executions_reproduce_realized_pnl() -> None:
                 symbol="GDX",
                 ibkr_contract="GDX-CFD-SMART-USD:2",
                 buy_sell="SELL",
-                quantity=Decimal("270"),
+                quantity=Decimal(270),
                 limit_price=Decimal("91.86"),
                 status="FILLED",
                 fill_price=gdx_open,
-                fill_qty=Decimal("270"),
+                fill_qty=Decimal(270),
             )
             session.add_all([o1, o2])
             await session.flush()
@@ -486,7 +497,7 @@ async def test_persisted_executions_reproduce_realized_pnl() -> None:
                         internal_order_id=o2.internal_order_id,
                         symbol="GDX",
                         side="SELL",
-                        quantity=Decimal("270"),
+                        quantity=Decimal(270),
                         price=gdx_open,
                         commission=Decimal("0.975"),
                         commission_currency="USD",
@@ -510,7 +521,7 @@ async def test_persisted_executions_reproduce_realized_pnl() -> None:
                         internal_order_id=f"ORD-{trade_id}:CLOSE-L1",
                         symbol="GDX",
                         side="BUY",
-                        quantity=Decimal("270"),
+                        quantity=Decimal(270),
                         price=gdx_close,
                         commission=Decimal("0.0"),
                         commission_currency="USD",
@@ -549,7 +560,7 @@ async def test_existing_open_basket_semantics_unchanged() -> None:
             account = AccountModel(
                 name=f"sem-{uuid4().hex[:8]}",
                 ibkr_account=f"DU{uuid4().hex[:8]}",
-                total_margin=Decimal("100000"),
+                total_margin=Decimal(100000),
                 enabled=True,
             )
             session.add(account)
@@ -571,7 +582,7 @@ async def test_existing_open_basket_semantics_unchanged() -> None:
                 }
             ),
             account_router=StaticStrategyAccountRouter(
-                [_ctx(account_id, "DU-SEM", total=Decimal("100000"), pct=Decimal("0.25"))]
+                [_ctx(account_id, "DU-SEM", total=Decimal(100000), pct=Decimal("0.25"))]
             ),
             session_factory=factory,
             persistence=ModelBlueExecutionPersistence(factory),

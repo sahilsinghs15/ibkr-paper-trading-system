@@ -3,7 +3,13 @@
 from decimal import Decimal
 
 from app.rms.checks.base import BaseRMSCheck
-from app.rms.models import CheckResult, OrderIntent, RMSContext, RMSOutcome, exposure_key
+from app.rms.models import (
+    CheckResult,
+    OrderIntent,
+    RMSContext,
+    RMSOutcome,
+    exposure_key,
+)
 
 
 class MoneyPerStockCheck(BaseRMSCheck):

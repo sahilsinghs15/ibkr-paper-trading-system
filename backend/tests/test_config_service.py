@@ -1,7 +1,6 @@
 """Unit tests for AccountStrategyConfigService."""
 
 import uuid
-import uuid
 from decimal import Decimal
 
 import pytest
@@ -31,7 +30,6 @@ async def _seed_account_strategy(
     suffix: str | None = None,
     strategy_max_open: int = 10,
 ) -> tuple[AccountModel, StrategyModel]:
-    tag = suffix or uuid.uuid4().hex[:8]
     account = AccountModel(
         name=f"cfg-{suffix}",
         ibkr_account=f"DUCFG{suffix}",
@@ -77,7 +75,7 @@ async def test_update_allocation_rejects_sum_over_one(db_factory) -> None:
     async with db_factory() as session:
         account, strategy = await _seed_account_strategy(session)
         svc = AccountStrategyConfigService(session)
-        first = await svc.create_allocation(
+        await svc.create_allocation(
             account=account,
             strategy_id=strategy.strategy_id,
             alloc_pct=Decimal("0.80"),

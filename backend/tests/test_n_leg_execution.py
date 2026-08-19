@@ -55,8 +55,8 @@ class _LegRecorder(BaseRMSCheck):
         )
 
 
-def _leg(symbol: str, index: int, notional: Decimal = Decimal("200")) -> OrderLeg:
-    price = Decimal("10")
+def _leg(symbol: str, index: int, notional: Decimal = Decimal(200)) -> OrderLeg:
+    price = Decimal(10)
     qty = float(notional / price)
     return OrderLeg(
         symbol=symbol,
@@ -159,9 +159,9 @@ def test_rms_rejects_when_third_leg_breaches_money_limit() -> None:
         strategy_id=_SYNTH,
         action=OrderAction.OPEN,
         legs=[
-            _leg("AAA", 0, Decimal("100")),
-            _leg("BBB", 1, Decimal("100")),
-            _leg("CCC", 2, Decimal("9000")),
+            _leg("AAA", 0, Decimal(100)),
+            _leg("BBB", 1, Decimal(100)),
+            _leg("CCC", 2, Decimal(9000)),
         ],
         timestamp=_TS,
     )
@@ -170,7 +170,7 @@ def test_rms_rejects_when_third_leg_breaches_money_limit() -> None:
             _SYNTH: StrategyConfig(
                 strategy_id=_SYNTH,
                 max_open_positions=10,
-                money_limit_per_symbol=Decimal("5000"),
+                money_limit_per_symbol=Decimal(5000),
             )
         }
     )
@@ -225,7 +225,7 @@ async def test_4_strategy_isolation_skips_model_blue_sizer() -> None:
         action="OPEN",
         symbol="SPY",
         side="BUY",
-        price=Decimal("100"),
+        price=Decimal(100),
         quantity=1,
     )
     with patch("app.services.model_blue.parser.parse_model_blue_payload") as parse_spy:

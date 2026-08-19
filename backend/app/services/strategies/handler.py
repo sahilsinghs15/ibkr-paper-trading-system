@@ -47,4 +47,4 @@ class StrategyHandler(ABC):
         exec_res: ExecutionResult,
     ) -> None:
         """Optional persistence / trade-book bookkeeping after OMS success."""
-        return None
+        return

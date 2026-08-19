@@ -49,11 +49,42 @@ class AccountsConfigResponse(BaseModel):
     accounts: list[AccountConfigSchema]
 
 
+class CreateAccountRequest(BaseModel):
+    """Payload to create a new paper trading account."""
+
+    name: str = Field(..., min_length=1)
+    ibkr_account: str = Field(..., min_length=1)
+    total_margin: Decimal = Field(..., gt=0)
+    enabled: bool = True
+
+
 class PatchAccountRequest(BaseModel):
     """Partial update for an account."""
 
+    name: str | None = Field(None, min_length=1)
+    ibkr_account: str | None = Field(None, min_length=1)
     total_margin: Decimal | None = Field(None, gt=0)
     enabled: bool | None = None
+
+
+class CreateAllocationRequest(BaseModel):
+    """Payload to assign a strategy allocation to an account."""
+
+    strategy_id: str = Field(..., min_length=1)
+    alloc_pct: Decimal = Field(..., ge=0, le=1)
+    max_open_positions: int | None = Field(None, ge=0)
+    target: Decimal = Field(Decimal("500.00"), gt=0)
+    stop: Decimal = Field(Decimal("250.00"), gt=0)
+    time_limit: int = Field(3600, gt=0)
+    enabled: bool = True
+
+
+class AccountDeleteCheckResponse(BaseModel):
+    """Response indicating whether an account can be deleted."""
+
+    can_delete: bool
+    reason: str | None = None
+    has_history: bool = False
 
 
 class PatchAllocationRequest(BaseModel):
@@ -68,3 +99,37 @@ class PutSymbolLimitRequest(BaseModel):
     """Upsert per-symbol money limit."""
 
     money_limit: Decimal = Field(..., gt=0)
+
+
+class ExecutionSettingsSchema(BaseModel):
+    """Paper auto square-off and incomplete-leg retry settings."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    enabled: bool
+    square_off_after_sec: int
+    max_retries: int
+    retry_interval_sec: int
+    retry_window_sec: int
+    paper_retries_active: bool = False
+
+
+class PatchExecutionSettingsRequest(BaseModel):
+    """Partial update for execution retry settings."""
+
+    enabled: bool | None = None
+    square_off_after_sec: int | None = Field(None, gt=0)
+    max_retries: int | None = Field(None, ge=0)
+    retry_interval_sec: int | None = Field(None, gt=0)
+    retry_window_sec: int | None = Field(None, gt=0)
+
+
+class SquareOffResponse(BaseModel):
+    """Response payload for account-scoped emergency Kill Switch."""
+
+    account_id: int
+    ibkr_account: str
+    squared_off_count: int
+    trade_ids: list[str] = Field(default_factory=list)
+
+

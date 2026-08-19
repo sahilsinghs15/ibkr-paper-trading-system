@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { matchPath, useLocation } from 'react-router-dom'
 import { usePnlStore } from '../store/pnlStore'
 import { TZ_IN, TZ_NY, type DisplayTimezone } from '../types/position'
 import {
@@ -7,13 +7,16 @@ import {
   fmtTime,
   saveTimezone,
   tzLongLabel,
-  tzShortLabel,
 } from '../utils/format'
+import { AppNav } from './AppNav'
 
-export function DashboardHeader() {
+export function AppHeader() {
   const location = useLocation()
-  const active = usePnlStore((s) => s.active)
-  const closed = usePnlStore((s) => s.closed)
+  const accountMatch =
+    matchPath('/account/:ibkrAccount/*', location.pathname) ||
+    matchPath('/account/:ibkrAccount', location.pathname)
+  const currentAccount = accountMatch?.params?.ibkrAccount
+
   const streamState = usePnlStore((s) => s.streamState)
   const lastTs = usePnlStore((s) => s.lastTs)
   const displayTz = usePnlStore((s) => s.displayTz)
@@ -27,24 +30,13 @@ export function DashboardHeader() {
     return () => clearInterval(id)
   }, [displayTz])
 
-  const rows = [...Object.values(active), ...Object.values(closed)]
-  const strategies = [
-    ...new Set(rows.map((r) => r.strategy_id).filter(Boolean)),
-  ] as string[]
-  const accounts = [
-    ...new Set(rows.map((r) => r.ibkr_account).filter(Boolean)),
-  ] as string[]
-  const strategyLabel = (strategies[0] || 'model_blue')
-    .toUpperCase()
-    .replaceAll('_', ' ')
-
   let streamClass = 'warn'
-  let streamText = 'STREAM CONNECTING'
+  let streamText = 'Connecting'
   if (streamState === 'LIVE') {
     streamClass = 'ok'
-    streamText = 'STREAM LIVE'
+    streamText = 'Live'
   } else if (streamState === 'RECONNECTING') {
-    streamText = 'STREAM RECONNECTING'
+    streamText = 'Reconnecting'
   }
 
   function onTz(tz: DisplayTimezone) {
@@ -53,36 +45,33 @@ export function DashboardHeader() {
   }
 
   return (
-    <header>
+    <header className="app-header">
       <div className="brand">
-        <h1>{strategyLabel}</h1>
-        <span className="tag">LIVE PAPER</span>
-        <span className="acct">{accounts[0] || '—'}</span>
+        <div className="brand-copy">
+          <div className="brand-name">Zahnrad</div>
+          <div className="brand-meta">
+            <span>Model Blue</span>
+            <span className="brand-dot" />
+            <span className="paper-pill">Paper</span>
+            {currentAccount ? (
+              <>
+                <span className="brand-dot" />
+                <span className="mono bold" style={{ color: 'var(--blue)' }}>
+                  {currentAccount}
+                </span>
+              </>
+            ) : null}
+          </div>
+        </div>
+        <AppNav />
       </div>
-      <div className="header-right">
-        <nav className="app-nav" aria-label="Main">
-          <Link to="/" className={location.pathname === '/' ? 'on' : undefined}>
-            Positions
-          </Link>
-          <Link
-            to="/settings"
-            className={location.pathname === '/settings' ? 'on' : undefined}
-          >
-            Settings
-          </Link>
-        </nav>
-        <div className="status-row">
-        <span className="dot ok">
-          <i />
-          PAPER
-        </span>
-        <span className={`dot ${streamClass}`}>
+      <div className="header-status">
+        <span className={`dot ${streamClass}`} title="Position stream">
           <i />
           {streamText}
         </span>
-        <span className="dot dim">
-          <i />
-          LAST UPDATE{' '}
+        <span className="dot dim" title="Last stream or snapshot time">
+          Updated{' '}
           {lastTs ? fmtTime(lastTs, displayTz, { withZone: true }) : '—'}
         </span>
         <div className="tz-box">
@@ -106,22 +95,7 @@ export function DashboardHeader() {
             </button>
           </div>
         </div>
-        </div>
       </div>
     </header>
   )
-}
-
-export function streamHint(streamState: string): string {
-  return streamState === 'LIVE'
-    ? 'STREAM ● LIVE'
-    : `STREAM ● ${streamState}`
-}
-
-export function timeColLabel(displayTz: DisplayTimezone): string {
-  return 'TIME · ' + tzShortLabel(displayTz)
-}
-
-export function closeTimeColLabel(displayTz: DisplayTimezone): string {
-  return 'CLOSE TIME · ' + tzShortLabel(displayTz)
 }

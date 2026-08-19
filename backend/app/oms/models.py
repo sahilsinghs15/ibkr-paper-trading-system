@@ -143,6 +143,7 @@ class OMSOrder:
     executions: dict[str, BrokerExecution] = field(default_factory=dict)
     last_exec_id: str | None = None
     resolved: ResolvedInstrument | None = None
+    pacer_delayed: bool = False
     timestamps: ExecutionTimestamps = field(default_factory=ExecutionTimestamps)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 

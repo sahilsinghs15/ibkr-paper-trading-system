@@ -9,8 +9,11 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.accounts.config_service import AccountStrategyConfigService
 from app.accounts.context import AccountExecutionContext
 from app.accounts.router import DatabaseStrategyAccountRouter, StrategyAccountRouter
+from app.core.config import get_settings
+from app.core.logger import bind_log_context
 from app.db.models.account import PerSymbolLimitModel
 from app.db.repositories.event_repository import EventRepository
 from app.db.repositories.position_repository import PositionRepository
@@ -20,12 +23,22 @@ from app.db.repositories.signal_repository import (
     SignalRepository,
     persist_signal_id_for,
 )
-from app.core.logger import bind_log_context
 from app.models.signal import Signal, SignalType
 from app.oms.basket import BasketState
 from app.oms.coordinator import BasketCoordinator
-from app.oms.models import AccountExecutionOutcome, ExecutionResult, FanoutExecutionResult, OMSOrder, executions_weighted_average
+from app.oms.models import (
+    AccountExecutionOutcome,
+    ExecutionResult,
+    FanoutExecutionResult,
+    OMSOrder,
+    executions_weighted_average,
+)
 from app.oms.oms_service import OMSService
+from app.oms.retry_policy import (
+    ExecutionRetryPolicy,
+    default_paper_retry_policy,
+    paper_retry_ports_allowed,
+)
 from app.rms.engine import RMSEngine
 from app.rms.models import (
     OrderAction,
@@ -128,7 +141,9 @@ class OrderManager:
         self._baskets: BasketCoordinator | None = None
         self._instrument_catalog = None
         if session_factory is not None:
-            from app.db.repositories.instrument_repository import DatabaseInstrumentCatalog
+            from app.db.repositories.instrument_repository import (
+                DatabaseInstrumentCatalog,
+            )
 
             self._instrument_catalog = DatabaseInstrumentCatalog(session_factory)
         if type(oms) is OMSService:
@@ -137,6 +152,9 @@ class OrderManager:
                 session_factory=session_factory,
                 fill_timeout=90.0,
                 cancel_timeout=30.0,
+                rms_engine=self._rms_engine,
+                rms_context=self._rms_context,
+                paper_retries_allowed=paper_retry_ports_allowed(get_settings().ibkr_port),
             )
 
     async def hydrate_runtime_from_db(self) -> None:
@@ -171,6 +189,7 @@ class OrderManager:
         if self._baskets is not None:
             await self._baskets.hydrate_critical_from_db()
             await self._baskets.recover_incomplete_baskets()
+        await self.reload_execution_policy()
         critical_count = len(getattr(self._baskets, "_critical", set()) or set())
         logger.info(
             "Hydrated runtime from DB: processed_signals=%d open_position_keys=%d critical_baskets=%d",
@@ -198,6 +217,34 @@ class OrderManager:
             "Reloaded RMS per_symbol_limits: count=%d",
             len(self._rms_context.per_symbol_limits),
         )
+
+    async def reload_execution_policy(self) -> None:
+        """Load paper square-off/retry settings from Postgres into the basket coordinator."""
+        if self._baskets is None:
+            return
+        policy = default_paper_retry_policy()
+        if self._session_factory is not None:
+            try:
+                async with self._session_factory() as session:
+                    svc = AccountStrategyConfigService(session)
+                    row = await svc.get_or_create_execution_settings()
+                    await session.commit()
+                    policy = ExecutionRetryPolicy(
+                        enabled=row.enabled,
+                        square_off_after_sec=float(row.square_off_after_sec),
+                        max_retries=int(row.max_retries),
+                        retry_interval_sec=float(row.retry_interval_sec),
+                        retry_window_sec=float(row.retry_window_sec),
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to load execution_settings; using conservative in-memory defaults"
+                )
+        paper = paper_retry_ports_allowed(get_settings().ibkr_port)
+        try:
+            self._baskets.apply_retry_policy(policy, paper_retries_allowed=paper)
+        except Exception:
+            logger.exception("Failed to apply execution retry policy")
 
     async def hydrate_live_pnl(self) -> None:
         """Re-subscribe market data for OPEN positions after TWS is available.
@@ -599,19 +646,28 @@ class OrderManager:
             logger.exception("Failed to persist RMS audit event")
 
     def _intent_with_fills(self, intent: OrderIntent, orders: list[OMSOrder]) -> OrderIntent:
-        by_index = {o.leg_index: o for o in orders}
         filled_legs = []
         for index, leg in enumerate(intent.legs):
-            order = by_index.get(index)
-            if order is None:
+            matching = [
+                o
+                for o in orders
+                if o.leg_index == index and not getattr(o, "is_compensation", False)
+            ]
+            if not matching:
                 filled_legs.append(leg)
                 continue
-            qty = order.filled_quantity
-            px = order.average_fill_price or order.last_fill_price or leg.price
-            execs = getattr(order, "executions", None) or {}
-            derived = executions_weighted_average(execs) if execs else None
-            if derived is not None:
-                px = derived
+            qty = sum(float(o.filled_quantity) for o in matching)
+            px = leg.price
+            for order in matching:
+                execs = getattr(order, "executions", None) or {}
+                derived = executions_weighted_average(execs) if execs else None
+                if derived is not None:
+                    px = derived
+                    break
+                cand = order.average_fill_price or order.last_fill_price
+                if cand is not None:
+                    px = cand
+                    break
             if not isinstance(px, Decimal):
                 px = Decimal(str(px))
             filled_legs.append(

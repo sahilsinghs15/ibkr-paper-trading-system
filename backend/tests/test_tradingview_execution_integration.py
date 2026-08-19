@@ -22,7 +22,7 @@ _MODEL_BLUE = "model_blue"
 
 
 def _qty(notional: Decimal, price: Decimal) -> float:
-    return float((notional / price).quantize(Decimal("1"), rounding=ROUND_DOWN))
+    return float((notional / price).quantize(Decimal(1), rounding=ROUND_DOWN))
 
 
 XLE_XOP_OPEN: dict[str, Any] = {

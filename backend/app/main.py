@@ -16,6 +16,7 @@ from app.core.logger import setup_logging
 from app.db.session import AsyncSessionLocal
 from app.oms.ibkr_adapter import IBKRExecutionAdapter
 from app.oms.oms_service import OMSService
+from app.oms.submit_pacer import OrderSubmitPacer
 from app.services.model_blue.db_allocation import DatabaseCommittedCapitalProvider
 from app.services.model_blue.db_trade_book import DatabaseModelBlueTradeBook
 from app.services.model_blue.persistence import ModelBlueExecutionPersistence
@@ -43,6 +44,7 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         port=settings.ibkr_port,
         client_id=settings.ibkr_client_id,
         timeout=float(settings.ibkr_connection_timeout),
+        submit_pacer=OrderSubmitPacer(min_interval_sec=0.2),
     )
     oms = OMSService(adapter=ibkr_adapter)
 

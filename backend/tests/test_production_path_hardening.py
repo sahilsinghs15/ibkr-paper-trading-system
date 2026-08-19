@@ -12,7 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.accounts.context import AccountExecutionContext
 from app.accounts.router import StaticStrategyAccountRouter
 from app.broker.ibkr.tws_client import TWSClient
-from app.db.models import AccountModel, AllocationModel, OrderModel, PositionModel, SignalModel, StrategyModel
+from app.db.models import (
+    AccountModel,
+    AllocationModel,
+    OrderModel,
+    PositionModel,
+    SignalModel,
+    StrategyModel,
+)
 from app.db.repositories.order_repository import OrderRepository
 from app.db.session import create_engine_from_settings
 from app.oms.ibkr_adapter import IBKRExecutionAdapter
@@ -26,7 +33,10 @@ from app.rms.models import (
     OrderSide,
     StrategyConfig,
 )
-from app.services.model_blue.parser import MODEL_BLUE_STRATEGY_ID, parse_model_blue_payload
+from app.services.model_blue.parser import (
+    MODEL_BLUE_STRATEGY_ID,
+    parse_model_blue_payload,
+)
 from app.services.order_manager import OrderManager
 from tests.ibkr_test_utils import fill_on_place_order
 
@@ -70,8 +80,8 @@ def _ctx(account_id: int, ibkr: str) -> AccountExecutionContext:
         total_margin=Decimal(100000),
         alloc_pct=Decimal("0.25"),
         committed_notional=Decimal(25000),
-        target=Decimal("500"),
-        stop=Decimal("250"),
+        target=Decimal(500),
+        stop=Decimal(250),
         time_limit=3600,
         max_open_positions=10,
     )
@@ -101,7 +111,7 @@ async def test_rms_reject_does_not_place_order() -> None:
                 MODEL_BLUE_STRATEGY_ID: StrategyConfig(
                     strategy_id=MODEL_BLUE_STRATEGY_ID,
                     max_open_positions=10,
-                    money_limit_per_symbol=Decimal("1"),
+                    money_limit_per_symbol=Decimal(1),
                 )
             }
         ),
@@ -216,7 +226,7 @@ async def test_callback_persist_idempotent_does_not_regress_filled() -> None:
             account = AccountModel(
                 name=f"idem-{uuid4().hex[:8]}",
                 ibkr_account=f"DU{uuid4().hex[:8]}",
-                total_margin=Decimal("100000"),
+                total_margin=Decimal(100000),
                 enabled=True,
             )
             session.add(account)
@@ -349,7 +359,7 @@ async def test_same_trade_id_two_accounts_two_positions() -> None:
                 acct = AccountModel(
                     name=f"multi-{name}-{uuid4().hex[:8]}",
                     ibkr_account=f"DU{name}{uuid4().hex[:6]}",
-                    total_margin=Decimal("100000"),
+                    total_margin=Decimal(100000),
                     enabled=True,
                 )
                 session.add(acct)
@@ -359,8 +369,8 @@ async def test_same_trade_id_two_accounts_two_positions() -> None:
                         account_id=acct.id,
                         strategy_id=MODEL_BLUE_STRATEGY_ID,
                         alloc_pct=Decimal("0.25"),
-                        target=Decimal("500"),
-                        stop=Decimal("250"),
+                        target=Decimal(500),
+                        stop=Decimal(250),
                         time_limit=3600,
                         max_open_positions=10,
                         enabled=True,

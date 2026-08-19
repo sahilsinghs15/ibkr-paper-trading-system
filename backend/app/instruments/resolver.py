@@ -14,9 +14,10 @@ Never falls back CFD → STK.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import replace
 from decimal import ROUND_DOWN, Decimal
-from typing import Protocol, Sequence
+from typing import Protocol
 
 from app.instruments.execution_override import (
     STK_TO_CFD_DEMO,

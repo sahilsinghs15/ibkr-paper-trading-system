@@ -26,6 +26,8 @@ Mounted in `create_app()`:
 | `PATCH` | `/api/v1/config/allocations/{allocation_id}` | `patch_allocation` | `PatchAllocationRequest` | `AllocationConfigSchema` | Update `alloc_pct`, `enabled`, `max_open_positions` |
 | `PUT` | `/api/v1/config/accounts/{account_id}/symbol-limits/{symbol}` | `put_symbol_limit` | `PutSymbolLimitRequest` | `SymbolLimitSchema` | Upsert `per_symbol_limits`; reload in-memory RMS limits |
 | `DELETE` | `/api/v1/config/accounts/{account_id}/symbol-limits/{symbol}` | `delete_symbol_limit` | — | 204 | Delete limit row; reload in-memory RMS limits |
+| `GET` | `/api/v1/config/execution` | `get_execution_settings` | — | `ExecutionSettingsSchema` | Read/create singleton paper square-off/retry row |
+| `PATCH` | `/api/v1/config/execution` | `patch_execution_settings` | `PatchExecutionSettingsRequest` | `ExecutionSettingsSchema` | Persist retry knobs; reload basket coordinator |
 
 `OrderSchema` fields: `order_id`, `symbol`, `side`, `quantity`, `order_type`, `status`, `timestamp`, `price`, `filled_quantity`, `average_fill_price`.
 

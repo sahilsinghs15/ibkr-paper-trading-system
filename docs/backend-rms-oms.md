@@ -34,7 +34,7 @@ Also present: `rms/checks/base.py` (`BaseRMSCheck`).
 
 `PENDING` → `EXECUTING` → `OPEN` / `CLOSED` / `UNWINDING` / `COMPENSATED` / `CRITICAL`
 
-`BasketCoordinator` (`oms/coordinator.py`) submits N legs, waits for fills, compensates on failure, and can block new work when baskets are `CRITICAL`. Persists via `baskets` (+ related order / event writes).
+`BasketCoordinator` (`oms/coordinator.py`) submits N legs, waits for fills, optionally retries remaining quantity (paper ports only, RMS + submit pacer), then compensates on failure, and can block new work when baskets are `CRITICAL`. Persists via `baskets` (+ related order / event writes).
 
 ## OMS + IBKR
 

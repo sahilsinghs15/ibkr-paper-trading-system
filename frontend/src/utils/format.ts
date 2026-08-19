@@ -27,6 +27,60 @@ export function blank(v: unknown): string {
   return String(v)
 }
 
+/** SSE Redis fields arrive as strings ("False"); snapshot uses real booleans. */
+export function isTrueFlag(v: unknown): boolean {
+  if (v === true || v === 1) return true
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase()
+    return s === 'true' || s === '1' || s === 'yes'
+  }
+  return false
+}
+
+export function displayStrategy(id: unknown): string {
+  const raw = String(id || '').trim()
+  if (!raw) return '—'
+  if (raw.toLowerCase() === 'model_blue') return 'Model Blue'
+  return raw
+    .replaceAll('_', ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+export function fmtQty(v: unknown): string {
+  const n = num(v)
+  if (n === null) return '—'
+  if (Number.isInteger(n)) return n.toLocaleString('en-US')
+  return n.toLocaleString('en-US', {
+    maximumFractionDigits: 4,
+    minimumFractionDigits: 0,
+  })
+}
+
+export function fmtInt(v: unknown): string {
+  const n = num(v)
+  if (n === null) return '—'
+  return Math.round(n).toLocaleString('en-US')
+}
+
+export function fmtPct(v: unknown): string {
+  const n = num(v)
+  if (n === null) return '—'
+  const rounded = Math.round(n * 100) / 100
+  const text =
+    Math.abs(rounded - Math.round(rounded)) < 1e-9
+      ? String(Math.round(rounded))
+      : rounded.toFixed(2)
+  return `${text}%`
+}
+
+/** Strip DB-style trailing zeros for numeric inputs (presentation only). */
+export function cleanNumberInput(v: string): string {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return v
+  if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n))
+  return String(Number(n.toFixed(2)))
+}
+
 export function displayInstrument(v: unknown): string {
   const raw = String(v || '')
     .trim()
@@ -78,6 +132,18 @@ export function pnlClass(v: unknown): string {
 
 export function tzShortLabel(tz: DisplayTimezone): string {
   return tz === TZ_IN ? 'IST' : 'ET'
+}
+
+export function streamHint(streamState: string): string {
+  return streamState === 'LIVE' ? 'Live' : streamState.toLowerCase()
+}
+
+export function timeColLabel(tz: DisplayTimezone): string {
+  return 'Time · ' + tzShortLabel(tz)
+}
+
+export function closeTimeColLabel(tz: DisplayTimezone): string {
+  return 'Close · ' + tzShortLabel(tz)
 }
 
 export function tzLongLabel(tz: DisplayTimezone): string {
@@ -139,14 +205,15 @@ export function badgeClass(label: unknown): string {
 
 export function statusLabel(row: {
   event?: string | null
-  close_in_progress?: boolean
+  close_in_progress?: boolean | string | number | null
   basket_state?: string | null
   order_status?: string | null
   status?: string | null
   position_state?: string | null
 }): string {
   const event = String(row.event || '').toUpperCase()
-  if (event === 'POSITION_PARTIAL_CLOSE' || row.close_in_progress) return 'CLOSING'
+  if (event === 'POSITION_PARTIAL_CLOSE' || isTrueFlag(row.close_in_progress))
+    return 'CLOSING'
   const basket = String(row.basket_state || '').toUpperCase()
   if (['EXECUTING', 'UNWINDING', 'COMPENSATED', 'CRITICAL'].includes(basket))
     return basket

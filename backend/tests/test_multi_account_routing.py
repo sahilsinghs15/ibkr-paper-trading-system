@@ -10,7 +10,10 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.accounts.config_service import AccountStrategyConfigService, AllocationConfigError
+from app.accounts.config_service import (
+    AccountStrategyConfigService,
+    AllocationConfigError,
+)
 from app.accounts.context import AccountExecutionContext
 from app.accounts.router import (
     DatabaseStrategyAccountRouter,
@@ -24,7 +27,10 @@ from app.oms.oms_service import OMSService
 from app.rms import RMSContext, RMSEngine
 from app.rms.models import OrderAction, OrderIntent, OrderLeg, OrderSide, StrategyConfig
 from app.services.model_blue.db_trade_book import DatabaseModelBlueTradeBook
-from app.services.model_blue.parser import MODEL_BLUE_STRATEGY_ID, parse_model_blue_payload
+from app.services.model_blue.parser import (
+    MODEL_BLUE_STRATEGY_ID,
+    parse_model_blue_payload,
+)
 from app.services.model_blue.persistence import ModelBlueExecutionPersistence
 from app.services.order_manager import OrderManager
 from app.services.strategies.inbound import parse_tradingview_payload
@@ -78,8 +84,8 @@ def _ctx(
         total_margin=total,
         alloc_pct=pct,
         committed_notional=total * pct,
-        target=Decimal("500"),
-        stop=Decimal("250"),
+        target=Decimal(500),
+        stop=Decimal(250),
         time_limit=3600,
         max_open_positions=max_open,
     )
@@ -170,8 +176,8 @@ async def test_6_and_7_independent_sizing_different_alloc_pct() -> None:
     xle_a = next(o for o in by_acct[41] if o.symbol == "XLE")
     xle_b = next(o for o in by_acct[42] if o.symbol == "XLE")
     assert xle_a.quantity != xle_b.quantity
-    expected_a = float((Decimal(25000) / _XLE).quantize(Decimal("1"), rounding=ROUND_DOWN))
-    expected_b = float((Decimal(20000) / _XLE).quantize(Decimal("1"), rounding=ROUND_DOWN))
+    expected_a = float((Decimal(25000) / _XLE).quantize(Decimal(1), rounding=ROUND_DOWN))
+    expected_b = float((Decimal(20000) / _XLE).quantize(Decimal(1), rounding=ROUND_DOWN))
     assert xle_a.quantity == pytest.approx(expected_a)
     assert xle_b.quantity == pytest.approx(expected_b)
 
@@ -214,8 +220,8 @@ async def test_9_per_symbol_limits_are_account_specific() -> None:
             )
         },
         per_symbol_limits={
-            (61, "XLE"): Decimal("50000"),
-            (62, "XLE"): Decimal("100"),
+            (61, "XLE"): Decimal(50000),
+            (62, "XLE"): Decimal(100),
         },
     )
     manager = _manager([a, b], rms=rms)
@@ -387,8 +393,8 @@ async def test_db_router_respects_enabled_flags(
             account_id=on_acct.id,
             strategy_id=strategy_id,
             alloc_pct=Decimal("0.10"),
-            target=Decimal("500"),
-            stop=Decimal("250"),
+            target=Decimal(500),
+            stop=Decimal(250),
             time_limit=3600,
             max_open_positions=10,
             enabled=True,
@@ -397,8 +403,8 @@ async def test_db_router_respects_enabled_flags(
             account_id=off_acct.id,
             strategy_id=strategy_id,
             alloc_pct=Decimal("0.10"),
-            target=Decimal("500"),
-            stop=Decimal("250"),
+            target=Decimal(500),
+            stop=Decimal(250),
             time_limit=3600,
             max_open_positions=10,
             enabled=True,
@@ -415,8 +421,8 @@ async def test_db_router_respects_enabled_flags(
             account_id=disabled_sub.id,
             strategy_id=strategy_id,
             alloc_pct=Decimal("0.10"),
-            target=Decimal("500"),
-            stop=Decimal("250"),
+            target=Decimal(500),
+            stop=Decimal(250),
             time_limit=3600,
             max_open_positions=10,
             enabled=False,
@@ -494,8 +500,8 @@ async def test_config_service_rejects_alloc_sum_over_one(
             account=account,
             strategy_id=MODEL_BLUE_STRATEGY_ID,
             alloc_pct=Decimal("0.80"),
-            target=Decimal("500"),
-            stop=Decimal("250"),
+            target=Decimal(500),
+            stop=Decimal(250),
             time_limit=3600,
         )
         with pytest.raises(AllocationConfigError, match="ALLOC_PCT_SUM_EXCEEDED"):
@@ -503,8 +509,8 @@ async def test_config_service_rejects_alloc_sum_over_one(
                 account=account,
                 strategy_id=green_id,
                 alloc_pct=Decimal("0.30"),
-                target=Decimal("500"),
-                stop=Decimal("250"),
+                target=Decimal(500),
+                stop=Decimal(250),
                 time_limit=3600,
             )
 
@@ -555,8 +561,8 @@ async def test_11_positions_isolated_by_account_id(
                     account_id=acct.id,
                     strategy_id=MODEL_BLUE_STRATEGY_ID,
                     alloc_pct=pct,
-                    target=Decimal("500"),
-                    stop=Decimal("250"),
+                    target=Decimal(500),
+                    stop=Decimal(250),
                     time_limit=3600,
                     max_open_positions=10,
                     enabled=True,
@@ -674,8 +680,8 @@ async def test_router_uses_allocation_max_open_not_strategy(
                 account_id=account.id,
                 strategy_id=strategy_id,
                 alloc_pct=Decimal("0.10"),
-                target=Decimal("500"),
-                stop=Decimal("250"),
+                target=Decimal(500),
+                stop=Decimal(250),
                 time_limit=3600,
                 max_open_positions=4,
                 enabled=True,

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 MIN_ORDER_NOTIONAL = Decimal(100)
 _QTY_QUANTUM = Decimal("0.0001")
-_STK_QTY_QUANTUM = Decimal("1")
+_STK_QTY_QUANTUM = Decimal(1)
 
 
 @dataclass(frozen=True)

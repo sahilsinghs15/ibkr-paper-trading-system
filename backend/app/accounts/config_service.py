@@ -9,10 +9,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.account import AccountModel, PerSymbolLimitModel
+from app.db.models.execution_settings import ExecutionSettingsModel
 from app.db.models.strategy import AllocationModel, StrategyModel
+from app.oms.retry_policy import ExecutionRetryPolicy
 
-ONE = Decimal("1")
-ZERO = Decimal("0")
+ONE = Decimal(1)
+ZERO = Decimal(0)
 
 
 class AllocationConfigError(ValueError):
@@ -113,13 +115,135 @@ class AccountStrategyConfigService:
                 f"would sum to {current + alloc_pct} (max 1.0)."
             )
 
+    async def create_account(
+        self,
+        *,
+        name: str,
+        ibkr_account: str,
+        total_margin: Decimal,
+        enabled: bool = True,
+    ) -> AccountModel:
+        clean_name = name.strip()
+        clean_ibkr = ibkr_account.strip().upper()
+        if not clean_name:
+            raise AllocationConfigError("INVALID_NAME: Account name required.")
+        if not clean_ibkr:
+            raise AllocationConfigError("INVALID_IBKR_ACCOUNT: IBKR account identifier required.")
+        if total_margin <= ZERO:
+            raise AllocationConfigError("INVALID_TOTAL_MARGIN: total_margin must be greater than 0.")
+
+        existing = (
+            await self._session.execute(
+                select(AccountModel).where(func.upper(AccountModel.ibkr_account) == clean_ibkr)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            raise AllocationConfigError(
+                f"DUPLICATE_IBKR_ACCOUNT: An account with IBKR identifier '{clean_ibkr}' already exists."
+            )
+
+        row = AccountModel(
+            name=clean_name,
+            ibkr_account=clean_ibkr,
+            total_margin=total_margin,
+            enabled=enabled,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def has_trading_history(self, account_id: int) -> bool:
+        from app.db.models.basket import BasketModel
+        from app.db.models.execution import ExecutionModel
+        from app.db.models.order import OrderModel
+        from app.db.models.position import PositionModel
+
+        for model in (OrderModel, ExecutionModel, PositionModel, BasketModel):
+            cnt = (
+                await self._session.execute(
+                    select(func.count()).select_from(model).where(model.account_id == account_id)
+                )
+            ).scalar_one()
+            if cnt > 0:
+                return True
+        return False
+
+    async def check_account_deletable(self, account_id: int) -> tuple[bool, str | None]:
+        account = await self.get_account(account_id)
+        if account is None:
+            return False, f"UNKNOWN_ACCOUNT: Account {account_id} not found."
+        history = await self.has_trading_history(account_id)
+        if history:
+            return (
+                False,
+                "Account deletion is unavailable because this account has trading history. Disable the account instead.",
+            )
+        return True, None
+
+    async def delete_account(self, account_id: int) -> None:
+        can_del, reason = await self.check_account_deletable(account_id)
+        if not can_del:
+            raise AllocationConfigError(reason or "Cannot delete account.")
+        account = await self.get_account(account_id)
+        if account is None:
+            return
+
+        allocations = (
+            await self._session.execute(
+                select(AllocationModel).where(AllocationModel.account_id == account_id)
+            )
+        ).scalars().all()
+        for alloc in allocations:
+            await self._session.delete(alloc)
+
+        limits = (
+            await self._session.execute(
+                select(PerSymbolLimitModel).where(PerSymbolLimitModel.account_id == account_id)
+            )
+        ).scalars().all()
+        for lim in limits:
+            await self._session.delete(lim)
+
+        await self._session.delete(account)
+        await self._session.flush()
+
     async def update_account(
         self,
         account: AccountModel,
         *,
+        name: str | None = None,
+        ibkr_account: str | None = None,
         total_margin: Decimal | None = None,
         enabled: bool | None = None,
     ) -> AccountModel:
+        if name is not None:
+            clean_name = name.strip()
+            if not clean_name:
+                raise AllocationConfigError("INVALID_NAME: Account name required.")
+            account.name = clean_name
+        if ibkr_account is not None:
+            clean_ibkr = ibkr_account.strip().upper()
+            if not clean_ibkr:
+                raise AllocationConfigError("INVALID_IBKR_ACCOUNT: IBKR account identifier required.")
+            if clean_ibkr != account.ibkr_account.upper():
+                history = await self.has_trading_history(account.id)
+                if history:
+                    raise AllocationConfigError(
+                        "IBKR account identifier cannot be changed because this account has trading history."
+                    )
+                existing = (
+                    await self._session.execute(
+                        select(AccountModel).where(
+                            func.upper(AccountModel.ibkr_account) == clean_ibkr,
+                            AccountModel.id != account.id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing is not None:
+                    raise AllocationConfigError(
+                        f"DUPLICATE_IBKR_ACCOUNT: An account with IBKR identifier '{clean_ibkr}' already exists."
+                    )
+                account.ibkr_account = clean_ibkr
         if total_margin is not None:
             account.total_margin = total_margin
             await self.validate_account_margin(account)
@@ -245,3 +369,57 @@ class AccountStrategyConfigService:
         await self._session.delete(existing)
         await self._session.flush()
         return True
+
+    async def get_or_create_execution_settings(self) -> ExecutionSettingsModel:
+        row = (
+            await self._session.execute(
+                select(ExecutionSettingsModel).where(ExecutionSettingsModel.id == 1)
+            )
+        ).scalar_one_or_none()
+        if row is not None:
+            return row
+        row = ExecutionSettingsModel(
+            id=1,
+            enabled=True,
+            square_off_after_sec=30,
+            max_retries=3,
+            retry_interval_sec=5,
+            retry_window_sec=30,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def update_execution_settings(
+        self,
+        *,
+        enabled: bool | None = None,
+        square_off_after_sec: int | None = None,
+        max_retries: int | None = None,
+        retry_interval_sec: int | None = None,
+        retry_window_sec: int | None = None,
+    ) -> ExecutionSettingsModel:
+        row = await self.get_or_create_execution_settings()
+        if enabled is not None:
+            row.enabled = enabled
+        if square_off_after_sec is not None:
+            row.square_off_after_sec = square_off_after_sec
+        if max_retries is not None:
+            row.max_retries = max_retries
+        if retry_interval_sec is not None:
+            row.retry_interval_sec = retry_interval_sec
+        if retry_window_sec is not None:
+            row.retry_window_sec = retry_window_sec
+        try:
+            ExecutionRetryPolicy(
+                enabled=row.enabled,
+                square_off_after_sec=float(row.square_off_after_sec),
+                max_retries=int(row.max_retries),
+                retry_interval_sec=float(row.retry_interval_sec),
+                retry_window_sec=float(row.retry_window_sec),
+            ).validate()
+        except ValueError as exc:
+            raise AllocationConfigError(str(exc)) from exc
+        await self._session.flush()
+        return row
+

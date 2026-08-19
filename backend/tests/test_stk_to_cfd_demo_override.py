@@ -6,7 +6,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.instruments.execution_override import STK_TO_CFD_DEMO, execution_instrument_type
+from app.instruments.execution_override import (
+    STK_TO_CFD_DEMO,
+    execution_instrument_type,
+)
 from app.instruments.models import InstrumentRecord, InstrumentResolutionError
 from app.instruments.resolver import (
     InMemoryInstrumentCatalog,
@@ -123,7 +126,7 @@ def test_ibkr_adapter_builds_cfd_contract(symbol: str) -> None:
                 symbol=symbol,
                 side=OrderSide.BUY,
                 quantity=10,
-                price=Decimal("90"),
+                price=Decimal(90),
                 contract_month="2026-09",
                 instrument_type="STK",
                 resolved=_demo_cfd(symbol),
@@ -208,7 +211,7 @@ def test_attach_resolved_keeps_requested_stk_on_leg() -> None:
                 symbol="SIL",
                 side=OrderSide.BUY,
                 quantity=10,
-                price=Decimal("90"),
+                price=Decimal(90),
                 contract_month="2026-09",
                 instrument_type="STK",
                 leg_index=0,
@@ -232,7 +235,7 @@ def test_open_persists_resolved_cfd_not_requested_stk() -> None:
                 symbol="SIL",
                 side=OrderSide.BUY,
                 quantity=10,
-                price=Decimal("90"),
+                price=Decimal(90),
                 contract_month="2026-09",
                 instrument_type="STK",
                 resolved=_demo_cfd("SIL"),
@@ -242,7 +245,7 @@ def test_open_persists_resolved_cfd_not_requested_stk() -> None:
                 symbol="GDX",
                 side=OrderSide.SELL,
                 quantity=10,
-                price=Decimal("40"),
+                price=Decimal(40),
                 contract_month="2026-09",
                 instrument_type="STK",
                 resolved=_demo_cfd("GDX"),
@@ -260,7 +263,7 @@ def test_open_persists_resolved_cfd_not_requested_stk() -> None:
             quantity=10,
             status=OMSOrderStatus.FILLED,
             filled_quantity=10,
-            average_fill_price=Decimal("90"),
+            average_fill_price=Decimal(90),
             leg_index=0,
             resolved=intent.legs[0].resolved,
         ),
@@ -272,7 +275,7 @@ def test_open_persists_resolved_cfd_not_requested_stk() -> None:
             quantity=10,
             status=OMSOrderStatus.FILLED,
             filled_quantity=10,
-            average_fill_price=Decimal("40"),
+            average_fill_price=Decimal(40),
             leg_index=1,
             resolved=intent.legs[1].resolved,
         ),
@@ -303,15 +306,15 @@ async def test_close_uses_persisted_cfd_without_catalog() -> None:
                     symbol="SIL",
                     instrument_type="CFD",
                     side=OrderSide.BUY,
-                    quantity=Decimal("10"),
-                    price=Decimal("90"),
+                    quantity=Decimal(10),
+                    price=Decimal(90),
                 ),
                 OpenModelBlueTradeLeg(
                     symbol="GDX",
                     instrument_type="CFD",
                     side=OrderSide.SELL,
-                    quantity=Decimal("10"),
-                    price=Decimal("40"),
+                    quantity=Decimal(10),
+                    price=Decimal(40),
                 ),
             ),
         )
@@ -345,7 +348,7 @@ async def test_close_uses_persisted_cfd_without_catalog() -> None:
 
 def test_model_blue_sizing_still_uses_requested_stk() -> None:
     signal = parse_model_blue_payload(_open_stk_payload(), timestamp=_TS, reason="size")
-    sizer = ModelBlueSizer(TemporarySettingsCommittedCapitalProvider(Decimal("25000")))
+    sizer = ModelBlueSizer(TemporarySettingsCommittedCapitalProvider(Decimal(25000)))
     sized_base, sized_hedge = sizer.size_open(signal)
     assert sized_base.instrument_type == "STK"
     assert sized_hedge.instrument_type == "STK"

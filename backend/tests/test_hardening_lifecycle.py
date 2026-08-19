@@ -31,11 +31,14 @@ from app.rms.models import (
     RMSOutcome,
     StrategyConfig,
 )
+from app.services.model_blue.allocation import TemporarySettingsCommittedCapitalProvider
 from app.services.model_blue.db_trade_book import DatabaseModelBlueTradeBook
-from app.services.model_blue.parser import MODEL_BLUE_STRATEGY_ID, parse_model_blue_payload
+from app.services.model_blue.parser import (
+    MODEL_BLUE_STRATEGY_ID,
+    parse_model_blue_payload,
+)
 from app.services.model_blue.persistence import ModelBlueExecutionPersistence
 from app.services.model_blue.sizer import ModelBlueSizer
-from app.services.model_blue.allocation import TemporarySettingsCommittedCapitalProvider
 from app.services.order_manager import OrderManager
 from app.services.pnl import LivePnlService, unrealized_leg, unrealized_pair
 from tests.ibkr_test_utils import fill_on_place_order
@@ -84,8 +87,8 @@ def _ctx(
         total_margin=total,
         alloc_pct=pct,
         committed_notional=total * pct,
-        target=Decimal("500"),
-        stop=Decimal("250"),
+        target=Decimal(500),
+        stop=Decimal(250),
         time_limit=3600,
         max_open_positions=max_open,
     )
@@ -165,18 +168,18 @@ def test_rms_evaluates_floored_quantity() -> None:
 
 
 def test_unrealized_pnl_long_and_short() -> None:
-    long_pnl = unrealized_leg(Decimal("399"), Decimal("62.59"), Decimal("63.59"))
-    short_pnl = unrealized_leg(Decimal("-93"), Decimal("183.34"), Decimal("182.34"))
-    assert long_pnl == Decimal("399")
-    assert short_pnl == Decimal("93")
+    long_pnl = unrealized_leg(Decimal(399), Decimal("62.59"), Decimal("63.59"))
+    short_pnl = unrealized_leg(Decimal(-93), Decimal("183.34"), Decimal("182.34"))
+    assert long_pnl == Decimal(399)
+    assert short_pnl == Decimal(93)
     assert unrealized_pair(
-        leg_a_signed=Decimal("399"),
+        leg_a_signed=Decimal(399),
         leg_a_entry=Decimal("62.59"),
         leg_a_mark=Decimal("63.59"),
-        leg_b_signed=Decimal("-93"),
+        leg_b_signed=Decimal(-93),
         leg_b_entry=Decimal("183.34"),
         leg_b_mark=Decimal("182.34"),
-    ) == Decimal("492")
+    ) == Decimal(492)
 
 
 @pytest.mark.asyncio
@@ -189,7 +192,7 @@ async def test_live_pnl_persists_marks_not_entry() -> None:
             account = AccountModel(
                 name=f"pnl-{uuid4().hex[:8]}",
                 ibkr_account=f"DU{uuid4().hex[:8]}",
-                total_margin=Decimal("100000"),
+                total_margin=Decimal(100000),
                 enabled=True,
             )
             session.add(account)
@@ -201,13 +204,13 @@ async def test_live_pnl_persists_marks_not_entry() -> None:
                     trade_id=trade_id,
                     strategy_id=MODEL_BLUE_STRATEGY_ID,
                     leg_a_symbol="XLE",
-                    leg_a_signed_qty=Decimal("399"),
+                    leg_a_signed_qty=Decimal(399),
                     leg_a_entry_mark=Decimal("62.59"),
                     leg_b_symbol="XOP",
-                    leg_b_signed_qty=Decimal("-93"),
+                    leg_b_signed_qty=Decimal(-93),
                     leg_b_entry_mark=Decimal("183.34"),
-                    target=Decimal("500"),
-                    stop=Decimal("250"),
+                    target=Decimal(500),
+                    stop=Decimal(250),
                     time_limit=3600,
                     risk_state="OPEN",
                 )
@@ -248,13 +251,13 @@ async def test_live_pnl_persists_marks_not_entry() -> None:
         xop_req = next(rid for rid, mapped in svc._by_req.items() if mapped[2] == "XOP")
         svc.on_tick_price(xle_req, 4, 63.59)
         svc.on_tick_price(xop_req, 68, 182.34)
-        await svc._persist(account_id, trade_id, Decimal("492"))
+        await svc._persist(account_id, trade_id, Decimal(492))
         async with factory() as session:
             row = await PositionRepository(session).get_by_trade_id(
                 trade_id, account_id=account_id
             )
             assert row is not None
-            assert row.live_pnl == Decimal("492")
+            assert row.live_pnl == Decimal(492)
             assert row.leg_a_entry_mark == Decimal("62.59")
     finally:
         await engine.dispose()
@@ -271,7 +274,7 @@ async def test_live_pnl_hydrates_open_stk_and_skips_unresolved_cfd() -> None:
             account = AccountModel(
                 name=f"pnlh-{uuid4().hex[:8]}",
                 ibkr_account=f"DU{uuid4().hex[:8]}",
-                total_margin=Decimal("100000"),
+                total_margin=Decimal(100000),
                 enabled=True,
             )
             session.add(account)
@@ -283,15 +286,15 @@ async def test_live_pnl_hydrates_open_stk_and_skips_unresolved_cfd() -> None:
                     trade_id=trade_stk,
                     strategy_id=MODEL_BLUE_STRATEGY_ID,
                     leg_a_symbol="XLE",
-                    leg_a_signed_qty=Decimal("399"),
+                    leg_a_signed_qty=Decimal(399),
                     leg_a_entry_mark=Decimal("62.59"),
                     leg_b_symbol="XOP",
-                    leg_b_signed_qty=Decimal("-93"),
+                    leg_b_signed_qty=Decimal(-93),
                     leg_b_entry_mark=Decimal("183.34"),
                     leg_a_instrument_type="STK",
                     leg_b_instrument_type="STK",
-                    target=Decimal("500"),
-                    stop=Decimal("250"),
+                    target=Decimal(500),
+                    stop=Decimal(250),
                     time_limit=3600,
                     risk_state="OPEN",
                 )
@@ -302,15 +305,15 @@ async def test_live_pnl_hydrates_open_stk_and_skips_unresolved_cfd() -> None:
                     trade_id=trade_cfd,
                     strategy_id=MODEL_BLUE_STRATEGY_ID,
                     leg_a_symbol="ZZZCFDA",
-                    leg_a_signed_qty=Decimal("10"),
+                    leg_a_signed_qty=Decimal(10),
                     leg_a_entry_mark=Decimal("90.64"),
                     leg_b_symbol="ZZZCFDB",
-                    leg_b_signed_qty=Decimal("-10"),
+                    leg_b_signed_qty=Decimal(-10),
                     leg_b_entry_mark=Decimal("91.86"),
                     leg_a_instrument_type="CFD",
                     leg_b_instrument_type="CFD",
-                    target=Decimal("500"),
-                    stop=Decimal("250"),
+                    target=Decimal(500),
+                    stop=Decimal(250),
                     time_limit=3600,
                     risk_state="OPEN",
                 )
@@ -374,7 +377,7 @@ async def test_close_uses_open_fill_qty_and_realized_pnl() -> None:
             account = AccountModel(
                 name=f"close-{uuid4().hex[:8]}",
                 ibkr_account=f"DU{uuid4().hex[:8]}",
-                total_margin=Decimal("100000"),
+                total_margin=Decimal(100000),
                 enabled=True,
             )
             session.add(account)
@@ -384,8 +387,8 @@ async def test_close_uses_open_fill_qty_and_realized_pnl() -> None:
                     account_id=account.id,
                     strategy_id=MODEL_BLUE_STRATEGY_ID,
                     alloc_pct=Decimal("0.25"),
-                    target=Decimal("500"),
-                    stop=Decimal("250"),
+                    target=Decimal(500),
+                    stop=Decimal(250),
                     time_limit=3600,
                     max_open_positions=10,
                     enabled=True,
@@ -429,7 +432,7 @@ async def test_close_uses_open_fill_qty_and_realized_pnl() -> None:
                 trade_id, account_id=account_id
             )
             assert pos is not None
-            assert pos.leg_a_signed_qty == Decimal("399")
+            assert pos.leg_a_signed_qty == Decimal(399)
             assert pos.leg_a_entry_mark == _XLE
             events = (await session.execute(select(EventLogModel.kind))).scalars().all()
             assert "RMS_PASS" in events
@@ -474,8 +477,8 @@ async def test_close_uses_open_fill_qty_and_realized_pnl() -> None:
             )
             assert pos is not None
             assert pos.risk_state == "CLOSED"
-            assert pos.realised_pnl == Decimal("0")
-            assert pos.commission == Decimal("0")
+            assert pos.realised_pnl == Decimal(0)
+            assert pos.commission == Decimal(0)
             kinds = (await session.execute(select(EventLogModel.kind))).scalars().all()
             assert "POSITION_CLOSE" in kinds
     finally:
@@ -492,7 +495,7 @@ async def test_realized_pnl_long_short_and_optional_commission() -> None:
             account = AccountModel(
                 name=f"real-{uuid4().hex[:8]}",
                 ibkr_account=f"DU{uuid4().hex[:8]}",
-                total_margin=Decimal("100000"),
+                total_margin=Decimal(100000),
                 enabled=True,
             )
             session.add(account)
@@ -508,21 +511,21 @@ async def test_realized_pnl_long_short_and_optional_commission() -> None:
                             symbol="XLE",
                             instrument_type="STK",
                             side=OrderSide.BUY,
-                            quantity=Decimal("399"),
+                            quantity=Decimal(399),
                             price=Decimal("62.59"),
                         ),
                         OpenModelBlueTradeLeg(
                             symbol="XOP",
                             instrument_type="STK",
                             side=OrderSide.SELL,
-                            quantity=Decimal("93"),
+                            quantity=Decimal(93),
                             price=Decimal("183.34"),
                         ),
                     ),
                 ),
                 account_id=account_id,
-                target=Decimal("500"),
-                stop=Decimal("250"),
+                target=Decimal(500),
+                stop=Decimal(250),
                 time_limit=3600,
             )
             closed = await PositionRepository(session).close_trade(
@@ -531,7 +534,7 @@ async def test_realized_pnl_long_short_and_optional_commission() -> None:
                 exit_marks={"XLE": Decimal("63.59"), "XOP": Decimal("182.34")},
                 commission=Decimal("1.25"),
             )
-            assert closed.realised_pnl == Decimal("492") - Decimal("1.25")
+            assert closed.realised_pnl == Decimal(492) - Decimal("1.25")
             assert closed.commission == Decimal("1.25")
             assert closed.risk_state == "CLOSED"
     finally:

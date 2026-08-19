@@ -106,7 +106,12 @@ def _leg_payload(
         filled = _dec(order.fill_qty)
     elif signed_qty is not None:
         filled = _qty(signed_qty)
-    live_pnl = _dec(position.live_pnl)
+    live_pnl = _dec(position.live_pnl) if position.risk_state == RISK_OPEN else None
+    realized_pnl = (
+        _dec(position.realised_pnl)
+        if (position.risk_state == RISK_CLOSED or position.realised_pnl != Decimal(0))
+        else None
+    )
     market_status = "UNAVAILABLE"
     payload = {
         "timestamp": timestamp.isoformat(),
@@ -124,7 +129,7 @@ def _leg_payload(
         "last_price": None,
         "mark_price": None,
         "unrealized_pnl": live_pnl,
-        "realized_pnl": _dec(position.realised_pnl),
+        "realized_pnl": realized_pnl,
         "commission": _dec(position.commission),
         "status": position.risk_state,
         "basket_state": _basket_state(baskets, position.risk_state),
@@ -199,6 +204,23 @@ async def load_position_rows(session: AsyncSession) -> list[tuple[PositionModel,
         .join(AccountModel, AccountModel.id == PositionModel.account_id)
         .where(PositionModel.risk_state == RISK_OPEN)
     )
+    return list(result.all())
+
+
+async def load_closed_position_rows(
+    session: AsyncSession, account_id: int | None = None
+) -> list[tuple[PositionModel, AccountModel]]:
+    """Load historical CLOSED positions from PostgreSQL."""
+    stmt = (
+        select(PositionModel, AccountModel)
+        .join(AccountModel, AccountModel.id == PositionModel.account_id)
+        .where(PositionModel.risk_state == RISK_CLOSED)
+        .order_by(PositionModel.closed_at.desc())
+        .limit(100)
+    )
+    if account_id is not None:
+        stmt = stmt.where(PositionModel.account_id == account_id)
+    result = await session.execute(stmt)
     return list(result.all())
 
 

@@ -316,7 +316,7 @@ async def test_d_allocation_is_authoritative_for_sizer(db_factory: async_session
         ),
     )
     xle, _xop = sizer.size_open(signal)
-    expected_qty = (_COMMITTED / Decimal("62.59")).quantize(Decimal("1"), rounding=ROUND_DOWN)
+    expected_qty = (_COMMITTED / Decimal("62.59")).quantize(Decimal(1), rounding=ROUND_DOWN)
     assert xle.quantity == expected_qty
 
     missing = DatabaseCommittedCapitalProvider(db_factory, account_id=account.id + 10_000_000)

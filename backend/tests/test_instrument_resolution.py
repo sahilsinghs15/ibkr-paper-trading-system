@@ -18,7 +18,14 @@ from app.instruments.resolver import (
 from app.oms.coordinator import BasketCoordinator
 from app.oms.ibkr_adapter import IBKRExecutionAdapter
 from app.oms.oms_service import OMSService
-from app.rms.models import OrderAction, OrderIntent, OrderLeg, OrderSide, RMSOutcome, RMSResult
+from app.rms.models import (
+    OrderAction,
+    OrderIntent,
+    OrderLeg,
+    OrderSide,
+    RMSOutcome,
+    RMSResult,
+)
 from app.services.model_blue.allocation import TemporarySettingsCommittedCapitalProvider
 from app.services.model_blue.parser import parse_model_blue_payload
 from app.services.model_blue.sizer import ModelBlueSizer
@@ -32,7 +39,7 @@ def _stk_leg(symbol: str, qty: float = 10.0, index: int = 0) -> OrderLeg:
         symbol=symbol,
         side=OrderSide.BUY,
         quantity=qty,
-        price=Decimal("10"),
+        price=Decimal(10),
         contract_month="2026-09",
         instrument_type="STK",
         leg_index=index,
@@ -275,7 +282,7 @@ async def test_n_leg_independent_and_unresolved_leg_blocks_basket() -> None:
                 symbol="GDX",
                 side=OrderSide.SELL,
                 quantity=10,
-                price=Decimal("10"),
+                price=Decimal(10),
                 contract_month="2026-09",
                 instrument_type="CFD",
                 leg_index=1,
@@ -307,7 +314,7 @@ def test_pnl_does_not_request_stk_for_unresolved_cfd() -> None:
                 symbol="SIL",
                 side=OrderSide.BUY,
                 quantity=10,
-                price=Decimal("90"),
+                price=Decimal(90),
                 contract_month="2026-09",
                 instrument_type="CFD",
             )
@@ -443,10 +450,10 @@ def test_pnl_subscribes_cfd_under_demo_override(monkeypatch: pytest.MonkeyPatch)
     from app.services.pnl import unrealized_pair
 
     expected = unrealized_pair(
-        leg_a_signed=Decimal("10"),
+        leg_a_signed=Decimal(10),
         leg_a_entry=Decimal("90.64"),
         leg_a_mark=Decimal("91.64"),
-        leg_b_signed=Decimal("-10"),
+        leg_b_signed=Decimal(-10),
         leg_b_entry=Decimal("91.86"),
         leg_b_mark=Decimal("90.86"),
     )
@@ -497,10 +504,10 @@ def test_pnl_uses_cfd_bid_ask_mid_when_last_absent(monkeypatch: pytest.MonkeyPat
     assert svc._marks[(1, "T-PNL-CFD-MID", "XLE")] == Decimal("63.71")
     assert svc._marks[(1, "T-PNL-CFD-MID", "XOP")] == Decimal("185.22")
     expected = unrealized_pair(
-        leg_a_signed=Decimal("392"),
+        leg_a_signed=Decimal(392),
         leg_a_entry=Decimal("63.67"),
         leg_a_mark=Decimal("63.71"),
-        leg_b_signed=Decimal("-91"),
+        leg_b_signed=Decimal(-91),
         leg_b_entry=Decimal("185.35"),
         leg_b_mark=Decimal("185.22"),
     )
@@ -551,7 +558,7 @@ def test_discovered_sil_gdx_cfd_conids_are_not_stk() -> None:
 
 def test_size_increment_numeric_scale_still_whole_lot() -> None:
     qty = apply_size_increment(Decimal("275.8164"), Decimal("1.00000000"))
-    assert qty == Decimal("275")
+    assert qty == Decimal(275)
 
 
 def test_cfd_size_increment_one_is_valid_for_ibkr_share_cfd() -> None:

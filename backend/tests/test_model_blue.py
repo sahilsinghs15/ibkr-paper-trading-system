@@ -19,7 +19,7 @@ _TS = datetime(2026, 8, 17, 19, 55, tzinfo=UTC)
 
 
 def _qty(notional: Decimal, price: Decimal) -> Decimal:
-    return (notional / price).quantize(Decimal("1"), rounding=ROUND_DOWN)
+    return (notional / price).quantize(Decimal(1), rounding=ROUND_DOWN)
 
 
 def test_parser_preserves_both_open_legs() -> None:
@@ -103,8 +103,8 @@ def test_sizer_direction_plus_one_uses_weight_times_direction() -> None:
     xop_target = _COMMITTED * Decimal("0.4057") / base_w
     assert xle.side == OrderSide.BUY
     assert xop.side == OrderSide.SELL
-    assert xle.quantity == Decimal("399")
-    assert xop.quantity == Decimal("93")
+    assert xle.quantity == Decimal(399)
+    assert xop.quantity == Decimal(93)
     assert xle.quantity == _qty(_COMMITTED, Decimal("62.59"))
     assert xop.quantity == _qty(xop_target, Decimal("183.34"))
     assert xle.quantity != Decimal(1)
@@ -177,11 +177,11 @@ def test_sizer_rejects_stk_below_one_share() -> None:
         trade_id="T5",
         direction=1,
         legs=(
-            SignalLeg("XLE", "STK", 0.5, Decimal("25000"), payload_side=None),
-            SignalLeg("XOP", "STK", -0.5, Decimal("10"), payload_side=None),
+            SignalLeg("XLE", "STK", 0.5, Decimal(25000), payload_side=None),
+            SignalLeg("XOP", "STK", -0.5, Decimal(10), payload_side=None),
         ),
     )
-    sizer = ModelBlueSizer(TemporarySettingsCommittedCapitalProvider(Decimal("100")))
+    sizer = ModelBlueSizer(TemporarySettingsCommittedCapitalProvider(Decimal(100)))
     with pytest.raises(ModelBlueValidationError, match="MIN_SHARE"):
         sizer.size_open(signal)
 

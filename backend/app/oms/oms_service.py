@@ -1,10 +1,9 @@
 """Order Management System (OMS) service orchestrating order lifecycle and broker execution."""
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
-
-from dataclasses import replace
 
 from app.instruments.models import InstrumentResolutionError
 from app.instruments.resolver import resolve_leg

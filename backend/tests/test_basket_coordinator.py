@@ -1,8 +1,8 @@
 """BasketCoordinator atomicity tests. All IBKR interactions are mocked."""
 
+import math
 from datetime import UTC, datetime
 from decimal import Decimal
-import math
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -32,7 +32,10 @@ from app.rms.models import (
     StrategyConfig,
 )
 from app.services.model_blue.allocation import TemporarySettingsCommittedCapitalProvider
-from app.services.model_blue.parser import MODEL_BLUE_STRATEGY_ID, parse_model_blue_payload
+from app.services.model_blue.parser import (
+    MODEL_BLUE_STRATEGY_ID,
+    parse_model_blue_payload,
+)
 from app.services.model_blue.persistence import ModelBlueExecutionPersistence
 from app.services.model_blue.sizer import ModelBlueSizer
 from app.services.order_manager import OrderManager
@@ -55,9 +58,9 @@ def _leg(symbol: str, index: int, qty: float = 100.0, side: OrderSide = OrderSid
         symbol=symbol,
         side=side,
         quantity=qty,
-        price=Decimal("10"),
+        price=Decimal(10),
         contract_month="2026-09",
-        notional=Decimal(str(qty)) * Decimal("10"),
+        notional=Decimal(str(qty)) * Decimal(10),
         instrument_type="STK",
         leg_index=index,
     )
@@ -359,7 +362,7 @@ async def test_restart_incomplete_basket_requires_reconciliation() -> None:
             account = AccountModel(
                 name=f"basket-{uuid4().hex[:8]}",
                 ibkr_account=f"DU{uuid4().hex[:8]}",
-                total_margin=Decimal("100000"),
+                total_margin=Decimal(100000),
                 enabled=True,
             )
             session.add(account)
@@ -408,7 +411,7 @@ async def test_persisted_fills_and_no_open_position_on_incomplete() -> None:
             account = AccountModel(
                 name=f"basket-{uuid4().hex[:8]}",
                 ibkr_account=f"DU{uuid4().hex[:8]}",
-                total_margin=Decimal("100000"),
+                total_margin=Decimal(100000),
                 enabled=True,
             )
             session.add(account)
@@ -487,7 +490,7 @@ async def test_critical_blocks_order_manager_open() -> None:
         action="OPEN",
         symbol="SPY",
         side="BUY",
-        price=Decimal("100"),
+        price=Decimal(100),
         quantity=1,
     )
     # process_signal_execution may not copy account_id onto intent for generic path.
@@ -550,7 +553,7 @@ async def test_restart_unwinding_basket_is_critical() -> None:
             account = AccountModel(
                 name=f"unwind-{uuid4().hex[:8]}",
                 ibkr_account=f"DU{uuid4().hex[:8]}",
-                total_margin=Decimal("100000"),
+                total_margin=Decimal(100000),
                 enabled=True,
             )
             session.add(account)

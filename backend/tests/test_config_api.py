@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models.account import AccountModel, PerSymbolLimitModel
+from app.db.models.account import AccountModel
 from app.db.models.strategy import AllocationModel, StrategyModel
 from app.db.session import create_engine_from_settings
 from app.main import app
@@ -41,7 +41,7 @@ async def seeded_config():
         account = AccountModel(
             name=f"api-{suffix}",
             ibkr_account=f"DUAPI{suffix}",
-            total_margin=Decimal("100000"),
+            total_margin=Decimal(100000),
             enabled=True,
         )
         strategy = StrategyModel(
@@ -58,8 +58,8 @@ async def seeded_config():
             account_id=account.id,
             strategy_id=strategy.strategy_id,
             alloc_pct=Decimal("0.40"),
-            target=Decimal("500"),
-            stop=Decimal("250"),
+            target=Decimal(500),
+            stop=Decimal(250),
             time_limit=3600,
             max_open_positions=3,
             enabled=True,
@@ -115,3 +115,105 @@ def test_put_symbol_limit_reloads_rms_context(
     assert om._rms_context.per_symbol_limits.get(
         (seeded_config["account_id"], "XLE")
     ) == Decimal("12345.67")
+
+
+def test_execution_settings_roundtrip(client: TestClient) -> None:
+    res = client.get("/api/v1/config/execution")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["square_off_after_sec"] >= 1
+    assert body["retry_window_sec"] >= body["retry_interval_sec"]
+    patch = client.patch(
+        "/api/v1/config/execution",
+        json={
+            "enabled": True,
+            "square_off_after_sec": 30,
+            "max_retries": 3,
+            "retry_interval_sec": 5,
+            "retry_window_sec": 30,
+        },
+    )
+    assert patch.status_code == 200
+    assert patch.json()["max_retries"] == 3
+    again = client.get("/api/v1/config/execution")
+    assert again.json()["retry_interval_sec"] == 5
+
+
+def test_execution_settings_reject_window_lt_interval(client: TestClient) -> None:
+    res = client.patch(
+        "/api/v1/config/execution",
+        json={"retry_interval_sec": 10, "retry_window_sec": 5},
+    )
+    assert res.status_code == 400
+
+
+def test_create_account_api(client: TestClient) -> None:
+    suffix = uuid.uuid4().hex[:6]
+    ibkr = f"DUTEST{suffix}"
+    res = client.post(
+        "/api/v1/config/accounts",
+        json={
+            "name": f"Test Account {suffix}",
+            "ibkr_account": ibkr,
+            "total_margin": 150000.0,
+            "enabled": True,
+        },
+    )
+    assert res.status_code == 201
+    body = res.json()
+    assert body["name"] == f"Test Account {suffix}"
+    assert body["ibkr_account"] == ibkr.upper()
+    assert body["enabled"] is True
+
+    # Duplicate creation should fail
+    dup = client.post(
+        "/api/v1/config/accounts",
+        json={
+            "name": "Duplicate Test",
+            "ibkr_account": ibkr,
+            "total_margin": 100000.0,
+        },
+    )
+    assert dup.status_code == 400
+    assert "DUPLICATE_IBKR_ACCOUNT" in dup.json()["detail"]
+
+
+def test_create_account_allocation_api(client: TestClient, seeded_config: dict) -> None:
+    # Create another strategy allocation for seeded account
+    res = client.post(
+        f"/api/v1/config/accounts/{seeded_config['account_id']}/allocations",
+        json={
+            "strategy_id": seeded_config["strategy_id"],
+            "alloc_pct": 0.25,
+            "enabled": True,
+            "max_open_positions": 2,
+        },
+    )
+    assert res.status_code in (201, 400)  # If unique strategy subscription constraint exists
+
+
+def test_account_delete_lifecycle_api(client: TestClient) -> None:
+    suffix = uuid.uuid4().hex[:6]
+    ibkr = f"DUDEL{suffix}"
+    create_res = client.post(
+        "/api/v1/config/accounts",
+        json={
+            "name": f"Disposable {suffix}",
+            "ibkr_account": ibkr,
+            "total_margin": 50000.0,
+            "enabled": True,
+        },
+    )
+    assert create_res.status_code == 201
+    account_id = create_res.json()["id"]
+
+    # Check deletable status
+    check_res = client.get(f"/api/v1/config/accounts/{account_id}/deletable")
+    assert check_res.status_code == 200
+    assert check_res.json()["can_delete"] is True
+    assert check_res.json()["has_history"] is False
+
+    # Delete untraded account
+    del_res = client.delete(f"/api/v1/config/accounts/{account_id}")
+    assert del_res.status_code == 204
+

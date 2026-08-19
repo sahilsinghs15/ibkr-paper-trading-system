@@ -1,9 +1,11 @@
 """Dashboard config CRUD for accounts, allocations, and symbol limits."""
 
 import logging
+import uuid
+from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts.config_service import (
@@ -11,16 +13,24 @@ from app.accounts.config_service import (
     AllocationConfigError,
 )
 from app.api.deps import get_order_manager
+from app.core.config import get_settings
 from app.db.models.account import AccountModel, PerSymbolLimitModel
 from app.db.models.strategy import AllocationModel
 from app.db.session import get_db_session
+from app.oms.retry_policy import paper_retry_ports_allowed
 from app.schemas.config_schemas import (
     AccountConfigSchema,
+    AccountDeleteCheckResponse,
     AccountsConfigResponse,
     AllocationConfigSchema,
+    CreateAccountRequest,
+    CreateAllocationRequest,
+    ExecutionSettingsSchema,
     PatchAccountRequest,
     PatchAllocationRequest,
+    PatchExecutionSettingsRequest,
     PutSymbolLimitRequest,
+    SquareOffResponse,
     SymbolLimitSchema,
 )
 from app.services.order_manager import OrderManager
@@ -85,10 +95,210 @@ async def list_accounts_config(
     return AccountsConfigResponse(accounts=payload)
 
 
+@router.get(
+    "/accounts/by-identifier/{ibkr_account}",
+    response_model=AccountConfigSchema,
+    summary="Get account config by IBKR account identifier",
+)
+async def get_account_by_identifier(
+    ibkr_account: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> AccountConfigSchema:
+    clean_ibkr = ibkr_account.strip().upper()
+    account = (
+        await session.execute(
+            select(AccountModel).where(func.upper(AccountModel.ibkr_account) == clean_ibkr)
+        )
+    ).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(
+            status_code=404, detail=f"Account '{ibkr_account}' not found."
+        )
+
+    allocations = (
+        await session.execute(
+            select(AllocationModel).where(AllocationModel.account_id == account.id)
+        )
+    ).scalars().all()
+    limits = (
+        await session.execute(
+            select(PerSymbolLimitModel).where(PerSymbolLimitModel.account_id == account.id)
+        )
+    ).scalars().all()
+
+    return AccountConfigSchema(
+        id=account.id,
+        name=account.name,
+        ibkr_account=account.ibkr_account,
+        total_margin=account.total_margin,
+        enabled=account.enabled,
+        allocations=[AllocationConfigSchema.model_validate(a) for a in allocations],
+        symbol_limits=[SymbolLimitSchema.model_validate(l) for l in limits],
+    )
+
+
+@router.post(
+    "/accounts/{account_id}/square-off",
+    response_model=SquareOffResponse,
+    summary="Emergency Kill Switch: Square off all open positions for account",
+)
+async def square_off_account_positions(
+    account_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+) -> SquareOffResponse:
+    svc = AccountStrategyConfigService(session)
+    account = await svc.get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    from app.db.models.position import PositionModel
+    from app.rms.engine import RMSOutcome, RMSResult
+    from app.rms.models import OrderAction, OrderIntent, OrderLeg
+    from app.rms.models import OrderSide as RMSOrderSide
+
+    # Query all open positions for ONLY this account
+    open_positions = (
+        await session.execute(
+            select(PositionModel).where(
+                PositionModel.account_id == account.id,
+                PositionModel.risk_state == "OPEN",
+            )
+        )
+    ).scalars().all()
+
+    if not open_positions:
+        return SquareOffResponse(
+            account_id=account.id,
+            ibkr_account=account.ibkr_account,
+            squared_off_count=0,
+            trade_ids=[],
+        )
+
+    order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
+    baskets_coord = getattr(order_manager, "_baskets", None) if order_manager else None
+
+    trade_ids: list[str] = []
+    for pos in open_positions:
+        legs: list[OrderLeg] = []
+
+        # Leg A reverse CLOSE
+        if pos.leg_a_symbol and pos.leg_a_signed_qty is not None and abs(pos.leg_a_signed_qty) > 0:
+            side = RMSOrderSide.SELL if pos.leg_a_signed_qty > 0 else RMSOrderSide.BUY
+            qty = abs(pos.leg_a_signed_qty)
+            legs.append(
+                OrderLeg(
+                    symbol=pos.leg_a_symbol,
+                    side=side,
+                    quantity=qty,
+                    price=Decimal(0),
+                    contract_month="202612",
+                    instrument_type=pos.leg_a_instrument_type or "STK",
+                    leg_index=0,
+                )
+            )
+
+        # Leg B reverse CLOSE (if present)
+        if pos.leg_b_symbol and pos.leg_b_signed_qty is not None and abs(pos.leg_b_signed_qty) > 0:
+            side = RMSOrderSide.SELL if pos.leg_b_signed_qty > 0 else RMSOrderSide.BUY
+            qty = abs(pos.leg_b_signed_qty)
+            legs.append(
+                OrderLeg(
+                    symbol=pos.leg_b_symbol,
+                    side=side,
+                    quantity=qty,
+                    price=Decimal(0),
+                    contract_month="202612",
+                    instrument_type=pos.leg_b_instrument_type or "STK",
+                    leg_index=1,
+                )
+            )
+
+        if not legs:
+            continue
+
+        close_intent = OrderIntent(
+            signal_id=f"KILLSWITCH-{pos.trade_id}-{uuid.uuid4().hex[:6]}",
+            strategy_id=pos.strategy_id,
+            action=OrderAction.CLOSE,
+            legs=legs,
+            account_id=account.id,
+            ibkr_account=account.ibkr_account,
+        )
+
+        if baskets_coord is not None:
+            if order_manager is not None:
+                close_intent = await order_manager._resolve_instruments(close_intent)
+            rms_pass = RMSResult(
+                outcome=RMSOutcome.PASS,
+                intent=close_intent,
+                original_intent=close_intent,
+                reason="KILL_SWITCH_EMERGENCY_CLOSE",
+            )
+            await baskets_coord.execute(close_intent, rms_pass, order_type="MARKET")
+
+        trade_ids.append(pos.trade_id)
+
+    logger.warning(
+        "EMERGENCY KILL SWITCH EXECUTED: account_id=%s ibkr=%s trades_closed=%d %s",
+        account.id,
+        account.ibkr_account,
+        len(trade_ids),
+        trade_ids,
+    )
+    return SquareOffResponse(
+        account_id=account.id,
+        ibkr_account=account.ibkr_account,
+        squared_off_count=len(trade_ids),
+        trade_ids=trade_ids,
+    )
+
+
+@router.post(
+    "/accounts",
+    response_model=AccountConfigSchema,
+    status_code=201,
+    summary="Create a new paper trading account",
+)
+async def create_account(
+    body: CreateAccountRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> AccountConfigSchema:
+    svc = AccountStrategyConfigService(session)
+    try:
+        account = await svc.create_account(
+            name=body.name,
+            ibkr_account=body.ibkr_account,
+            total_margin=body.total_margin,
+            enabled=body.enabled,
+        )
+        await session.commit()
+    except AllocationConfigError as exc:
+        await session.rollback()
+        raise _config_error(exc) from exc
+    logger.info(
+        "Config POST account id=%s name=%s ibkr=%s margin=%s enabled=%s",
+        account.id,
+        account.name,
+        account.ibkr_account,
+        account.total_margin,
+        account.enabled,
+    )
+    return AccountConfigSchema(
+        id=account.id,
+        name=account.name,
+        ibkr_account=account.ibkr_account,
+        total_margin=account.total_margin,
+        enabled=account.enabled,
+        allocations=[],
+        symbol_limits=[],
+    )
+
+
 @router.patch(
     "/accounts/{account_id}",
     response_model=AccountConfigSchema,
-    summary="Update account margin or enabled flag",
+    summary="Update account name, IBKR identifier, margin or enabled flag",
 )
 async def patch_account(
     account_id: int,
@@ -99,11 +309,18 @@ async def patch_account(
     account = await svc.get_account(account_id)
     if account is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
-    if body.total_margin is None and body.enabled is None:
+    if (
+        body.name is None
+        and body.ibkr_account is None
+        and body.total_margin is None
+        and body.enabled is None
+    ):
         raise HTTPException(status_code=400, detail="No fields to update.")
     try:
         await svc.update_account(
             account,
+            name=body.name,
+            ibkr_account=body.ibkr_account,
             total_margin=body.total_margin,
             enabled=body.enabled,
         )
@@ -112,8 +329,10 @@ async def patch_account(
         await session.rollback()
         raise _config_error(exc) from exc
     logger.info(
-        "Config PATCH account id=%s margin=%s enabled=%s",
+        "Config PATCH account id=%s name=%s ibkr=%s margin=%s enabled=%s",
         account_id,
+        body.name,
+        body.ibkr_account,
         body.total_margin,
         body.enabled,
     )
@@ -136,6 +355,84 @@ async def patch_account(
         allocations=[AllocationConfigSchema.model_validate(a) for a in allocations],
         symbol_limits=[SymbolLimitSchema.model_validate(l) for l in limits],
     )
+
+
+@router.post(
+    "/accounts/{account_id}/allocations",
+    response_model=AllocationConfigSchema,
+    status_code=201,
+    summary="Assign strategy allocation to account",
+)
+async def create_account_allocation(
+    account_id: int,
+    body: CreateAllocationRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> AllocationConfigSchema:
+    svc = AccountStrategyConfigService(session)
+    account = await svc.get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+    try:
+        allocation = await svc.create_allocation(
+            account=account,
+            strategy_id=body.strategy_id,
+            alloc_pct=body.alloc_pct,
+            target=body.target,
+            stop=body.stop,
+            time_limit=body.time_limit,
+            enabled=body.enabled,
+            max_open_positions=body.max_open_positions,
+        )
+        await session.commit()
+    except AllocationConfigError as exc:
+        await session.rollback()
+        raise _config_error(exc) from exc
+    logger.info(
+        "Config POST allocation account_id=%s strategy=%s pct=%s enabled=%s",
+        account_id,
+        body.strategy_id,
+        body.alloc_pct,
+        body.enabled,
+    )
+    return AllocationConfigSchema.model_validate(allocation)
+
+
+@router.get(
+    "/accounts/{account_id}/deletable",
+    response_model=AccountDeleteCheckResponse,
+    summary="Check if an account can be safely deleted",
+)
+async def check_account_deletable_api(
+    account_id: int,
+    session: AsyncSession = Depends(get_db_session),
+) -> AccountDeleteCheckResponse:
+    svc = AccountStrategyConfigService(session)
+    can_del, reason = await svc.check_account_deletable(account_id)
+    history = await svc.has_trading_history(account_id) if not can_del else False
+    return AccountDeleteCheckResponse(
+        can_delete=can_del,
+        reason=reason,
+        has_history=history,
+    )
+
+
+@router.delete(
+    "/accounts/{account_id}",
+    status_code=204,
+    summary="Safely delete account without trading history",
+)
+async def delete_account_api(
+    account_id: int,
+    session: AsyncSession = Depends(get_db_session),
+) -> None:
+    svc = AccountStrategyConfigService(session)
+    try:
+        await svc.delete_account(account_id)
+        await session.commit()
+    except AllocationConfigError as exc:
+        await session.rollback()
+        raise _config_error(exc) from exc
+    logger.info("Config DELETE account id=%s", account_id)
 
 
 @router.patch(
@@ -233,3 +530,74 @@ async def delete_symbol_limit(
     await session.commit()
     await order_manager.reload_rms_limits()
     logger.info("Config DELETE symbol limit account=%s symbol=%s", account_id, symbol)
+
+
+def _execution_schema(row, *, paper_active: bool) -> ExecutionSettingsSchema:
+    return ExecutionSettingsSchema(
+        enabled=row.enabled,
+        square_off_after_sec=row.square_off_after_sec,
+        max_retries=row.max_retries,
+        retry_interval_sec=row.retry_interval_sec,
+        retry_window_sec=row.retry_window_sec,
+        paper_retries_active=paper_active and row.enabled,
+    )
+
+
+@router.get(
+    "/execution",
+    response_model=ExecutionSettingsSchema,
+    summary="Paper auto square-off and retry settings",
+)
+async def get_execution_settings(
+    session: AsyncSession = Depends(get_db_session),
+) -> ExecutionSettingsSchema:
+    svc = AccountStrategyConfigService(session)
+    row = await svc.get_or_create_execution_settings()
+    await session.commit()
+    paper = paper_retry_ports_allowed(get_settings().ibkr_port)
+    return _execution_schema(row, paper_active=paper)
+
+
+@router.patch(
+    "/execution",
+    response_model=ExecutionSettingsSchema,
+    summary="Update paper auto square-off and retry settings",
+)
+async def patch_execution_settings(
+    body: PatchExecutionSettingsRequest,
+    session: AsyncSession = Depends(get_db_session),
+    order_manager: OrderManager = Depends(get_order_manager),
+) -> ExecutionSettingsSchema:
+    if (
+        body.enabled is None
+        and body.square_off_after_sec is None
+        and body.max_retries is None
+        and body.retry_interval_sec is None
+        and body.retry_window_sec is None
+    ):
+        raise HTTPException(status_code=400, detail="No fields to update.")
+    svc = AccountStrategyConfigService(session)
+    try:
+        row = await svc.update_execution_settings(
+            enabled=body.enabled,
+            square_off_after_sec=body.square_off_after_sec,
+            max_retries=body.max_retries,
+            retry_interval_sec=body.retry_interval_sec,
+            retry_window_sec=body.retry_window_sec,
+        )
+        await session.commit()
+    except AllocationConfigError as exc:
+        await session.rollback()
+        raise _config_error(exc) from exc
+    await order_manager.reload_execution_policy()
+    logger.info(
+        "Config PATCH execution enabled=%s timeout=%s retries=%s interval=%s window=%s",
+        row.enabled,
+        row.square_off_after_sec,
+        row.max_retries,
+        row.retry_interval_sec,
+        row.retry_window_sec,
+    )
+    paper = paper_retry_ports_allowed(get_settings().ibkr_port)
+    return _execution_schema(row, paper_active=paper)
+

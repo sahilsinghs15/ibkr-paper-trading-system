@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -19,11 +21,14 @@ from app.instruments.resolver import attach_resolved
 from app.oms.basket import Basket, BasketExecutionResult, BasketState
 from app.oms.models import OMSOrder, OMSOrderStatus
 from app.oms.oms_service import OMSService
+from app.oms.retry_policy import ExecutionRetryPolicy
+from app.rms.engine import RMSEngine
 from app.rms.models import (
     OrderAction,
     OrderIntent,
     OrderLeg,
     OrderSide,
+    RMSContext,
     RMSOutcome,
     RMSResult,
 )
@@ -53,11 +58,20 @@ class BasketCoordinator:
         session_factory: SessionFactory | None = None,
         fill_timeout: float = 10.0,
         cancel_timeout: float = 10.0,
+        retry_policy: ExecutionRetryPolicy | None = None,
+        rms_engine: RMSEngine | None = None,
+        rms_context: RMSContext | None = None,
+        paper_retries_allowed: bool = False,
     ) -> None:
         self._oms = oms
         self._session_factory = session_factory
         self._fill_timeout = fill_timeout
         self._cancel_timeout = cancel_timeout
+        self._retry_policy = retry_policy
+        self._rms_engine = rms_engine
+        self._rms_context = rms_context
+        self._paper_retries_allowed = paper_retries_allowed
+        self._retry_ids: set[str] = set()
         self._critical: set[tuple[int, str]] = set()
         self._order_baskets: dict[str, Basket] = {}
         self._active_basket: Basket | None = None
@@ -76,6 +90,27 @@ class BasketCoordinator:
         if account_id is None:
             return
         self._critical.add((account_id, strategy_id))
+
+    def apply_retry_policy(
+        self,
+        policy: ExecutionRetryPolicy,
+        *,
+        paper_retries_allowed: bool,
+    ) -> None:
+        policy.validate()
+        self._retry_policy = policy
+        self._fill_timeout = float(policy.square_off_after_sec)
+        self._paper_retries_allowed = paper_retries_allowed
+        logger.info(
+            "Execution retry policy applied: enabled=%s timeout=%.1fs retries=%d "
+            "interval=%.1fs window=%.1fs paper=%s",
+            policy.enabled,
+            policy.square_off_after_sec,
+            policy.max_retries,
+            policy.retry_interval_sec,
+            policy.retry_window_sec,
+            paper_retries_allowed,
+        )
 
     async def hydrate_critical_from_db(self) -> None:
         if self._session_factory is None:
@@ -242,6 +277,19 @@ class BasketCoordinator:
             completeness,
         )
 
+        if not self._basket_complete(intent, submitted):
+            retry_orders = await self._retry_incomplete(
+                intent,
+                submitted,
+                order_type=order_type,
+                signal_pk=signal_pk,
+                basket=basket,
+            )
+            if retry_orders:
+                submitted.extend(retry_orders)
+                for order in retry_orders:
+                    await self._persist_child(order, intent, signal_pk=signal_pk, basket=basket)
+
         if self._basket_complete(intent, submitted):
             basket.orders = submitted
             if intent.action == OrderAction.CLOSE:
@@ -406,15 +454,17 @@ class BasketCoordinator:
             await self._persist_basket(basket)
             self.mark_critical(row.account_id, row.strategy_id)
 
+    def _filled_qty_for_leg(self, index: int, orders: list[OMSOrder]) -> float:
+        return sum(
+            float(o.filled_quantity)
+            for o in orders
+            if o.leg_index == index and not o.is_compensation
+        )
+
     def _basket_complete(self, intent: OrderIntent, orders: list[OMSOrder]) -> bool:
-        if len(orders) != len(intent.legs):
-            return False
-        by_index = {o.leg_index: o for o in orders}
         for index, leg in enumerate(intent.legs):
-            order = by_index.get(index)
-            if order is None or order.status != OMSOrderStatus.FILLED:
-                return False
-            if order.filled_quantity + _FILL_EPS < float(leg.quantity):
+            filled = self._filled_qty_for_leg(index, orders)
+            if filled + _FILL_EPS < float(leg.quantity):
                 return False
         return True
 
@@ -452,6 +502,243 @@ class BasketCoordinator:
 
         await asyncio.gather(*[_wait_one(order) for order in orders])
 
+    def _retries_enabled(self) -> bool:
+        policy = self._retry_policy
+        if policy is None or not policy.enabled or policy.max_retries <= 0:
+            return False
+        if not self._paper_retries_allowed:
+            logger.info(
+                "AUTO-SQUARE-OFF retries skipped: paper ports only (IBKR live port or flag off)"
+            )
+            return False
+        if self._rms_engine is None or self._rms_context is None:
+            logger.warning("AUTO-SQUARE-OFF retries skipped: RMS engine not wired")
+            return False
+        return True
+
+    async def _cancel_working(
+        self,
+        submitted: list[OMSOrder],
+        *,
+        intent: OrderIntent,
+        signal_pk: int | None,
+        basket: Basket,
+    ) -> bool:
+        working = [o for o in submitted if o.status not in _TERMINAL]
+        for order in working:
+            try:
+                await self._oms.cancel_order(order.internal_order_id)
+            except Exception as exc:
+                logger.warning("Cancel failed for %s: %s", order.internal_order_id, exc)
+                return False
+        await self._wait_terminals(working, timeout=self._cancel_timeout)
+        if any(o.status not in _TERMINAL for o in working):
+            return False
+        for order in submitted:
+            await self._persist_child(order, intent, signal_pk=signal_pk, basket=basket)
+        return True
+
+    async def _retry_incomplete(
+        self,
+        intent: OrderIntent,
+        submitted: list[OMSOrder],
+        *,
+        order_type: str,
+        signal_pk: int | None,
+        basket: Basket,
+    ) -> list[OMSOrder]:
+        if not self._retries_enabled():
+            return []
+        policy = self._retry_policy
+        assert policy is not None
+        cancelled = await self._cancel_working(
+            submitted, intent=intent, signal_pk=signal_pk, basket=basket
+        )
+        if not cancelled:
+            logger.warning(
+                "AUTO-SQUARE-OFF retry aborted: could not cancel working orders trade_id=%s",
+                intent.signal_id,
+            )
+            return []
+
+        created: list[OMSOrder] = []
+        rms_blocked: set[int] = set()
+        started = time.monotonic()
+        attempt = 0
+        while attempt < policy.max_retries:
+            elapsed = time.monotonic() - started
+            if elapsed >= policy.retry_window_sec:
+                logger.info(
+                    "AUTO-SQUARE-OFF retry window expired: trade_id=%s elapsed=%.1fs window=%.1fs",
+                    intent.signal_id,
+                    elapsed,
+                    policy.retry_window_sec,
+                )
+                break
+            pool = submitted + created
+            if self._basket_complete(intent, pool):
+                break
+            if attempt > 0:
+                cancelled = await self._cancel_working(
+                    submitted + created, intent=intent, signal_pk=signal_pk, basket=basket
+                )
+                if not cancelled:
+                    logger.warning(
+                        "AUTO-SQUARE-OFF retry step aborted: could not cancel working orders trade_id=%s attempt=%d",
+                        intent.signal_id,
+                        attempt,
+                    )
+                    break
+                await asyncio.sleep(policy.retry_interval_sec)
+                elapsed = time.monotonic() - started
+                if elapsed >= policy.retry_window_sec:
+                    break
+            attempt += 1
+            round_orders: list[OMSOrder] = []
+            for index, orig_leg in enumerate(intent.legs):
+                if index in rms_blocked:
+                    continue
+                filled = self._filled_qty_for_leg(index, submitted + created)
+                remaining = float(orig_leg.quantity) - filled
+                if remaining <= _FILL_EPS:
+                    continue
+                retry_key = f"{intent.account_id}:{intent.signal_id}:{index}:{attempt}"
+                if retry_key in self._retry_ids:
+                    logger.info(
+                        "AUTO-SQUARE-OFF skip duplicate retry key=%s",
+                        retry_key,
+                    )
+                    continue
+                self._retry_ids.add(retry_key)
+                retry_intent = self._retry_intent(intent, orig_leg, remaining, index, attempt)
+                rms_result = self._rms_engine.evaluate(retry_intent, self._rms_context)
+                rate_limited = False
+                if rms_result.outcome != RMSOutcome.PASS:
+                    rms_blocked.add(index)
+                    logger.warning(
+                        "AUTO-SQUARE-OFF retry blocked: trade_id=%s basket_id=%s account_id=%s "
+                        "ibkr_account=%s symbol=%s instrument_type=%s original_qty=%s "
+                        "filled_qty=%s remaining_qty=%s retry=%d/%d retry_window=%.1fs "
+                        "elapsed=%.1fs reason=incomplete_leg rms=REJECT reason=%s "
+                        "rate_limit=N/A action=SKIP",
+                        intent.signal_id,
+                        basket.id,
+                        intent.account_id,
+                        intent.ibkr_account,
+                        orig_leg.symbol,
+                        orig_leg.instrument_type,
+                        orig_leg.quantity,
+                        filled,
+                        remaining,
+                        attempt,
+                        policy.max_retries,
+                        policy.retry_window_sec,
+                        time.monotonic() - started,
+                        rms_result.reason,
+                    )
+                    await self._event(
+                        "AUTO_SQUARE_OFF_RETRY_BLOCKED",
+                        {
+                            "trade_id": intent.signal_id,
+                            "symbol": orig_leg.symbol,
+                            "remaining_qty": remaining,
+                            "retry": attempt,
+                            "reason": rms_result.reason,
+                        },
+                        signal_pk=signal_pk,
+                        basket=basket,
+                        idempotency_key=f"retry_blocked:{retry_key}",
+                    )
+                    continue
+                try:
+                    order = await self._oms.submit_one_leg(
+                        retry_intent,
+                        rms_result,
+                        0,
+                        order_type=order_type,
+                    )
+                except Exception:
+                    logger.exception(
+                        "AUTO-SQUARE-OFF retry submit failed: trade_id=%s symbol=%s",
+                        intent.signal_id,
+                        orig_leg.symbol,
+                    )
+                    continue
+                order.leg_index = index
+                order.basket_id = basket.id
+                self._order_baskets[order.internal_order_id] = basket
+                rate_limited = bool(getattr(order, "pacer_delayed", False))
+                logger.info(
+                    "AUTO-SQUARE-OFF retry: trade_id=%s basket_id=%s account_id=%s "
+                    "ibkr_account=%s symbol=%s instrument_type=%s original_qty=%s "
+                    "filled_qty=%s remaining_qty=%s retry=%d/%d retry_window=%.1fs "
+                    "elapsed=%.1fs reason=incomplete_leg rms=PASS rate_limit=%s "
+                    "action=SUBMIT broker_order_id=%s",
+                    intent.signal_id,
+                    basket.id,
+                    intent.account_id,
+                    intent.ibkr_account,
+                    orig_leg.symbol,
+                    orig_leg.instrument_type,
+                    orig_leg.quantity,
+                    filled,
+                    remaining,
+                    attempt,
+                    policy.max_retries,
+                    policy.retry_window_sec,
+                    time.monotonic() - started,
+                    "DELAYED" if rate_limited else "PASS",
+                    order.ibkr_order_id,
+                )
+                await self._event(
+                    "AUTO_SQUARE_OFF_RETRY",
+                    {
+                        "trade_id": intent.signal_id,
+                        "symbol": orig_leg.symbol,
+                        "remaining_qty": remaining,
+                        "retry": attempt,
+                        "broker_order_id": str(order.ibkr_order_id)
+                        if order.ibkr_order_id
+                        else None,
+                    },
+                    signal_pk=signal_pk,
+                    basket=basket,
+                    order=order,
+                    idempotency_key=f"retry_submit:{retry_key}",
+                )
+                created.append(order)
+                round_orders.append(order)
+            if round_orders:
+                remaining_window = policy.retry_window_sec - (time.monotonic() - started)
+                retry_timeout = min(self._fill_timeout, max(0.05, remaining_window))
+                await self._wait_terminals(
+                    round_orders, timeout=retry_timeout
+                )
+        return created
+
+    def _retry_intent(
+        self,
+        original: OrderIntent,
+        orig_leg: OrderLeg,
+        remaining: float,
+        index: int,
+        attempt: int,
+    ) -> OrderIntent:
+        qty = Decimal(str(remaining))
+        px = orig_leg.price
+        retry_leg = replace(
+            orig_leg,
+            quantity=qty,
+            notional=qty * px,
+            leg_index=0,
+        )
+        return replace(
+            original,
+            signal_id=f"{original.signal_id}:RETRY:L{index}:{attempt}",
+            legs=[retry_leg],
+            timestamp=datetime.now(UTC),
+        )
+
     async def _compensate_filled(
         self,
         original: OrderIntent,
@@ -468,7 +755,7 @@ class BasketCoordinator:
             if filled <= _FILL_EPS:
                 continue
             reverse = OrderSide.SELL if order.side == OrderSide.BUY else OrderSide.BUY
-            price = order.average_fill_price or order.last_fill_price or order.limit_price or Decimal("0")
+            price = order.average_fill_price or order.last_fill_price or order.limit_price or Decimal(0)
             orig_index = order.leg_index if order.leg_index is not None else 0
             orig_leg = original.legs[orig_index]
             comp_intent = OrderIntent(

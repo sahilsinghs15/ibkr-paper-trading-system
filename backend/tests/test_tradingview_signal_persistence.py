@@ -1,17 +1,12 @@
 """Integration and regression tests for Phase 3 TradingView signal persistence."""
 
-import json
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import SignalModel
-from app.db.session import create_engine_from_settings
 from app.main import app
 
 
@@ -40,21 +35,18 @@ def client() -> Generator[TestClient, None, None]:
 @pytest.mark.asyncio
 async def test_1_valid_open_payload_persisted(client: TestClient, capture_dir: Path) -> None:
     """TEST 1: Valid OPEN signal is persisted to database with status=NEW."""
-    pass
 
 
 @pytest.mark.skip(reason="Database persistence in webhook route temporarily paused for execution engine integration task")
 @pytest.mark.asyncio
 async def test_2_duplicate_signal_delivery_ignored(client: TestClient) -> None:
     """TEST 2: Duplicate signal delivery creates exactly 1 database row due to unique constraint."""
-    pass
 
 
 @pytest.mark.skip(reason="Database persistence in webhook route temporarily paused for execution engine integration task")
 @pytest.mark.asyncio
 async def test_3_valid_close_payload_persisted(client: TestClient) -> None:
     """TEST 3: Valid CLOSE signal is persisted with status=NEW."""
-    pass
 
 
 @pytest.mark.asyncio
@@ -72,11 +64,9 @@ async def test_4_invalid_webhook_payload_no_db_row(client: TestClient) -> None:
 @pytest.mark.asyncio
 async def test_5_raw_payload_audit(client: TestClient) -> None:
     """TEST 5: Stored raw_payload JSONB contains metadata, raw_body, and parsed_json."""
-    pass
 
 
 @pytest.mark.skip(reason="Database persistence in webhook route temporarily paused for execution engine integration task")
 @pytest.mark.asyncio
 async def test_6_restart_persistence(client: TestClient) -> None:
     """TEST 6: Previously persisted signal rows remain in database after connection reset."""
-    pass

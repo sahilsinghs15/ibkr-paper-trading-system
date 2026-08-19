@@ -5,8 +5,8 @@ from decimal import Decimal
 
 import pytest
 
-from demo_streaming.snapshot import classify_event, fingerprint, position_leg_payloads
 from demo_streaming.publisher import PositionBridge
+from demo_streaming.snapshot import classify_event, fingerprint, position_leg_payloads
 
 
 class _Pos:
@@ -14,16 +14,16 @@ class _Pos:
     trade_id = "MBG-PAPER-DEMO"
     strategy_id = "model_blue"
     leg_a_symbol = "SIL"
-    leg_a_signed_qty = Decimal("275")
+    leg_a_signed_qty = Decimal(275)
     leg_a_entry_mark = Decimal("88.3900")
     leg_a_instrument_type = "CFD"
     leg_b_symbol = "GDX"
-    leg_b_signed_qty = Decimal("-270")
+    leg_b_signed_qty = Decimal(-270)
     leg_b_entry_mark = Decimal("90.0200")
     leg_b_instrument_type = "CFD"
-    live_pnl = Decimal("0")
-    realised_pnl = Decimal("0")
-    commission = Decimal("0")
+    live_pnl = Decimal(0)
+    realised_pnl = Decimal(0)
+    commission = Decimal(0)
     risk_state = "OPEN"
 
 
@@ -146,7 +146,7 @@ async def test_bridge_emits_position_update_when_live_pnl_changes() -> None:
     bridge = PositionBridge(session_factory=_Factory(), stream=stream, poll_interval=0.01)  # type: ignore[arg-type]
     open_zero = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=datetime.now(UTC))[0]
     updated_pos = _Pos()
-    updated_pos.live_pnl = Decimal("492")
+    updated_pos.live_pnl = Decimal(492)
     open_live = position_leg_payloads(updated_pos, _Acct(), [], [], timestamp=datetime.now(UTC))[0]
 
     async def first(_session=None):
@@ -264,4 +264,25 @@ def test_demo_usd_and_pnl_display_contract() -> None:
     assert fmt_usd(87.930727) == "$87.93"
     assert fmt_usd(None) == "—"
     assert "₹" not in fmt_usd(90.64) + fmt_pnl(492)
+
+
+def test_open_position_leg_payload_realized_pnl_is_none() -> None:
+    open_pos = _Pos()
+    open_pos.risk_state = "OPEN"
+    open_pos.realised_pnl = Decimal(0)
+    open_pos.live_pnl = Decimal("125.40")
+
+    legs = position_leg_payloads(open_pos, _Acct(), [], [], timestamp=datetime.now(UTC))
+    assert legs[0]["unrealized_pnl"] == "125.40"
+    assert legs[0]["realized_pnl"] is None
+
+    closed_pos = _Pos()
+    closed_pos.risk_state = "CLOSED"
+    closed_pos.realised_pnl = Decimal("492.00")
+    closed_pos.live_pnl = Decimal("492.00")
+
+    closed_legs = position_leg_payloads(closed_pos, _Acct(), [], [], timestamp=datetime.now(UTC))
+    assert closed_legs[0]["unrealized_pnl"] is None
+    assert closed_legs[0]["realized_pnl"] == "492.00"
+
 

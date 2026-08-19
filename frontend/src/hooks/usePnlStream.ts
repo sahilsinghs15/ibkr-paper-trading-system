@@ -7,11 +7,19 @@ async function loadSnapshot(
   apply: (row: PositionLeg) => void,
   clearActive: () => void,
 ): Promise<void> {
-  const { data } = await axios.get<PositionsSnapshot>('/demo/positions', {
-    headers: { 'Cache-Control': 'no-store' },
-  })
+  const [openRes, closedRes] = await Promise.all([
+    axios.get<PositionsSnapshot>('/demo/positions', {
+      headers: { 'Cache-Control': 'no-store' },
+    }),
+    axios.get<{ closed_positions: PositionLeg[] }>('/demo/closed-positions', {
+      headers: { 'Cache-Control': 'no-store' },
+    }).catch(() => ({ data: { closed_positions: [] } })),
+  ])
   clearActive()
-  for (const row of data.positions || []) {
+  for (const row of openRes.data.positions || []) {
+    apply(row)
+  }
+  for (const row of closedRes.data.closed_positions || []) {
     apply(row)
   }
 }
