@@ -516,13 +516,6 @@ body,
   border: 1px solid rgba(239, 107, 115, 0.3);
 }
 
-.badge-pair.month {
-  background: rgba(125, 138, 160, 0.1);
-  color: var(--dim);
-  border: 1px solid var(--line);
-  font-size: 9px;
-}
-
 /* Exposure Balance */
 .exposure-box {
   display: flex;
@@ -592,20 +585,6 @@ body,
   color: var(--red);
   border: 1px solid rgba(239, 107, 115, 0.25);
   white-space: nowrap;
-}
-
-/* News / CA Alert */
-.badge-clean {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10px;
-  font-weight: 650;
-  color: var(--green);
-  background: rgba(62, 207, 142, 0.08);
-  border: 1px solid rgba(62, 207, 142, 0.25);
-  padding: 3px 8px;
-  border-radius: 12px;
 }
 
 /* Progress / R-Multiple */

@@ -44,20 +44,19 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
         <table className="factory-table">
           <thead>
             <tr>
-              <th style={{ width: '45px' }}>SNO</th>
-              <th style={{ width: '135px' }}>ENTRY</th>
-              <th style={{ width: '90px' }}>AGE</th>
-              <th style={{ width: '220px' }}>PAIR</th>
+              <th style={{ width: '48px' }}>SNO</th>
+              <th style={{ width: '145px' }}>ENTRY</th>
+              <th style={{ width: '85px' }}>AGE</th>
+              <th style={{ width: '180px' }}>PAIR</th>
               <th>EXPOSURE BALANCE</th>
-              <th style={{ width: '110px' }}>NEWS / CA ALERT</th>
-              <th style={{ width: '120px', textAlign: 'right' }}>PL</th>
-              <th style={{ width: '120px', textAlign: 'right' }}>PROGRESS</th>
+              <th style={{ width: '130px', textAlign: 'right' }}>PL</th>
+              <th style={{ width: '130px', textAlign: 'right' }}>PROGRESS</th>
             </tr>
           </thead>
           <tbody>
             {trades.length === 0 ? (
               <tr>
-                <td colSpan={8} className="empty">
+                <td colSpan={7} className="empty">
                   No active positions open.
                 </td>
               </tr>
@@ -87,10 +86,6 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                 const r = calcRMultiple(head.unrealized_pnl, totalNotional)
                 const tk = `${head.account_id}|${head.trade_id}`
 
-                // Month tag (e.g. JUN, AUG)
-                const dateObj = new Date(head.timestamp || head.fill_timestamp || Date.now())
-                const monthTag = new Intl.DateTimeFormat('en-US', { month: 'short' }).format(dateObj).toUpperCase()
-
                 return (
                   <tr key={tk} className="factory-row">
                     {/* 1. SNO */}
@@ -119,7 +114,6 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                       <div className="pair-badges">
                         <span className="badge-pair leg-a">{legA.symbol || '—'}</span>
                         <span className="badge-pair leg-b">{legB.symbol || '—'}</span>
-                        <span className="badge-pair month">{monthTag}</span>
                       </div>
                     </td>
 
@@ -146,17 +140,12 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                       </div>
                     </td>
 
-                    {/* 6. NEWS / CA ALERT */}
-                    <td className="alert-cell">
-                      <span className="badge-clean">✓ 7d clean</span>
-                    </td>
-
-                    {/* 7. PL */}
+                    {/* 6. PL */}
                     <td className={`right pl-cell ${pnlClass(head.unrealized_pnl)}`}>
                       {fmtPnl(head.unrealized_pnl)}
                     </td>
 
-                    {/* 8. PROGRESS */}
+                    {/* 7. PROGRESS */}
                     <td className="right progress-cell">
                       <div className="progress-wrapper">
                         <div className="progress-track">
