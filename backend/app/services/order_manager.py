@@ -2,6 +2,7 @@
 
 import logging
 import uuid
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -108,6 +109,7 @@ class OrderManager:
         self._session_factory = session_factory
         self._persistence = persistence
         self._committed_capital_provider = committed_capital_provider
+        self._account_router: StrategyAccountRouter | None = None
         if account_router is not None:
             self._account_router = account_router
         elif session_factory is not None:
@@ -198,7 +200,7 @@ class OrderManager:
             critical_count,
         )
 
-    def _apply_symbol_limits(self, limits: list) -> None:
+    def _apply_symbol_limits(self, limits: Sequence[PerSymbolLimitModel] | list) -> None:
         """Replace in-memory per-symbol money limits from DB rows."""
         self._rms_context.per_symbol_limits.clear()
         for limit in limits:
@@ -350,8 +352,23 @@ class OrderManager:
         )
         inbound_row = await self._persist_inbound_signal(signal, status=SIGNAL_STATUS_NEW)
         try:
-            return await self._process_signal_execution_inner(signal, inbound_row)
-        except ValueError as exc:
+            res = await self._process_signal_execution_inner(signal, inbound_row)
+            if res is not None and getattr(res, "all_rejected", False):
+                reasons = []
+                outcomes = getattr(res, "outcomes", [])
+                for o in outcomes:
+                    if getattr(o, "error", None):
+                        reasons.append(f"Account {o.ibkr_account}: {o.error}")
+                    elif getattr(o, "result", None) and getattr(o.result, "rms_result", None):
+                        r_res = o.result.rms_result
+                        if getattr(r_res, "reason", None):
+                            reasons.append(f"Account {o.ibkr_account}: {r_res.reason}")
+                rej_msg = "; ".join(reasons) if reasons else "Execution rejected by RMS/OMS policy"
+                await self._persist_inbound_signal(
+                    signal, status=SIGNAL_STATUS_REJECTED, reject_reason=rej_msg
+                )
+            return res
+        except Exception as exc:
             await self._persist_inbound_signal(
                 signal, status=SIGNAL_STATUS_REJECTED, reject_reason=str(exc)
             )
@@ -900,7 +917,10 @@ class OrderManager:
     async def _instrument_snapshot_for_legs(
         self, leg_specs: list[tuple[str | None, str | None]]
     ):
-        from app.db.repositories.instrument_repository import SnapshotInstrumentCatalog
+        from app.db.repositories.instrument_repository import (
+            DatabaseInstrumentCatalog,
+            SnapshotInstrumentCatalog,
+        )
         from app.instruments.execution_override import execution_instrument_type
         from app.instruments.models import InstrumentResolutionError
         from app.instruments.resolver import ibkr_sec_type
@@ -917,9 +937,8 @@ class OrderManager:
                 sec = ibkr_sec_type(execution_type)
             except InstrumentResolutionError:
                 continue
-            finder = getattr(catalog, "find_all_async", None)
-            if callable(finder):
-                rows.extend(await finder(symbol, sec))
+            if isinstance(catalog, DatabaseInstrumentCatalog):
+                rows.extend(await catalog.find_all_async(symbol, sec))
             else:
                 rows.extend(list(catalog.find_all(symbol, sec)))
         return SnapshotInstrumentCatalog(rows) if rows else SnapshotInstrumentCatalog([])

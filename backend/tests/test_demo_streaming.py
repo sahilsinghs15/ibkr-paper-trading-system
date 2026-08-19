@@ -294,4 +294,19 @@ async def test_load_signals_handles_none_session_safely() -> None:
     assert res == []
 
 
+@pytest.mark.asyncio
+async def test_signal_status_terminal_classification() -> None:
+    from app.db.repositories.signal_repository import (
+        SIGNAL_STATUS_NEW,
+        SIGNAL_STATUS_PROCESSED,
+        SIGNAL_STATUS_REJECTED,
+    )
+
+    statuses = [SIGNAL_STATUS_NEW, SIGNAL_STATUS_PROCESSED, SIGNAL_STATUS_REJECTED]
+    assert "PROCESSED" in statuses
+    assert "REJECTED" in statuses
+    assert "NEW" in statuses
+
+
+
 

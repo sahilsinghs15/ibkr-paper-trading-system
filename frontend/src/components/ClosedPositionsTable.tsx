@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { groupLegs, usePnlStore } from '../store/pnlStore'
 import {
   calcAgeDays,
@@ -9,15 +9,11 @@ import {
   num,
   pnlClass,
 } from '../utils/format'
-import { Pagination } from './Pagination'
 
 export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string }) {
   const closed = usePnlStore((s) => s.closed)
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
-
-  const [currentPage, setCurrentPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
 
   const filteredClosed = useMemo(() => {
     if (!cleanFilter) return closed
@@ -32,21 +28,16 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
 
   const closedTrades = useMemo(() => [...groupLegs(filteredClosed).values()], [filteredClosed])
 
-  const paginatedTrades = useMemo(() => {
-    const start = (currentPage - 1) * pageSize
-    return closedTrades.slice(start, start + pageSize)
-  }, [closedTrades, currentPage, pageSize])
-
   return (
     <section className="factory-panel-section">
       <div className="section-h factory-h">
         <div className="factory-title-block">
-          <h2>FACTORY PANEL — RECENTLY CLOSED POSITIONS</h2>
+          <h2>FACTORY PANEL — RECENTLY CLOSED POSITIONS ({closedTrades.length})</h2>
           <span className="factory-subtitle">MODEL BLUE X-SERIES · HISTORICAL TRADES</span>
         </div>
       </div>
 
-      <div className="board factory-board">
+      <div className="board factory-board scrollable-table-container">
         <table className="factory-table">
           <thead>
             <tr>
@@ -68,7 +59,7 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
                 </td>
               </tr>
             ) : (
-              paginatedTrades.map((legs, idx) => {
+              closedTrades.map((legs, idx) => {
                 const head = legs[0]
                 const legA = legs[0]
                 const legB = legs[1] || legs[0]
@@ -93,7 +84,7 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
                 const closedStr = fmtFactoryDate(head.fill_timestamp || head.timestamp, displayTz)
                 const r = calcRMultiple(head.realized_pnl, totalNotional)
                 const tk = `${head.account_id}|${head.trade_id}`
-                const rowSno = (currentPage - 1) * pageSize + idx + 1
+                const rowSno = idx + 1
 
                 return (
                   <tr key={tk} className="factory-row">
@@ -178,14 +169,6 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
           </tbody>
         </table>
       </div>
-
-      <Pagination
-        currentPage={currentPage}
-        totalItems={closedTrades.length}
-        pageSize={pageSize}
-        onPageChange={setCurrentPage}
-        onPageSizeChange={setPageSize}
-      />
     </section>
   )
 }

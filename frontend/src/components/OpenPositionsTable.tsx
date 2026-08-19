@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { groupLegs, usePnlStore } from '../store/pnlStore'
 import {
   calcAgeDays,
@@ -10,16 +10,12 @@ import {
   pnlClass,
   streamHint,
 } from '../utils/format'
-import { Pagination } from './Pagination'
 
 export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }) {
   const active = usePnlStore((s) => s.active)
   const streamState = usePnlStore((s) => s.streamState)
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
-
-  const [currentPage, setCurrentPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
 
   const filteredActive = useMemo(() => {
     if (!cleanFilter) return active
@@ -34,22 +30,17 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
 
   const trades = useMemo(() => [...groupLegs(filteredActive).values()], [filteredActive])
 
-  const paginatedTrades = useMemo(() => {
-    const start = (currentPage - 1) * pageSize
-    return trades.slice(start, start + pageSize)
-  }, [trades, currentPage, pageSize])
-
   return (
     <section className="factory-panel-section">
       <div className="section-h factory-h">
         <div className="factory-title-block">
-          <h2>FACTORY PANEL — OPEN POSITIONS</h2>
+          <h2>FACTORY PANEL — OPEN POSITIONS ({trades.length})</h2>
           <span className="factory-subtitle">MODEL BLUE X-SERIES · V1.1</span>
         </div>
         <span className="muted">{streamHint(streamState)}</span>
       </div>
 
-      <div className="board factory-board">
+      <div className="board factory-board scrollable-table-container">
         <table className="factory-table">
           <thead>
             <tr>
@@ -70,7 +61,7 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                 </td>
               </tr>
             ) : (
-              paginatedTrades.map((legs, idx) => {
+              trades.map((legs, idx) => {
                 const head = legs[0]
                 const legA = legs[0]
                 const legB = legs[1] || legs[0]
@@ -94,7 +85,7 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                 const entryStr = fmtFactoryDate(head.timestamp || head.fill_timestamp, displayTz)
                 const r = calcRMultiple(head.unrealized_pnl, totalNotional)
                 const tk = `${head.account_id}|${head.trade_id}`
-                const rowSno = (currentPage - 1) * pageSize + idx + 1
+                const rowSno = idx + 1
 
                 return (
                   <tr key={tk} className="factory-row">
@@ -176,14 +167,6 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
           </tbody>
         </table>
       </div>
-
-      <Pagination
-        currentPage={currentPage}
-        totalItems={trades.length}
-        pageSize={pageSize}
-        onPageChange={setCurrentPage}
-        onPageSizeChange={setPageSize}
-      />
     </section>
   )
 }
