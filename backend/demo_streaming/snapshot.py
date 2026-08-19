@@ -11,6 +11,7 @@ from app.db.models.account import AccountModel
 from app.db.models.basket import BasketModel
 from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
+from app.db.models.signal import SignalModel
 
 RISK_OPEN = "OPEN"
 RISK_CLOSED = "CLOSED"
@@ -112,9 +113,10 @@ def _leg_payload(
         if (position.risk_state == RISK_CLOSED or position.realised_pnl != Decimal(0))
         else None
     )
+    entry_ts = position.opened_at if getattr(position, "opened_at", None) is not None else timestamp
     market_status = "UNAVAILABLE"
     payload = {
-        "timestamp": timestamp.isoformat(),
+        "timestamp": entry_ts.isoformat(),
         "account_id": position.account_id,
         "ibkr_account": account.ibkr_account,
         "account_name": account.name,
@@ -255,3 +257,37 @@ async def load_orders(session: AsyncSession) -> dict[tuple[int, str], list[Order
             continue
         grouped.setdefault((row.account_id, row.trade_id), []).append(row)
     return grouped
+
+
+async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str, Any]]:
+    if session is None or not hasattr(session, "execute"):
+        return []
+    rows = (
+        await session.execute(
+            select(SignalModel, AccountModel.ibkr_account)
+            .outerjoin(AccountModel, AccountModel.id == SignalModel.account_id)
+            .order_by(SignalModel.received_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    signals: list[dict[str, Any]] = []
+    for sig, ibkr_account in rows:
+        signals.append(
+            {
+                "id": sig.id,
+                "signal_id": sig.signal_id,
+                "trade_id": sig.trade_id,
+                "strategy_id": sig.strategy_id,
+                "action": sig.action,
+                "pair": sig.pair,
+                "side": sig.side,
+                "status": sig.status,
+                "account_id": sig.account_id,
+                "ibkr_account": ibkr_account,
+                "reject_reason": sig.reject_reason,
+                "received_at": sig.received_at.isoformat() if sig.received_at else None,
+                "processed_at": sig.processed_at.isoformat() if sig.processed_at else None,
+                "raw_payload": sig.raw_payload,
+            }
+        )
+    return signals

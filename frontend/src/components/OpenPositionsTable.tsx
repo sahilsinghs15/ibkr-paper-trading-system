@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { groupLegs, usePnlStore } from '../store/pnlStore'
 import {
   calcAgeDays,
@@ -10,12 +10,16 @@ import {
   pnlClass,
   streamHint,
 } from '../utils/format'
+import { Pagination } from './Pagination'
 
 export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }) {
   const active = usePnlStore((s) => s.active)
   const streamState = usePnlStore((s) => s.streamState)
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
+
+  const [currentPage, setCurrentPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
 
   const filteredActive = useMemo(() => {
     if (!cleanFilter) return active
@@ -28,7 +32,12 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
     return out
   }, [active, cleanFilter])
 
-  const trades = [...groupLegs(filteredActive).values()]
+  const trades = useMemo(() => [...groupLegs(filteredActive).values()], [filteredActive])
+
+  const paginatedTrades = useMemo(() => {
+    const start = (currentPage - 1) * pageSize
+    return trades.slice(start, start + pageSize)
+  }, [trades, currentPage, pageSize])
 
   return (
     <section className="factory-panel-section">
@@ -61,7 +70,7 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                 </td>
               </tr>
             ) : (
-              trades.map((legs, idx) => {
+              paginatedTrades.map((legs, idx) => {
                 const head = legs[0]
                 const legA = legs[0]
                 const legB = legs[1] || legs[0]
@@ -85,11 +94,12 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                 const entryStr = fmtFactoryDate(head.timestamp || head.fill_timestamp, displayTz)
                 const r = calcRMultiple(head.unrealized_pnl, totalNotional)
                 const tk = `${head.account_id}|${head.trade_id}`
+                const rowSno = (currentPage - 1) * pageSize + idx + 1
 
                 return (
                   <tr key={tk} className="factory-row">
                     {/* 1. SNO */}
-                    <td className="mono dim sno">{idx + 1}</td>
+                    <td className="mono dim sno">{rowSno}</td>
 
                     {/* 2. ENTRY */}
                     <td className="mono entry-cell">{entryStr}</td>
@@ -166,6 +176,14 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
           </tbody>
         </table>
       </div>
+
+      <Pagination
+        currentPage={currentPage}
+        totalItems={trades.length}
+        pageSize={pageSize}
+        onPageChange={setCurrentPage}
+        onPageSizeChange={setPageSize}
+      />
     </section>
   )
 }

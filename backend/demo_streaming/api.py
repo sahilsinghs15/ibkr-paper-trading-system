@@ -21,6 +21,7 @@ from demo_streaming.snapshot import (
     load_closed_position_rows,
     load_orders,
     load_position_rows,
+    load_signals,
     position_leg_payloads,
 )
 from demo_streaming.stream import PositionStream
@@ -125,6 +126,12 @@ def create_demo_app(
                 )
             )
         return JSONResponse({"closed_positions": payload})
+
+    @app.get("/demo/signals")
+    async def signals(limit: int = 50) -> JSONResponse:
+        async with session_factory() as session:
+            sig_list = await load_signals(session, limit=limit)
+        return JSONResponse({"signals": sig_list})
 
     @app.get("/demo/stream")
     async def sse(request: Request) -> StreamingResponse:

@@ -14,6 +14,7 @@ from demo_streaming.snapshot import (
     load_baskets,
     load_orders,
     load_position_rows,
+    load_signals,
     position_leg_payloads,
 )
 from demo_streaming.stream import PositionStream
@@ -37,24 +38,37 @@ class PositionBridge:
         self._fingerprints: dict[tuple[int, str, str], tuple] = {}
         self._status: dict[tuple[int, str, str], str] = {}
         self._last_payload: dict[tuple[int, str, str], dict] = {}
+        self._last_signal_id = 0
         self._baseline_ready = False
 
     async def restore_baseline(self) -> None:
         """Load current rows so a bridge restart does not re-emit OPEN for existing trades."""
         async with self._session_factory() as session:
             payloads = await self._collect(session)
+            sigs = await load_signals(session, limit=1)
+            if sigs:
+                self._last_signal_id = int(sigs[0].get("id") or 0)
         for payload in payloads:
             key = _key(payload)
             self._fingerprints[key] = fingerprint(payload)
             self._status[key] = str(payload.get("status") or "")
             self._last_payload[key] = payload
         self._baseline_ready = True
-        logger.info("Demo stream baseline restored: %d legs", len(self._fingerprints))
+        logger.info("Demo stream baseline restored: %d legs, last_signal_id=%d", len(self._fingerprints), self._last_signal_id)
 
     async def poll_once(self) -> list[dict]:
         async with self._session_factory() as session:
             payloads = await self._collect(session)
+            sigs = await load_signals(session, limit=20)
         emitted: list[dict] = []
+        for sig in reversed(sigs):
+            sig_id = int(sig.get("id") or 0)
+            if sig_id > self._last_signal_id:
+                record = {"event": "SIGNAL_RECEIVED", **sig}
+                await self._stream.xadd(record)
+                self._last_signal_id = max(self._last_signal_id, sig_id)
+                emitted.append(record)
+                logger.info("Demo stream published signal event: signal_id=%s pair=%s", sig.get("signal_id"), sig.get("pair"))
         seen: set[tuple[int, str, str]] = set()
         for payload in payloads:
             key = _key(payload)

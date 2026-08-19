@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import axios from 'axios'
 import type { PositionLeg, PositionsSnapshot } from '../types/position'
 import { usePnlStore } from '../store/pnlStore'
+import { useSignalStore } from '../store/signalStore'
 
 async function loadSnapshot(
   apply: (row: PositionLeg) => void,
@@ -15,6 +16,7 @@ async function loadSnapshot(
       headers: { 'Cache-Control': 'no-store' },
     }).catch(() => ({ data: { closed_positions: [] } })),
   ])
+  useSignalStore.getState().fetchSignals()
   clearActive()
   for (const row of openRes.data.positions || []) {
     apply(row)
@@ -55,7 +57,12 @@ export function usePnlStream(): void {
 
       source.onmessage = (ev) => {
         try {
-          apply(JSON.parse(ev.data) as PositionLeg)
+          const data = JSON.parse(ev.data) as Record<string, unknown>
+          if (data && data.event === 'SIGNAL_RECEIVED') {
+            useSignalStore.getState().handleSignalEvent(data)
+          } else {
+            apply(data as unknown as PositionLeg)
+          }
         } catch (err) {
           console.warn(err)
         }
