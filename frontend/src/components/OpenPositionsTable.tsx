@@ -44,13 +44,13 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
         <table className="factory-table">
           <thead>
             <tr>
-              <th style={{ width: '48px' }}>SNO</th>
-              <th style={{ width: '145px' }}>ENTRY</th>
-              <th style={{ width: '85px' }}>AGE</th>
-              <th style={{ width: '180px' }}>PAIR</th>
-              <th>EXPOSURE BALANCE</th>
-              <th style={{ width: '130px', textAlign: 'right' }}>PL</th>
-              <th style={{ width: '130px', textAlign: 'right' }}>PROGRESS</th>
+              <th style={{ width: '4%' }}>SNO</th>
+              <th style={{ width: '14%' }}>ENTRY</th>
+              <th style={{ width: '7%' }}>AGE</th>
+              <th style={{ width: '15%' }}>PAIR</th>
+              <th style={{ width: '36%' }}>EXPOSURE BALANCE</th>
+              <th style={{ width: '12%', textAlign: 'right' }}>PL</th>
+              <th style={{ width: '12%', textAlign: 'right' }}>PROGRESS</th>
             </tr>
           </thead>
           <tbody>

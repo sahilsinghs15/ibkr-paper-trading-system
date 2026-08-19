@@ -520,7 +520,8 @@ body,
 .exposure-box {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
+  width: 100%;
 }
 
 .exp-legs {
@@ -528,7 +529,7 @@ body,
   flex-direction: column;
   gap: 3px;
   flex: 1;
-  max-width: 220px;
+  width: 100%;
 }
 
 .exp-leg {
