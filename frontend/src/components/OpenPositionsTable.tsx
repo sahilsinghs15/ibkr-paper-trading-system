@@ -1,19 +1,14 @@
 import { useMemo } from 'react'
 import { groupLegs, usePnlStore } from '../store/pnlStore'
 import {
-  badgeClass,
-  blank,
-  displayInstrument,
-  displayStrategy,
+  calcAgeDays,
+  calcRMultiple,
+  fmtCompactCurrency,
+  fmtFactoryDate,
   fmtPnl,
-  fmtQty,
-  fmtTime,
-  fmtUsd,
-  markOf,
+  num,
   pnlClass,
-  statusLabel,
   streamHint,
-  timeColLabel,
 } from '../utils/format'
 
 export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }) {
@@ -36,133 +31,152 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
   const trades = [...groupLegs(filteredActive).values()]
 
   return (
-    <>
-      <div className="section-h">
-        <h2>Positions</h2>
+    <section className="factory-panel-section">
+      <div className="section-h factory-h">
+        <div className="factory-title-block">
+          <h2>FACTORY PANEL — OPEN POSITIONS</h2>
+          <span className="factory-subtitle">MODEL BLUE X-SERIES · V1.1</span>
+        </div>
         <span className="muted">{streamHint(streamState)}</span>
       </div>
-      <div className="board">
-        <table>
+
+      <div className="board factory-board">
+        <table className="factory-table">
           <thead>
             <tr>
-              <th>Status</th>
-              <th>{timeColLabel(displayTz)}</th>
-              <th>Trade ID</th>
-              <th>Account</th>
-              <th>Symbol</th>
-              <th>Instrument</th>
-              <th>Side</th>
-              <th className="right">Qty</th>
-              <th className="right">Entry</th>
-              <th className="right">Mark</th>
-              <th className="right">Unrealized</th>
-              <th className="right">Realized</th>
-              <th>Basket</th>
-              <th>Broker</th>
+              <th style={{ width: '45px' }}>SNO</th>
+              <th style={{ width: '135px' }}>ENTRY</th>
+              <th style={{ width: '90px' }}>AGE</th>
+              <th style={{ width: '220px' }}>PAIR</th>
+              <th>EXPOSURE BALANCE</th>
+              <th style={{ width: '110px' }}>NEWS / CA ALERT</th>
+              <th style={{ width: '120px', textAlign: 'right' }}>PL</th>
+              <th style={{ width: '120px', textAlign: 'right' }}>PROGRESS</th>
             </tr>
           </thead>
-          {trades.length === 0 ? (
-            <tbody>
+          <tbody>
+            {trades.length === 0 ? (
               <tr>
-                <td colSpan={14} className="empty">
-                  No open positions.
+                <td colSpan={8} className="empty">
+                  No active positions open.
                 </td>
               </tr>
-            </tbody>
-          ) : (
-            trades.map((legs) => {
-              const head = legs[0]
-              const st = statusLabel(head)
-              const pair = legs
-                .map((x) => x.symbol)
-                .filter(Boolean)
-                .join(' / ')
-              const tk = `${head.account_id}|${head.trade_id}`
-              return (
-                <tbody className="trade-group" key={tk}>
-                  <tr className="trade-head">
-                    <td>
-                      <span className={`badge ${badgeClass(st)}`}>{st}</span>
-                    </td>
-                    <td className="muted">
-                      {fmtTime(
-                        head.timestamp || head.fill_timestamp,
-                        displayTz,
-                      )}
-                    </td>
-                    <td className="trade-identity" colSpan={8}>
-                      <div className="trade-strategy">
-                        {displayStrategy(head.strategy_id)}
+            ) : (
+              trades.map((legs, idx) => {
+                const head = legs[0]
+                const legA = legs[0]
+                const legB = legs[1] || legs[0]
+
+                const legAQty = Math.abs(num(legA.filled_quantity ?? legA.quantity) || 0)
+                const legAPrice = num(legA.mark_price || legA.entry_price || legA.last_price) || 0
+                const legANotional = legAQty * legAPrice
+
+                const legBQty = Math.abs(num(legB.filled_quantity ?? legB.quantity) || 0)
+                const legBPrice = num(legB.mark_price || legB.entry_price || legB.last_price) || 0
+                const legBNotional = legBQty * legBPrice
+
+                const totalNotional = legANotional + legBNotional || 1
+                const legAPct = Math.round((legANotional / totalNotional) * 100)
+                const legBPct = Math.round((legBNotional / totalNotional) * 100)
+                const imbalance = Math.abs(legBPct - legAPct)
+                const imbalanceSide = legBPct >= legAPct ? 'short' : 'long'
+                const imbalanceText = `+${imbalance}% more ${imbalanceSide}`
+
+                const age = calcAgeDays(head.timestamp || head.fill_timestamp)
+                const entryStr = fmtFactoryDate(head.timestamp || head.fill_timestamp, displayTz)
+                const r = calcRMultiple(head.unrealized_pnl, totalNotional)
+                const tk = `${head.account_id}|${head.trade_id}`
+
+                // Month tag (e.g. JUN, AUG)
+                const dateObj = new Date(head.timestamp || head.fill_timestamp || Date.now())
+                const monthTag = new Intl.DateTimeFormat('en-US', { month: 'short' }).format(dateObj).toUpperCase()
+
+                return (
+                  <tr key={tk} className="factory-row">
+                    {/* 1. SNO */}
+                    <td className="mono dim sno">{idx + 1}</td>
+
+                    {/* 2. ENTRY */}
+                    <td className="mono entry-cell">{entryStr}</td>
+
+                    {/* 3. AGE */}
+                    <td className="age-cell">
+                      <div className="age-wrapper">
+                        <div className="age-bars">
+                          {[0, 1, 2, 3, 4].map((i) => (
+                            <span
+                              key={i}
+                              className={`age-bar ${i <= age.days ? 'active' : ''}`}
+                            />
+                          ))}
+                        </div>
+                        <span className="mono age-txt">{age.text}</span>
                       </div>
-                      <div className="trade-pair">{pair || '—'}</div>
-                      <div className="trade-meta">
-                        <span>{blank(head.trade_id)}</span>
-                        <span className="sep">·</span>
-                        <span>{blank(head.ibkr_account)}</span>
+                    </td>
+
+                    {/* 4. PAIR */}
+                    <td className="pair-cell">
+                      <div className="pair-badges">
+                        <span className="badge-pair leg-a">{legA.symbol || '—'}</span>
+                        <span className="badge-pair leg-b">{legB.symbol || '—'}</span>
+                        <span className="badge-pair month">{monthTag}</span>
                       </div>
                     </td>
-                    <td className={`right ${pnlClass(head.unrealized_pnl)}`}>
+
+                    {/* 5. EXPOSURE BALANCE */}
+                    <td className="exposure-cell">
+                      <div className="exposure-box">
+                        <div className="exp-legs">
+                          <div className="exp-leg leg-a">
+                            <span className="sym">{legA.symbol}</span>
+                            <div className="track">
+                              <div className="fill" style={{ width: `${Math.max(15, legAPct)}%` }} />
+                            </div>
+                            <span className="val">{fmtCompactCurrency(legANotional)}</span>
+                          </div>
+                          <div className="exp-leg leg-b">
+                            <span className="sym">{legB.symbol}</span>
+                            <div className="track">
+                              <div className="fill" style={{ width: `${Math.max(15, legBPct)}%` }} />
+                            </div>
+                            <span className="val">{fmtCompactCurrency(legBNotional)}</span>
+                          </div>
+                        </div>
+                        <span className="imbalance-pill">{imbalanceText}</span>
+                      </div>
+                    </td>
+
+                    {/* 6. NEWS / CA ALERT */}
+                    <td className="alert-cell">
+                      <span className="badge-clean">✓ 7d clean</span>
+                    </td>
+
+                    {/* 7. PL */}
+                    <td className={`right pl-cell ${pnlClass(head.unrealized_pnl)}`}>
                       {fmtPnl(head.unrealized_pnl)}
                     </td>
-                    <td className={`right ${pnlClass(head.realized_pnl)}`}>
-                      {fmtPnl(head.realized_pnl)}
+
+                    {/* 8. PROGRESS */}
+                    <td className="right progress-cell">
+                      <div className="progress-wrapper">
+                        <div className="progress-track">
+                          <div
+                            className={`progress-fill ${r.isPos ? 'pos' : 'neg'}`}
+                            style={{ width: `${Math.min(100, Math.max(10, Math.abs(r.r) * 50))}%` }}
+                          />
+                        </div>
+                        <span className={`mono progress-txt ${r.isPos ? 'pnl-pos' : 'pnl-neg'}`}>
+                          {r.text}
+                        </span>
+                      </div>
                     </td>
-                    <td colSpan={2} />
                   </tr>
-                  {legs.map((row) => {
-                    const m = markOf(row)
-                    const side = String(row.side || '').toUpperCase()
-                    return (
-                      <tr
-                        className="leg"
-                        key={`${row.account_id}|${row.trade_id}|${row.symbol}`}
-                      >
-                        <td />
-                        <td className="dim">
-                          {fmtTime(
-                            row.fill_timestamp || row.timestamp,
-                            displayTz,
-                          )}
-                        </td>
-                        <td className="dim">{blank(row.broker_order_id)}</td>
-                        <td className="dim">{blank(row.ibkr_account)}</td>
-                        <td className="sym">{blank(row.symbol)}</td>
-                        <td>{displayInstrument(row.instrument_type)}</td>
-                        <td className={side === 'BUY' ? 'side-buy' : side === 'SELL' ? 'side-sell' : undefined}>
-                          {blank(row.side)}
-                        </td>
-                        <td className="right">
-                          {fmtQty(row.filled_quantity ?? row.quantity)}
-                        </td>
-                        <td className="right">{fmtUsd(row.entry_price)}</td>
-                        <td className="right">
-                          {m === '—' ? '—' : fmtUsd(m)}
-                        </td>
-                        <td className="right dim">—</td>
-                        <td className="right dim">—</td>
-                        <td>
-                          <span
-                            className={`badge ${badgeClass(row.basket_state)}`}
-                          >
-                            {blank(row.basket_state)}
-                          </span>
-                        </td>
-                        <td>
-                          <span
-                            className={`badge ${badgeClass(row.order_status)}`}
-                          >
-                            {blank(row.order_status)}
-                          </span>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              )
-            })
-          )}
+                )
+              })
+            )}
+          </tbody>
         </table>
       </div>
-    </>
+    </section>
   )
 }

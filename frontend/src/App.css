@@ -254,6 +254,391 @@ body,
   color: var(--muted);
 }
 
+/* Factory Panel - Institutional Dark Terminal Styles */
+
+.factory-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.factory-kpi {
+  background: #0b0e14;
+  border: 1px solid #1a2233;
+  border-radius: 6px;
+  padding: 12px 14px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 84px;
+}
+
+.factory-kpi label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.factory-kpi .v {
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 700;
+  margin: 4px 0;
+}
+
+.kpi-accent-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+}
+
+.kpi-accent-bar.blue {
+  background: #3b82f6;
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
+}
+
+.kpi-accent-bar.red {
+  background: #ef6b73;
+  box-shadow: 0 0 8px rgba(239, 107, 115, 0.6);
+}
+
+.kpi-subtext {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+}
+
+.hedge-kpi .hedge-h {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.badge-pill {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.badge-pill.red {
+  background: rgba(239, 107, 115, 0.15);
+  color: var(--red);
+  border: 1px solid rgba(239, 107, 115, 0.3);
+}
+
+.badge-pill.green {
+  background: rgba(62, 207, 142, 0.15);
+  color: var(--green);
+  border: 1px solid rgba(62, 207, 142, 0.3);
+}
+
+.hedge-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.hedge-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  font-family: var(--mono);
+}
+
+.hedge-bar-row .lbl {
+  width: 36px;
+  color: var(--dim);
+  font-weight: 700;
+  font-size: 9px;
+}
+
+.hedge-bar-row .bar-track {
+  flex: 1;
+  height: 6px;
+  background: #141a26;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.hedge-bar-row .bar-fill.long {
+  background: var(--green);
+  height: 100%;
+}
+
+.hedge-bar-row .bar-fill.short {
+  background: var(--red);
+  height: 100%;
+}
+
+.hedge-bar-row .val {
+  color: var(--ink);
+  font-size: 10px;
+  width: 50px;
+  text-align: right;
+}
+
+/* Factory Panel - Table Styles */
+
+.factory-panel-section {
+  margin-top: 12px;
+}
+
+.factory-h {
+  margin-bottom: 10px;
+}
+
+.factory-title-block h2 {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.factory-subtitle {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--dim);
+}
+
+.factory-board {
+  background: #090c12;
+  border: 1px solid #161d2b;
+  border-radius: 6px;
+}
+
+.factory-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.factory-table thead th {
+  background: #0d121a;
+  border-bottom: 1px solid #1a2233;
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 10px 12px;
+  text-transform: uppercase;
+}
+
+.factory-row {
+  border-bottom: 1px solid #141a26;
+  transition: background 0.15s ease;
+}
+
+.factory-row:hover {
+  background: #0e1420;
+}
+
+.factory-row td {
+  padding: 10px 12px;
+  vertical-align: middle;
+  font-size: 11px;
+}
+
+.sno {
+  color: var(--dim);
+  font-weight: 650;
+}
+
+.entry-cell {
+  color: var(--ink);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.age-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.age-bars {
+  display: flex;
+  gap: 2px;
+}
+
+.age-bar {
+  width: 3px;
+  height: 10px;
+  background: #1e2636;
+  border-radius: 1px;
+}
+
+.age-bar.active {
+  background: var(--amber);
+}
+
+.age-txt {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+/* Pair Badges */
+.pair-badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.badge-pair {
+  display: inline-block;
+  padding: 3px 7px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.badge-pair.leg-a {
+  background: rgba(62, 207, 142, 0.12);
+  color: var(--green);
+  border: 1px solid rgba(62, 207, 142, 0.3);
+}
+
+.badge-pair.leg-b {
+  background: rgba(239, 107, 115, 0.12);
+  color: var(--red);
+  border: 1px solid rgba(239, 107, 115, 0.3);
+}
+
+.badge-pair.month {
+  background: rgba(125, 138, 160, 0.1);
+  color: var(--dim);
+  border: 1px solid var(--line);
+  font-size: 9px;
+}
+
+/* Exposure Balance */
+.exposure-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.exp-legs {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  max-width: 220px;
+}
+
+.exp-leg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.exp-leg .sym {
+  width: 70px;
+  color: var(--ink);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.exp-leg .track {
+  flex: 1;
+  height: 12px;
+  background: #121722;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.exp-leg.leg-a .fill {
+  background: rgba(62, 207, 142, 0.25);
+  border-right: 2px solid var(--green);
+  height: 100%;
+}
+
+.exp-leg.leg-b .fill {
+  background: rgba(239, 107, 115, 0.25);
+  border-right: 2px solid var(--red);
+  height: 100%;
+}
+
+.exp-leg .val {
+  width: 50px;
+  text-align: right;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.imbalance-pill {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: rgba(239, 107, 115, 0.1);
+  color: var(--red);
+  border: 1px solid rgba(239, 107, 115, 0.25);
+  white-space: nowrap;
+}
+
+/* News / CA Alert */
+.badge-clean {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 650;
+  color: var(--green);
+  background: rgba(62, 207, 142, 0.08);
+  border: 1px solid rgba(62, 207, 142, 0.25);
+  padding: 3px 8px;
+  border-radius: 12px;
+}
+
+/* Progress / R-Multiple */
+.progress-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.progress-track {
+  width: 70px;
+  height: 6px;
+  background: #141a26;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill.pos {
+  background: var(--green);
+  height: 100%;
+}
+
+.progress-fill.neg {
+  background: var(--red);
+  height: 100%;
+}
+
+.progress-txt {
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .section-h {
   display: flex;
   justify-content: space-between;

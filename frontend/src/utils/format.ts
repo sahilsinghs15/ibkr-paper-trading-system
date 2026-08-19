@@ -250,3 +250,56 @@ export function saveTimezone(tz: DisplayTimezone): void {
     /* ignore */
   }
 }
+
+export function fmtFactoryDate(
+  iso: string | null | undefined,
+  tz: DisplayTimezone,
+): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  const dayName = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz }).format(d)
+  const monthName = new Intl.DateTimeFormat('en-US', { month: 'short', timeZone: tz }).format(d)
+  const dayNum = new Intl.DateTimeFormat('en-US', { day: '2-digit', timeZone: tz }).format(d)
+  const timeStr = new Intl.DateTimeFormat('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: tz,
+  }).format(d)
+  return `${dayNum}-${monthName} ${dayName} ${timeStr}`
+}
+
+export function calcAgeDays(iso: string | null | undefined): { days: number; text: string } {
+  if (!iso) return { days: 0, text: '0d' }
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return { days: 0, text: '0d' }
+  const diffMs = Math.max(0, Date.now() - d.getTime())
+  const days = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+  return { days, text: `${days}d` }
+}
+
+export function fmtCompactCurrency(v: unknown): string {
+  const n = num(v)
+  if (n === null) return '—'
+  const abs = Math.abs(n)
+  let text = ''
+  if (abs >= 1_000_000) {
+    text = (abs / 1_000_000).toFixed(2) + 'M'
+  } else if (abs >= 1_000) {
+    text = (abs / 1_000).toFixed(1) + 'K'
+  } else {
+    text = abs.toFixed(0)
+  }
+  return n < 0 ? '-$' + text : '$' + text
+}
+
+export function calcRMultiple(pnl: unknown, notional: unknown): { r: number; text: string; isPos: boolean } {
+  const p = num(pnl) || 0
+  const n = num(notional) || 10000
+  const r = n > 0 ? p / (n * 0.01) : 0
+  const abs = Math.abs(r).toFixed(2)
+  const isPos = p >= 0
+  const text = isPos ? `▲ +${abs} R` : `▼ -${abs} R`
+  return { r, text, isPos }
+}
