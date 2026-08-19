@@ -264,14 +264,13 @@ async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str,
         return []
     rows = (
         await session.execute(
-            select(SignalModel, AccountModel.ibkr_account)
-            .outerjoin(AccountModel, AccountModel.id == SignalModel.account_id)
+            select(SignalModel)
             .order_by(SignalModel.received_at.desc())
             .limit(limit)
         )
-    ).all()
+    ).scalars().all()
     signals: list[dict[str, Any]] = []
-    for sig, ibkr_account in rows:
+    for sig in rows:
         signals.append(
             {
                 "id": sig.id,
@@ -282,8 +281,6 @@ async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str,
                 "pair": sig.pair,
                 "side": sig.side,
                 "status": sig.status,
-                "account_id": sig.account_id,
-                "ibkr_account": ibkr_account,
                 "reject_reason": sig.reject_reason,
                 "received_at": sig.received_at.isoformat() if sig.received_at else None,
                 "processed_at": sig.processed_at.isoformat() if sig.processed_at else None,
