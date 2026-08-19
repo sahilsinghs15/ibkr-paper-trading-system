@@ -38,6 +38,7 @@ class PositionBridge:
         self._fingerprints: dict[tuple[int, str, str], tuple] = {}
         self._status: dict[tuple[int, str, str], str] = {}
         self._last_payload: dict[tuple[int, str, str], dict] = {}
+        self._signal_status: dict[int, str] = {}
         self._last_signal_id = 0
         self._baseline_ready = False
 
@@ -45,9 +46,12 @@ class PositionBridge:
         """Load current rows so a bridge restart does not re-emit OPEN for existing trades."""
         async with self._session_factory() as session:
             payloads = await self._collect(session)
-            sigs = await load_signals(session, limit=1)
-            if sigs:
-                self._last_signal_id = int(sigs[0].get("id") or 0)
+            sigs = await load_signals(session, limit=50)
+            for s in sigs:
+                s_id = int(s.get("id") or 0)
+                if s_id > 0:
+                    self._signal_status[s_id] = str(s.get("status") or "")
+                    self._last_signal_id = max(self._last_signal_id, s_id)
         for payload in payloads:
             key = _key(payload)
             self._fingerprints[key] = fingerprint(payload)
@@ -59,16 +63,26 @@ class PositionBridge:
     async def poll_once(self) -> list[dict]:
         async with self._session_factory() as session:
             payloads = await self._collect(session)
-            sigs = await load_signals(session, limit=20)
+            sigs = await load_signals(session, limit=50)
         emitted: list[dict] = []
         for sig in reversed(sigs):
             sig_id = int(sig.get("id") or 0)
-            if sig_id > self._last_signal_id:
+            if sig_id <= 0:
+                continue
+            cur_status = str(sig.get("status") or "")
+            prev_status = self._signal_status.get(sig_id)
+            if sig_id > self._last_signal_id or prev_status != cur_status:
                 record = {"event": "SIGNAL_RECEIVED", **sig}
                 await self._stream.xadd(record)
                 self._last_signal_id = max(self._last_signal_id, sig_id)
+                self._signal_status[sig_id] = cur_status
                 emitted.append(record)
-                logger.info("Demo stream published signal event: signal_id=%s pair=%s", sig.get("signal_id"), sig.get("pair"))
+                logger.info(
+                    "Demo stream published signal event: signal_id=%s status=%s pair=%s",
+                    sig.get("signal_id"),
+                    cur_status,
+                    sig.get("pair"),
+                )
         seen: set[tuple[int, str, str]] = set()
         for payload in payloads:
             key = _key(payload)

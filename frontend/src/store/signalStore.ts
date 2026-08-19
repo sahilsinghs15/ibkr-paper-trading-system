@@ -65,9 +65,16 @@ export const useSignalStore = create<SignalState>((set) => ({
     }
 
     set((state) => {
-      // Avoid duplicate signal_id
-      if (state.signals.some((s) => s.signal_id === newSig.signal_id)) {
-        return state
+      const existingIdx = state.signals.findIndex(
+        (s) => s.signal_id === newSig.signal_id || (newSig.id > 0 && s.id === newSig.id)
+      )
+      if (existingIdx >= 0) {
+        const updated = [...state.signals]
+        updated[existingIdx] = {
+          ...updated[existingIdx],
+          ...newSig,
+        }
+        return { signals: updated }
       }
       return { signals: [newSig, ...state.signals].slice(0, 100) }
     })
