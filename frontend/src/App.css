@@ -524,12 +524,44 @@ thead th {
   color: var(--dim);
 }
 
-.settings-account-id {
-  margin: 2px 0 0;
+.settings-header-banner {
+  background: linear-gradient(180deg, #0e121a 0%, #090c10 100%);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 14px 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.settings-header-title h1 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.settings-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.execution-pipeline-badge {
+  background: rgba(110, 168, 255, 0.08);
+  border: 1px solid rgba(110, 168, 255, 0.2);
+  border-radius: 4px;
+  padding: 8px 12px;
   font-family: var(--mono);
-  font-size: 16px;
-  font-weight: 650;
+  font-size: 11px;
   color: var(--blue);
+  margin: 10px 0;
 }
 
 .settings-card-head {

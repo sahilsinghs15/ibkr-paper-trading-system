@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import {
   deleteSymbolLimit,
   fetchAccountByIdentifier,
@@ -121,9 +121,16 @@ function ExecutionSettingsCard() {
           </label>
         </div>
         <p className="field-hint">
-          If all legs of a trade are not filled within the configured time, the system can retry
-          missing quantity or square off filled exposure.
+          If all legs of a trade are not filled within the configured time, the system will retry
+          unfilled leg quantities before squaring off exposure.
         </p>
+
+        {draft ? (
+          <div className="execution-pipeline-badge">
+            ⚡ <strong>Execution Pipeline:</strong> {executionSummary(draft)}
+          </div>
+        ) : null}
+
         {data && !data.paper_retries_active ? (
           <p className="settings-msg err">
             Retries apply on paper TWS/Gateway ports only (7497 / 4002).
@@ -364,15 +371,13 @@ export function AccountSettingsPage() {
 
   return (
     <main className="page settings-page">
-      <section className="settings-card">
-        <div className="settings-block">
-          <div className="settings-block-h" style={{ alignItems: 'center' }}>
-            <div>
-              <h2>MODEL BLUE ACCOUNT SETTINGS</h2>
-              <div className="settings-kicker" style={{ marginTop: 2 }}>
-                Account: <span className="mono bold">{cleanAccount}</span> · PAPER
-              </div>
-            </div>
+      <header className="settings-header-banner">
+        <div className="settings-header-title">
+          <h1>MODEL BLUE ACCOUNT SETTINGS</h1>
+          <div className="settings-header-meta">
+            <span>Account: <strong className="mono">{cleanAccount}</strong></span>
+            <span>·</span>
+            <span className="paper-pill">PAPER</span>
             {account ? (
               <span className={`account-status-pill ${enabled ? 'enabled' : 'disabled'}`}>
                 ● {enabled ? 'ENABLED' : 'DISABLED'}
@@ -380,7 +385,12 @@ export function AccountSettingsPage() {
             ) : null}
           </div>
         </div>
-      </section>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <Link to={`/account/${cleanAccount}`} className="btn primary">
+            View Dashboard →
+          </Link>
+        </div>
+      </header>
 
       {isLoading ? <p className="empty">Loading configuration for {cleanAccount}…</p> : null}
       {isError ? (
