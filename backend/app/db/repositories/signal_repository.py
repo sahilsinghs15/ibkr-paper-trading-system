@@ -76,6 +76,12 @@ def _audit_values(
     reject_reason: str | None = None,
 ) -> dict[str, Any]:
     pair = ":".join(leg.symbol for leg in signal.legs) if signal.legs else ""
+    if not pair and signal.trade_id:
+        trade_parts = [p.split(":")[-1] for p in signal.trade_id.split("-") if ":" in p]
+        if len(trade_parts) >= 2:
+            pair = f"{trade_parts[0]}:{trade_parts[1]}"
+        elif len(trade_parts) == 1:
+            pair = trade_parts[0]
     if signal.direction is not None:
         side = str(signal.direction)
     elif signal.side:

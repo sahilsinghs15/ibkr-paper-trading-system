@@ -28,7 +28,7 @@ export function SignalTray({ accountFilter }: { accountFilter?: string }) {
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
 
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACCEPTED' | 'REJECTED'>('ALL')
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACCEPTED' | 'REJECTED' | 'PENDING'>('ALL')
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 5
 
@@ -51,6 +51,11 @@ export function SignalTray({ accountFilter }: { accountFilter?: string }) {
         (s) => s.status === 'REJECTED' || Boolean(s.reject_reason)
       )
     }
+    if (statusFilter === 'PENDING') {
+      return scopedSignals.filter(
+        (s) => (s.status === 'NEW' || s.status === 'RECEIVED' || s.status === 'PROCESSING') && !s.reject_reason
+      )
+    }
     return scopedSignals
   }, [scopedSignals, statusFilter])
 
@@ -62,13 +67,21 @@ export function SignalTray({ accountFilter }: { accountFilter?: string }) {
   const acceptedCount = useMemo(
     () =>
       scopedSignals.filter(
-        (s) => (s.status === 'PROCESSED' || s.status === 'FILLED') && !s.reject_reason
+        (s) => (s.status === 'PROCESSED' || s.status === 'FILLED' || s.status === 'SUCCESS') && !s.reject_reason
       ).length,
     [scopedSignals]
   )
 
   const rejectedCount = useMemo(
     () => scopedSignals.filter((s) => s.status === 'REJECTED' || Boolean(s.reject_reason)).length,
+    [scopedSignals]
+  )
+
+  const pendingCount = useMemo(
+    () =>
+      scopedSignals.filter(
+        (s) => (s.status === 'NEW' || s.status === 'RECEIVED' || s.status === 'PROCESSING') && !s.reject_reason
+      ).length,
     [scopedSignals]
   )
 
@@ -111,7 +124,7 @@ export function SignalTray({ accountFilter }: { accountFilter?: string }) {
             setCurrentPage(1)
           }}
         >
-          ✓ ACCEPTED ({acceptedCount})
+          ✓ ACC ({acceptedCount})
         </button>
         <button
           type="button"
@@ -121,7 +134,17 @@ export function SignalTray({ accountFilter }: { accountFilter?: string }) {
             setCurrentPage(1)
           }}
         >
-          ✕ REJECTED ({rejectedCount})
+          ✕ REJ ({rejectedCount})
+        </button>
+        <button
+          type="button"
+          className={`signal-filter-btn amber ${statusFilter === 'PENDING' ? 'active' : ''}`}
+          onClick={() => {
+            setStatusFilter('PENDING')
+            setCurrentPage(1)
+          }}
+        >
+          ● NEW ({pendingCount})
         </button>
       </div>
 

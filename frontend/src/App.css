@@ -389,6 +389,11 @@ body,
   color: var(--red);
 }
 
+.signal-filter-btn.amber.active {
+  background: rgba(235, 179, 56, 0.15);
+  color: var(--amber);
+}
+
 .signal-tray-list {
   display: flex;
   flex-direction: column;

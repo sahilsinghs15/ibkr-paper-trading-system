@@ -286,3 +286,12 @@ def test_open_position_leg_payload_realized_pnl_is_none() -> None:
     assert closed_legs[0]["realized_pnl"] == "492.00"
 
 
+@pytest.mark.asyncio
+async def test_load_signals_handles_none_session_safely() -> None:
+    from demo_streaming.snapshot import load_signals
+
+    res = await load_signals(None)  # type: ignore[arg-type]
+    assert res == []
+
+
+

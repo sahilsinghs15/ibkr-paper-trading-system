@@ -271,6 +271,16 @@ async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str,
     ).scalars().all()
     signals: list[dict[str, Any]] = []
     for sig in rows:
+        pair = sig.pair
+        if (not pair or pair == "N/A") and sig.trade_id:
+            trade_parts = [p.split(":")[-1] for p in sig.trade_id.split("-") if ":" in p]
+            if len(trade_parts) >= 2:
+                pair = f"{trade_parts[0]} / {trade_parts[1]}"
+            elif len(trade_parts) == 1:
+                pair = trade_parts[0]
+        elif pair and ":" in pair and " / " not in pair:
+            pair = pair.replace(":", " / ")
+
         signals.append(
             {
                 "id": sig.id,
@@ -278,7 +288,7 @@ async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str,
                 "trade_id": sig.trade_id,
                 "strategy_id": sig.strategy_id,
                 "action": sig.action,
-                "pair": sig.pair,
+                "pair": pair or "N/A",
                 "side": sig.side,
                 "status": sig.status,
                 "reject_reason": sig.reject_reason,
