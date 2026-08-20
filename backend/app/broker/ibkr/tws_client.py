@@ -91,6 +91,12 @@ class TWSClient(EWrapper, EClient):
                 errorCode,
                 errorString,
             )
+            for listener in list(self._market_data_listeners):
+                try:
+                    if hasattr(listener, "on_error"):
+                        listener.on_error(reqId, errorCode, errorString)
+                except Exception:
+                    logger.exception("Error in market_data_listener on_error callback")
             for listener in list(self._listeners):
                 try:
                     listener.on_error(reqId, errorCode, errorString)
