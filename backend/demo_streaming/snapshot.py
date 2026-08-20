@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.account import AccountModel
 from app.db.models.basket import BasketModel
+from app.db.models.event import EventLogModel
+from app.db.models.execution import ExecutionModel
 from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
 from app.db.models.signal import SignalModel
@@ -269,6 +271,67 @@ async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str,
             .limit(limit)
         )
     ).scalars().all()
+
+    if not rows:
+        return []
+
+    sig_ids = [s.id for s in rows]
+    trade_ids = [s.trade_id for s in rows if s.trade_id]
+
+    # 1. Batched query for child orders
+    order_stmt = select(OrderModel).where(
+        (OrderModel.signal_id.in_(sig_ids)) | (OrderModel.trade_id.in_(trade_ids))
+    )
+    all_orders = (await session.execute(order_stmt)).scalars().all()
+
+    orders_by_sig_id: dict[int, list[OrderModel]] = {}
+    orders_by_trade_id: dict[str, list[OrderModel]] = {}
+    order_ids: list[int] = []
+    internal_order_ids: list[str] = []
+    for o in all_orders:
+        if o.id:
+            order_ids.append(o.id)
+        if o.internal_order_id:
+            internal_order_ids.append(o.internal_order_id)
+        if o.signal_id:
+            orders_by_sig_id.setdefault(o.signal_id, []).append(o)
+        if o.trade_id:
+            orders_by_trade_id.setdefault(o.trade_id, []).append(o)
+
+    # 2. Batched query for execution fill reports
+    all_executions: list[ExecutionModel] = []
+    if order_ids or internal_order_ids:
+        exec_stmt = select(ExecutionModel).where(
+            (ExecutionModel.order_id.in_(order_ids))
+            | (ExecutionModel.internal_order_id.in_(internal_order_ids))
+        )
+        all_executions = (await session.execute(exec_stmt)).scalars().all()
+
+    execs_by_order_id: dict[int, list[ExecutionModel]] = {}
+    execs_by_internal_id: dict[str, list[ExecutionModel]] = {}
+    for ex in all_executions:
+        if ex.order_id:
+            execs_by_order_id.setdefault(ex.order_id, []).append(ex)
+        if ex.internal_order_id:
+            execs_by_internal_id.setdefault(ex.internal_order_id, []).append(ex)
+
+    # 3. Batched query for audit event log records
+    all_events: list[EventLogModel] = []
+    event_stmt = select(EventLogModel).where(
+        (EventLogModel.signal_id.in_(sig_ids))
+        | (EventLogModel.order_id.in_(order_ids))
+    )
+    all_events = (await session.execute(event_stmt)).scalars().all()
+
+    events_by_sig_id: dict[int, list[EventLogModel]] = {}
+    events_by_trade_id: dict[str, list[EventLogModel]] = {}
+    for ev in all_events:
+        if ev.signal_id:
+            events_by_sig_id.setdefault(ev.signal_id, []).append(ev)
+        tid = str((ev.detail or {}).get("trade_id") or "").strip()
+        if tid:
+            events_by_trade_id.setdefault(tid, []).append(ev)
+
     signals: list[dict[str, Any]] = []
     for sig in rows:
         pair = sig.pair
@@ -280,6 +343,58 @@ async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str,
                 pair = trade_parts[0]
         elif pair and ":" in pair and " / " not in pair:
             pair = pair.replace(":", " / ")
+
+        matched_orders = orders_by_sig_id.get(sig.id) or (orders_by_trade_id.get(sig.trade_id) if sig.trade_id else []) or []
+        matched_orders = sorted(matched_orders, key=lambda x: x.id)
+
+        orders_payload = []
+        for o in matched_orders:
+            m_execs = execs_by_order_id.get(o.id) or (execs_by_internal_id.get(o.internal_order_id) if o.internal_order_id else []) or []
+            m_execs = sorted(m_execs, key=lambda x: x.id)
+
+            execs_payload = [
+                {
+                    "id": ex.id,
+                    "exec_id": ex.exec_id,
+                    "symbol": ex.symbol,
+                    "side": ex.side,
+                    "quantity": float(ex.quantity) if ex.quantity is not None else 0.0,
+                    "price": float(ex.price) if ex.price is not None else 0.0,
+                    "executed_at": ex.executed_at.isoformat() if ex.executed_at else ex.created_at.isoformat() if ex.created_at else None,
+                }
+                for ex in m_execs
+            ]
+
+            orders_payload.append(
+                {
+                    "id": o.id,
+                    "internal_order_id": o.internal_order_id,
+                    "leg": o.leg,
+                    "symbol": o.symbol,
+                    "buy_sell": o.buy_sell,
+                    "quantity": float(o.quantity) if o.quantity is not None else 0.0,
+                    "fill_qty": float(o.fill_qty) if o.fill_qty is not None else 0.0,
+                    "fill_price": float(o.fill_price) if o.fill_price is not None else None,
+                    "status": o.status,
+                    "is_compensation": o.is_compensation,
+                    "compensation_of_internal_order_id": o.compensation_of_internal_order_id,
+                    "filled_at": o.filled_at.isoformat() if o.filled_at else None,
+                    "executions": execs_payload,
+                }
+            )
+
+        matched_events = events_by_sig_id.get(sig.id) or (events_by_trade_id.get(sig.trade_id) if sig.trade_id else []) or []
+        matched_events = sorted(matched_events, key=lambda x: x.id)
+
+        events_payload = [
+            {
+                "id": ev.id,
+                "kind": ev.kind,
+                "ts": ev.ts.isoformat() if ev.ts else None,
+                "detail": ev.detail or {},
+            }
+            for ev in matched_events
+        ]
 
         signals.append(
             {
@@ -295,6 +410,8 @@ async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str,
                 "received_at": sig.received_at.isoformat() if sig.received_at else None,
                 "processed_at": sig.processed_at.isoformat() if sig.processed_at else None,
                 "raw_payload": sig.raw_payload,
+                "orders": orders_payload,
+                "events": events_payload,
             }
         )
     return signals

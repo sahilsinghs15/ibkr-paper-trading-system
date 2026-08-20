@@ -20,6 +20,7 @@ from app.db.repositories.event_repository import EventRepository
 from app.db.repositories.position_repository import PositionRepository
 from app.db.repositories.signal_repository import (
     SIGNAL_STATUS_NEW,
+    SIGNAL_STATUS_PROCESSED,
     SIGNAL_STATUS_REJECTED,
     SignalRepository,
     persist_signal_id_for,
@@ -746,6 +747,8 @@ class OrderManager:
             new_strat_qty = max(0, self._rms_context.open_positions.get(strat_id, 0) - target_qty)
             self._rms_context.open_positions[target_symbol] = new_sym_qty
             self._rms_context.open_positions[strat_id] = new_strat_qty
+
+        await self._persist_inbound_signal(sized_from, status=SIGNAL_STATUS_PROCESSED)
 
     async def record_rejected_inbound(
         self,

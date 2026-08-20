@@ -251,10 +251,11 @@ class SignalRepository:
                 "reject_reason": stmt.excluded.reject_reason,
                 "status": case(
                     (
-                        SignalModel.status == literal(SIGNAL_STATUS_PROCESSED),
-                        SignalModel.status,
+                        (stmt.excluded.status == SIGNAL_STATUS_PROCESSED)
+                        | (stmt.excluded.status == SIGNAL_STATUS_REJECTED),
+                        stmt.excluded.status,
                     ),
-                    else_=stmt.excluded.status,
+                    else_=SignalModel.status,
                 ),
                 "processed_at": case(
                     (SignalModel.processed_at.isnot(None), SignalModel.processed_at),
@@ -269,4 +270,5 @@ class SignalRepository:
             raise RuntimeError(
                 f"Failed to persist signal {persist_signal_id} for {signal.strategy_id}."
             )
+        await self._session.refresh(row)
         return row

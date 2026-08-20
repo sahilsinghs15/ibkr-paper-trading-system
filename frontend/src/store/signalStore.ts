@@ -1,4 +1,38 @@
 import { create } from 'zustand'
+import { playSignalNotificationSound } from '../utils/audioNotification'
+
+export interface SignalExecution {
+  id: number
+  exec_id: string
+  symbol: string
+  side: string
+  quantity: number
+  price: number
+  executed_at?: string | null
+}
+
+export interface SignalAuditEvent {
+  id: number
+  kind: string
+  ts?: string | null
+  detail?: Record<string, unknown> | null
+}
+
+export interface SignalOrderLeg {
+  id: number
+  internal_order_id?: string | null
+  leg: string
+  symbol: string
+  buy_sell: string
+  quantity: number
+  fill_qty: number
+  fill_price?: number | null
+  status: string
+  is_compensation?: boolean
+  compensation_of_internal_order_id?: string | null
+  filled_at?: string | null
+  executions?: SignalExecution[]
+}
 
 export interface SignalItem {
   id: number
@@ -15,6 +49,8 @@ export interface SignalItem {
   received_at?: string | null
   processed_at?: string | null
   raw_payload?: Record<string, unknown> | null
+  orders?: SignalOrderLeg[]
+  events?: SignalAuditEvent[]
 }
 
 interface SignalState {
@@ -24,6 +60,9 @@ interface SignalState {
   handleSignalEvent: (evt: Record<string, unknown>) => void
 }
 
+// In-memory set of signal keys already seen during this browser session
+const seenSignalKeys = new Set<string>()
+
 export const useSignalStore = create<SignalState>((set) => ({
   signals: [],
   isLoading: false,
@@ -31,10 +70,15 @@ export const useSignalStore = create<SignalState>((set) => ({
   fetchSignals: async () => {
     set({ isLoading: true })
     try {
-      const res = await fetch('/demo/signals?limit=50')
+      const res = await fetch('/demo/signals?limit=100')
       if (res.ok) {
         const data = await res.json()
         if (Array.isArray(data.signals)) {
+          // Mark historical signal IDs as seen WITHOUT playing sound
+          for (const s of data.signals) {
+            if (s.signal_id) seenSignalKeys.add(String(s.signal_id))
+            if (s.id) seenSignalKeys.add(String(s.id))
+          }
           set({ signals: data.signals, isLoading: false })
           return
         }
@@ -47,6 +91,8 @@ export const useSignalStore = create<SignalState>((set) => ({
 
   handleSignalEvent: (evt) => {
     if (!evt || evt.event !== 'SIGNAL_RECEIVED' || !evt.signal_id) return
+    const rawOrders = Array.isArray(evt.orders) ? (evt.orders as SignalOrderLeg[]) : []
+    const rawEvents = Array.isArray(evt.events) ? (evt.events as SignalAuditEvent[]) : []
     const newSig: SignalItem = {
       id: Number(evt.id) || Date.now(),
       signal_id: String(evt.signal_id),
@@ -62,13 +108,25 @@ export const useSignalStore = create<SignalState>((set) => ({
       received_at: evt.received_at ? String(evt.received_at) : new Date().toISOString(),
       processed_at: evt.processed_at ? String(evt.processed_at) : null,
       raw_payload: (evt.raw_payload as Record<string, unknown>) || null,
+      orders: rawOrders,
+      events: rawEvents,
     }
 
     set((state) => {
+      const isKnownBySignalId = seenSignalKeys.has(newSig.signal_id)
+      const isKnownById = newSig.id > 0 && seenSignalKeys.has(String(newSig.id))
       const existingIdx = state.signals.findIndex(
         (s) => s.signal_id === newSig.signal_id || (newSig.id > 0 && s.id === newSig.id)
       )
+
+      const isGenuinelyNew = !isKnownBySignalId && !isKnownById && existingIdx < 0
+
+      // Mark keys as seen
+      if (newSig.signal_id) seenSignalKeys.add(newSig.signal_id)
+      if (newSig.id > 0) seenSignalKeys.add(String(newSig.id))
+
       if (existingIdx >= 0) {
+        // Update existing signal in-place without triggering audio sound
         const updated = [...state.signals]
         updated[existingIdx] = {
           ...updated[existingIdx],
@@ -76,6 +134,12 @@ export const useSignalStore = create<SignalState>((set) => ({
         }
         return { signals: updated }
       }
+
+      // GENUINELY NEW SIGNAL ARRIVAL -> Trigger audio notification ONCE
+      if (isGenuinelyNew) {
+        playSignalNotificationSound(newSig.ibkr_account)
+      }
+
       return { signals: [newSig, ...state.signals].slice(0, 100) }
     })
   },

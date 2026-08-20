@@ -22,6 +22,23 @@ from demo_streaming.stream import PositionStream
 logger = logging.getLogger(__name__)
 
 
+def _signal_fp(sig: dict) -> tuple:
+    orders = sig.get("orders") or []
+    events = sig.get("events") or []
+    orders_fp = tuple(
+        (
+            o.get("id"),
+            o.get("status"),
+            o.get("fill_qty"),
+            o.get("is_compensation"),
+            tuple((e.get("id"), e.get("quantity"), e.get("price")) for e in (o.get("executions") or [])),
+        )
+        for o in orders
+    )
+    events_fp = tuple((ev.get("id"), ev.get("kind")) for ev in events)
+    return (sig.get("status"), sig.get("reject_reason"), orders_fp, events_fp)
+
+
 class PositionBridge:
     """Observe existing DB rows and XADD changes. Never mutates trading state."""
 
@@ -38,7 +55,7 @@ class PositionBridge:
         self._fingerprints: dict[tuple[int, str, str], tuple] = {}
         self._status: dict[tuple[int, str, str], str] = {}
         self._last_payload: dict[tuple[int, str, str], dict] = {}
-        self._signal_status: dict[int, str] = {}
+        self._signal_fingerprints: dict[int, tuple] = {}
         self._last_signal_id = 0
         self._baseline_ready = False
 
@@ -46,11 +63,11 @@ class PositionBridge:
         """Load current rows so a bridge restart does not re-emit OPEN for existing trades."""
         async with self._session_factory() as session:
             payloads = await self._collect(session)
-            sigs = await load_signals(session, limit=50)
+            sigs = await load_signals(session, limit=100)
             for s in sigs:
                 s_id = int(s.get("id") or 0)
                 if s_id > 0:
-                    self._signal_status[s_id] = str(s.get("status") or "")
+                    self._signal_fingerprints[s_id] = _signal_fp(s)
                     self._last_signal_id = max(self._last_signal_id, s_id)
         for payload in payloads:
             key = _key(payload)
@@ -63,25 +80,26 @@ class PositionBridge:
     async def poll_once(self) -> list[dict]:
         async with self._session_factory() as session:
             payloads = await self._collect(session)
-            sigs = await load_signals(session, limit=50)
+            sigs = await load_signals(session, limit=100)
         emitted: list[dict] = []
         for sig in reversed(sigs):
             sig_id = int(sig.get("id") or 0)
             if sig_id <= 0:
                 continue
-            cur_status = str(sig.get("status") or "")
-            prev_status = self._signal_status.get(sig_id)
-            if sig_id > self._last_signal_id or prev_status != cur_status:
+            cur_fp = _signal_fp(sig)
+            prev_fp = self._signal_fingerprints.get(sig_id)
+            if sig_id > self._last_signal_id or prev_fp != cur_fp:
                 record = {"event": "SIGNAL_RECEIVED", **sig}
                 await self._stream.xadd(record)
                 self._last_signal_id = max(self._last_signal_id, sig_id)
-                self._signal_status[sig_id] = cur_status
+                self._signal_fingerprints[sig_id] = cur_fp
                 emitted.append(record)
                 logger.info(
-                    "Demo stream published signal event: signal_id=%s status=%s pair=%s",
+                    "Demo stream published signal event: signal_id=%s status=%s pair=%s orders=%d",
                     sig.get("signal_id"),
-                    cur_status,
+                    sig.get("status"),
                     sig.get("pair"),
+                    len(sig.get("orders") or []),
                 )
         seen: set[tuple[int, str, str]] = set()
         for payload in payloads:
