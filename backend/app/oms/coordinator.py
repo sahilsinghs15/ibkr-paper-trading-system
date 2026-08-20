@@ -730,7 +730,7 @@ class BasketCoordinator:
             orig_leg,
             quantity=qty,
             notional=qty * px,
-            leg_index=0,
+            leg_index=index,
         )
         return replace(
             original,
@@ -750,14 +750,12 @@ class BasketCoordinator:
     ) -> list[OMSOrder]:
         created: list[OMSOrder] = []
         now = datetime.now(UTC)
-        for order in submitted:
-            filled = float(order.filled_quantity)
-            if filled <= _FILL_EPS:
+        for orig_index, orig_leg in enumerate(original.legs):
+            cum_filled = self._filled_qty_for_leg(orig_index, submitted)
+            if cum_filled <= _FILL_EPS:
                 continue
-            reverse = OrderSide.SELL if order.side == OrderSide.BUY else OrderSide.BUY
-            price = order.average_fill_price or order.last_fill_price or order.limit_price or Decimal(0)
-            orig_index = order.leg_index if order.leg_index is not None else 0
-            orig_leg = original.legs[orig_index]
+            reverse = OrderSide.SELL if orig_leg.side == OrderSide.BUY else OrderSide.BUY
+            price = orig_leg.price or Decimal(0)
             comp_intent = OrderIntent(
                 signal_id=f"{original.signal_id}:UNWIND:L{orig_index}",
                 strategy_id=original.strategy_id,
@@ -767,9 +765,9 @@ class BasketCoordinator:
                 market=original.market,
                 legs=[
                     OrderLeg(
-                        symbol=order.symbol,
+                        symbol=orig_leg.symbol,
                         side=reverse,
-                        quantity=filled,
+                        quantity=Decimal(str(cum_filled)),
                         price=price if isinstance(price, Decimal) else Decimal(str(price)),
                         contract_month=orig_leg.contract_month,
                         instrument_type=orig_leg.instrument_type,
@@ -777,7 +775,7 @@ class BasketCoordinator:
                         exchange=orig_leg.exchange,
                         currency=orig_leg.currency,
                         resolved=orig_leg.resolved,
-                        leg_index=0,
+                        leg_index=orig_index,
                     )
                 ],
                 timestamp=now,
@@ -791,9 +789,12 @@ class BasketCoordinator:
             exec_res = await self._oms.submit_intent(
                 comp_intent, pass_rms, order_type=order_type
             )
+            matching_orders = [o for o in submitted if o.leg_index == orig_index and not o.is_compensation]
+            comp_of = matching_orders[0].internal_order_id if matching_orders else f"cumulative:L{orig_index}"
             for child in exec_res.orders:
+                child.leg_index = orig_index
                 child.is_compensation = True
-                child.compensation_of_internal_order_id = order.internal_order_id
+                child.compensation_of_internal_order_id = comp_of
                 child.basket_id = basket.id
                 created.append(child)
                 self._order_baskets[child.internal_order_id] = basket
@@ -806,22 +807,27 @@ class BasketCoordinator:
                         "account_id": original.account_id,
                         "trade_id": original.signal_id,
                         "internal_order_id": child.internal_order_id,
-                        "of": order.internal_order_id,
+                        "of": comp_of,
                         "quantity": child.quantity,
+                        "side": child.side.value if hasattr(child.side, "value") else str(child.side),
                         "symbol": child.symbol,
                     },
+                    signal_pk=signal_pk,
+                    basket=basket,
+                    order=child,
+                    idempotency_key=f"compensation:{child.internal_order_id}",
                 )
-                logger.info(
-                    "COMPENSATION: of=%s new=%s symbol=%s qty=%s side=%s",
-                    order.internal_order_id,
+                logger.warning(
+                    "COMPENSATION: internal_order_id=%s symbol=%s qty=%s side=%s of=%s",
                     child.internal_order_id,
                     child.symbol,
                     child.quantity,
                     child.side.value if hasattr(child.side, "value") else child.side,
+                    comp_of,
                 )
                 if child.status in (OMSOrderStatus.REJECTED, OMSOrderStatus.ERROR):
                     raise RuntimeError(
-                        f"Compensation submit failed for {order.internal_order_id}: {child.error_message}"
+                        f"Compensation submit failed for cumulative:L{orig_index}: {child.error_message}"
                     )
         return created
 

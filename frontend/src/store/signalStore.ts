@@ -95,33 +95,91 @@ export function getCanonicalStatus(sig: SignalItem): 'PROCESSING' | 'ACCEPTED' |
   return 'REJECTED'
 }
 
+export interface SignalCounts {
+  total: number
+  processing: number
+  accepted: number
+  rejected: number
+  square_off: number
+}
+
 interface SignalState {
   signals: SignalItem[]
   isLoading: boolean
-  fetchSignals: () => Promise<void>
+  page: number
+  pageSize: number
+  total: number
+  totalPages: number
+  statusFilter: string
+  counts: SignalCounts
+  fetchSignals: (opts?: { page?: number; status?: string; account?: string }) => Promise<void>
+  setPage: (page: number, account?: string) => Promise<void>
+  setStatusFilter: (status: string, account?: string) => Promise<void>
   handleSignalEvent: (evt: Record<string, unknown>) => void
 }
 
 // In-memory set of signal keys already seen during this browser session
 const seenSignalKeys = new Set<string>()
 
-export const useSignalStore = create<SignalState>((set) => ({
+export const useSignalStore = create<SignalState>((set, get) => ({
   signals: [],
   isLoading: false,
+  page: 1,
+  pageSize: 100,
+  total: 0,
+  totalPages: 1,
+  statusFilter: 'ALL',
+  counts: {
+    total: 0,
+    processing: 0,
+    accepted: 0,
+    rejected: 0,
+    square_off: 0,
+  },
 
-  fetchSignals: async () => {
+  setPage: async (page: number, account?: string) => {
+    const { fetchSignals } = get()
+    await fetchSignals({ page, account })
+  },
+
+  setStatusFilter: async (status: string, account?: string) => {
+    const { fetchSignals } = get()
+    await fetchSignals({ page: 1, status, account })
+  },
+
+  fetchSignals: async (opts) => {
     set({ isLoading: true })
+    const state = get()
+    const targetPage = opts?.page ?? state.page
+    const targetStatus = opts?.status !== undefined ? opts.status : state.statusFilter
+    const accountParam = opts?.account ? `&ibkr_account=${encodeURIComponent(opts.account)}` : ''
+
     try {
-      const res = await fetch('/demo/signals?limit=100')
+      const url = `/demo/signals?page=${targetPage}&page_size=${state.pageSize}&status=${targetStatus}${accountParam}`
+      const res = await fetch(url)
       if (res.ok) {
         const data = await res.json()
         if (Array.isArray(data.signals)) {
-          // Mark historical signal IDs as seen WITHOUT playing sound
           for (const s of data.signals) {
             if (s.signal_id) seenSignalKeys.add(String(s.signal_id))
             if (s.id) seenSignalKeys.add(String(s.id))
           }
-          set({ signals: data.signals, isLoading: false })
+          set({
+            signals: data.signals,
+            page: data.page || targetPage,
+            pageSize: data.page_size || state.pageSize,
+            total: typeof data.total === 'number' ? data.total : data.signals.length,
+            totalPages: data.total_pages || 1,
+            statusFilter: targetStatus,
+            counts: data.counts || {
+              total: typeof data.total === 'number' ? data.total : data.signals.length,
+              processing: 0,
+              accepted: 0,
+              rejected: 0,
+              square_off: 0,
+            },
+            isLoading: false,
+          })
           return
         }
       }
@@ -186,7 +244,31 @@ export const useSignalStore = create<SignalState>((set) => ({
         playSignalNotificationSound(newSig.ibkr_account)
       }
 
-      return { signals: [newSig, ...state.signals].slice(0, 100) }
+      const nextTotal = state.total + (isGenuinelyNew ? 1 : 0)
+      const c = getCanonicalStatus(newSig)
+      const nextCounts = { ...state.counts, total: nextTotal }
+      if (isGenuinelyNew) {
+        if (c === 'PROCESSING') nextCounts.processing += 1
+        else if (c === 'ACCEPTED') nextCounts.accepted += 1
+        else if (c === 'SQUARE-OFF') {
+          nextCounts.square_off += 1
+          nextCounts.rejected += 1
+        } else nextCounts.rejected += 1
+      }
+
+      // If on page 1, add to current signals array
+      if (state.page === 1) {
+        return {
+          signals: [newSig, ...state.signals].slice(0, state.pageSize),
+          total: nextTotal,
+          counts: nextCounts,
+        }
+      }
+
+      return {
+        total: nextTotal,
+        counts: nextCounts,
+      }
     })
   },
 }))

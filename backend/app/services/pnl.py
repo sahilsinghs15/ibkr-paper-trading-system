@@ -235,9 +235,9 @@ class LivePnlService:
                 resolved = resolve_leg(
                     symbol=leg.symbol,
                     instrument_type=leg.instrument_type,
-                    market=leg.exchange,
-                    currency=leg.currency,
-                    con_id=leg.con_id,
+                    market=getattr(leg, "exchange", "SMART"),
+                    currency=getattr(leg, "currency", "USD"),
+                    con_id=getattr(leg, "con_id", None),
                     catalog=self._catalog,
                 )
             except InstrumentResolutionError as exc:
@@ -251,6 +251,7 @@ class LivePnlService:
                 )
                 return
         contract = ibkr_market_data_contract_from_resolved(resolved)
+
         con_id = getattr(contract, "conId", None) or None
         if (getattr(contract, "secType", "") or "").upper() == "CFD" and not con_id:
             logger.warning(

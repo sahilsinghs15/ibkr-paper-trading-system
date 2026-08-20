@@ -189,8 +189,12 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                     </td>
 
                     {/* 6. PL */}
-                    <td className={`right pl-cell ${pnlClass(head.unrealized_pnl)}`}>
-                      {fmtPnl(head.unrealized_pnl)}
+                    <td className={`right pl-cell ${head.unrealized_pnl !== null && head.unrealized_pnl !== undefined ? pnlClass(head.unrealized_pnl) : 'dim-txt'}`}>
+                      {head.unrealized_pnl !== null && head.unrealized_pnl !== undefined
+                        ? fmtPnl(head.unrealized_pnl)
+                        : head.market_data_status === 'UNAVAILABLE'
+                        ? 'NO MARK'
+                        : fmtPnl(head.unrealized_pnl)}
                     </td>
 
                     {/* 7. PROGRESS */}

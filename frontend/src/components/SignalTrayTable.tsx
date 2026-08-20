@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { usePnlStore } from '../store/pnlStore'
 import { getCanonicalStatus, type SignalItem, useSignalStore } from '../store/signalStore'
 import { isSoundEnabled, toggleSoundEnabled, unlockAudioContext } from '../utils/audioNotification'
@@ -22,16 +22,16 @@ function cleanRejectReason(raw: string | null | undefined): string {
   return s.replace(/^[A-Z_]+:\s*/, '').trim()
 }
 
-function isRejectedSig(sig: SignalItem): boolean {
+export function isRejectedSig(sig: SignalItem): boolean {
   const c = getCanonicalStatus(sig)
   return c === 'REJECTED' || c === 'SQUARE-OFF'
 }
 
-function isAcceptedSig(sig: SignalItem): boolean {
+export function isAcceptedSig(sig: SignalItem): boolean {
   return getCanonicalStatus(sig) === 'ACCEPTED'
 }
 
-function isProcessingSig(sig: SignalItem): boolean {
+export function isProcessingSig(sig: SignalItem): boolean {
   return getCanonicalStatus(sig) === 'PROCESSING'
 }
 
@@ -226,12 +226,25 @@ function buildUnifiedTimeline(sig: SignalItem): TimelineItem[] {
 export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
   const signals = useSignalStore((s) => s.signals)
   const isLoading = useSignalStore((s) => s.isLoading)
+  const page = useSignalStore((s) => s.page)
+  const pageSize = useSignalStore((s) => s.pageSize)
+  const total = useSignalStore((s) => s.total)
+  const totalPages = useSignalStore((s) => s.totalPages)
+  const counts = useSignalStore((s) => s.counts)
+  const fetchSignals = useSignalStore((s) => s.fetchSignals)
+  const setPage = useSignalStore((s) => s.setPage)
+  const storeSetStatusFilter = useSignalStore((s) => s.setStatusFilter)
+
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
 
-  const [statusFilter, setStatusFilter] = useState<'PROCESSING' | 'ACCEPTED' | 'REJECTED'>('PROCESSING')
+  const [activeStatus, setActiveStatus] = useState<string>('ALL')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [soundOn, setSoundOn] = useState(() => isSoundEnabled())
+
+  useEffect(() => {
+    fetchSignals({ page: 1, account: cleanFilter })
+  }, [cleanFilter, fetchSignals])
 
   const handleToggleSound = () => {
     unlockAudioContext()
@@ -239,23 +252,10 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
     setSoundOn(next)
   }
 
-  const scopedSignals = useMemo(() => {
-    if (!cleanFilter) return signals
-    return signals.filter((sig) => {
-      if (!sig.ibkr_account) return true
-      return String(sig.ibkr_account).trim().toUpperCase() === cleanFilter
-    })
-  }, [signals, cleanFilter])
-
-  const processingSignals = useMemo(() => scopedSignals.filter(isProcessingSig), [scopedSignals])
-  const acceptedSignals = useMemo(() => scopedSignals.filter(isAcceptedSig), [scopedSignals])
-  const rejectedSignals = useMemo(() => scopedSignals.filter(isRejectedSig), [scopedSignals])
-
-  const filteredSignals = useMemo(() => {
-    if (statusFilter === 'ACCEPTED') return acceptedSignals
-    if (statusFilter === 'REJECTED') return rejectedSignals
-    return processingSignals
-  }, [statusFilter, processingSignals, acceptedSignals, rejectedSignals])
+  const handleFilterClick = (status: string) => {
+    setActiveStatus(status)
+    storeSetStatusFilter(status, cleanFilter)
+  }
 
   const toggleExpand = (idKey: string) => {
     setExpandedId((prev) => (prev === idKey ? null : idKey))
@@ -267,7 +267,7 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
       <div className="board-header signal-tray-workspace-header">
         <div className="board-title-group">
           <h3>DEDICATED SIGNAL TRAY</h3>
-          <span className="sub-title">REAL-TIME SIGNAL LIFECYCLE WORKSPACE ({scopedSignals.length} SIGNALS)</span>
+          <span className="sub-title">REAL-TIME SIGNAL LIFECYCLE WORKSPACE · {total} SIGNALS</span>
         </div>
 
         <div className="signal-tray-filters inline-filters">
@@ -282,27 +282,35 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
           </button>
           <button
             type="button"
-            className={`signal-filter-btn amber ${statusFilter === 'PROCESSING' ? 'active' : ''}`}
-            onClick={() => setStatusFilter('PROCESSING')}
-            aria-label={`Processing (${processingSignals.length})`}
+            className={`signal-filter-btn ${activeStatus === 'ALL' ? 'active' : ''}`}
+            onClick={() => handleFilterClick('ALL')}
+            aria-label={`All Signals (${total})`}
           >
-            <span className="spin-icon" aria-hidden="true">⟳</span> PROCESSING ({processingSignals.length})
+            ALL ({total})
           </button>
           <button
             type="button"
-            className={`signal-filter-btn green ${statusFilter === 'ACCEPTED' ? 'active' : ''}`}
-            onClick={() => setStatusFilter('ACCEPTED')}
-            aria-label={`Accepted (${acceptedSignals.length})`}
+            className={`signal-filter-btn amber ${activeStatus === 'PROCESSING' ? 'active' : ''}`}
+            onClick={() => handleFilterClick('PROCESSING')}
+            aria-label={`Processing (${counts.processing})`}
           >
-            ✓ ACCEPTED ({acceptedSignals.length})
+            <span className="spin-icon" aria-hidden="true">⟳</span> PROCESSING ({counts.processing})
           </button>
           <button
             type="button"
-            className={`signal-filter-btn red ${statusFilter === 'REJECTED' ? 'active' : ''}`}
-            onClick={() => setStatusFilter('REJECTED')}
-            aria-label={`Rejected (${rejectedSignals.length})`}
+            className={`signal-filter-btn green ${activeStatus === 'ACCEPTED' ? 'active' : ''}`}
+            onClick={() => handleFilterClick('ACCEPTED')}
+            aria-label={`Accepted (${counts.accepted})`}
           >
-            ✕ REJECTED ({rejectedSignals.length})
+            ✓ ACCEPTED ({counts.accepted})
+          </button>
+          <button
+            type="button"
+            className={`signal-filter-btn red ${activeStatus === 'REJECTED' ? 'active' : ''}`}
+            onClick={() => handleFilterClick('REJECTED')}
+            aria-label={`Rejected (${counts.rejected})`}
+          >
+            ✕ REJECTED ({counts.rejected})
           </button>
         </div>
       </div>
@@ -314,10 +322,10 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
             <span className="spin-icon" aria-hidden="true">⟳</span>
             <p>Loading real-time signal workspace...</p>
           </div>
-        ) : filteredSignals.length === 0 ? (
+        ) : signals.length === 0 ? (
           <div className="signal-empty-state">
             <span className="empty-icon">📡</span>
-            <p>No {statusFilter.toLowerCase()} signals found for this account.</p>
+            <p>No {activeStatus.toLowerCase()} signals found for this account.</p>
             <span className="dim-txt">Incoming webhooks from TradingView will stream here automatically.</span>
           </div>
         ) : (
@@ -334,7 +342,7 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
               </tr>
             </thead>
             <tbody>
-              {filteredSignals.map((sig) => {
+              {signals.map((sig: SignalItem) => {
                 const idKey = String(sig.signal_id || sig.id)
                 const isExpanded = expandedId === idKey
                 const act = String(sig.action || 'OPEN').toUpperCase()
@@ -619,6 +627,47 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
               })}
             </tbody>
           </table>
+        )}
+
+        {/* Table Footer Pagination Controls */}
+        {total > 0 && (
+          <div className="signal-pagination-bar">
+            <span className="pagination-info dim-txt mono">
+              Showing {Math.min((page - 1) * pageSize + 1, total)}–{Math.min(page * pageSize, total)} of {total} signals
+            </span>
+            <div className="pagination-buttons">
+              <button
+                type="button"
+                className="page-nav-btn"
+                disabled={page <= 1 || isLoading}
+                onClick={() => setPage(page - 1, cleanFilter)}
+              >
+                ← Previous
+              </button>
+
+              {Array.from({ length: totalPages }, (_, i) => i + 1)
+                .slice(Math.max(0, page - 3), Math.min(totalPages, page + 2))
+                .map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    className={`page-num-btn ${p === page ? 'active' : ''}`}
+                    onClick={() => setPage(p, cleanFilter)}
+                  >
+                    {p}
+                  </button>
+                ))}
+
+              <button
+                type="button"
+                className="page-nav-btn"
+                disabled={page >= totalPages || isLoading}
+                onClick={() => setPage(page + 1, cleanFilter)}
+              >
+                Next →
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>

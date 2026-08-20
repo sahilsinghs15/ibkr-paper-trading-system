@@ -529,6 +529,56 @@ body,
   font-size: 10px;
 }
 
+.signal-pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: #090d16;
+  border-top: 1px solid #1c2638;
+}
+
+.pagination-info {
+  font-size: 11px;
+}
+
+.pagination-buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.page-nav-btn,
+.page-num-btn {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid #1c2638;
+  color: var(--dim);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.page-nav-btn:hover:not(:disabled),
+.page-num-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--ink);
+}
+
+.page-num-btn.active {
+  background: var(--accent);
+  color: #000;
+  font-weight: 700;
+  border-color: var(--accent);
+}
+
+.page-nav-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .status-pill-badge {
   font-size: 10px;
   font-weight: 700;

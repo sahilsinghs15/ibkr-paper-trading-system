@@ -120,7 +120,7 @@ def _leg_payload(
     if closed_ts is None and order is not None and order.filled_at is not None and position.risk_state == RISK_CLOSED:
         closed_ts = order.filled_at
 
-    market_status = "UNAVAILABLE"
+    market_status = "LIVE" if position.live_pnl is not None and position.live_pnl != Decimal(0) else "UNAVAILABLE"
     payload = {
         "timestamp": opened_ts.isoformat(),
         "opened_at": opened_ts.isoformat() if opened_ts else None,
@@ -207,6 +207,7 @@ def fingerprint(payload: dict[str, Any]) -> tuple:
         payload.get("close_in_progress"),
         payload.get("opened_at"),
         payload.get("closed_at"),
+        payload.get("market_data_status"),
     )
 
 
@@ -269,26 +270,45 @@ async def load_orders(session: AsyncSession) -> dict[tuple[int, str], list[Order
     return grouped
 
 
-async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str, Any]]:
+async def load_signals(
+    session: AsyncSession,
+    limit: int | None = None,
+    *,
+    page: int = 1,
+    page_size: int = 100,
+    status_filter: str | None = None,
+    account_id: int | None = None,
+    ibkr_account: str | None = None,
+    return_dict: bool = False,
+) -> dict[str, Any] | list[dict[str, Any]]:
     if session is None or not hasattr(session, "execute"):
-        return []
-    rows = (
-        await session.execute(
-            select(SignalModel)
-            .order_by(SignalModel.received_at.desc())
-            .limit(limit)
-        )
-    ).scalars().all()
+        return {"signals": [], "page": 1, "page_size": page_size, "total": 0, "total_pages": 1, "counts": {"total": 0, "processing": 0, "accepted": 0, "rejected": 0, "square_off": 0}} if return_dict else []
 
-    if not rows:
-        return []
+    eff_page_size = page_size if limit is None else limit
+    eff_page_size = max(1, min(eff_page_size, 500))
+    eff_page = max(1, page)
 
-    sig_ids = [s.id for s in rows]
-    trade_ids = [s.trade_id for s in rows if s.trade_id]
+    stmt = select(SignalModel)
+    if account_id is not None:
+        stmt = stmt.where(SignalModel.account_id == account_id)
+    if ibkr_account:
+        stmt = stmt.join(AccountModel, AccountModel.id == SignalModel.account_id).where(AccountModel.ibkr_account == ibkr_account)
 
-    # 1. Batched query for child orders
+    stmt = stmt.order_by(SignalModel.received_at.desc(), SignalModel.id.desc())
+
+    all_rows = (await session.execute(stmt)).scalars().all()
+    if not all_rows:
+        empty_res = {"signals": [], "page": eff_page, "page_size": eff_page_size, "total": 0, "total_pages": 1, "counts": {"total": 0, "processing": 0, "accepted": 0, "rejected": 0, "square_off": 0}}
+        return empty_res if return_dict else []
+
+    total_count = len(all_rows)
+
+    # To calculate canonical counts & filter accurately, we batch-load order & event info for all_rows
+    all_sig_ids = [s.id for s in all_rows]
+    all_trade_ids = [s.trade_id for s in all_rows if s.trade_id]
+
     order_stmt = select(OrderModel).where(
-        (OrderModel.signal_id.in_(sig_ids)) | (OrderModel.trade_id.in_(trade_ids))
+        (OrderModel.signal_id.in_(all_sig_ids)) | (OrderModel.trade_id.in_(all_trade_ids))
     )
     all_orders = (await session.execute(order_stmt)).scalars().all()
 
@@ -306,7 +326,6 @@ async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str,
         if o.trade_id:
             orders_by_trade_id.setdefault(o.trade_id, []).append(o)
 
-    # 2. Batched query for execution fill reports
     all_executions: list[ExecutionModel] = []
     if order_ids or internal_order_ids:
         exec_stmt = select(ExecutionModel).where(
@@ -323,10 +342,9 @@ async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str,
         if ex.internal_order_id:
             execs_by_internal_id.setdefault(ex.internal_order_id, []).append(ex)
 
-    # 3. Batched query for audit event log records
     all_events: list[EventLogModel] = []
     event_stmt = select(EventLogModel).where(
-        (EventLogModel.signal_id.in_(sig_ids))
+        (EventLogModel.signal_id.in_(all_sig_ids))
         | (EventLogModel.order_id.in_(order_ids))
     )
     all_events = (await session.execute(event_stmt)).scalars().all()
@@ -340,8 +358,14 @@ async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str,
         if tid:
             events_by_trade_id.setdefault(tid, []).append(ev)
 
-    signals: list[dict[str, Any]] = []
-    for sig in rows:
+    # Build full reconciled signals list
+    all_reconciled: list[dict[str, Any]] = []
+    count_processing = 0
+    count_accepted = 0
+    count_rejected = 0
+    count_square_off = 0
+
+    for sig in all_rows:
         pair = sig.pair
         if (not pair or pair == "N/A") and sig.trade_id:
             trade_parts = [p.split(":")[-1] for p in sig.trade_id.split("-") if ":" in p]
@@ -404,12 +428,21 @@ async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str,
             for ev in matched_events
         ]
 
-        # Reconcile canonical lifecycle status & processing duration
         c_status, is_active, rec_reason, calc_proc_at, duration_sec = reconcile_signal_status(
             sig, orders_payload, events_payload
         )
 
-        signals.append(
+        if c_status == "PROCESSING":
+            count_processing += 1
+        elif c_status == "ACCEPTED":
+            count_accepted += 1
+        elif c_status == "SQUARE-OFF":
+            count_square_off += 1
+            count_rejected += 1
+        else:
+            count_rejected += 1
+
+        all_reconciled.append(
             {
                 "id": sig.id,
                 "signal_id": sig.signal_id,
@@ -431,7 +464,40 @@ async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str,
                 "events": events_payload,
             }
         )
-    return signals
+
+    # Filter by canonical status if requested
+    filtered = all_reconciled
+    if status_filter and status_filter.upper() != "ALL":
+        sf = status_filter.upper()
+        if sf == "REJECTED":
+            filtered = [s for s in all_reconciled if s["canonical_status"] in ("REJECTED", "SQUARE-OFF", "EXPIRED")]
+        else:
+            filtered = [s for s in all_reconciled if s["canonical_status"] == sf]
+
+    effective_total = len(filtered)
+    import math
+    total_pages = max(1, math.ceil(effective_total / eff_page_size))
+    start_idx = (eff_page - 1) * eff_page_size
+    page_signals = filtered[start_idx : start_idx + eff_page_size]
+
+    if not return_dict:
+        return page_signals
+
+    return {
+        "signals": page_signals,
+        "page": eff_page,
+        "page_size": eff_page_size,
+        "total": total_count,
+        "filtered_total": effective_total,
+        "total_pages": total_pages,
+        "counts": {
+            "total": total_count,
+            "processing": count_processing,
+            "accepted": count_accepted,
+            "rejected": count_rejected,
+            "square_off": count_square_off,
+        },
+    }
 
 
 def reconcile_signal_status(
@@ -481,11 +547,32 @@ def reconcile_signal_status(
                 pass
         return ("SQUARE-OFF", False, "Incomplete leg timeout reached — Exposure automatically squared off", proc_at, duration)
 
-    # 3. Primary Orders Full Fill
+    # 3. Primary Orders Full Fill (Cumulative Leg Reconciliation)
     if primary_orders:
-        all_filled = all(
-            (o.get("status") in ("FILLED", "PROCESSED", "SUCCESS") or (o.get("fill_qty", 0.0) >= o.get("quantity", 1.0) > 0))
-            for o in primary_orders
+        legs_map: dict[str, dict[str, Any]] = {}
+        for o in primary_orders:
+            leg_id = o.get("leg") if o.get("leg") is not None else o.get("leg_index")
+            if leg_id is not None and str(leg_id).strip() != "":
+                key = f"leg:{leg_id}"
+            else:
+                key = f"sym:{o.get('symbol')}:{o.get('side') or o.get('buy_sell')}"
+
+            req_qty = float(o.get("quantity") or 0.0)
+            fill_qty = float(o.get("fill_qty") if o.get("fill_qty") is not None else (o.get("filled_quantity") or 0.0))
+
+            if key not in legs_map:
+                legs_map[key] = {
+                    "req": req_qty,
+                    "cum_fill": fill_qty,
+                    "symbol": o.get("symbol"),
+                }
+            else:
+                legs_map[key]["req"] = max(legs_map[key]["req"], req_qty)
+                legs_map[key]["cum_fill"] += fill_qty
+
+        all_filled = (
+            len(legs_map) > 0
+            and all(info["cum_fill"] + 1e-6 >= info["req"] > 0 for info in legs_map.values())
         )
         if all_filled:
             last_fill_ts = None
@@ -537,6 +624,9 @@ def reconcile_signal_status(
             pass
 
     if primary_orders and any(o.get("status") in ("CANCELLED", "REJECTED", "ERROR") for o in primary_orders):
+        # Check if the cancelled/rejected orders were superseded by retry orders that satisfied the legs
+        if 'all_filled' in locals() and all_filled:
+            return ("ACCEPTED", False, None, proc_at, duration)
         return ("REJECTED", False, "Broker leg order rejected or cancelled", proc_at, duration)
 
     # Truthful handling when no orders or execution evidence exists:

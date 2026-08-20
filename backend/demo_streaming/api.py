@@ -128,10 +128,28 @@ def create_demo_app(
         return JSONResponse({"closed_positions": payload})
 
     @app.get("/demo/signals")
-    async def signals(limit: int = 50) -> JSONResponse:
+    async def signals(
+        limit: int | None = None,
+        page: int = 1,
+        page_size: int = 100,
+        status: str | None = None,
+        account_id: int | None = None,
+        ibkr_account: str | None = None,
+    ) -> JSONResponse:
         async with session_factory() as session:
-            sig_list = await load_signals(session, limit=limit)
-        return JSONResponse({"signals": sig_list})
+            payload = await load_signals(
+                session,
+                limit=limit,
+                page=page,
+                page_size=page_size,
+                status_filter=status,
+                account_id=account_id,
+                ibkr_account=ibkr_account,
+                return_dict=True,
+            )
+        if isinstance(payload, list):
+            return JSONResponse({"signals": payload})
+        return JSONResponse(payload)
 
     @app.get("/demo/stream")
     async def sse(request: Request) -> StreamingResponse:

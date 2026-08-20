@@ -70,7 +70,8 @@ class PositionBridge:
         """Load current rows so a bridge restart does not re-emit OPEN for existing trades."""
         async with self._session_factory() as session:
             payloads = await self._collect(session)
-            sigs = await load_signals(session, limit=100)
+            sig_res = await load_signals(session, page_size=100, return_dict=True)
+            sigs = sig_res.get("signals", []) if isinstance(sig_res, dict) else sig_res
             for s in sigs:
                 s_id = int(s.get("id") or 0)
                 if s_id > 0:
@@ -87,7 +88,8 @@ class PositionBridge:
     async def poll_once(self) -> list[dict]:
         async with self._session_factory() as session:
             payloads = await self._collect(session)
-            sigs = await load_signals(session, limit=100)
+            sig_res = await load_signals(session, page_size=100, return_dict=True)
+            sigs = sig_res.get("signals", []) if isinstance(sig_res, dict) else sig_res
         emitted: list[dict] = []
         for sig in reversed(sigs):
             sig_id = int(sig.get("id") or 0)
