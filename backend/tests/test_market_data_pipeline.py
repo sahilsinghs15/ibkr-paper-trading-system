@@ -296,3 +296,76 @@ def test_10_unrealized_pair_requires_both_leg_marks() -> None:
     # Leg B: -10 * (45 - 50) = 50
     # Total: 150
     assert pnl_both == Decimal("150")
+
+
+# ---------------------------------------------------------------------------
+# Test 11 — CFD positions request underlying STK market-data contract
+# ---------------------------------------------------------------------------
+def test_11_cfd_positions_request_underlying_stk_market_data() -> None:
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+    client.reqMarketDataType = MagicMock()
+
+    factory = MagicMock()
+    svc = LivePnlService(factory, client)
+
+    # CFD position requested
+    intent = OrderIntent(
+        signal_id="T-CFD-MD-1",
+        strategy_id="MODEL_BLUE",
+        action=OrderAction.OPEN,
+        account_id=1,
+        ibkr_account="DU12345",
+        legs=[
+            OrderLeg(
+                symbol="SPY",
+                side=OrderSide.BUY,
+                quantity=Decimal("100"),
+                price=Decimal("588.00"),
+                contract_month="2026-09",
+                instrument_type="CFD",
+                leg_index=0,
+            )
+        ],
+        timestamp=datetime.now(UTC),
+    )
+
+    svc.watch_open(intent)
+
+    # Verify reqMktData was called with STK secType for underlying market data
+    assert client.reqMktData.call_count == 1
+    args = client.reqMktData.call_args[0]
+    contract = args[1]
+    generic_ticks = args[2]
+
+    assert contract.symbol == "SPY"
+    assert contract.secType == "STK"
+    assert generic_ticks == "221"
+
+
+# ---------------------------------------------------------------------------
+# Test 12 — Cooldown suppresses repeated subscription requests for 10 minutes
+# ---------------------------------------------------------------------------
+def test_12_cooldown_suppresses_repeated_requests() -> None:
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+    client.reqMarketDataType = MagicMock()
+
+    factory = MagicMock()
+    svc = LivePnlService(factory, client)
+    intent1 = _make_intent("T-COOL-1", symbols=["SIL"])
+
+    svc.watch_open(intent1)
+    req_id = list(svc._by_req.keys())[0]
+
+    # Deliver Error 10089 to activate cooldown
+    svc.on_error(req_id, 10089, "Requested market data requires additional subscription for API.")
+
+    initial_calls = client.reqMktData.call_count
+
+    # Try watching SIL again while in cooldown
+    intent2 = _make_intent("T-COOL-2", account_id=2, symbols=["SIL"])
+    svc.watch_open(intent2)
+
+    # Calls to reqMktData should NOT increase due to active cooldown
+    assert client.reqMktData.call_count == initial_calls

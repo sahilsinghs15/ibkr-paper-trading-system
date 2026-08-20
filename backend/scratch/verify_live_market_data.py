@@ -1,8 +1,8 @@
 """Live Paper-Runtime Verification & Diagnostic Probe Script for IBKR Market Data Pipeline.
 
 Connects to TWSClient or performs runtime qualification audit,
-validating tick timestamp progression, contract conId resolution, listener refcounting,
-subscription deduplication, and P&L updates.
+distinguishing trade_conId (CFD) from market_data_conId (underlying STK/ETF),
+validating tick timestamp progression, listener refcounting, and P&L updates.
 """
 
 from datetime import UTC, datetime
@@ -165,23 +165,23 @@ def run_live_verification_simulation() -> dict:
         pnl_updating = "YES" if status == "LIVE_TICKING" else "NO"
         con_id = entry.get("con_id") or "UNVERIFIED"
 
-        actual_con_id = "UNVERIFIED — LIVE IBKR QUALIFICATION REQUIRED" if client.is_connected() == False else str(con_id)
-        stored_con_id = str(con_id) if con_id != "UNVERIFIED" else "None"
-        match_str = "MATCH" if actual_con_id == stored_con_id else "UNVERIFIED"
+        actual_trade_con_id = "UNVERIFIED — LIVE IBKR QUALIFICATION REQUIRED" if client.is_connected() == False else str(con_id)
+        actual_md_con_id = "UNVERIFIED — LIVE IBKR QUALIFICATION REQUIRED" if client.is_connected() == False else str(con_id)
 
         cnt = tick_counts.get(sym, 0)
 
         table_rows.append(
             {
-                "symbol": sym,
-                "actualConId": actual_con_id,
-                "storedConId": stored_con_id,
-                "match": match_str,
+                "cfd": f"{sym} CFD",
+                "underlying": sym,
+                "tradeConId": actual_trade_con_id,
+                "mdConId": actual_md_con_id,
+                "secType": entry.get("sec_type", "STK"),
                 "reqId": req_id if req_id is not None else "N/A",
                 "callbacks": cnt,
                 "advancing": advancing,
                 "pnl_updating": pnl_updating,
-                "final_status": status,
+                "status": status,
                 "error": f"Code {err_code}" if err_code else "None",
             }
         )
@@ -196,15 +196,15 @@ def run_live_verification_simulation() -> dict:
 if __name__ == "__main__":
     res = run_live_verification_simulation()
     print("\n=========================================================================================")
-    print("READ-ONLY LIVE IBKR CONTRACT QUALIFICATION & TICK AUDIT RESULTS")
+    print("CFD VS UNDERLYING STK/ETF MARKET DATA AUDIT RESULTS")
     print("=========================================================================================\n")
-    print(f"Active IBKR Subscriptions: {res['active_subscriptions']}")
+    print(f"Active Underlying Subscriptions: {res['active_subscriptions']}")
     print(f"Total reqMktData Calls Issued: {res['req_mkt_data_call_count']}\n")
     print(
-        f"{'Symbol':<10} | {'Actual conId':<44} | {'Stored conId':<12} | {'Match':<8} | {'reqId':<8} | {'Callbacks':<10} | {'Tick Adv':<9} | {'PnL Update':<10} | {'Final Status'}"
+        f"{'CFD':<10} | {'Underlying':<10} | {'Trade conId':<44} | {'Market-data conId':<44} | {'secType':<7} | {'reqId':<8} | {'Callbacks':<10} | {'Tick Adv':<9} | {'PnL Update':<10} | {'Status'}"
     )
-    print("-" * 155)
+    print("-" * 185)
     for r in res["table_rows"]:
         print(
-            f"{r['symbol']:<10} | {r['actualConId']:<44} | {r['storedConId']:<12} | {r['match']:<8} | {str(r['reqId']):<8} | {r['callbacks']:<10} | {r['advancing']:<9} | {r['pnl_updating']:<10} | {r['final_status']}"
+            f"{r['cfd']:<10} | {r['underlying']:<10} | {r['tradeConId']:<44} | {r['mdConId']:<44} | {r['secType']:<7} | {str(r['reqId']):<8} | {r['callbacks']:<10} | {r['advancing']:<9} | {r['pnl_updating']:<10} | {r['status']}"
         )

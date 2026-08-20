@@ -301,15 +301,7 @@ class LivePnlService:
                 if tick_age_sec is not None and tick_age_sec > STALE_THRESHOLD_SEC:
                     computed_status = "STALE_TICK"
                 else:
-                    computed_status = "LIVE_TICKING"
-            elif raw_status in ("NO_LIVE_ENTITLEMENT_API_SUBSCRIPTION_REQUIRED", "10089"):
-                computed_status = "NO_LIVE_ENTITLEMENT"
-            elif raw_status in ("NO_LIVE_ENTITLEMENT_DELAYED", "10167"):
-                computed_status = "DELAYED_ONLY"
-            elif raw_status in ("NO_MARKET_DATA_ENTITLEMENT", "354", "300", "321"):
-                computed_status = "SUBSCRIPTION_ERROR"
-            elif raw_status in ("UNRESOLVED_CONTRACT_SPEC", "200"):
-                computed_status = "CONTRACT_UNRESOLVED"
+                    computed_status = raw_status
             else:
                 computed_status = raw_status
 
@@ -372,9 +364,10 @@ class LivePnlService:
         resolved = getattr(leg, "resolved", None)
         if resolved is None:
             try:
+                md_inst_type = "STK" if getattr(leg, "instrument_type", "").upper() in ("CFD", "STK", "ETF") else getattr(leg, "instrument_type", "STK")
                 resolved = resolve_leg(
                     symbol=leg.symbol,
-                    instrument_type=leg.instrument_type,
+                    instrument_type=md_inst_type,
                     market=getattr(leg, "exchange", "SMART"),
                     currency=getattr(leg, "currency", "USD"),
                     con_id=getattr(leg, "con_id", None),
@@ -467,7 +460,7 @@ class LivePnlService:
             req_type = getattr(self._client, "reqMarketDataType", None)
             if callable(req_type):
                 req_type(1)  # REALTIME live market data mode
-            req_mkt(req_id, contract, "", False, False, [])
+            req_mkt(req_id, contract, "221", False, False, [])
         except Exception:
             self._by_req.pop(req_id, None)
             self._contract_reqs.pop(c_key, None)

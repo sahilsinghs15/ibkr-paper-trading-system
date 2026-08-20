@@ -289,10 +289,13 @@ async def load_signals(
     eff_page = max(1, page)
 
     stmt = select(SignalModel)
-    if account_id is not None:
-        stmt = stmt.where(SignalModel.account_id == account_id)
-    if ibkr_account:
-        stmt = stmt.join(AccountModel, AccountModel.id == SignalModel.account_id).where(AccountModel.ibkr_account == ibkr_account)
+    if account_id is not None or ibkr_account:
+        subq = select(OrderModel.signal_id)
+        if account_id is not None:
+            subq = subq.where(OrderModel.account_id == account_id)
+        if ibkr_account:
+            subq = subq.join(AccountModel, AccountModel.id == OrderModel.account_id).where(AccountModel.ibkr_account == ibkr_account)
+        stmt = stmt.where(SignalModel.id.in_(subq))
 
     stmt = stmt.order_by(SignalModel.received_at.desc(), SignalModel.id.desc())
 

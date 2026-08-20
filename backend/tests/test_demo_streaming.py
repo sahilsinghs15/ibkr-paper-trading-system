@@ -308,5 +308,16 @@ async def test_signal_status_terminal_classification() -> None:
     assert "NEW" in statuses
 
 
+@pytest.mark.asyncio
+async def test_load_signals_account_filtering_query_safety() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+    from demo_streaming.snapshot import load_signals
 
+    session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    session.execute.return_value = mock_result
 
+    res = await load_signals(session, account_id=1, ibkr_account="DU12345", return_dict=True)
+    assert res["total"] == 0
+    assert session.execute.called
