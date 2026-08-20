@@ -36,7 +36,14 @@ def _signal_fp(sig: dict) -> tuple:
         for o in orders
     )
     events_fp = tuple((ev.get("id"), ev.get("kind")) for ev in events)
-    return (sig.get("status"), sig.get("reject_reason"), orders_fp, events_fp)
+    return (
+        sig.get("status"),
+        sig.get("canonical_status"),
+        sig.get("is_active_processing"),
+        sig.get("reject_reason"),
+        orders_fp,
+        events_fp,
+    )
 
 
 class PositionBridge:

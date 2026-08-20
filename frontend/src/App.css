@@ -494,6 +494,41 @@ body,
   color: var(--accent);
 }
 
+.processing-time-card {
+  background: rgba(88, 166, 255, 0.04);
+  border: 1px solid rgba(88, 166, 255, 0.15);
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+
+.processing-time-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.time-metric-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.time-metric-label {
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+.time-metric-val {
+  font-size: 14px;
+}
+
+.time-stamps-row {
+  display: flex;
+  gap: 16px;
+  font-size: 10px;
+}
+
 .status-pill-badge {
   font-size: 10px;
   font-weight: 700;

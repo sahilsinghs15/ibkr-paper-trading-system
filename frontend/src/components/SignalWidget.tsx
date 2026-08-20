@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { usePnlStore } from '../store/pnlStore'
-import { type SignalItem, useSignalStore } from '../store/signalStore'
+import { getCanonicalStatus, type SignalItem, useSignalStore } from '../store/signalStore'
 import { isSoundEnabled, toggleSoundEnabled, unlockAudioContext } from '../utils/audioNotification'
 import { displayStrategy, fmtTime } from '../utils/format'
 
@@ -23,17 +23,16 @@ function cleanRejectReason(raw: string | null | undefined): string {
 }
 
 export function isRejectedSig(sig: SignalItem): boolean {
-  const st = String(sig.status || '').toUpperCase()
-  return st === 'REJECTED' || Boolean(sig.reject_reason)
+  const c = getCanonicalStatus(sig)
+  return c === 'REJECTED' || c === 'SQUARE-OFF'
 }
 
 export function isAcceptedSig(sig: SignalItem): boolean {
-  const st = String(sig.status || '').toUpperCase()
-  return (st === 'PROCESSED' || st === 'FILLED' || st === 'SUCCESS') && !isRejectedSig(sig)
+  return getCanonicalStatus(sig) === 'ACCEPTED'
 }
 
 export function isProcessingSig(sig: SignalItem): boolean {
-  return !isAcceptedSig(sig) && !isRejectedSig(sig)
+  return getCanonicalStatus(sig) === 'PROCESSING'
 }
 
 export function SignalWidget({

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { usePnlStore } from '../store/pnlStore'
-import { type SignalItem, useSignalStore } from '../store/signalStore'
+import { getCanonicalStatus, type SignalItem, useSignalStore } from '../store/signalStore'
 import { isSoundEnabled, toggleSoundEnabled, unlockAudioContext } from '../utils/audioNotification'
 import { displayStrategy, fmtTime } from '../utils/format'
 
@@ -23,17 +23,52 @@ function cleanRejectReason(raw: string | null | undefined): string {
 }
 
 function isRejectedSig(sig: SignalItem): boolean {
-  const st = String(sig.status || '').toUpperCase()
-  return st === 'REJECTED' || Boolean(sig.reject_reason)
+  const c = getCanonicalStatus(sig)
+  return c === 'REJECTED' || c === 'SQUARE-OFF'
 }
 
 function isAcceptedSig(sig: SignalItem): boolean {
-  const st = String(sig.status || '').toUpperCase()
-  return (st === 'PROCESSED' || st === 'FILLED' || st === 'SUCCESS') && !isRejectedSig(sig)
+  return getCanonicalStatus(sig) === 'ACCEPTED'
 }
 
 function isProcessingSig(sig: SignalItem): boolean {
-  return !isAcceptedSig(sig) && !isRejectedSig(sig)
+  return getCanonicalStatus(sig) === 'PROCESSING'
+}
+
+function formatDuration(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || isNaN(seconds) || seconds < 0) {
+    return '—'
+  }
+  if (seconds < 60) {
+    return `${seconds.toFixed(1)} seconds`
+  }
+  const mins = Math.floor(seconds / 60)
+  const secs = (seconds % 60).toFixed(1)
+  return `${mins}m ${secs}s`
+}
+
+function computeProcessingDuration(sig: SignalItem): { text: string; isActive: boolean } {
+  if (sig.processing_duration_sec !== undefined && sig.processing_duration_sec !== null) {
+    return { text: formatDuration(sig.processing_duration_sec), isActive: false }
+  }
+  if (sig.received_at && sig.processed_at) {
+    const tRec = new Date(sig.received_at).getTime()
+    const tProc = new Date(sig.processed_at).getTime()
+    if (!isNaN(tRec) && !isNaN(tProc) && tProc >= tRec) {
+      return { text: formatDuration((tProc - tRec) / 1000), isActive: false }
+    }
+  }
+  if (sig.is_active_processing || getCanonicalStatus(sig) === 'PROCESSING') {
+    if (sig.received_at) {
+      const tRec = new Date(sig.received_at).getTime()
+      const tNow = Date.now()
+      if (!isNaN(tRec) && tNow >= tRec) {
+        return { text: `${((tNow - tRec) / 1000).toFixed(1)} seconds`, isActive: true }
+      }
+    }
+    return { text: 'Active processing', isActive: true }
+  }
+  return { text: '—', isActive: false }
 }
 
 function computeFillSummary(sig: SignalItem): {
@@ -43,7 +78,7 @@ function computeFillSummary(sig: SignalItem): {
   partiallyFilled: boolean
   latestAttempt: number | null
 } {
-  const orders = sig.events ? sig.orders : sig.orders
+  const orders = sig.orders || []
   if (!orders || orders.length === 0) {
     return {
       summaryText: '',
@@ -58,47 +93,36 @@ function computeFillSummary(sig: SignalItem): {
   const compensationOrders = orders.filter((o) => o.is_compensation)
   const isProtectionTriggered = compensationOrders.length > 0
 
-  const retryEvents = (sig.events || []).filter((e) => String(e.kind).toUpperCase() === 'BASKET_RETRY')
   let latestAttempt: number | null = null
-  if (retryEvents.length > 0) {
-    const lastEv = retryEvents[retryEvents.length - 1]
-    const dt = (lastEv.detail || {}) as Record<string, unknown>
-    latestAttempt = Number(dt.attempt) || retryEvents.length
+  for (const ev of sig.events || []) {
+    if (String(ev.kind || '').toUpperCase() === 'BASKET_RETRY') {
+      const att = Number((ev.detail || {}).attempt)
+      if (att && (!latestAttempt || att > latestAttempt)) {
+        latestAttempt = att
+      }
+    }
   }
 
-  let totalRequested = 0
-  let totalFilled = 0
-  let filledCount = 0
-
-  const legSummaries: string[] = []
-
-  for (const o of primaryOrders) {
+  const legs = primaryOrders.map((o) => {
     const req = Number(o.quantity) || 0
     const fill = Number(o.fill_qty) || 0
-    totalRequested += req
-    totalFilled += fill
-    const isLegFull = fill >= req && req > 0
-    if (isLegFull) filledCount++
+    return { symbol: o.symbol, req, fill }
+  })
 
-    const prefix = isLegFull ? '✓ ' : fill > 0 ? '⟳ ' : ''
-    legSummaries.push(`${prefix}${o.symbol} ${fill}/${req}`)
+  const allFilled = legs.length > 0 && legs.every((l) => l.fill >= l.req && l.req > 0)
+  const partiallyFilled = legs.some((l) => l.fill > 0 && l.fill < l.req)
+
+  const summaryParts = legs.map((l) => {
+    const isFull = l.fill >= l.req && l.req > 0
+    const isPart = l.fill > 0 && l.fill < l.req
+    const mark = isFull ? '✓ ' : isPart ? '⟳ ' : ''
+    return `${mark}${l.symbol} ${l.fill}/${l.req}`
+  })
+
+  let summaryText = summaryParts.join(' · ')
+  if (latestAttempt && !allFilled && !isProtectionTriggered) {
+    summaryText += ` (Retry ${latestAttempt}/3)`
   }
-
-  const allFilled = primaryOrders.length > 0 && filledCount === primaryOrders.length
-  const partiallyFilled = totalFilled > 0 && !allFilled
-
-  let statusSuffix = ''
-  if (allFilled) {
-    statusSuffix = ' (Fully filled)'
-  } else if (isProtectionTriggered) {
-    statusSuffix = ' (Protection triggered)'
-  } else if (latestAttempt !== null) {
-    statusSuffix = ` (Retrying · Attempt ${latestAttempt}/3)`
-  } else if (partiallyFilled) {
-    statusSuffix = ' (Evaluating RMS & OMS)'
-  }
-
-  const summaryText = legSummaries.join(' · ') + statusSuffix
 
   return {
     summaryText,
@@ -109,47 +133,36 @@ function computeFillSummary(sig: SignalItem): {
   }
 }
 
-interface TimelineEvent {
+interface TimelineItem {
   ts: string
-  dotColor: 'green' | 'amber' | 'red'
+  dotColor: 'green' | 'amber' | 'red' | 'blue'
   description: string
 }
 
-function buildChronologicalTimeline(sig: SignalItem): TimelineEvent[] {
-  const events: TimelineEvent[] = []
+function buildUnifiedTimeline(sig: SignalItem): TimelineItem[] {
+  const events: TimelineItem[] = []
   const baseTs = sig.received_at || new Date().toISOString()
 
   // 1. Signal Received
   events.push({
     ts: baseTs,
-    dotColor: 'green',
-    description: `Signal received from strategy ${displayStrategy(sig.strategy_id)} (${sig.action} ${sig.pair})`,
+    dotColor: 'blue',
+    description: `TradingView signal received for ${sig.pair || 'Pair'} (${sig.action || 'OPEN'})`,
   })
 
-  const isRejected = isRejectedSig(sig)
-
-  if (isRejected) {
+  // 2. Risk Check & OMS Order Submission
+  const primaryOrders = (sig.orders || []).filter((o) => !o.is_compensation)
+  if (sig.reject_reason) {
     events.push({
       ts: sig.processed_at || baseTs,
       dotColor: 'red',
-      description: `Rejected by RMS policy: ${cleanRejectReason(sig.reject_reason)}`,
+      description: `RMS Risk Check Rejected: ${cleanRejectReason(sig.reject_reason)}`,
     })
-    return events
-  }
-
-  // 2. RMS Risk Decision
-  events.push({
-    ts: baseTs,
-    dotColor: 'green',
-    description: 'Pre-trade risk checks passed (RMS duplicate, strategy, & capital limits verified)',
-  })
-
-  const primaryOrders = (sig.orders || []).filter((o) => !o.is_compensation)
-  if (primaryOrders.length > 0) {
+  } else if (primaryOrders.length > 0) {
     events.push({
       ts: baseTs,
       dotColor: 'amber',
-      description: `OMS submitted ${primaryOrders.length} leg order(s) to IBKR broker adapter`,
+      description: `RMS Risk Checks PASSED — OMS submitted ${primaryOrders.length} leg order(s) to IBKR broker adapter`,
     })
   }
 
@@ -201,7 +214,7 @@ function buildChronologicalTimeline(sig: SignalItem): TimelineEvent[] {
     events.push({
       ts: sig.processed_at,
       dotColor: 'green',
-      description: `Signal lifecycle processing completed (Final DB Status: ${sig.status})`,
+      description: `Signal lifecycle processing completed (${sig.canonical_status || sig.status})`,
     })
   }
 
@@ -294,45 +307,47 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
         </div>
       </div>
 
-      {/* Main Signal Table Container */}
+      {/* Main Signal Tray Workspace Table */}
       <div className="board factory-board scrollable-table-container">
         {isLoading && signals.length === 0 ? (
           <div className="signal-empty-state">
-            <span className="empty-icon">⏳</span>
-            <p>Loading historical signals...</p>
+            <span className="spin-icon" aria-hidden="true">⟳</span>
+            <p>Loading real-time signal workspace...</p>
           </div>
         ) : filteredSignals.length === 0 ? (
           <div className="signal-empty-state">
             <span className="empty-icon">📡</span>
-            <p>No {statusFilter.toLowerCase()} signals for account {cleanFilter || 'All'}.</p>
-            <span className="dim-txt">Incoming TradingView alert webhooks will appear here in real time.</span>
+            <p>No {statusFilter.toLowerCase()} signals found for this account.</p>
+            <span className="dim-txt">Incoming webhooks from TradingView will stream here automatically.</span>
           </div>
         ) : (
-          <table className="factory-table signal-table">
+          <table className="factory-table signal-workspace-table">
             <thead>
               <tr>
-                <th style={{ width: '140px' }}>TIME</th>
-                <th style={{ width: '130px' }}>SIGNAL / PAIR</th>
-                <th style={{ width: '110px' }}>ACTION</th>
-                <th style={{ width: '120px' }}>STRATEGY</th>
-                <th style={{ width: '110px' }}>ACCOUNT</th>
-                <th style={{ width: '140px' }}>STATUS</th>
-                <th>EXECUTION & OUTCOME SUMMARY</th>
+                <th style={{ width: '12%' }}>RECEIVED</th>
+                <th style={{ width: '15%' }}>PAIR</th>
+                <th style={{ width: '10%' }}>ACTION</th>
+                <th style={{ width: '13%' }}>STRATEGY</th>
+                <th style={{ width: '12%' }}>ACCOUNT</th>
+                <th style={{ width: '13%' }}>STATUS</th>
+                <th style={{ width: '25%' }}>OUTCOME & LEG PROGRESS</th>
               </tr>
             </thead>
             <tbody>
               {filteredSignals.map((sig) => {
-                const idKey = sig.signal_id || String(sig.id)
+                const idKey = String(sig.signal_id || sig.id)
+                const isExpanded = expandedId === idKey
                 const act = String(sig.action || 'OPEN').toUpperCase()
                 const isRejected = isRejectedSig(sig)
                 const isAccepted = isAcceptedSig(sig)
-                const isExpanded = expandedId === idKey
-
                 const fillInfo = computeFillSummary(sig)
-                const primaryOrders = (sig.orders || []).filter((o) => !o.is_compensation)
-                const compensationOrders = (sig.orders || []).filter((o) => o.is_compensation)
+                const timeline = buildUnifiedTimeline(sig)
+                const procDuration = computeProcessingDuration(sig)
+
+                const orders = sig.orders || []
+                const primaryOrders = orders.filter((o) => !o.is_compensation)
+                const compensationOrders = orders.filter((o) => o.is_compensation)
                 const retryEvents = (sig.events || []).filter((e) => String(e.kind).toUpperCase() === 'BASKET_RETRY')
-                const timeline = buildChronologicalTimeline(sig)
 
                 const incompleteLeg = primaryOrders.find((o) => (Number(o.fill_qty) || 0) < (Number(o.quantity) || 0))
 
@@ -406,7 +421,26 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
                       {/* Expandable Technical Lifecycle Drawer */}
                       {isExpanded && (
                         <div className="signal-expanded-drawer" onClick={(e) => e.stopPropagation()}>
-                          {/* 1. LEG-BY-LEG EXECUTION CARDS */}
+                          {/* 1. TOTAL PROCESSING TIME METRIC CARD */}
+                          <div className="drawer-section processing-time-card">
+                            <h5 className="drawer-section-title">⏱ TOTAL SIGNAL PROCESSING TIME</h5>
+                            <div className="processing-time-body">
+                              <div className="time-metric-box">
+                                <span className="time-metric-label dim-txt font-bold">
+                                  {procDuration.isActive ? 'CURRENTLY PROCESSING FOR:' : 'TOTAL PROCESSING TIME:'}
+                                </span>
+                                <span className={`time-metric-val font-bold ${procDuration.isActive ? 'txt-warning' : 'txt-success'}`}>
+                                  {procDuration.text}
+                                </span>
+                              </div>
+                              <div className="time-stamps-row dim-txt mono">
+                                <span>Received: {fmtTime(sig.received_at, displayTz)}</span>
+                                {sig.processed_at && <span>Completed: {fmtTime(sig.processed_at, displayTz)}</span>}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* 2. LEG-BY-LEG EXECUTION CARDS */}
                           {primaryOrders.length > 0 && (
                             <div className="drawer-section">
                               <h5 className="drawer-section-title">📊 LEG-BY-LEG EXECUTION STATE</h5>
@@ -466,7 +500,7 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
                             </div>
                           )}
 
-                          {/* 2. RETRY POLICY & CURRENT ACTION BLOCK */}
+                          {/* 3. RETRY POLICY & CURRENT ACTION BLOCK */}
                           {!isAccepted && !isRejected && (
                             <div className="drawer-section retry-policy-card">
                               <h5 className="drawer-section-title">🔄 RETRY POLICY & CURRENT ACTION</h5>
@@ -491,7 +525,7 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
                             </div>
                           )}
 
-                          {/* 3. AUTOMATIC PROTECTION / SQUARE-OFF CARD */}
+                          {/* 4. AUTOMATIC PROTECTION / SQUARE-OFF CARD */}
                           {compensationOrders.length > 0 && (
                             <div className="drawer-section protection-section">
                               <h5 className="drawer-section-title txt-warning">
@@ -546,7 +580,7 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
                             </div>
                           )}
 
-                          {/* 4. UNIFIED CHRONOLOGICAL LIFECYCLE TIMELINE */}
+                          {/* 5. UNIFIED CHRONOLOGICAL LIFECYCLE TIMELINE */}
                           <div className="drawer-section">
                             <h5 className="drawer-section-title">⏱ UNIFIED CHRONOLOGICAL LIFECYCLE TIMELINE</h5>
                             <div className="lifecycle-timeline">
@@ -560,7 +594,7 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
                             </div>
                           </div>
 
-                          {/* 5. TECHNICAL IDENTIFIERS */}
+                          {/* 6. TECHNICAL IDENTIFIERS */}
                           <div className="drawer-section technical-metadata">
                             <div className="drawer-grid">
                               <div>
@@ -571,6 +605,9 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
                               </div>
                               <div>
                                 <span className="drawer-label">Raw Status:</span> <span className="mono">{sig.status}</span>
+                              </div>
+                              <div>
+                                <span className="drawer-label">Canonical:</span> <span className="mono">{sig.canonical_status || '—'}</span>
                               </div>
                             </div>
                           </div>

@@ -404,6 +404,11 @@ async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str,
             for ev in matched_events
         ]
 
+        # Reconcile canonical lifecycle status & processing duration
+        c_status, is_active, rec_reason, calc_proc_at, duration_sec = reconcile_signal_status(
+            sig, orders_payload, events_payload
+        )
+
         signals.append(
             {
                 "id": sig.id,
@@ -414,12 +419,125 @@ async def load_signals(session: AsyncSession, limit: int = 50) -> list[dict[str,
                 "pair": pair or "N/A",
                 "side": sig.side,
                 "status": sig.status,
-                "reject_reason": sig.reject_reason,
+                "canonical_status": c_status,
+                "is_active_processing": is_active,
+                "reconciled_reason": rec_reason,
+                "reject_reason": sig.reject_reason or rec_reason,
                 "received_at": sig.received_at.isoformat() if sig.received_at else None,
-                "processed_at": sig.processed_at.isoformat() if sig.processed_at else None,
+                "processed_at": calc_proc_at,
+                "processing_duration_sec": duration_sec,
                 "raw_payload": sig.raw_payload,
                 "orders": orders_payload,
                 "events": events_payload,
             }
         )
     return signals
+
+
+def reconcile_signal_status(
+    sig: SignalModel,
+    orders: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+) -> tuple[str, bool, str | None, str | None, float | None]:
+    """Reconcile raw database status to canonical_status, is_active_processing, reason, processed_at, duration_sec."""
+    raw_status = str(sig.status or "").upper()
+    reject_reason = sig.reject_reason
+
+    # 1. RMS / OMS Rejections
+    has_reject_event = any(
+        e.get("kind") in ("RMS_REJECTED", "OMS_REJECTED", "SIGNAL_REJECTED", "EXECUTION_ERROR")
+        for e in events
+    )
+    if reject_reason or has_reject_event or raw_status in ("REJECTED", "ERROR", "FAILED"):
+        proc_at = sig.processed_at.isoformat() if sig.processed_at else (events[-1]["ts"] if events and events[-1].get("ts") else (sig.received_at.isoformat() if sig.received_at else None))
+        rec_reason = reject_reason or "Declined by RMS/OMS execution pipeline"
+        duration = None
+        if sig.received_at and proc_at:
+            try:
+                dt_rec = sig.received_at
+                dt_proc = datetime.fromisoformat(proc_at)
+                duration = max(0.0, (dt_proc - dt_rec).total_seconds())
+            except Exception:
+                pass
+        return ("REJECTED", False, rec_reason, proc_at, duration)
+
+    # 2. Compensation / Unwinding Orders
+    primary_orders = [o for o in orders if not o.get("is_compensation")]
+    comp_orders = [o for o in orders if o.get("is_compensation")]
+
+    has_comp_unwound = any(
+        o.get("status") in ("FILLED", "CANCELLED") for o in comp_orders
+    ) or any(e.get("kind") in ("BASKET_UNWINDING", "SQUARE_OFF") for e in events)
+
+    if has_comp_unwound or (comp_orders and all(o.get("status") in ("FILLED", "CANCELLED") for o in comp_orders)):
+        proc_at = sig.processed_at.isoformat() if sig.processed_at else (events[-1]["ts"] if events and events[-1].get("ts") else (sig.received_at.isoformat() if sig.received_at else None))
+        duration = None
+        if sig.received_at and proc_at:
+            try:
+                dt_rec = sig.received_at
+                dt_proc = datetime.fromisoformat(proc_at)
+                duration = max(0.0, (dt_proc - dt_rec).total_seconds())
+            except Exception:
+                pass
+        return ("SQUARE-OFF", False, "Incomplete leg timeout reached — Exposure automatically squared off", proc_at, duration)
+
+    # 3. Primary Orders Full Fill
+    if primary_orders:
+        all_filled = all(
+            (o.get("status") in ("FILLED", "PROCESSED", "SUCCESS") or (o.get("fill_qty", 0.0) >= o.get("quantity", 1.0) > 0))
+            for o in primary_orders
+        )
+        if all_filled:
+            last_fill_ts = None
+            for o in primary_orders:
+                if o.get("filled_at"):
+                    if not last_fill_ts or o["filled_at"] > last_fill_ts:
+                        last_fill_ts = o["filled_at"]
+            proc_at = sig.processed_at.isoformat() if sig.processed_at else (last_fill_ts or (sig.received_at.isoformat() if sig.received_at else None))
+            duration = None
+            if sig.received_at and proc_at:
+                try:
+                    dt_rec = sig.received_at
+                    dt_proc = datetime.fromisoformat(proc_at)
+                    duration = max(0.0, (dt_proc - dt_rec).total_seconds())
+                except Exception:
+                    pass
+            return ("ACCEPTED", False, None, proc_at, duration)
+
+        # Active Working Orders
+        has_working = any(
+            o.get("status") in ("SUBMITTED", "PRESUBMITTED", "PENDING", "PARTIALLY_FILLED", "RETRYING")
+            for o in primary_orders
+        )
+        if has_working:
+            return ("PROCESSING", True, "Working orders executing in IBKR", None, None)
+
+    # 4. Explicit PROCESSED status in DB
+    if raw_status in ("PROCESSED", "FILLED", "SUCCESS"):
+        proc_at = sig.processed_at.isoformat() if sig.processed_at else (sig.received_at.isoformat() if sig.received_at else None)
+        duration = None
+        if sig.received_at and proc_at:
+            try:
+                dt_rec = sig.received_at
+                dt_proc = datetime.fromisoformat(proc_at)
+                duration = max(0.0, (dt_proc - dt_rec).total_seconds())
+            except Exception:
+                pass
+        return ("ACCEPTED", False, None, proc_at, duration)
+
+    # 5. Stale / Orphaned Signals (e.g. status == NEW but no active working orders)
+    proc_at = sig.processed_at.isoformat() if sig.processed_at else (sig.received_at.isoformat() if sig.received_at else None)
+    duration = None
+    if sig.received_at and proc_at:
+        try:
+            dt_rec = sig.received_at
+            dt_proc = datetime.fromisoformat(proc_at)
+            duration = max(0.0, (dt_proc - dt_rec).total_seconds())
+        except Exception:
+            pass
+
+    if primary_orders and any(o.get("status") in ("CANCELLED", "REJECTED", "ERROR") for o in primary_orders):
+        return ("REJECTED", False, "Broker leg order rejected or cancelled", proc_at, duration)
+
+    # Truthful handling when no orders or execution evidence exists:
+    return ("EXPIRED", False, "Signal inactive — No broker orders or execution reports recorded", proc_at, duration)
