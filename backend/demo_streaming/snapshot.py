@@ -115,10 +115,16 @@ def _leg_payload(
         if (position.risk_state == RISK_CLOSED or position.realised_pnl != Decimal(0))
         else None
     )
-    entry_ts = position.opened_at if getattr(position, "opened_at", None) is not None else timestamp
+    opened_ts = position.opened_at if getattr(position, "opened_at", None) is not None else timestamp
+    closed_ts = getattr(position, "closed_at", None)
+    if closed_ts is None and order is not None and order.filled_at is not None and position.risk_state == RISK_CLOSED:
+        closed_ts = order.filled_at
+
     market_status = "UNAVAILABLE"
     payload = {
-        "timestamp": entry_ts.isoformat(),
+        "timestamp": opened_ts.isoformat(),
+        "opened_at": opened_ts.isoformat() if opened_ts else None,
+        "closed_at": closed_ts.isoformat() if closed_ts else None,
         "account_id": position.account_id,
         "ibkr_account": account.ibkr_account,
         "account_name": account.name,
@@ -199,6 +205,8 @@ def fingerprint(payload: dict[str, Any]) -> tuple:
         payload.get("order_status"),
         payload.get("broker_order_id"),
         payload.get("close_in_progress"),
+        payload.get("opened_at"),
+        payload.get("closed_at"),
     )
 
 

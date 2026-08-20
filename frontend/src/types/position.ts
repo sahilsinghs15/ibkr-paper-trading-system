@@ -5,6 +5,8 @@ export type StreamState = 'CONNECTING' | 'LIVE' | 'RECONNECTING'
 export interface PositionLeg {
   event?: string
   timestamp?: string | null
+  opened_at?: string | null
+  closed_at?: string | null
   account_id?: number | string | null
   ibkr_account?: string | null
   account_name?: string | null

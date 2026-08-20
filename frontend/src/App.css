@@ -456,6 +456,44 @@ body,
   border-color: rgba(239, 107, 115, 0.2);
 }
 
+.header-controls-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.history-filter-toggle {
+  display: inline-flex;
+  background: #0d121c;
+  border: 1px solid #1c2638;
+  border-radius: 4px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.history-filter-btn {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 3px 8px;
+  border-radius: 3px;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.history-filter-btn:hover {
+  color: var(--ink);
+}
+
+.history-filter-btn.active {
+  background: #1c2638;
+  color: var(--accent);
+}
+
 .status-pill-badge {
   font-size: 10px;
   font-weight: 700;

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { groupLegs, usePnlStore } from '../store/pnlStore'
 import {
   calcAgeDays,
@@ -11,11 +11,18 @@ import {
   streamHint,
 } from '../utils/format'
 
+function getEpochMs(isoStr?: string | null): number {
+  if (!isoStr) return 0
+  const ms = new Date(isoStr).getTime()
+  return isNaN(ms) ? 0 : ms
+}
+
 export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }) {
   const active = usePnlStore((s) => s.active)
   const streamState = usePnlStore((s) => s.streamState)
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
+  const [historyOrder, setHistoryOrder] = useState<'RECENT' | 'OLDER'>('RECENT')
 
   const filteredActive = useMemo(() => {
     if (!cleanFilter) return active
@@ -28,7 +35,24 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
     return out
   }, [active, cleanFilter])
 
-  const trades = useMemo(() => [...groupLegs(filteredActive).values()], [filteredActive])
+  const trades = useMemo(() => {
+    const list = [...groupLegs(filteredActive).values()]
+
+    // Deterministically sort by ENTRY TIME (opened_at)
+    list.sort((a, b) => {
+      const headA = a[0]
+      const headB = b[0]
+      const openTsA = getEpochMs(headA.opened_at || headA.timestamp)
+      const openTsB = getEpochMs(headB.opened_at || headB.timestamp)
+
+      if (historyOrder === 'RECENT') {
+        return openTsB - openTsA // Newest open positions first (DESC)
+      }
+      return openTsA - openTsB // Older open positions chronologically (ASC)
+    })
+
+    return list
+  }, [filteredActive, historyOrder])
 
   return (
     <section className="factory-panel-section">
@@ -37,7 +61,29 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
           <h2>FACTORY PANEL — OPEN POSITIONS ({trades.length})</h2>
           <span className="factory-subtitle">MODEL BLUE X-SERIES · V1.1</span>
         </div>
-        <span className="muted">{streamHint(streamState)}</span>
+
+        <div className="header-controls-group">
+          {/* Recent vs Older Filter Toggle */}
+          <div className="history-filter-toggle">
+            <button
+              type="button"
+              className={`history-filter-btn ${historyOrder === 'RECENT' ? 'active' : ''}`}
+              onClick={() => setHistoryOrder('RECENT')}
+              title="Show newest open positions first (Entry Time DESC)"
+            >
+              RECENT (NEWEST FIRST)
+            </button>
+            <button
+              type="button"
+              className={`history-filter-btn ${historyOrder === 'OLDER' ? 'active' : ''}`}
+              onClick={() => setHistoryOrder('OLDER')}
+              title="Show older open positions chronologically (Entry Time ASC)"
+            >
+              OLDER (CHRONOLOGICAL)
+            </button>
+          </div>
+          <span className="muted">{streamHint(streamState)}</span>
+        </div>
       </div>
 
       <div className="board factory-board scrollable-table-container">
@@ -81,8 +127,9 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                 const imbalanceSide = legBPct >= legAPct ? 'short' : 'long'
                 const imbalanceText = `+${imbalance}% more ${imbalanceSide}`
 
-                const age = calcAgeDays(head.timestamp || head.fill_timestamp)
-                const entryStr = fmtFactoryDate(head.timestamp || head.fill_timestamp, displayTz)
+                const openTsRaw = head.opened_at || head.timestamp
+                const age = calcAgeDays(openTsRaw)
+                const entryStr = openTsRaw ? fmtFactoryDate(openTsRaw, displayTz) : '—'
                 const r = calcRMultiple(head.unrealized_pnl, totalNotional)
                 const tk = `${head.account_id}|${head.trade_id}`
                 const rowSno = idx + 1
@@ -148,16 +195,8 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
 
                     {/* 7. PROGRESS */}
                     <td className="right progress-cell">
-                      <div className="progress-wrapper">
-                        <div className="progress-track">
-                          <div
-                            className={`progress-fill ${r.isPos ? 'pos' : 'neg'}`}
-                            style={{ width: `${Math.min(100, Math.max(10, Math.abs(r.r) * 50))}%` }}
-                          />
-                        </div>
-                        <span className={`mono progress-txt ${r.isPos ? 'pnl-pos' : 'pnl-neg'}`}>
-                          {r.text}
-                        </span>
+                      <div className="r-pill-box">
+                        <span className={`r-pill ${r.isPos ? 'pos' : 'neg'}`}>{r.text}</span>
                       </div>
                     </td>
                   </tr>

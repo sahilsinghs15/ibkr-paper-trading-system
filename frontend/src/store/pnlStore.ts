@@ -53,7 +53,13 @@ export const usePnlStore = create<PnlState>((set, get) => ({
 
     if (isClosedEvent(row)) {
       if (row.symbol) {
-        const merged = { ...(nextActive[key] || {}), ...row }
+        const prev = nextActive[key] || {}
+        const merged: PositionLeg = {
+          ...prev,
+          ...row,
+          opened_at: row.opened_at || prev.opened_at || row.timestamp,
+          closed_at: row.closed_at || row.fill_timestamp || row.timestamp || new Date().toISOString(),
+        }
         delete nextActive[key]
         nextClosed[key] = merged
       } else {
@@ -63,13 +69,23 @@ export const usePnlStore = create<PnlState>((set, get) => ({
             v.trade_id === row.trade_id
           ) {
             delete nextActive[k]
-            nextClosed[k] = { ...v, ...row }
+            nextClosed[k] = {
+              ...v,
+              ...row,
+              opened_at: row.opened_at || v.opened_at || v.timestamp,
+              closed_at: row.closed_at || row.fill_timestamp || row.timestamp || new Date().toISOString(),
+            }
           }
         }
       }
     } else if (row.symbol) {
       delete nextClosed[key]
-      nextActive[key] = { ...(nextActive[key] || {}), ...row }
+      const prev = nextActive[key] || {}
+      nextActive[key] = {
+        ...prev,
+        ...row,
+        opened_at: row.opened_at || prev.opened_at || row.timestamp,
+      }
     }
 
     set({ active: nextActive, closed: nextClosed, lastTs: nextLast })

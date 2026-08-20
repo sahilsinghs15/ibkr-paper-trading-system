@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { groupLegs, usePnlStore } from '../store/pnlStore'
 import {
   calcAgeDays,
@@ -10,10 +10,17 @@ import {
   pnlClass,
 } from '../utils/format'
 
+function getEpochMs(isoStr?: string | null): number {
+  if (!isoStr) return 0
+  const ms = new Date(isoStr).getTime()
+  return isNaN(ms) ? 0 : ms
+}
+
 export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string }) {
   const closed = usePnlStore((s) => s.closed)
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
+  const [historyOrder, setHistoryOrder] = useState<'RECENT' | 'OLDER'>('RECENT')
 
   const filteredClosed = useMemo(() => {
     if (!cleanFilter) return closed
@@ -26,7 +33,24 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
     return out
   }, [closed, cleanFilter])
 
-  const closedTrades = useMemo(() => [...groupLegs(filteredClosed).values()], [filteredClosed])
+  const closedTrades = useMemo(() => {
+    const list = [...groupLegs(filteredClosed).values()]
+
+    // Deterministically sort by CLOSED TIME
+    list.sort((a, b) => {
+      const headA = a[0]
+      const headB = b[0]
+      const closeTsA = getEpochMs(headA.closed_at || headA.fill_timestamp || headA.timestamp)
+      const closeTsB = getEpochMs(headB.closed_at || headB.fill_timestamp || headB.timestamp)
+
+      if (historyOrder === 'RECENT') {
+        return closeTsB - closeTsA // Newest closed trades first (DESC)
+      }
+      return closeTsA - closeTsB // Older trades chronologically (ASC)
+    })
+
+    return list
+  }, [filteredClosed, historyOrder])
 
   return (
     <section className="factory-panel-section">
@@ -34,6 +58,26 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
         <div className="factory-title-block">
           <h2>FACTORY PANEL — RECENTLY CLOSED POSITIONS ({closedTrades.length})</h2>
           <span className="factory-subtitle">MODEL BLUE X-SERIES · HISTORICAL TRADES</span>
+        </div>
+
+        {/* Recent vs Older Filter Toggle */}
+        <div className="history-filter-toggle">
+          <button
+            type="button"
+            className={`history-filter-btn ${historyOrder === 'RECENT' ? 'active' : ''}`}
+            onClick={() => setHistoryOrder('RECENT')}
+            title="Show most recent closed trades first (Closed Time DESC)"
+          >
+            RECENT (NEWEST FIRST)
+          </button>
+          <button
+            type="button"
+            className={`history-filter-btn ${historyOrder === 'OLDER' ? 'active' : ''}`}
+            onClick={() => setHistoryOrder('OLDER')}
+            title="Show older historical trades chronologically (Closed Time ASC)"
+          >
+            OLDER (CHRONOLOGICAL)
+          </button>
         </div>
       </div>
 
@@ -79,9 +123,12 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
                 const imbalanceSide = legBPct >= legAPct ? 'short' : 'long'
                 const imbalanceText = `+${imbalance}% more ${imbalanceSide}`
 
-                const age = calcAgeDays(head.timestamp || head.fill_timestamp)
-                const entryStr = fmtFactoryDate(head.timestamp || head.fill_timestamp, displayTz)
-                const closedStr = fmtFactoryDate(head.fill_timestamp || head.timestamp, displayTz)
+                const openTsRaw = head.opened_at || head.timestamp
+                const closeTsRaw = head.closed_at || head.fill_timestamp
+
+                const age = calcAgeDays(closeTsRaw || openTsRaw)
+                const entryStr = openTsRaw ? fmtFactoryDate(openTsRaw, displayTz) : '—'
+                const closedStr = closeTsRaw ? fmtFactoryDate(closeTsRaw, displayTz) : '—'
                 const r = calcRMultiple(head.realized_pnl, totalNotional)
                 const tk = `${head.account_id}|${head.trade_id}`
                 const rowSno = idx + 1
@@ -150,16 +197,8 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
 
                     {/* 8. PROGRESS */}
                     <td className="right progress-cell">
-                      <div className="progress-wrapper">
-                        <div className="progress-track">
-                          <div
-                            className={`progress-fill ${r.isPos ? 'pos' : 'neg'}`}
-                            style={{ width: `${Math.min(100, Math.max(10, Math.abs(r.r) * 50))}%` }}
-                          />
-                        </div>
-                        <span className={`mono progress-txt ${r.isPos ? 'pnl-pos' : 'pnl-neg'}`}>
-                          {r.text}
-                        </span>
+                      <div className="r-pill-box">
+                        <span className={`r-pill ${r.isPos ? 'pos' : 'neg'}`}>{r.text}</span>
                       </div>
                     </td>
                   </tr>
