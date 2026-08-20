@@ -397,3 +397,58 @@ def test_13_reroute_mkt_data_req_subscribes_underlying() -> None:
     assert underlying_contract.conId == 756733
     assert underlying_contract.secType == "STK"
     assert underlying_contract.exchange == "ARCA"
+
+
+# ---------------------------------------------------------------------------
+# Test 14 — Pre-resolved CFD leg overrides to STK for market-data subscription
+# ---------------------------------------------------------------------------
+def test_14_preresolved_cfd_leg_overrides_to_stk_for_market_data() -> None:
+    from app.instruments.models import ResolvedInstrument
+
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+
+    factory = MagicMock()
+    svc = LivePnlService(factory, client)
+
+    # Leg pre-resolved by OrderManager with CFD execution identity and con_id=134770252
+    resolved_cfd = ResolvedInstrument(
+        symbol="EWC",
+        requested_instrument_type="STK",
+        sec_type="CFD",
+        exchange="SMART",
+        currency="USD",
+        con_id=134770252,
+    )
+    leg = OrderLeg(
+        symbol="EWC",
+        side=OrderSide.BUY,
+        quantity=Decimal("405"),
+        price=Decimal("61.71"),
+        contract_month="2026-09",
+        instrument_type="CFD",
+        leg_index=0,
+    )
+    from dataclasses import replace
+    leg = replace(leg, resolved=resolved_cfd)
+
+    intent = OrderIntent(
+        signal_id="T-CFD-PRERESOLVED-1",
+        strategy_id="MODEL_BLUE",
+        action=OrderAction.OPEN,
+        account_id=7,
+        ibkr_account="DUR919062",
+        legs=[leg],
+        timestamp=datetime.now(UTC),
+    )
+
+    svc.watch_open(intent)
+
+    # Verify reqMktData was called with secType="STK", NOT "CFD", and NOT CFD conId 134770252
+    assert client.reqMktData.call_count == 1
+    call_args = client.reqMktData.call_args[0]
+    contract = call_args[1]
+
+    assert contract.symbol == "EWC"
+    assert contract.secType == "STK"
+    assert contract.conId != 134770252

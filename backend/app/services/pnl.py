@@ -395,7 +395,7 @@ class LivePnlService:
         )
 
         resolved = getattr(leg, "resolved", None)
-        if resolved is None:
+        if resolved is None or getattr(resolved, "sec_type", "").upper() == "CFD":
             try:
                 md_inst_type = "STK" if getattr(leg, "instrument_type", "").upper() in ("CFD", "STK", "ETF") else getattr(leg, "instrument_type", "STK")
                 resolved = resolve_leg(
@@ -403,7 +403,7 @@ class LivePnlService:
                     instrument_type=md_inst_type,
                     market=getattr(leg, "exchange", "SMART"),
                     currency=getattr(leg, "currency", "USD"),
-                    con_id=getattr(leg, "con_id", None),
+                    con_id=getattr(resolved, "market_data_con_id", None),
                     catalog=self._catalog,
                     apply_demo_override=False,  # Market data uses STK for equities/ETFs
                 )
@@ -427,6 +427,9 @@ class LivePnlService:
                 }
                 return
         contract = ibkr_market_data_contract_from_resolved(resolved)
+        if getattr(contract, "secType", "").upper() == "CFD":
+            contract.secType = "STK"
+            contract.conId = getattr(resolved, "market_data_con_id", None) or 0
 
         # Live IBKR Contract Qualification if connected
         is_conn = getattr(self._client, "is_connected", None)
