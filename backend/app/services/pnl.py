@@ -39,19 +39,20 @@ def unrealized_pair(
     *,
     leg_a_signed: Decimal,
     leg_a_entry: Decimal,
-    leg_a_mark: Decimal,
+    leg_a_mark: Decimal | None,
     leg_b_signed: Decimal | None,
     leg_b_entry: Decimal | None,
     leg_b_mark: Decimal | None,
-) -> Decimal:
-    total = unrealized_leg(leg_a_signed, leg_a_entry, leg_a_mark)
-    if (
-        leg_b_signed is not None
-        and leg_b_entry is not None
-        and leg_b_mark is not None
-    ):
-        total += unrealized_leg(leg_b_signed, leg_b_entry, leg_b_mark)
-    return total
+) -> Decimal | None:
+    if leg_a_mark is None:
+        return None
+    if leg_b_signed is not None and leg_b_entry is not None:
+        if leg_b_mark is None:
+            return None
+        return unrealized_leg(leg_a_signed, leg_a_entry, leg_a_mark) + unrealized_leg(
+            leg_b_signed, leg_b_entry, leg_b_mark
+        )
+    return unrealized_leg(leg_a_signed, leg_a_entry, leg_a_mark)
 
 
 def _effective_mark(quote: dict[str, Decimal]) -> Decimal | None:
@@ -83,6 +84,7 @@ class LivePnlService:
         self._contract_reqs: dict[tuple, int] = {}
         self._req_to_contract: dict[int, tuple] = {}
         self._contract_health: dict[tuple, dict[str, Any]] = {}
+        self._cooldowns: dict[tuple, float] = {}
         self._loop = None
         self._catalog = None
         if client is not None and hasattr(client, "register_market_data_listener"):
@@ -180,6 +182,9 @@ class LivePnlService:
         c_key = self._req_to_contract.get(reqId)
         if c_key is None:
             return
+        import time
+
+        self._cooldowns[c_key] = time.time() + 600.0  # 10 minute backoff
         health = self._contract_health.setdefault(c_key, {
             "symbol": c_key[1],
             "sec_type": c_key[0],
@@ -191,23 +196,31 @@ class LivePnlService:
         })
         health["ibkr_error_code"] = errorCode
         health["ibkr_error_string"] = errorString
-        if errorCode == 10167:
+
+        if errorCode == 10089:
+            health["status"] = "NO_LIVE_ENTITLEMENT_API_SUBSCRIPTION_REQUIRED"
+            logger.warning(
+                "LivePnl IBKR Market Data Warning (10089): symbol=%s reqId=%d message=%s — "
+                "Account lacks live API entitlement for exchange",
+                c_key[1], reqId, errorString
+            )
+        elif errorCode == 10167:
             health["status"] = "NO_LIVE_ENTITLEMENT_DELAYED"
             logger.warning(
-                "LivePnl IBKR Market Data Notice: symbol=%s reqId=%d code=%d message=%s",
-                c_key[1], reqId, errorCode, errorString
+                "LivePnl IBKR Market Data Notice (10167): symbol=%s reqId=%d message=%s",
+                c_key[1], reqId, errorString
             )
         elif errorCode in (354, 300, 321):
             health["status"] = "NO_MARKET_DATA_ENTITLEMENT"
             logger.warning(
-                "LivePnl IBKR Market Data Warning: symbol=%s reqId=%d code=%d message=%s",
-                c_key[1], reqId, errorCode, errorString
+                "LivePnl IBKR Market Data Warning (%d): symbol=%s reqId=%d message=%s",
+                errorCode, c_key[1], reqId, errorString
             )
         elif errorCode == 200:
-            health["status"] = "INVALID_CONTRACT_SPEC"
+            health["status"] = "UNRESOLVED_CONTRACT_SPEC"
             logger.warning(
-                "LivePnl IBKR Contract Error: symbol=%s reqId=%d code=%d message=%s",
-                c_key[1], reqId, errorCode, errorString
+                "LivePnl IBKR Contract Error (200): symbol=%s reqId=%d message=%s",
+                c_key[1], reqId, errorString
             )
 
     def on_tick_price(self, reqId: int, tickType: int, price: float) -> None:
@@ -275,15 +288,41 @@ class LivePnlService:
     def get_market_data_health(self) -> dict[str, Any]:
         import datetime
         now = datetime.datetime.now(datetime.timezone.utc)
+        STALE_THRESHOLD_SEC = 15.0
         contracts_out = []
         for c_key, health in self._contract_health.items():
             last_ts = health.get("last_tick_at")
             tick_age_sec = (now - last_ts).total_seconds() if last_ts else None
+            req_id = self._contract_reqs.get(c_key)
+            listeners = self._listeners_by_req.get(req_id, set()) if req_id is not None else set()
+
+            raw_status = health.get("status", "NO_MARK")
+            if raw_status in ("LIVE", "LIVE_TICKING"):
+                if tick_age_sec is not None and tick_age_sec > STALE_THRESHOLD_SEC:
+                    computed_status = "STALE_TICK"
+                else:
+                    computed_status = "LIVE_TICKING"
+            elif raw_status in ("NO_LIVE_ENTITLEMENT_API_SUBSCRIPTION_REQUIRED", "10089"):
+                computed_status = "NO_LIVE_ENTITLEMENT"
+            elif raw_status in ("NO_LIVE_ENTITLEMENT_DELAYED", "10167"):
+                computed_status = "DELAYED_ONLY"
+            elif raw_status in ("NO_MARKET_DATA_ENTITLEMENT", "354", "300", "321"):
+                computed_status = "SUBSCRIPTION_ERROR"
+            elif raw_status in ("UNRESOLVED_CONTRACT_SPEC", "200"):
+                computed_status = "CONTRACT_UNRESOLVED"
+            else:
+                computed_status = raw_status
+
             contracts_out.append({
                 "symbol": c_key[1],
                 "sec_type": c_key[0],
                 "exchange": c_key[2],
-                "status": health.get("status", "NO_MARK"),
+                "currency": c_key[3] if len(c_key) > 3 else "USD",
+                "con_id": c_key[4] if len(c_key) > 4 else None,
+                "req_id": req_id,
+                "status": computed_status,
+                "listener_count": len(listeners),
+                "last_tick_timestamp": last_ts.isoformat() if last_ts else None,
                 "last_tick_age_sec": round(tick_age_sec, 2) if tick_age_sec is not None else None,
                 "last_mark": health.get("last_mark"),
                 "ibkr_error_code": health.get("ibkr_error_code"),
@@ -295,6 +334,26 @@ class LivePnlService:
         }
 
     def _request_ticks(self, account_id: int, trade_id: str, leg) -> None:
+        sym_clean = (leg.symbol or "").strip().upper()
+        if sym_clean.startswith("ZZZ") or "ZZZCFD" in sym_clean:
+            logger.warning(
+                "LivePnl skip ticks: synthetic/test symbol=%s account_id=%s trade_id=%s",
+                leg.symbol,
+                account_id,
+                trade_id,
+            )
+            c_key = ("UNRESOLVED", leg.symbol, "SMART", "USD", 0)
+            self._contract_health[c_key] = {
+                "symbol": leg.symbol,
+                "sec_type": "UNRESOLVED",
+                "status": "UNRESOLVED_CONTRACT_SPEC",
+                "ibkr_error_code": 200,
+                "ibkr_error_string": "Synthetic test symbol — not sent to IBKR",
+                "last_tick_at": None,
+                "last_mark": None,
+            }
+            return
+
         req_mkt = getattr(self._client, "reqMktData", None)
         if not callable(req_mkt):
             logger.warning(
@@ -320,9 +379,9 @@ class LivePnlService:
                     currency=getattr(leg, "currency", "USD"),
                     con_id=getattr(leg, "con_id", None),
                     catalog=self._catalog,
+                    apply_demo_override=False,  # Market data uses STK for equities/ETFs
                 )
             except InstrumentResolutionError as exc:
-                # CFD without master metadata: do not subscribe as STK.
                 logger.warning(
                     "LivePnl skip ticks: account_id=%s trade_id=%s symbol=%s reason=%s",
                     account_id,
@@ -330,8 +389,42 @@ class LivePnlService:
                     leg.symbol,
                     exc,
                 )
+                c_key = ("UNRESOLVED", leg.symbol, "SMART", "USD", 0)
+                self._contract_health[c_key] = {
+                    "symbol": leg.symbol,
+                    "sec_type": "UNRESOLVED",
+                    "status": "UNRESOLVED_CONTRACT_SPEC",
+                    "ibkr_error_code": 200,
+                    "ibkr_error_string": str(exc),
+                    "last_tick_at": None,
+                    "last_mark": None,
+                }
                 return
         contract = ibkr_market_data_contract_from_resolved(resolved)
+
+        # Live IBKR Contract Qualification if connected
+        is_conn = getattr(self._client, "is_connected", None)
+        if callable(is_conn) and is_conn():
+            req_details = getattr(self._client, "request_contract_details", None)
+            if callable(req_details):
+                try:
+                    details = req_details(contract, timeout=3.0)
+                    if details:
+                        qualified_c = details[0].contract
+                        if getattr(qualified_c, "conId", 0):
+                            contract.conId = qualified_c.conId
+                        if getattr(qualified_c, "primaryExchange", None):
+                            contract.primaryExchange = qualified_c.primaryExchange
+                    else:
+                        logger.warning(
+                            "LivePnl IBKR Contract Qualification: 0 details returned for symbol=%s",
+                            leg.symbol,
+                        )
+                except Exception:
+                    logger.exception(
+                        "LivePnl IBKR Contract Qualification exception for symbol=%s",
+                        leg.symbol,
+                    )
 
         c_key = (
             getattr(contract, "secType", "STK"),
@@ -340,6 +433,14 @@ class LivePnlService:
             getattr(contract, "currency", "USD"),
             getattr(contract, "conId", 0) or 0,
         )
+
+        import time
+        if time.time() < self._cooldowns.get(c_key, 0):
+            logger.info(
+                "LivePnl skip ticks (cooldown active): symbol=%s account_id=%s trade_id=%s",
+                leg.symbol, account_id, trade_id
+            )
+            return
 
         # Check if contract is already subscribed
         if c_key in self._contract_reqs:
@@ -355,15 +456,6 @@ class LivePnlService:
             )
             return
 
-        con_id = getattr(contract, "conId", None) or None
-        if (getattr(contract, "secType", "") or "").upper() == "CFD" and not con_id:
-            logger.warning(
-                "LivePnl reqMktData without conId: account_id=%s trade_id=%s symbol=%s "
-                "secType=CFD — ticks may not arrive",
-                account_id,
-                trade_id,
-                leg.symbol,
-            )
         req_id = self._next_req
         self._next_req += 1
         self._by_req[req_id] = (account_id, trade_id, leg.symbol)

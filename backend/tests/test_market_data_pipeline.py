@@ -8,7 +8,10 @@ Tests cover:
 5. Error on one symbol (e.g. GS) does not block tick processing for other symbols (GDX/SIL).
 6. get_market_data_health() outputs contract health snapshot with tick ages.
 7. Unwatching a position refcounts subscriptions and only cancels when subscriber count is zero.
-8. Staleness detection tracks last tick timestamp per contract.
+8. TWSClient forwards error callbacks to market data listeners.
+9. Synthetic test symbols (ZZZCFDA/ZZZCFDB) marked UNRESOLVED_CONTRACT_SPEC without calling reqMktData.
+10. TWS Error 10089 tracks health as NO_LIVE_ENTITLEMENT_API_SUBSCRIPTION_REQUIRED.
+11. unrealized_pair requires marks for both legs when Leg B is defined.
 """
 
 from datetime import UTC, datetime
@@ -19,7 +22,7 @@ import pytest
 
 from app.broker.ibkr.tws_client import TWSClient
 from app.rms.models import OrderAction, OrderIntent, OrderLeg, OrderSide
-from app.services.pnl import LivePnlService
+from app.services.pnl import LivePnlService, unrealized_pair
 
 
 def _make_intent(
@@ -213,3 +216,83 @@ def test_7_tws_client_forwards_errors_to_market_data_listeners() -> None:
     tws.error(50001, 10167, "Requested market data is not subscribed.")
 
     listener.on_error.assert_called_once_with(50001, 10167, "Requested market data is not subscribed.")
+
+
+# ---------------------------------------------------------------------------
+# Test 8 — Synthetic test symbols (ZZZCFDA) filtered out before reqMktData
+# ---------------------------------------------------------------------------
+def test_8_synthetic_symbols_filtered_out() -> None:
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+
+    factory = MagicMock()
+    svc = LivePnlService(factory, client)
+    intent = _make_intent("T-SYNTH-1", symbols=["ZZZCFDA", "ZZZCFDB"])
+
+    svc.watch_open(intent)
+
+    # reqMktData should NOT be called for synthetic symbols
+    client.reqMktData.assert_not_called()
+
+    health = svc.get_market_data_health()
+    zzz_health = next(c for c in health["contracts"] if c["symbol"] == "ZZZCFDA")
+    assert zzz_health["status"] == "UNRESOLVED_CONTRACT_SPEC"
+
+
+# ---------------------------------------------------------------------------
+# Test 9 — TWS Error 10089 tracks health as NO_LIVE_ENTITLEMENT_API_SUBSCRIPTION_REQUIRED
+# ---------------------------------------------------------------------------
+def test_9_tws_error_10089_tracks_health_status() -> None:
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+    client.reqMarketDataType = MagicMock()
+
+    factory = MagicMock()
+    svc = LivePnlService(factory, client)
+    intent = _make_intent("T-ERR-10089", symbols=["SIL"])
+
+    svc.watch_open(intent)
+    req_id = list(svc._by_req.keys())[0]
+
+    # Deliver TWS Error 10089
+    svc.on_error(
+        req_id,
+        10089,
+        "Requested market data requires additional subscription for API. Delayed market data is available. SIL ARCA/TOP/ALL",
+    )
+
+    health = svc.get_market_data_health()
+    sil_health = next(c for c in health["contracts"] if c["symbol"] == "SIL")
+
+    assert sil_health["status"] == "NO_LIVE_ENTITLEMENT_API_SUBSCRIPTION_REQUIRED"
+    assert sil_health["ibkr_error_code"] == 10089
+
+
+# ---------------------------------------------------------------------------
+# Test 10 — Two-leg spread P&L requires marks for both legs
+# ---------------------------------------------------------------------------
+def test_10_unrealized_pair_requires_both_leg_marks() -> None:
+    # Leg A has mark 100, Leg B mark is None -> returns None
+    pnl = unrealized_pair(
+        leg_a_signed=Decimal("10"),
+        leg_a_entry=Decimal("90"),
+        leg_a_mark=Decimal("100"),
+        leg_b_signed=Decimal("-10"),
+        leg_b_entry=Decimal("50"),
+        leg_b_mark=None,
+    )
+    assert pnl is None
+
+    # Both legs have marks -> returns calculated spread P&L
+    pnl_both = unrealized_pair(
+        leg_a_signed=Decimal("10"),
+        leg_a_entry=Decimal("90"),
+        leg_a_mark=Decimal("100"),
+        leg_b_signed=Decimal("-10"),
+        leg_b_entry=Decimal("50"),
+        leg_b_mark=Decimal("45"),
+    )
+    # Leg A: 10 * (100 - 90) = 100
+    # Leg B: -10 * (45 - 50) = 50
+    # Total: 150
+    assert pnl_both == Decimal("150")

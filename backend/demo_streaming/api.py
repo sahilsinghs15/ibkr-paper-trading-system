@@ -151,6 +151,17 @@ def create_demo_app(
             return JSONResponse({"signals": payload})
         return JSONResponse(payload)
 
+    @app.get("/demo/market-data-health")
+    async def get_market_data_health() -> JSONResponse:
+        pnl_svc = getattr(app.state, "live_pnl_service", None)
+        if pnl_svc is not None and hasattr(pnl_svc, "get_market_data_health"):
+            return JSONResponse(pnl_svc.get_market_data_health())
+        return JSONResponse({
+            "active_subscriptions": 0,
+            "contracts": [],
+            "status": "NO_LIVE_PNL_SERVICE"
+        })
+
     @app.get("/demo/stream")
     async def sse(request: Request) -> StreamingResponse:
         async def events():

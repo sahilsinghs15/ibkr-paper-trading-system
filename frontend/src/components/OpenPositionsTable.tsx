@@ -192,9 +192,17 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                     <td className={`right pl-cell ${head.unrealized_pnl !== null && head.unrealized_pnl !== undefined ? pnlClass(head.unrealized_pnl) : 'dim-txt'}`}>
                       {head.unrealized_pnl !== null && head.unrealized_pnl !== undefined
                         ? fmtPnl(head.unrealized_pnl)
-                        : head.market_data_status === 'UNAVAILABLE'
-                        ? 'NO MARK'
-                        : fmtPnl(head.unrealized_pnl)}
+                        : head.market_data_status === 'NO_LIVE_ENTITLEMENT_API_SUBSCRIPTION_REQUIRED' || head.market_data_status === 'NO_LIVE_ENTITLEMENT' || head.market_data_status === '10089'
+                        ? 'ENTITLEMENT REQUIRED'
+                        : head.market_data_status === 'UNRESOLVED_CONTRACT_SPEC' || head.market_data_status === 'CONTRACT_UNRESOLVED' || head.market_data_status === '200'
+                        ? 'CONTRACT UNRESOLVED'
+                        : head.market_data_status === 'STALE_TICK'
+                        ? 'STALE DATA'
+                        : head.market_data_status === 'SUBSCRIPTION_ERROR'
+                        ? 'MARKET DATA ERROR'
+                        : head.market_data_status === 'DELAYED' || head.market_data_status === 'DELAYED_ONLY' || head.market_data_status === 'NO_LIVE_ENTITLEMENT_DELAYED'
+                        ? 'DELAYED'
+                        : 'NO MARK'}
                     </td>
 
                     {/* 7. PROGRESS */}
