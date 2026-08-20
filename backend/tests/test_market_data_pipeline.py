@@ -369,3 +369,31 @@ def test_12_cooldown_suppresses_repeated_requests() -> None:
 
     # Calls to reqMktData should NOT increase due to active cooldown
     assert client.reqMktData.call_count == initial_calls
+
+
+# ---------------------------------------------------------------------------
+# Test 13 — IBKR rerouteMktDataReq callback subscribes to reported underlying
+# ---------------------------------------------------------------------------
+def test_13_reroute_mkt_data_req_subscribes_underlying() -> None:
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+
+    factory = MagicMock()
+    svc = LivePnlService(factory, client)
+    intent = _make_intent("T-REROUTE-1", symbols=["SPY"])
+    svc.watch_open(intent)
+
+    initial_req_id = list(svc._by_req.keys())[0]
+    initial_calls = client.reqMktData.call_count
+
+    # Simulate IBKR issuing rerouteMktDataReq callback with underlying conId 756733
+    svc.on_reroute_mkt_data(initial_req_id, 756733, "ARCA")
+
+    # Verify a new reqMktData call was issued for the underlying STK contract with conId 756733
+    assert client.reqMktData.call_count == initial_calls + 1
+    new_call_args = client.reqMktData.call_args_list[-1][0]
+    underlying_contract = new_call_args[1]
+
+    assert underlying_contract.conId == 756733
+    assert underlying_contract.secType == "STK"
+    assert underlying_contract.exchange == "ARCA"

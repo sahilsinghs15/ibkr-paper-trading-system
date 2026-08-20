@@ -282,6 +282,39 @@ class LivePnlService:
     def on_market_data_type(self, reqId: int, marketDataType: int) -> None:
         return
 
+    def on_reroute_mkt_data(self, reqId: int, conId: int, exchange: str) -> None:
+        c_key = self._req_to_contract.get(reqId)
+        if not c_key:
+            return
+        symbol = c_key[1]
+        logger.info(
+            "LivePnl on_reroute_mkt_data: reqId=%d symbol=%s underlying_conId=%d exchange=%s",
+            reqId, symbol, conId, exchange
+        )
+        from ibapi.contract import Contract
+        underlying = Contract()
+        underlying.conId = conId
+        underlying.symbol = symbol
+        underlying.secType = "STK"
+        underlying.exchange = exchange or "SMART"
+        underlying.currency = "USD"
+
+        new_c_key = ("STK", symbol, underlying.exchange, "USD", conId)
+        if new_c_key not in self._contract_reqs:
+            new_req_id = self._next_req
+            self._next_req += 1
+            listeners = self._listeners_by_req.get(reqId, set())
+            mapped = self._by_req.get(reqId)
+            if mapped:
+                self._by_req[new_req_id] = mapped
+            self._contract_reqs[new_c_key] = new_req_id
+            self._req_to_contract[new_req_id] = new_c_key
+            self._listeners_by_req[new_req_id] = set(listeners)
+
+            req_mkt = getattr(self._client, "reqMktData", None)
+            if callable(req_mkt):
+                req_mkt(new_req_id, underlying, "221", False, False, [])
+
     def on_connection_closed(self) -> None:
         return
 

@@ -150,6 +150,17 @@ class TWSClient(EWrapper, EClient):
             except Exception:
                 logger.exception("Error in marketDataType listener callback")
 
+    def rerouteMktDataReq(self, reqId: int, conId: int, exchange: str) -> None:
+        """Callback received when IBKR reroutes CFD market data request to underlying conId."""
+        super().rerouteMktDataReq(reqId, conId, exchange)
+        logger.info("TWSClient rerouteMktDataReq: reqId=%d underlying_conId=%d exchange=%s", reqId, conId, exchange)
+        for listener in list(self._market_data_listeners):
+            try:
+                if hasattr(listener, "on_reroute_mkt_data"):
+                    listener.on_reroute_mkt_data(reqId, conId, exchange)
+            except Exception:
+                logger.exception("Error in rerouteMktDataReq listener callback")
+
     def contractDetails(self, reqId: int, contractDetails: Any) -> None:
         """Callback receiving a single ContractDetails result."""
         super().contractDetails(reqId, contractDetails)
