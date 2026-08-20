@@ -120,7 +120,7 @@ def test_3_tws_error_10167_tracks_health_status() -> None:
     health = svc.get_market_data_health()
     gs_health = next(c for c in health["contracts"] if c["symbol"] == "GS")
 
-    assert gs_health["status"] == "NO_LIVE_ENTITLEMENT_DELAYED"
+    assert gs_health["status"] == "DELAYED_FALLBACK"
     assert gs_health["ibkr_error_code"] == 10167
 
 
@@ -174,7 +174,7 @@ def test_5_symbol_error_isolation() -> None:
     gs_health = next(c for c in health["contracts"] if c["symbol"] == "GS")
     gdx_health = next(c for c in health["contracts"] if c["symbol"] == "GDX")
 
-    assert gs_health["status"] == "NO_LIVE_ENTITLEMENT_DELAYED"
+    assert gs_health["status"] == "DELAYED_FALLBACK"
     assert gdx_health["status"] == "LIVE"
     assert gdx_health["last_mark"] in ("35.5", "35.50")
 
@@ -264,7 +264,7 @@ def test_9_tws_error_10089_tracks_health_status() -> None:
     health = svc.get_market_data_health()
     sil_health = next(c for c in health["contracts"] if c["symbol"] == "SIL")
 
-    assert sil_health["status"] == "NO_LIVE_ENTITLEMENT_API_SUBSCRIPTION_REQUIRED"
+    assert sil_health["status"] == "DELAYED_FALLBACK"
     assert sil_health["ibkr_error_code"] == 10089
 
 
@@ -344,31 +344,55 @@ def test_11_cfd_positions_request_underlying_stk_market_data() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 12 — Cooldown suppresses repeated subscription requests for 10 minutes
+# Test 12 — Error 10089 triggers delayed data fallback, NOT cooldown
 # ---------------------------------------------------------------------------
-def test_12_cooldown_suppresses_repeated_requests() -> None:
+def test_12_error_10089_triggers_delayed_fallback() -> None:
     client = MagicMock()
     client.reqMktData = MagicMock()
     client.reqMarketDataType = MagicMock()
 
     factory = MagicMock()
     svc = LivePnlService(factory, client)
-    intent1 = _make_intent("T-COOL-1", symbols=["SIL"])
+    intent1 = _make_intent("T-DELAY-1", symbols=["SIL"])
 
     svc.watch_open(intent1)
     req_id = list(svc._by_req.keys())[0]
 
-    # Deliver Error 10089 to activate cooldown
+    # Deliver Error 10089
     svc.on_error(req_id, 10089, "Requested market data requires additional subscription for API.")
 
-    initial_calls = client.reqMktData.call_count
+    # Verify reqMarketDataType(3) was called to switch to delayed mode
+    client.reqMarketDataType.assert_called_with(3)
 
-    # Try watching SIL again while in cooldown
-    intent2 = _make_intent("T-COOL-2", account_id=2, symbols=["SIL"])
-    svc.watch_open(intent2)
+    # Verify health status is DELAYED_FALLBACK, not NO_LIVE_ENTITLEMENT
+    c_key = svc._req_to_contract.get(req_id)
+    assert svc._contract_health[c_key]["status"] == "DELAYED_FALLBACK"
 
-    # Calls to reqMktData should NOT increase due to active cooldown
-    assert client.reqMktData.call_count == initial_calls
+    # Verify NO cooldown was set (so subsequent watches can still subscribe)
+    assert c_key not in svc._cooldowns
+
+
+# ---------------------------------------------------------------------------
+# Test 12b — Error 354 triggers cooldown (not delayed fallback)
+# ---------------------------------------------------------------------------
+def test_12b_error_354_triggers_cooldown() -> None:
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+    client.reqMarketDataType = MagicMock()
+
+    factory = MagicMock()
+    svc = LivePnlService(factory, client)
+    intent1 = _make_intent("T-COOL-1", symbols=["XYZ"])
+
+    svc.watch_open(intent1)
+    req_id = list(svc._by_req.keys())[0]
+
+    # Deliver Error 354 (no market data permission)
+    svc.on_error(req_id, 354, "No market data permission.")
+
+    # Verify cooldown IS set
+    c_key = svc._req_to_contract.get(req_id)
+    assert c_key in svc._cooldowns
 
 
 # ---------------------------------------------------------------------------

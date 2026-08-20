@@ -184,7 +184,6 @@ class LivePnlService:
             return
         import time
 
-        self._cooldowns[c_key] = time.time() + 600.0  # 10 minute backoff
         health = self._contract_health.setdefault(c_key, {
             "symbol": c_key[1],
             "sec_type": c_key[0],
@@ -197,26 +196,35 @@ class LivePnlService:
         health["ibkr_error_code"] = errorCode
         health["ibkr_error_string"] = errorString
 
-        if errorCode == 10089:
-            health["status"] = "NO_LIVE_ENTITLEMENT_API_SUBSCRIPTION_REQUIRED"
+        if errorCode in (10089, 10167):
+            # "Delayed market data is available" — fall back to delayed mode
+            # instead of treating as fatal. IBKR will send delayed ticks
+            # (15-min delay) which is far better than $0.00.
+            health["status"] = "DELAYED_FALLBACK"
             logger.warning(
-                "LivePnl IBKR Market Data Warning (10089): symbol=%s reqId=%d message=%s — "
-                "Account lacks live API entitlement for exchange",
-                c_key[1], reqId, errorString
+                "LivePnl IBKR Market Data Warning (%d): symbol=%s reqId=%d — "
+                "Falling back to DELAYED market data. message=%s",
+                errorCode, c_key[1], reqId, errorString
             )
-        elif errorCode == 10167:
-            health["status"] = "NO_LIVE_ENTITLEMENT_DELAYED"
-            logger.warning(
-                "LivePnl IBKR Market Data Notice (10167): symbol=%s reqId=%d message=%s",
-                c_key[1], reqId, errorString
-            )
+            # Switch to delayed mode and IBKR will start sending delayed ticks
+            # on the SAME reqId — no need to cancel and re-request
+            req_type = getattr(self._client, "reqMarketDataType", None)
+            if callable(req_type):
+                req_type(3)  # 3 = delayed market data
+                logger.info(
+                    "LivePnl switched to DELAYED market data mode (type=3) for symbol=%s reqId=%d",
+                    c_key[1], reqId
+                )
+            # Do NOT set cooldown — we want delayed ticks to flow
         elif errorCode in (354, 300, 321):
+            self._cooldowns[c_key] = time.time() + 600.0  # 10 minute backoff
             health["status"] = "NO_MARKET_DATA_ENTITLEMENT"
             logger.warning(
                 "LivePnl IBKR Market Data Warning (%d): symbol=%s reqId=%d message=%s",
                 errorCode, c_key[1], reqId, errorString
             )
         elif errorCode == 200:
+            self._cooldowns[c_key] = time.time() + 600.0  # 10 minute backoff
             health["status"] = "UNRESOLVED_CONTRACT_SPEC"
             logger.warning(
                 "LivePnl IBKR Contract Error (200): symbol=%s reqId=%d message=%s",
@@ -280,7 +288,14 @@ class LivePnlService:
         return
 
     def on_market_data_type(self, reqId: int, marketDataType: int) -> None:
-        return
+        # 1=live, 2=frozen, 3=delayed, 4=delayed-frozen
+        _type_names = {1: "LIVE", 2: "FROZEN", 3: "DELAYED", 4: "DELAYED_FROZEN"}
+        c_key = self._req_to_contract.get(reqId)
+        symbol = c_key[1] if c_key else "?"
+        logger.info(
+            "LivePnl marketDataType callback: reqId=%d symbol=%s type=%d (%s)",
+            reqId, symbol, marketDataType, _type_names.get(marketDataType, "UNKNOWN")
+        )
 
     def on_reroute_mkt_data(self, reqId: int, conId: int, exchange: str) -> None:
         c_key = self._req_to_contract.get(reqId)

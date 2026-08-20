@@ -200,7 +200,7 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                         ? 'STALE DATA'
                         : head.market_data_status === 'SUBSCRIPTION_ERROR'
                         ? 'MARKET DATA ERROR'
-                        : head.market_data_status === 'DELAYED' || head.market_data_status === 'DELAYED_ONLY' || head.market_data_status === 'NO_LIVE_ENTITLEMENT_DELAYED'
+                        : head.market_data_status === 'DELAYED' || head.market_data_status === 'DELAYED_ONLY' || head.market_data_status === 'NO_LIVE_ENTITLEMENT_DELAYED' || head.market_data_status === 'DELAYED_FALLBACK'
                         ? 'DELAYED'
                         : 'NO MARK'}
                     </td>
