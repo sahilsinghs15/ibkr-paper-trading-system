@@ -513,9 +513,17 @@ async def load_signals(
                         sig_ibkr_acc = acc_obj.ibkr_account
                     break
 
-        if not sig_ibkr_acc and target_ibkr_acc:
-            sig_ibkr_acc = target_ibkr_acc
-            sig_acc_id = target_acc_id
+        if not sig_ibkr_acc and matched_events:
+            for ev in matched_events:
+                detail = ev.detail or {}
+                if isinstance(detail, dict) and detail.get("ibkr_account"):
+                    sig_ibkr_acc = str(detail["ibkr_account"])
+                    if detail.get("account_id"):
+                        try:
+                            sig_acc_id = int(detail["account_id"])
+                        except (ValueError, TypeError):
+                            pass
+                    break
 
         if not sig_ibkr_acc and sig.raw_payload and isinstance(sig.raw_payload, dict):
             p_acc = sig.raw_payload.get("account") or sig.raw_payload.get("ibkr_account") or sig.raw_payload.get("account_id")
