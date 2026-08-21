@@ -4,17 +4,12 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models.account import AccountModel
 from app.db.models.kill_switch import (
     KILL_SWITCH_STATUS_ACTIVATING,
-    KILL_SWITCH_STATUS_COMPLETE,
-    KILL_SWITCH_STATUS_FLATTENING,
-    KillSwitchOperationModel,
 )
-from app.db.models.position import PositionModel
 from app.rms.checks.money_per_stock import MoneyPerStockCheck
 from app.rms.checks.strategy import StrategyCheck
 from app.rms.models import (

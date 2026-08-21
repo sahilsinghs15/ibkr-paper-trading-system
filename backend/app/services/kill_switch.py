@@ -18,7 +18,6 @@ from app.db.models.account import AccountModel
 from app.db.models.kill_switch import (
     KILL_SWITCH_STATUS_ACTIVATING,
     KILL_SWITCH_STATUS_COMPLETE,
-    KILL_SWITCH_STATUS_FLAT,
     KILL_SWITCH_STATUS_FLATTENING,
     KILL_SWITCH_STATUS_RECONCILING,
     KILL_SWITCH_STATUS_RETRYING,
@@ -254,9 +253,54 @@ class KillSwitchService:
                 )
                 try:
                     res = await baskets_coord.execute(close_intent, rms_pass, order_type="MARKET")
-                    return getattr(res, "success", True)
-                except Exception as exc:
-                    logger.exception("Failed to execute position reduction for trade_id=%s: %s", pos.trade_id, exc)
+                    success = getattr(res, "success", False)
+                    orders = getattr(res, "orders", [])
+
+                    if success and orders:
+                        from app.oms.models import OMSOrderStatus
+                        fill_orders = [o for o in orders if not getattr(o, "is_compensation", False)]
+                        is_fully_filled = bool(fill_orders) and all(
+                            getattr(o, "status", None) == OMSOrderStatus.FILLED for o in fill_orders
+                        )
+
+                        if is_fully_filled:
+                            async with self._session_factory() as session, session.begin():
+                                pos_repo = PositionRepository(session)
+                                p_row = await pos_repo.get_open_by_trade_id(pos.trade_id, account_id=account_id)
+                                if p_row is not None:
+                                    from app.services.model_blue.persistence import (
+                                        _commission_from_orders,
+                                        _exit_marks_from_orders,
+                                    )
+                                    exit_marks = _exit_marks_from_orders(fill_orders)
+                                    comm = _commission_from_orders(fill_orders)
+                                    await pos_repo.close_trade(
+                                        pos.trade_id,
+                                        account_id=account_id,
+                                        exit_marks=exit_marks,
+                                        commission=comm,
+                                    )
+                                    from app.db.repositories.event_repository import (
+                                        EventRepository,
+                                    )
+                                    await EventRepository(session).append(
+                                        process="position",
+                                        kind="POSITION_CLOSE",
+                                        detail={
+                                            "account_id": account_id,
+                                            "trade_id": pos.trade_id,
+                                            "source": "KILL_SWITCH",
+                                        },
+                                        idempotency_key=f"position_close:kill_switch:{account_id}:{pos.trade_id}",
+                                    )
+                                    logger.info(
+                                        "Kill Switch persisted position close: account_id=%d trade_id=%s",
+                                        account_id,
+                                        pos.trade_id,
+                                    )
+                    return success
+                except Exception:
+                    logger.exception("Failed to execute position reduction for trade_id=%s", pos.trade_id)
                     return False
             return True
 
@@ -264,6 +308,38 @@ class KillSwitchService:
         self, operation_id: UUID, account_id: int, results: list[Any]
     ) -> None:
         """Reconcile final exposure from database and broker state before setting operation COMPLETE."""
+        # Tier 2 Reconciliation: Auto-repair any open positions whose close orders filled in DB
+        async with self._session_factory() as session, session.begin():
+            pos_repo = PositionRepository(session)
+            from app.db.repositories.order_repository import OrderRepository
+            order_repo = OrderRepository(session)
+            open_positions = await pos_repo.list_open()
+            account_open = [p for p in open_positions if p.account_id == account_id]
+
+            for pos in account_open:
+                pos_orders = await order_repo.list_by_trade_id(pos.trade_id)
+                close_orders = [
+                    o for o in pos_orders
+                    if "KILLSWITCH-" in (o.internal_order_id or "") or ":CLOSE" in (o.internal_order_id or "")
+                ]
+                if close_orders:
+                    filled_close = [o for o in close_orders if o.status == "FILLED"]
+                    req_legs = 2 if pos.leg_b_symbol else 1
+                    if len(filled_close) >= req_legs:
+                        exit_marks = {}
+                        for co in filled_close:
+                            if co.fill_price is not None:
+                                exit_marks[co.symbol] = Decimal(str(co.fill_price))
+                        await pos_repo.close_trade(
+                            pos.trade_id,
+                            account_id=account_id,
+                            exit_marks=exit_marks,
+                        )
+                        logger.info(
+                            "Reconciled stale position to CLOSED during Kill Switch: trade_id=%s",
+                            pos.trade_id,
+                        )
+
         async with self._session_factory() as session:
             remaining_positions = await PositionRepository(session).list_open()
             account_remaining = [p for p in remaining_positions if p.account_id == account_id]

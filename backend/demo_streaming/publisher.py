@@ -54,7 +54,7 @@ class PositionBridge:
         session_factory: async_sessionmaker[AsyncSession],
         stream: PositionStream,
         *,
-        poll_interval: float = 0.25,
+        poll_interval: float = 1.0,
     ) -> None:
         self._session_factory = session_factory
         self._stream = stream

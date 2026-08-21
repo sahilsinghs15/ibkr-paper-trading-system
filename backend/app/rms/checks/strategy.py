@@ -1,7 +1,14 @@
 """CHECK 3 — STRATEGY check implementation."""
 
 from app.rms.checks.base import BaseRMSCheck
-from app.rms.models import CheckResult, ExecutionIntentMode, OrderAction, OrderIntent, RMSContext, RMSOutcome
+from app.rms.models import (
+    CheckResult,
+    ExecutionIntentMode,
+    OrderAction,
+    OrderIntent,
+    RMSContext,
+    RMSOutcome,
+)
 
 
 class StrategyCheck(BaseRMSCheck):

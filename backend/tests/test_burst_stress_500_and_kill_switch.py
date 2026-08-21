@@ -1,8 +1,8 @@
 """500-Signal Burst & Concurrent Kill-Switch Priority Stress Integration Test."""
 
 import asyncio
-from decimal import Decimal
 import time
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest

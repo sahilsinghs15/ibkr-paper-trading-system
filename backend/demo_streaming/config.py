@@ -15,7 +15,7 @@ class DemoStreamSettings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:6379/0"
     demo_stream_host: str = "127.0.0.1"
     demo_stream_port: int = 8010
-    demo_poll_interval_ms: int = 250
+    demo_poll_interval_ms: int = 1000
     demo_stream_name: str = "positions:stream"
     trading_api_url: str = "http://127.0.0.1:8000"
 

@@ -1,8 +1,6 @@
 """Dashboard config CRUD for accounts, allocations, and symbol limits."""
 
 import logging
-import uuid
-from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
@@ -14,7 +12,6 @@ from app.accounts.config_service import (
 )
 from app.api.deps import get_order_manager
 from app.core.config import get_settings
-from app.services.kill_switch import KillSwitchService
 from app.db.models.account import AccountModel, PerSymbolLimitModel
 from app.db.models.strategy import AllocationModel
 from app.db.session import get_db_session
@@ -34,6 +31,7 @@ from app.schemas.config_schemas import (
     SquareOffResponse,
     SymbolLimitSchema,
 )
+from app.services.kill_switch import KillSwitchService
 from app.services.order_manager import OrderManager
 
 logger = logging.getLogger(__name__)

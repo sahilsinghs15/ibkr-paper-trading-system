@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.broker.ibkr.scheduler import IBKRExecutionScheduler
 from app.db.models.signal import (
-    JOB_STATUS_CLAIMED,
     JOB_STATUS_QUEUED,
 )
 from app.db.repositories.signal_repository import SignalJobRepository
