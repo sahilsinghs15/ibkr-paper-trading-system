@@ -164,21 +164,42 @@ export const useSignalStore = create<SignalState>((set, get) => ({
             if (s.signal_id) seenSignalKeys.add(String(s.signal_id))
             if (s.id) seenSignalKeys.add(String(s.id))
           }
-          set({
-            signals: data.signals,
-            page: data.page || targetPage,
-            pageSize: data.page_size || state.pageSize,
-            total: typeof data.total === 'number' ? data.total : data.signals.length,
-            totalPages: data.total_pages || 1,
-            statusFilter: targetStatus,
-            counts: data.counts || {
-              total: typeof data.total === 'number' ? data.total : data.signals.length,
-              processing: 0,
-              accepted: 0,
-              rejected: 0,
-              square_off: 0,
-            },
-            isLoading: false,
+
+          set((prev) => {
+            const snapshotMap = new Map<string, SignalItem>()
+            for (const s of data.signals) {
+              const k = s.signal_id ? String(s.signal_id) : String(s.id)
+              snapshotMap.set(k, s)
+            }
+
+            // Merge snapshot items with existing live signals to prevent state overwriting
+            const mergedList: SignalItem[] = [...data.signals]
+            for (const existing of prev.signals) {
+              const k = existing.signal_id ? String(existing.signal_id) : String(existing.id)
+              if (!snapshotMap.has(k)) {
+                mergedList.push(existing)
+              }
+            }
+
+            // Sort strictly by received_at timestamp descending
+            mergedList.sort((a, b) => {
+              const ta = a.received_at ? Date.parse(a.received_at) : 0
+              const tb = b.received_at ? Date.parse(b.received_at) : 0
+              return tb - ta
+            })
+
+            const effectiveTotal = typeof data.total === 'number' ? Math.max(data.total, mergedList.length) : mergedList.length
+
+            return {
+              signals: mergedList,
+              page: data.page || targetPage,
+              pageSize: data.page_size || state.pageSize,
+              total: effectiveTotal,
+              totalPages: data.total_pages || 1,
+              statusFilter: targetStatus,
+              counts: data.counts || prev.counts,
+              isLoading: false,
+            }
           })
           return
         }

@@ -13,7 +13,7 @@ from app.db.models.event import EventLogModel
 from app.db.models.execution import ExecutionModel
 from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
-from app.db.models.signal import SignalModel
+from app.db.models.signal import SignalJobModel, SignalModel
 
 RISK_OPEN = "OPEN"
 RISK_CLOSED = "CLOSED"
@@ -288,14 +288,69 @@ async def load_signals(
     eff_page_size = max(1, min(eff_page_size, 500))
     eff_page = max(1, page)
 
+    # Load Account map for account_id <-> ibkr_account resolution
+    acc_rows = (await session.execute(select(AccountModel))).scalars().all()
+    acc_by_id: dict[int, AccountModel] = {a.id: a for a in acc_rows}
+    acc_by_ibkr: dict[str, AccountModel] = {a.ibkr_account: a for a in acc_rows if a.ibkr_account}
+
+    target_acc_id: int | None = account_id
+    target_ibkr_acc: str | None = ibkr_account
+    if target_ibkr_acc and not target_acc_id:
+        acc_obj = acc_by_ibkr.get(target_ibkr_acc)
+        if acc_obj:
+            target_acc_id = acc_obj.id
+    elif target_acc_id and not target_ibkr_acc:
+        acc_obj = acc_by_id.get(target_acc_id)
+        if acc_obj:
+            target_ibkr_acc = acc_obj.ibkr_account
+
     stmt = select(SignalModel)
-    if account_id is not None or ibkr_account:
-        subq = select(OrderModel.signal_id)
-        if account_id is not None:
-            subq = subq.where(OrderModel.account_id == account_id)
-        if ibkr_account:
-            subq = subq.join(AccountModel, AccountModel.id == OrderModel.account_id).where(AccountModel.ibkr_account == ibkr_account)
-        stmt = stmt.where(SignalModel.id.in_(subq))
+    if target_acc_id is not None or target_ibkr_acc:
+        matched_sig_ids: set[int] = set()
+
+        # a) OrderModel matching
+        order_subq_stmt = select(OrderModel.signal_id, OrderModel.account_id).where(OrderModel.signal_id.is_not(None))
+        if target_acc_id is not None:
+            order_subq_stmt = order_subq_stmt.where(OrderModel.account_id == target_acc_id)
+        order_res = (await session.execute(order_subq_stmt)).all()
+        for s_id, _a_id in order_res:
+            if s_id:
+                matched_sig_ids.add(s_id)
+
+        # b) SignalJobModel matching
+        job_stmt = select(SignalJobModel.signal_id, SignalJobModel.account_scope)
+        job_res = (await session.execute(job_stmt)).all()
+        for sig_str_id, acc_scope in job_res:
+            if not acc_scope:
+                continue
+            scope_str = str(acc_scope).strip()
+            if (target_acc_id and scope_str == str(target_acc_id)) or (target_ibkr_acc and scope_str.upper() == target_ibkr_acc.upper()):
+                s_stmt = select(SignalModel.id).where(SignalModel.signal_id == sig_str_id)
+                s_res = (await session.execute(s_stmt)).scalars().all()
+                matched_sig_ids.update(s_res)
+
+        # c) PositionModel matching by trade_id
+        if target_acc_id is not None:
+            pos_stmt = select(PositionModel.trade_id).where(PositionModel.account_id == target_acc_id)
+            pos_trades = set((await session.execute(pos_stmt)).scalars().all())
+            if pos_trades:
+                s_pos_stmt = select(SignalModel.id).where(SignalModel.trade_id.in_(pos_trades))
+                s_pos_res = (await session.execute(s_pos_stmt)).scalars().all()
+                matched_sig_ids.update(s_pos_res)
+
+        # d) Raw payload matching
+        payload_stmt = select(SignalModel.id, SignalModel.raw_payload)
+        p_res = (await session.execute(payload_stmt)).all()
+        for s_id, r_payload in p_res:
+            if not r_payload or not isinstance(r_payload, dict):
+                continue
+            p_acc = r_payload.get("account") or r_payload.get("ibkr_account") or r_payload.get("account_id")
+            if p_acc:
+                p_str = str(p_acc).strip().upper()
+                if (target_ibkr_acc and p_str == target_ibkr_acc.upper()) or (target_acc_id and p_str == str(target_acc_id)):
+                    matched_sig_ids.add(s_id)
+
+        stmt = stmt.where(SignalModel.id.in_(matched_sig_ids))
 
     stmt = stmt.order_by(SignalModel.received_at.desc(), SignalModel.id.desc())
 
@@ -445,6 +500,38 @@ async def load_signals(
         else:
             count_rejected += 1
 
+        # Resolve account_id and ibkr_account for sig
+        sig_acc_id: int | None = None
+        sig_ibkr_acc: str | None = None
+
+        if matched_orders:
+            for mo in matched_orders:
+                if mo.account_id:
+                    sig_acc_id = mo.account_id
+                    acc_obj = acc_by_id.get(mo.account_id)
+                    if acc_obj:
+                        sig_ibkr_acc = acc_obj.ibkr_account
+                    break
+
+        if not sig_ibkr_acc and target_ibkr_acc:
+            sig_ibkr_acc = target_ibkr_acc
+            sig_acc_id = target_acc_id
+
+        if not sig_ibkr_acc and sig.raw_payload and isinstance(sig.raw_payload, dict):
+            p_acc = sig.raw_payload.get("account") or sig.raw_payload.get("ibkr_account") or sig.raw_payload.get("account_id")
+            if p_acc:
+                p_str = str(p_acc).strip()
+                if p_str.isdigit():
+                    sig_acc_id = int(p_str)
+                    acc_obj = acc_by_id.get(sig_acc_id)
+                    if acc_obj:
+                        sig_ibkr_acc = acc_obj.ibkr_account
+                else:
+                    sig_ibkr_acc = p_str
+                    acc_obj = acc_by_ibkr.get(p_str)
+                    if acc_obj:
+                        sig_acc_id = acc_obj.id
+
         all_reconciled.append(
             {
                 "id": sig.id,
@@ -462,6 +549,8 @@ async def load_signals(
                 "received_at": sig.received_at.isoformat() if sig.received_at else None,
                 "processed_at": calc_proc_at,
                 "processing_duration_sec": duration_sec,
+                "account_id": sig_acc_id,
+                "ibkr_account": sig_ibkr_acc,
                 "raw_payload": sig.raw_payload,
                 "orders": orders_payload,
                 "events": events_payload,
