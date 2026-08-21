@@ -27,12 +27,21 @@ export async function fetchAccountByIdentifier(ibkrAccount: string): Promise<Acc
 
 export async function squareOffAccountPositions(
   accountId: number,
-): Promise<{ account_id: number; ibkr_account: string; squared_off_count: number; trade_ids: string[] }> {
+): Promise<{
+  account_id: number
+  ibkr_account: string
+  squared_off_count: number
+  trade_ids: string[]
+  operation_id?: string
+  status?: string
+}> {
   const { data } = await axios.post<{
     account_id: number
     ibkr_account: string
     squared_off_count: number
     trade_ids: string[]
+    operation_id?: string
+    status?: string
   }>(`${base}/accounts/${accountId}/square-off`)
   return data
 }

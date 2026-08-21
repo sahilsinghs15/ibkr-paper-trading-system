@@ -18,6 +18,14 @@ class OrderAction(Enum):
     CLOSE = "CLOSE"
 
 
+class ExecutionIntentMode(Enum):
+    """Mode of execution intent for risk classification."""
+
+    OPEN = "OPEN"
+    NORMAL_CLOSE = "NORMAL_CLOSE"
+    EMERGENCY_FLATTEN = "EMERGENCY_FLATTEN"
+
+
 class OrderSide(Enum):
     """Side of an order leg."""
 
@@ -76,6 +84,7 @@ class OrderIntent:
         legs: List of order legs associated with the intent.
         account_id: Optional future account identifier.
         timestamp: Creation timestamp.
+        intent_mode: Execution mode (OPEN, NORMAL_CLOSE, EMERGENCY_FLATTEN).
     """
 
     signal_id: str
@@ -86,6 +95,7 @@ class OrderIntent:
     ibkr_account: str | None = None
     market: str | None = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    intent_mode: ExecutionIntentMode = ExecutionIntentMode.OPEN
 
 
 def duplicate_lookup_key(intent: OrderIntent) -> tuple:

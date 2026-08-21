@@ -730,11 +730,18 @@ class BasketCoordinator:
             notional=qty * px,
             leg_index=index,
         )
+        from app.rms.models import ExecutionIntentMode
+        mode = (
+            ExecutionIntentMode.EMERGENCY_FLATTEN
+            if getattr(original, "intent_mode", None) == ExecutionIntentMode.EMERGENCY_FLATTEN or original.action == OrderAction.CLOSE
+            else getattr(original, "intent_mode", ExecutionIntentMode.OPEN)
+        )
         return replace(
             original,
             signal_id=f"{original.signal_id}:RETRY:L{index}:{attempt}",
             legs=[retry_leg],
             timestamp=datetime.now(UTC),
+            intent_mode=mode,
         )
 
     async def _compensate_filled(

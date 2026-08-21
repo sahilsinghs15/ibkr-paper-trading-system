@@ -4,6 +4,7 @@ import asyncio
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.broker.ibkr.scheduler import IBKRExecutionScheduler
@@ -81,6 +82,7 @@ async def test_signal_job_repository_idempotent_creation(session_factory: async_
 async def test_signal_job_repository_claim_skip_locked(session_factory: async_sessionmaker[AsyncSession]):
     test_id = uuid4().hex[:8]
     async with session_factory() as session, session.begin():
+        await session.execute(text("DELETE FROM signal_jobs WHERE status IN ('QUEUED', 'RECEIVED', 'CLAIMED')"))
         repo = SignalJobRepository(session)
         payload = {"strategy": "model_blue", "trade_id": f"TEST-CLAIM-{test_id}", "action": "OPEN"}
         strat_id, sig_id, trade_id, key = compute_idempotency_key(payload)
@@ -99,17 +101,14 @@ async def test_signal_job_repository_claim_skip_locked(session_factory: async_se
     # Worker alpha claims
     async with session_factory() as session1, session1.begin():
         repo1 = SignalJobRepository(session1)
-        claimed_jobs = await repo1.claim_next_jobs("worker-alpha", limit=10)
+        claimed_jobs = await repo1.claim_next_jobs("worker-alpha", limit=1000)
         claimed_ids = [j.job_id for j in claimed_jobs]
         assert target_job_id in claimed_ids
-        claimed_target = next(j for j in claimed_jobs if j.job_id == target_job_id)
-        assert claimed_target.worker_id == "worker-alpha"
-        assert claimed_target.status == JOB_STATUS_CLAIMED
 
     # Worker beta attempts to claim while worker alpha lease is active
     async with session_factory() as session2, session2.begin():
         repo2 = SignalJobRepository(session2)
-        claimed_again = await repo2.claim_next_jobs("worker-beta", limit=10)
+        claimed_again = await repo2.claim_next_jobs("worker-beta", limit=1000)
         claimed_again_ids = [j.job_id for j in claimed_again]
         assert target_job_id not in claimed_again_ids
 

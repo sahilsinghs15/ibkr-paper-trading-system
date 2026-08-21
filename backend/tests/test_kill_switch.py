@@ -1,143 +1,95 @@
-"""Tests for account-scoped emergency Kill Switch / Square-Off-All endpoint."""
+"""Unit and integration tests for Production Kill Switch / Emergency Flatten architecture."""
 
-import uuid
 from decimal import Decimal
-from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.accounts.config_service import AccountStrategyConfigService
+from app.db.models.account import AccountModel
+from app.db.models.kill_switch import (
+    KILL_SWITCH_STATUS_ACTIVATING,
+    KILL_SWITCH_STATUS_COMPLETE,
+    KILL_SWITCH_STATUS_FLATTENING,
+    KillSwitchOperationModel,
+)
 from app.db.models.position import PositionModel
-from app.db.session import create_engine_from_settings
-from app.main import app
+from app.rms.checks.money_per_stock import MoneyPerStockCheck
+from app.rms.checks.strategy import StrategyCheck
+from app.rms.models import (
+    ExecutionIntentMode,
+    OrderAction,
+    OrderIntent,
+    OrderLeg,
+    OrderSide,
+    RMSContext,
+    RMSOutcome,
+)
+from app.services.kill_switch import KillSwitchService, is_account_kill_switch_active
 
 
 @pytest.fixture
-def client():
-    with (
-        patch(
-            "app.broker.ibkr.tws_client.TWSClient.connect_and_start",
-            return_value=True,
-        ),
-        patch("app.broker.ibkr.tws_client.TWSClient.disconnect_clean"),
-        patch(
-            "app.broker.ibkr.tws_client.TWSClient.is_connected",
-            return_value=True,
-        ),
-        TestClient(app) as c,
-    ):
-        yield c
+async def session_factory():
+    from app.db.session import AsyncSessionLocal, engine
+    yield AsyncSessionLocal
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_square_off_zero_positions(client: TestClient):
-    """Square off endpoint with 0 open positions returns count 0."""
-    engine = create_engine_from_settings()
-    factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
-    suffix = uuid.uuid4().hex[:6].upper()
-    ibkr_acc = f"DU99{suffix}"
+async def test_emergency_flatten_bypasses_entry_rms_checks():
+    """Verify EMERGENCY_FLATTEN intent mode bypasses entry-only checks 3 and 8."""
+    context = RMSContext(strategy_configs={})  # Empty strategy config map
 
-    async with factory() as session:
-        svc = AccountStrategyConfigService(session)
-        acc = await svc.create_account(
-            name=f"Test Account {suffix}",
-            ibkr_account=ibkr_acc,
-            total_margin=Decimal("100000.00"),
-            enabled=True,
-        )
-        await session.commit()
+    leg = OrderLeg(
+        symbol="AAPL",
+        side=OrderSide.SELL,
+        quantity=100.0,
+        price=Decimal("150.00"),
+        contract_month="202612",
+        leg_index=0,
+    )
+
+    emergency_intent = OrderIntent(
+        signal_id="TEST-EMERGENCY-1",
+        strategy_id="UNKNOWN_STRATEGY",
+        action=OrderAction.CLOSE,
+        legs=[leg],
+        account_id=1,
+        ibkr_account="DU12345",
+        intent_mode=ExecutionIntentMode.EMERGENCY_FLATTEN,
+    )
+
+    # StrategyCheck (Check 3)
+    strat_result = StrategyCheck().evaluate(emergency_intent, context)
+    assert strat_result.outcome == RMSOutcome.PASS
+
+    # MoneyPerStockCheck (Check 8)
+    money_result = MoneyPerStockCheck().evaluate(emergency_intent, context)
+    assert money_result.outcome == RMSOutcome.PASS
+
+
+@pytest.mark.asyncio
+async def test_kill_switch_idempotency_and_active_flag(session_factory: async_sessionmaker[AsyncSession]):
+    """Verify repeated square-off calls return existing active operation and activate blocking flag."""
+    test_id = uuid4().hex[:6]
+    ibkr_acc = f"DU{test_id}"
+
+    async with session_factory() as session, session.begin():
+        acc = AccountModel(name="KillSwitchTestAcc", ibkr_account=ibkr_acc, total_margin=Decimal("100000.00"))
+        session.add(acc)
+        await session.flush()
         acc_id = acc.id
 
-    resp = client.post(f"/api/v1/config/accounts/{acc_id}/square-off")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["account_id"] == acc_id
-    assert body["ibkr_account"] == ibkr_acc
-    assert body["squared_off_count"] == 0
-    assert body["trade_ids"] == []
+    svc = KillSwitchService(session_factory=session_factory)
 
+    # 1st call: creates new operation
+    op1, created1 = await svc.initiate_square_off(account_id=acc_id, requested_by="operator")
+    assert created1 is True
+    assert op1.status == KILL_SWITCH_STATUS_ACTIVATING
+    assert is_account_kill_switch_active(acc_id) is True
 
-@pytest.mark.asyncio
-async def test_square_off_account_isolation(client: TestClient):
-    """Square off endpoint targets ONLY positions for the specified account."""
-    engine = create_engine_from_settings()
-    factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
-    suffix_a = uuid.uuid4().hex[:6].upper()
-    suffix_b = uuid.uuid4().hex[:6].upper()
-    ibkr_a = f"DUA{suffix_a}"
-    ibkr_b = f"DUB{suffix_b}"
-
-    async with factory() as session:
-        svc = AccountStrategyConfigService(session)
-        acc_a = await svc.create_account(
-            name=f"Account A {suffix_a}",
-            ibkr_account=ibkr_a,
-            total_margin=Decimal("100000.00"),
-            enabled=True,
-        )
-        acc_b = await svc.create_account(
-            name=f"Account B {suffix_b}",
-            ibkr_account=ibkr_b,
-            total_margin=Decimal("100000.00"),
-            enabled=True,
-        )
-        await session.commit()
-        acc_a_id = acc_a.id
-        acc_b_id = acc_b.id
-
-        trade_a = f"TR-A-{suffix_a}"
-        trade_b = f"TR-B-{suffix_b}"
-
-        pos_a = PositionModel(
-            account_id=acc_a_id,
-            trade_id=trade_a,
-            strategy_id="model_blue",
-            leg_a_symbol="SIL",
-            leg_a_signed_qty=Decimal("100.00"),
-            leg_a_entry_mark=Decimal("25.00"),
-            leg_b_symbol="GDX",
-            leg_b_signed_qty=Decimal("-100.00"),
-            leg_b_entry_mark=Decimal("30.00"),
-            target=Decimal("500.00"),
-            stop=Decimal("250.00"),
-            time_limit=3600,
-            risk_state="OPEN",
-        )
-        pos_b = PositionModel(
-            account_id=acc_b_id,
-            trade_id=trade_b,
-            strategy_id="model_blue",
-            leg_a_symbol="SIL",
-            leg_a_signed_qty=Decimal("50.00"),
-            leg_a_entry_mark=Decimal("25.00"),
-            target=Decimal("500.00"),
-            stop=Decimal("250.00"),
-            time_limit=3600,
-            risk_state="OPEN",
-        )
-        session.add_all([pos_a, pos_b])
-        await session.commit()
-
-    # Square off Account A only via HTTP
-    resp_a = client.post(f"/api/v1/config/accounts/{acc_a_id}/square-off")
-    assert resp_a.status_code == 200
-    body_a = resp_a.json()
-    assert body_a["account_id"] == acc_a_id
-    assert body_a["squared_off_count"] == 1
-    assert body_a["trade_ids"] == [trade_a]
-
-    # Verify Account B open position remains untouched in database
-    async with factory() as session:
-        b_pos = (
-            await session.execute(
-                select(PositionModel).where(
-                    PositionModel.account_id == acc_b_id,
-                    PositionModel.trade_id == trade_b,
-                )
-            )
-        ).scalar_one_or_none()
-        assert b_pos is not None
-        assert b_pos.risk_state == "OPEN"
+    # 2nd call: returns existing active operation
+    op2, created2 = await svc.initiate_square_off(account_id=acc_id, requested_by="operator")
+    assert created2 is False
+    assert op2.operation_id == op1.operation_id

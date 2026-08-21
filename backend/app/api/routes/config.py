@@ -4,7 +4,7 @@ import logging
 import uuid
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,7 @@ from app.accounts.config_service import (
 )
 from app.api.deps import get_order_manager
 from app.core.config import get_settings
+from app.services.kill_switch import KillSwitchService
 from app.db.models.account import AccountModel, PerSymbolLimitModel
 from app.db.models.strategy import AllocationModel
 from app.db.session import get_db_session
@@ -140,6 +141,7 @@ async def get_account_by_identifier(
 @router.post(
     "/accounts/{account_id}/square-off",
     response_model=SquareOffResponse,
+    status_code=status.HTTP_202_ACCEPTED,
     summary="Emergency Kill Switch: Square off all open positions for account",
 )
 async def square_off_account_positions(
@@ -152,105 +154,30 @@ async def square_off_account_positions(
     if account is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
 
-    from app.db.models.position import PositionModel
-    from app.rms.engine import RMSOutcome, RMSResult
-    from app.rms.models import OrderAction, OrderIntent, OrderLeg
-    from app.rms.models import OrderSide as RMSOrderSide
-
-    # Query all open positions for ONLY this account
-    open_positions = (
-        await session.execute(
-            select(PositionModel).where(
-                PositionModel.account_id == account.id,
-                PositionModel.risk_state == "OPEN",
-            )
-        )
-    ).scalars().all()
-
-    if not open_positions:
-        return SquareOffResponse(
-            account_id=account.id,
-            ibkr_account=account.ibkr_account,
-            squared_off_count=0,
-            trade_ids=[],
-        )
-
     order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
-    baskets_coord = getattr(order_manager, "_baskets", None) if order_manager else None
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory is None:
+        from app.db.session import AsyncSessionLocal
+        session_factory = AsyncSessionLocal
 
-    trade_ids: list[str] = []
-    for pos in open_positions:
-        legs: list[OrderLeg] = []
-
-        # Leg A reverse CLOSE
-        if pos.leg_a_symbol and pos.leg_a_signed_qty is not None and abs(pos.leg_a_signed_qty) > 0:
-            side = RMSOrderSide.SELL if pos.leg_a_signed_qty > 0 else RMSOrderSide.BUY
-            qty = abs(pos.leg_a_signed_qty)
-            legs.append(
-                OrderLeg(
-                    symbol=pos.leg_a_symbol,
-                    side=side,
-                    quantity=qty,
-                    price=Decimal(0),
-                    contract_month="202612",
-                    instrument_type=pos.leg_a_instrument_type or "STK",
-                    leg_index=0,
-                )
-            )
-
-        # Leg B reverse CLOSE (if present)
-        if pos.leg_b_symbol and pos.leg_b_signed_qty is not None and abs(pos.leg_b_signed_qty) > 0:
-            side = RMSOrderSide.SELL if pos.leg_b_signed_qty > 0 else RMSOrderSide.BUY
-            qty = abs(pos.leg_b_signed_qty)
-            legs.append(
-                OrderLeg(
-                    symbol=pos.leg_b_symbol,
-                    side=side,
-                    quantity=qty,
-                    price=Decimal(0),
-                    contract_month="202612",
-                    instrument_type=pos.leg_b_instrument_type or "STK",
-                    leg_index=1,
-                )
-            )
-
-        if not legs:
-            continue
-
-        close_intent = OrderIntent(
-            signal_id=f"KILLSWITCH-{pos.trade_id}-{uuid.uuid4().hex[:6]}",
-            strategy_id=pos.strategy_id,
-            action=OrderAction.CLOSE,
-            legs=legs,
-            account_id=account.id,
-            ibkr_account=account.ibkr_account,
-        )
-
-        if baskets_coord is not None:
-            if order_manager is not None:
-                close_intent = await order_manager._resolve_instruments(close_intent)
-            rms_pass = RMSResult(
-                outcome=RMSOutcome.PASS,
-                intent=close_intent,
-                original_intent=close_intent,
-                reason="KILL_SWITCH_EMERGENCY_CLOSE",
-            )
-            await baskets_coord.execute(close_intent, rms_pass, order_type="MARKET")
-
-        trade_ids.append(pos.trade_id)
-
-    logger.warning(
-        "EMERGENCY KILL SWITCH EXECUTED: account_id=%s ibkr=%s trades_closed=%d %s",
-        account.id,
-        account.ibkr_account,
-        len(trade_ids),
-        trade_ids,
+    kill_switch_svc = KillSwitchService(
+        session_factory=session_factory,
+        order_manager=order_manager,
     )
+
+    op, created_new = await kill_switch_svc.initiate_square_off(
+        account_id=account_id, requested_by="operator"
+    )
+    if created_new:
+        await kill_switch_svc.execute_flatten_operation_background(op.operation_id)
+
     return SquareOffResponse(
         account_id=account.id,
         ibkr_account=account.ibkr_account,
-        squared_off_count=len(trade_ids),
-        trade_ids=trade_ids,
+        squared_off_count=op.initial_position_count,
+        trade_ids=[],
+        operation_id=str(op.operation_id),
+        status=op.status,
     )
 
 

@@ -1,7 +1,7 @@
 """CHECK 3 — STRATEGY check implementation."""
 
 from app.rms.checks.base import BaseRMSCheck
-from app.rms.models import CheckResult, OrderIntent, RMSContext, RMSOutcome
+from app.rms.models import CheckResult, ExecutionIntentMode, OrderAction, OrderIntent, RMSContext, RMSOutcome
 
 
 class StrategyCheck(BaseRMSCheck):
@@ -16,6 +16,14 @@ class StrategyCheck(BaseRMSCheck):
         return "STRATEGY"
 
     def evaluate(self, intent: OrderIntent, context: RMSContext) -> CheckResult:
+        # Emergency flatten and close operations must not be blocked by disabled/missing strategy configs
+        if intent.action == OrderAction.CLOSE or intent.intent_mode == ExecutionIntentMode.EMERGENCY_FLATTEN:
+            return CheckResult(
+                check_number=self.check_number,
+                check_name=self.check_name,
+                outcome=RMSOutcome.PASS,
+            )
+
         if not intent.strategy_id or not intent.strategy_id.strip():
             return CheckResult(
                 check_number=self.check_number,

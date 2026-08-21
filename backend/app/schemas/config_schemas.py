@@ -131,5 +131,7 @@ class SquareOffResponse(BaseModel):
     ibkr_account: str
     squared_off_count: int
     trade_ids: list[str] = Field(default_factory=list)
+    operation_id: str | None = None
+    status: str | None = None
 
 

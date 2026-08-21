@@ -19,20 +19,12 @@ from app.core.config import get_settings
 def create_engine_from_settings() -> AsyncEngine:
     """Create and return an AsyncEngine instance configured with Settings."""
     settings = get_settings()
-    is_testing = "pytest" in sys.modules or os.getenv("PYTEST_CURRENT_TEST") is not None
-    if is_testing:
-        return create_async_engine(
-            settings.database_url,
-            echo=False,
-            pool_pre_ping=True,
-            poolclass=NullPool,
-        )
     return create_async_engine(
         settings.database_url,
         echo=False,
         pool_pre_ping=True,
-        pool_size=10,
-        max_overflow=20,
+        pool_size=20,
+        max_overflow=30,
         pool_timeout=30,
         pool_recycle=1800,
     )

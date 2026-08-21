@@ -5,6 +5,8 @@ from decimal import Decimal
 from app.rms.checks.base import BaseRMSCheck
 from app.rms.models import (
     CheckResult,
+    ExecutionIntentMode,
+    OrderAction,
     OrderIntent,
     RMSContext,
     RMSOutcome,
@@ -24,6 +26,13 @@ class MoneyPerStockCheck(BaseRMSCheck):
         return "MONEY_PER_STOCK"
 
     def evaluate(self, intent: OrderIntent, context: RMSContext) -> CheckResult:
+        # Position reduction / emergency flatten operations must not be blocked by money budgets
+        if intent.action == OrderAction.CLOSE or intent.intent_mode == ExecutionIntentMode.EMERGENCY_FLATTEN:
+            return CheckResult(
+                check_number=self.check_number,
+                check_name=self.check_name,
+                outcome=RMSOutcome.PASS,
+            )
         strategy_cfg = context.strategy_configs.get(intent.strategy_id)
         strategy_limit = (
             strategy_cfg.money_limit_per_symbol if strategy_cfg is not None else None

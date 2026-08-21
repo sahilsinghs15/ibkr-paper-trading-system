@@ -223,6 +223,14 @@ class LivePnlService:
                 "LivePnl IBKR Market Data Warning (%d): symbol=%s reqId=%d message=%s",
                 errorCode, c_key[1], reqId, errorString
             )
+        elif errorCode == 1100:
+            logger.warning("LivePnl IBKR Connectivity Lost (1100): message=%s", errorString)
+        elif errorCode == 1101:
+            logger.info("LivePnl IBKR Connectivity Restored - Data Lost (1101): Re-subscribing active streams...")
+            self._cooldowns.clear()
+            self._resubscribe_all_active()
+        elif errorCode == 1102:
+            logger.info("LivePnl IBKR Connectivity Restored - Data Maintained (1102): Stream active.")
         elif errorCode == 200:
             self._cooldowns[c_key] = time.time() + 600.0  # 10 minute backoff
             health["status"] = "UNRESOLVED_CONTRACT_SPEC"
@@ -230,6 +238,27 @@ class LivePnlService:
                 "LivePnl IBKR Contract Error (200): symbol=%s reqId=%d message=%s",
                 c_key[1], reqId, errorString
             )
+
+    def _resubscribe_all_active(self) -> None:
+        """Re-subscribe all active contract requests after an 1101 connection recovery."""
+        if not self._client or not hasattr(self._client, "reqMktData"):
+            return
+        for c_key, req_id in list(self._contract_reqs.items()):
+            try:
+                # Issue reqMktData via centralized scheduler / client
+                sec_type, symbol, exchange, ccy, con_id = c_key
+                import ibapi.contract  # type: ignore
+                contract = ibapi.contract.Contract()
+                contract.symbol = symbol
+                contract.secType = sec_type
+                contract.exchange = exchange
+                contract.currency = ccy
+                if con_id:
+                    contract.conId = con_id
+                self._client.reqMktData(req_id, contract, "", False, False, [])
+                logger.info("LivePnl re-subscribed market data for symbol=%s reqId=%d", symbol, req_id)
+            except Exception:
+                logger.exception("Failed to re-subscribe market data for symbol=%s reqId=%d", c_key[1], req_id)
 
     def on_tick_price(self, reqId: int, tickType: int, price: float) -> None:
         if price is None or price <= 0:

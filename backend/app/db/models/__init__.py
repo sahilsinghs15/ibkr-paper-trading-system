@@ -6,6 +6,7 @@ from app.db.models.event import EventLogModel
 from app.db.models.execution import ExecutionModel
 from app.db.models.execution_settings import ExecutionSettingsModel
 from app.db.models.instrument import InstrumentModel
+from app.db.models.kill_switch import KillSwitchOperationModel
 from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
 from app.db.models.signal import SignalModel
@@ -19,6 +20,7 @@ __all__ = [
     "ExecutionModel",
     "ExecutionSettingsModel",
     "InstrumentModel",
+    "KillSwitchOperationModel",
     "OrderModel",
     "PerSymbolLimitModel",
     "PositionModel",

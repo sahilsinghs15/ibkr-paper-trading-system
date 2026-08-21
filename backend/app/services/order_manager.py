@@ -426,6 +426,17 @@ class OrderManager:
         )
         try:
             intent = await handler.build_intent(signal, account=ctx)
+            from app.services.kill_switch import is_account_kill_switch_active
+            if intent.action == OrderAction.OPEN and is_account_kill_switch_active(ctx.account_id):
+                logger.warning(
+                    "KILL_SWITCH_ACTIVE: Blocking NEW open signal for account_id=%s ibkr=%s signal_id=%s",
+                    ctx.account_id,
+                    ctx.ibkr_account,
+                    signal.signal_id,
+                )
+                raise ValueError(
+                    f"KILL_SWITCH_ACTIVE: Account {ctx.account_id} is in active emergency kill-switch mode."
+                )
             result = await self._evaluate_and_submit(
                 intent, signal, handler=handler, inbound_pk=inbound_pk
             )
