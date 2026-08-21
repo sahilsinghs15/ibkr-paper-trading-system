@@ -76,15 +76,23 @@ class TWSClient(EWrapper, EClient):
         advancedOrderRejectJson: str = "",
     ) -> None:
         """Callback received when TWS generates an error or status message."""
-        # System-level message codes (like 2104, 2106, 2158) are informational/status notifications
+        # IBKR status codes 2000-2999 are informational notifications/warnings
         # and do not indicate actual failure.
         if errorCode >= 2000 and errorCode < 3000:
-            logger.info(
-                "TWS Status Notification: reqId=%d, code=%d, message=%s",
-                reqId,
-                errorCode,
-                errorString,
-            )
+            if errorCode == 2176:
+                logger.debug(
+                    "TWS Status Notification: reqId=%d, code=%d, message=%s",
+                    reqId,
+                    errorCode,
+                    errorString,
+                )
+            else:
+                logger.info(
+                    "TWS Status Notification: reqId=%d, code=%d, message=%s",
+                    reqId,
+                    errorCode,
+                    errorString,
+                )
         else:
             logger.warning(
                 "TWS API Error: reqId=%d, code=%d, message=%s",
