@@ -311,6 +311,7 @@ async def test_signal_status_terminal_classification() -> None:
 @pytest.mark.asyncio
 async def test_load_signals_account_filtering_query_safety() -> None:
     from unittest.mock import AsyncMock, MagicMock
+
     from demo_streaming.snapshot import load_signals
 
     session = AsyncMock()

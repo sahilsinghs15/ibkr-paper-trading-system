@@ -81,10 +81,30 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
             logger.exception("Failed to re-subscribe live P&L for open positions.")
 
     # Store references on application state for dependency lookup
+    fastapi_app.state.session_factory = AsyncSessionLocal
     fastapi_app.state.client = client
     fastapi_app.state.ibkr_adapter = ibkr_adapter
     fastapi_app.state.oms = oms
     fastapi_app.state.order_manager = order_manager
+
+    from app.services.recovery import RecoveryManager
+    from app.services.worker_pool import ExecutionWorkerPool
+
+    # Run startup recovery scanner
+    recovery_mgr = RecoveryManager(AsyncSessionLocal, order_manager)
+    try:
+        await recovery_mgr.run_startup_recovery()
+    except Exception:
+        logger.exception("Failed to execute startup crash recovery scanner.")
+
+    # Start background execution worker pool
+    worker_pool = ExecutionWorkerPool(
+        session_factory=AsyncSessionLocal,
+        order_manager=order_manager,
+        worker_count=10,
+    )
+    await worker_pool.start()
+    fastapi_app.state.worker_pool = worker_pool
 
     critical_count = 0
     baskets = getattr(order_manager, "_baskets", None)
@@ -109,6 +129,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     yield
 
     logger.info("Shutting down paper-trading application...")
+    if hasattr(fastapi_app.state, "worker_pool"):
+        await fastapi_app.state.worker_pool.stop()
     client.disconnect_clean()
     logger.info("TWS Client disconnected cleanly. Shutdown complete.")
 

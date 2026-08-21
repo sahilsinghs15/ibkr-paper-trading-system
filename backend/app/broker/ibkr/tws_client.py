@@ -1,5 +1,6 @@
 """IBKR TWS API connection client and wrapper."""
 
+import asyncio
 import logging
 import threading
 from typing import Any
@@ -383,6 +384,12 @@ class TWSClient(EWrapper, EClient):
                 req_id,
             )
         return results
+
+    async def request_contract_details_async(
+        self, contract: Any, *, timeout: float = 5.0
+    ) -> list[Any]:
+        """Request IBKR contract details asynchronously off the event loop."""
+        return await asyncio.to_thread(self.request_contract_details, contract, timeout=timeout)
 
     def _clear_contract_details_request(self, req_id: int) -> None:
         with self._contract_details_lock:

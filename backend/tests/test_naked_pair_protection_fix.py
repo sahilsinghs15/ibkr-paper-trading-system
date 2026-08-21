@@ -16,18 +16,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.db.models.signal import SignalModel
-from app.oms.basket import Basket, BasketState
+from app.oms.basket import Basket
 from app.oms.coordinator import BasketCoordinator
 from app.oms.models import OMSOrder, OMSOrderStatus
 from app.oms.oms_service import OMSService
-from app.oms.retry_policy import ExecutionRetryPolicy
 from app.rms.models import (
     OrderAction,
     OrderIntent,
     OrderLeg,
     OrderSide,
-    RMSOutcome,
-    RMSResult,
 )
 from demo_streaming.snapshot import reconcile_signal_status
 
@@ -158,7 +155,7 @@ def test_2_leg_2_retry_preserves_leg_index() -> None:
 # Test 3 — Same symbol on multiple legs (Leg 1 = EWP, Leg 2 = EWU, Leg 3 = EWP)
 # ---------------------------------------------------------------------------
 def test_3_same_symbol_multiple_legs_stay_independent() -> None:
-    intent = _make_intent(
+    _make_intent(
         "T-TRIPLE-LEG",
         legs=[
             ("EWP", OrderSide.BUY, 100.0, 50.0),

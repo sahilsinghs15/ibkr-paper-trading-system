@@ -74,7 +74,6 @@ class BasketCoordinator:
         self._retry_ids: set[str] = set()
         self._critical: set[tuple[int, str]] = set()
         self._order_baskets: dict[str, Basket] = {}
-        self._active_basket: Basket | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         adapter = getattr(oms, "_adapter", None)
         add_listener = getattr(adapter, "add_order_state_listener", None)
@@ -144,7 +143,6 @@ class BasketCoordinator:
             state=BasketState.EXECUTING,
             signal_pk=signal_pk,
         )
-        self._active_basket = basket
         await self._persist_basket(basket)
         await self._event(
             "BASKET_CREATED",
@@ -1028,7 +1026,7 @@ class BasketCoordinator:
         return None
 
     async def _persist_broker_snapshot(self, order: OMSOrder, kind: str) -> None:
-        basket = self._order_baskets.get(order.internal_order_id) or self._active_basket
+        basket = self._order_baskets.get(order.internal_order_id)
         if basket is None:
             basket = Basket(
                 account_id=order.intent.account_id,

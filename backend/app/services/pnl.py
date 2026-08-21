@@ -274,7 +274,7 @@ class LivePnlService:
                 "last_mark": None,
             })
             health["status"] = "LIVE"
-            health["last_tick_at"] = datetime.datetime.now(datetime.timezone.utc)
+            health["last_tick_at"] = datetime.datetime.now(datetime.UTC)
             if listeners:
                 any_key = next(iter(listeners))
                 mark = self._marks.get(any_key)
@@ -335,7 +335,7 @@ class LivePnlService:
 
     def get_market_data_health(self) -> dict[str, Any]:
         import datetime
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.UTC)
         STALE_THRESHOLD_SEC = 15.0
         contracts_out = []
         for c_key, health in self._contract_health.items():

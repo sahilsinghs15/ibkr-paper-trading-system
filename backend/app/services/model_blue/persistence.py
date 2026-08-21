@@ -91,9 +91,12 @@ def _open_trade_from_fills(
         if resolved is not None:
             # Persist the executed IBKR product, not the TradingView requested type.
             itype = resolved.sec_type
-        elif order.leg_index is not None and order.intent.legs:
-            if 0 <= order.leg_index < len(order.intent.legs):
-                itype = order.intent.legs[order.leg_index].instrument_type
+        elif (
+            order.leg_index is not None
+            and order.intent.legs
+            and 0 <= order.leg_index < len(order.intent.legs)
+        ):
+            itype = order.intent.legs[order.leg_index].instrument_type
         if not itype:
             raise ModelBlueValidationError(
                 f"POSITION_REQUIRES_INSTRUMENT_TYPE: {order.symbol} fill has no instrument_type."

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
@@ -128,7 +129,11 @@ async def discover_and_upsert_cfd(
         return None
 
     contract = cfd_search_contract(sym, exchange=market, currency=currency)
-    details = client.request_contract_details(contract, timeout=timeout)
+    req_async = getattr(client, "request_contract_details_async", None)
+    if callable(req_async):
+        details = await req_async(contract, timeout=timeout)
+    else:
+        details = await asyncio.to_thread(client.request_contract_details, contract, timeout=timeout)
     picked = pick_unique_cfd_details(details)
     if picked is None:
         count = len(

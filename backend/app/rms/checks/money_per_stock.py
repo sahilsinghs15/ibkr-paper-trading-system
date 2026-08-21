@@ -41,7 +41,6 @@ class MoneyPerStockCheck(BaseRMSCheck):
                 outcome=RMSOutcome.PASS,
             )
 
-        any_limit = False
         for symbol, order_notional in symbol_order_notionals.items():
             account_limit = None
             if intent.account_id is not None:

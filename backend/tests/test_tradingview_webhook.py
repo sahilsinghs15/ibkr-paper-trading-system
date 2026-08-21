@@ -47,9 +47,9 @@ def test_tradingview_webhook_success_and_persists_artifact(
         "strategy": "FiveCandleStrategy",
     }
     response = client.post("/api/webhooks/tradingview", json=payload)
-    assert response.status_code == 200
+    assert response.status_code in (200, 202)
     assert response.json()["source"] == "tradingview"
-    assert response.json()["status"] in {"received", "rejected_by_rms"}
+    assert response.json()["status"] in {"received", "accepted", "rejected_by_rms"}
 
     # Verify persistent capture artifact
     captured_files = list(capture_dir.glob("webhook_*.json"))

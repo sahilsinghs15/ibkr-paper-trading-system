@@ -18,8 +18,6 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import MagicMock
 
-import pytest
-
 from app.broker.ibkr.tws_client import TWSClient
 from app.rms.models import OrderAction, OrderIntent, OrderLeg, OrderSide
 from app.services.pnl import LivePnlService, unrealized_pair
@@ -36,7 +34,7 @@ def _make_intent(
         OrderLeg(
             symbol=sym,
             side=OrderSide.BUY if idx == 0 else OrderSide.SELL,
-            quantity=Decimal("100"),
+            quantity=Decimal(100),
             price=Decimal("150.00"),
             contract_month="2026-09",
             instrument_type="STK",
@@ -274,28 +272,28 @@ def test_9_tws_error_10089_tracks_health_status() -> None:
 def test_10_unrealized_pair_requires_both_leg_marks() -> None:
     # Leg A has mark 100, Leg B mark is None -> returns None
     pnl = unrealized_pair(
-        leg_a_signed=Decimal("10"),
-        leg_a_entry=Decimal("90"),
-        leg_a_mark=Decimal("100"),
-        leg_b_signed=Decimal("-10"),
-        leg_b_entry=Decimal("50"),
+        leg_a_signed=Decimal(10),
+        leg_a_entry=Decimal(90),
+        leg_a_mark=Decimal(100),
+        leg_b_signed=Decimal(-10),
+        leg_b_entry=Decimal(50),
         leg_b_mark=None,
     )
     assert pnl is None
 
     # Both legs have marks -> returns calculated spread P&L
     pnl_both = unrealized_pair(
-        leg_a_signed=Decimal("10"),
-        leg_a_entry=Decimal("90"),
-        leg_a_mark=Decimal("100"),
-        leg_b_signed=Decimal("-10"),
-        leg_b_entry=Decimal("50"),
-        leg_b_mark=Decimal("45"),
+        leg_a_signed=Decimal(10),
+        leg_a_entry=Decimal(90),
+        leg_a_mark=Decimal(100),
+        leg_b_signed=Decimal(-10),
+        leg_b_entry=Decimal(50),
+        leg_b_mark=Decimal(45),
     )
     # Leg A: 10 * (100 - 90) = 100
     # Leg B: -10 * (45 - 50) = 50
     # Total: 150
-    assert pnl_both == Decimal("150")
+    assert pnl_both == Decimal(150)
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +318,7 @@ def test_11_cfd_positions_request_underlying_stk_market_data() -> None:
             OrderLeg(
                 symbol="SPY",
                 side=OrderSide.BUY,
-                quantity=Decimal("100"),
+                quantity=Decimal(100),
                 price=Decimal("588.00"),
                 contract_month="2026-09",
                 instrument_type="CFD",
@@ -447,7 +445,7 @@ def test_14_preresolved_cfd_leg_overrides_to_stk_for_market_data() -> None:
     leg = OrderLeg(
         symbol="EWC",
         side=OrderSide.BUY,
-        quantity=Decimal("405"),
+        quantity=Decimal(405),
         price=Decimal("61.71"),
         contract_month="2026-09",
         instrument_type="CFD",

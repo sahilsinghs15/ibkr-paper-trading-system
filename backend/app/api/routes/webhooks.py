@@ -1,5 +1,6 @@
 """TradingView Webhook router definition."""
 
+import asyncio
 import json
 import logging
 import uuid
@@ -10,8 +11,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, status
 
 from app.core.logger import bind_log_context, clear_log_context
+from app.db.repositories.signal_repository import SignalJobRepository
 from app.schemas.webhook import TradingViewWebhookResponse
 from app.services.strategies.inbound import parse_tradingview_payload
+from app.services.worker_pool import compute_idempotency_key
 
 logger = logging.getLogger(__name__)
 
@@ -22,15 +25,22 @@ WEBHOOK_CAPTURE_DIR = (
 )
 
 
+def _save_raw_capture_file(capture_data: dict[str, Any], filename: str) -> None:
+    """Save raw capture JSON payload to disk off the FastAPI event loop."""
+    WEBHOOK_CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+    file_path = WEBHOOK_CAPTURE_DIR / filename
+    file_path.write_text(json.dumps(capture_data, indent=2), encoding="utf-8")
+
+
 @router.post(
     "/tradingview",
     response_model=TradingViewWebhookResponse,
-    status_code=status.HTTP_200_OK,
+    status_code=status.HTTP_202_ACCEPTED,
     summary="Receive TradingView Webhook",
-    description="Endpoint to receive, validate, log, locally capture, and persist TradingView alert JSON payloads into PostgreSQL.",
+    description="Fast ingestion endpoint to validate, capture, and durably queue TradingView alerts.",
 )
-async def receive_tradingview_webhook(request: Request) -> dict[str, str]:
-    """Ingest, validate, safely log, locally capture, and persist a TradingView JSON alert payload."""
+async def receive_tradingview_webhook(request: Request) -> TradingViewWebhookResponse:
+    """Ingest, validate, safely log, locally capture, and persist a TradingView JSON alert payload into PostgreSQL durable queue."""
     body_bytes = await request.body()
     raw_body = body_bytes.decode("utf-8", errors="replace")
 
@@ -72,7 +82,7 @@ async def _process_tradingview_webhook(
     *,
     raw_body: str,
     request_id: str,
-) -> dict[str, str]:
+) -> TradingViewWebhookResponse:
     utc_now = datetime.now(UTC)
     received_at = utc_now.isoformat()
 
@@ -88,18 +98,18 @@ async def _process_tradingview_webhook(
     timestamp_str = utc_now.strftime("%Y%m%d_%H%M%S_%f")
     filename = f"webhook_{timestamp_str}_{request_id}.json"
 
-    WEBHOOK_CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
-    file_path = WEBHOOK_CAPTURE_DIR / filename
-    file_path.write_text(json.dumps(capture_data, indent=2), encoding="utf-8")
+    # Non-blocking disk persistence off the event loop
+    await asyncio.to_thread(_save_raw_capture_file, capture_data, filename)
 
-    logger.info(
-        "Received TradingView webhook payload safely (request_id=%s) and saved to %s: %s",
-        request_id,
-        file_path,
-        payload,
-    )
+    strategy_id, signal_id, trade_id, idempotency_key = compute_idempotency_key(payload)
+    bind_log_context(signal_id=signal_id, trade_id=trade_id or signal_id)
 
     order_manager = getattr(request.app.state, "order_manager", None)
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory is None and order_manager is not None:
+        session_factory = getattr(order_manager, "_session_factory", None)
+
+    # Validate signal payload structure via strategy parser
     try:
         if order_manager is not None:
             domain_signal = order_manager.parse_inbound_payload(
@@ -121,58 +131,68 @@ async def _process_tradingview_webhook(
             await order_manager.record_rejected_inbound(
                 payload, capture_data=capture_data, reason=str(val_err)
             )
-        response = {"status": "rejected", "source": "tradingview"}
-        logger.info("Webhook HTTP response status=%s", response["status"])
-        return response
+        return TradingViewWebhookResponse(
+            status="rejected",
+            source="tradingview",
+            signal_id=signal_id,
+            request_id=request_id,
+        )
 
-    bind_log_context(
-        signal_id=domain_signal.signal_id,
-        trade_id=domain_signal.trade_id or domain_signal.signal_id,
-    )
+    job_id_str = None
+    if session_factory is not None:
+        try:
+            async with session_factory() as session, session.begin():
+                job, created = await SignalJobRepository(session).create_job_if_not_exists(
+                    signal_id=domain_signal.signal_id,
+                    strategy_id=domain_signal.strategy_id or strategy_id,
+                    trade_id=domain_signal.trade_id or trade_id,
+                    idempotency_key=idempotency_key,
+                    raw_payload=payload,
+                    capture_data=capture_data,
+                    correlation_id=request_id,
+                )
+                job_id_str = str(job.job_id)
+                if not created:
+                    logger.info(
+                        "Duplicate webhook received for idempotency_key=%s signal_id=%s (job_id=%s)",
+                        idempotency_key,
+                        domain_signal.signal_id,
+                        job_id_str,
+                    )
+        except Exception:
+            logger.exception("Failed to persist durable signal job into PostgreSQL queue")
 
-    if order_manager is not None:
+    # If legacy in-line execution mode is required (e.g. worker pool not running and order_manager present)
+    worker_pool = getattr(request.app.state, "worker_pool", None)
+    if worker_pool is None and order_manager is not None and session_factory is None:
         try:
             execution = await order_manager.process_signal_execution(domain_signal)
-            if execution is not None:
-                symbols = [o.symbol for o in execution.orders]
-                logger.info(
-                    "Signal processed by OrderManager -> RMS -> OMS: signal_id=%s success=%s orders=%s symbols=%s",
-                    domain_signal.signal_id,
-                    getattr(execution, "success", None),
-                    [o.internal_order_id for o in execution.orders],
-                    symbols,
+            if execution is not None and getattr(execution, "all_rejected", False) and not execution.orders:
+                return TradingViewWebhookResponse(
+                    status="rejected_by_rms",
+                    source="tradingview",
+                    signal_id=domain_signal.signal_id,
+                    request_id=request_id,
                 )
-                if getattr(execution, "all_rejected", False) and not execution.orders:
-                    response = {"status": "rejected_by_rms", "source": "tradingview"}
-                    logger.info("Webhook HTTP response status=%s", response["status"])
-                    return response
-                if not getattr(execution, "success", False):
-                    response = {
-                        "status": "execution_incomplete",
-                        "source": "tradingview",
-                    }
-                    logger.info("Webhook HTTP response status=%s", response["status"])
-                    return response
-        except ValueError as val_err:
-            logger.warning("Incoming TradingView signal rejected: %s", val_err)
-            response = {"status": "rejected_by_rms", "source": "tradingview"}
-            logger.info("Webhook HTTP response status=%s", response["status"])
-            return response
-        except (ConnectionError, RuntimeError) as conn_err:
-            logger.warning("Signal ingested but broker submission unconfirmed: %s", conn_err)
-            response = {"status": "received", "source": "tradingview"}
-            logger.info(
-                "Webhook HTTP response status=%s (broker submission unconfirmed)",
-                response["status"],
+        except ValueError:
+            return TradingViewWebhookResponse(
+                status="rejected_by_rms",
+                source="tradingview",
+                signal_id=domain_signal.signal_id,
+                request_id=request_id,
             )
-            return response
-        except Exception as exc:
-            logger.exception("Error processing signal through OrderManager pipeline")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Execution pipeline error: {exc}",
-            ) from exc
 
-    response = {"status": "received", "source": "tradingview"}
-    logger.info("Webhook HTTP response status=%s", response["status"])
-    return response
+    logger.info(
+        "Webhook HTTP 202 accepted: signal_id=%s job_id=%s request_id=%s",
+        domain_signal.signal_id,
+        job_id_str,
+        request_id,
+    )
+    return TradingViewWebhookResponse(
+        status="accepted",
+        source="tradingview",
+        signal_id=domain_signal.signal_id,
+        job_id=job_id_str,
+        request_id=request_id,
+    )
+

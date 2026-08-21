@@ -1,14 +1,25 @@
 """Persistence for TradingView/external signals."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import case, literal, not_, select
+from sqlalchemy import case, literal, not_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.signal import SignalModel
+from app.db.models.signal import (
+    JOB_STATUS_CLAIMED,
+    JOB_STATUS_COMPLETED,
+    JOB_STATUS_DEAD_LETTER,
+    JOB_STATUS_FAILED,
+    JOB_STATUS_PROCESSING,
+    JOB_STATUS_QUEUED,
+    JOB_STATUS_RECEIVED,
+    JOB_STATUS_REJECTED,
+    SignalJobModel,
+    SignalModel,
+)
 from app.models.signal import Signal, SignalType
 
 SIGNAL_STATUS_PROCESSED = "PROCESSED"
@@ -272,3 +283,185 @@ class SignalRepository:
             )
         await self._session.refresh(row)
         return row
+
+
+class SignalJobRepository:
+    """Repository for managing signal jobs in the durable PostgreSQL queue."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_by_idempotency_key(self, idempotency_key: str) -> SignalJobModel | None:
+        stmt = select(SignalJobModel).where(SignalJobModel.idempotency_key == idempotency_key)
+        res = await self._session.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def create_job_if_not_exists(
+        self,
+        *,
+        signal_id: str,
+        strategy_id: str,
+        trade_id: str | None,
+        idempotency_key: str,
+        raw_payload: dict[str, Any],
+        capture_data: dict[str, Any] | None,
+        correlation_id: str,
+        account_scope: str | None = None,
+    ) -> tuple[SignalJobModel, bool]:
+        """Atomically insert a job record if it does not already exist.
+
+        Returns (job_model, created_boolean).
+        """
+        now = datetime.now(UTC)
+        values = {
+            "signal_id": signal_id,
+            "strategy_id": strategy_id,
+            "trade_id": trade_id,
+            "status": JOB_STATUS_QUEUED,
+            "idempotency_key": idempotency_key,
+            "account_scope": account_scope,
+            "raw_payload": raw_payload,
+            "capture_data": capture_data,
+            "correlation_id": correlation_id,
+            "received_at": now,
+            "queued_at": now,
+        }
+        stmt = (
+            insert(SignalJobModel)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=["idempotency_key"])
+        )
+        res = await self._session.execute(stmt)
+        if res.rowcount > 0:
+            job = await self.get_by_idempotency_key(idempotency_key)
+            assert job is not None
+            return job, True
+        existing = await self.get_by_idempotency_key(idempotency_key)
+        if existing is None:
+            raise RuntimeError(f"Failed to fetch existing job for idempotency key {idempotency_key}")
+        return existing, False
+
+    async def claim_next_jobs(
+        self,
+        worker_id: str,
+        *,
+        limit: int = 1,
+        lease_duration_sec: float = 30.0,
+    ) -> list[SignalJobModel]:
+        """Claim up to `limit` queued/expired jobs using FOR UPDATE SKIP LOCKED."""
+        now = datetime.now(UTC)
+        lease_until = now + timedelta(seconds=lease_duration_sec)
+
+        subq = (
+            select(SignalJobModel.job_id)
+            .where(
+                (SignalJobModel.status.in_([JOB_STATUS_QUEUED, JOB_STATUS_RECEIVED]))
+                | (
+                    (SignalJobModel.status == JOB_STATUS_CLAIMED)
+                    & (SignalJobModel.lease_expires_at < now)
+                )
+            )
+            .order_by(SignalJobModel.received_at.asc())
+            .with_for_update(skip_locked=True)
+            .limit(limit)
+        )
+        result = await self._session.execute(subq)
+        job_ids = list(result.scalars().all())
+        if not job_ids:
+            return []
+
+        stmt = (
+            update(SignalJobModel)
+            .where(SignalJobModel.job_id.in_(job_ids))
+            .values(
+                status=JOB_STATUS_CLAIMED,
+                worker_id=worker_id,
+                claimed_at=now,
+                lease_expires_at=lease_until,
+                attempt_count=SignalJobModel.attempt_count + 1,
+            )
+            .execution_options(synchronize_session="fetch")
+        )
+        await self._session.execute(stmt)
+        await self._session.flush()
+
+        res = await self._session.execute(
+            select(SignalJobModel).where(SignalJobModel.job_id.in_(job_ids))
+        )
+        return list(res.scalars().all())
+
+    async def update_status(
+        self,
+        job_id: Any,
+        status: str,
+        *,
+        error: str | None = None,
+        worker_id: str | None = None,
+    ) -> None:
+        """Update job lifecycle status."""
+        now = datetime.now(UTC)
+        values: dict[str, Any] = {"status": status}
+        if status == JOB_STATUS_PROCESSING:
+            values["processing_started_at"] = now
+        elif status in (JOB_STATUS_COMPLETED, JOB_STATUS_REJECTED, JOB_STATUS_FAILED, JOB_STATUS_DEAD_LETTER):
+            values["completed_at"] = now
+        if error is not None:
+            values["last_error"] = error
+        if worker_id is not None:
+            values["worker_id"] = worker_id
+
+        stmt = update(SignalJobModel).where(SignalJobModel.job_id == job_id).values(**values)
+        await self._session.execute(stmt)
+        await self._session.flush()
+
+    async def heartbeat_lease(self, job_id: Any, worker_id: str, lease_duration_sec: float = 30.0) -> None:
+        """Renew worker lease expiration timestamp."""
+        now = datetime.now(UTC)
+        lease_until = now + timedelta(seconds=lease_duration_sec)
+        stmt = (
+            update(SignalJobModel)
+            .where(
+                SignalJobModel.job_id == job_id,
+                SignalJobModel.worker_id == worker_id,
+                SignalJobModel.status == JOB_STATUS_CLAIMED,
+            )
+            .values(lease_expires_at=lease_until)
+        )
+        await self._session.execute(stmt)
+
+    async def reclaim_stale_jobs(self, max_attempts: int = 3) -> int:
+        """Reclaim jobs with expired leases back to QUEUED or DEAD_LETTER."""
+        now = datetime.now(UTC)
+
+        stmt_dead = (
+            update(SignalJobModel)
+            .where(
+                SignalJobModel.status == JOB_STATUS_CLAIMED,
+                SignalJobModel.lease_expires_at < now,
+                SignalJobModel.attempt_count >= max_attempts,
+            )
+            .values(
+                status=JOB_STATUS_DEAD_LETTER,
+                last_error=f"Exceeded max attempts ({max_attempts}) due to worker lease expiry.",
+                completed_at=now,
+            )
+        )
+        res_dead = await self._session.execute(stmt_dead)
+
+        stmt_requeue = (
+            update(SignalJobModel)
+            .where(
+                SignalJobModel.status == JOB_STATUS_CLAIMED,
+                SignalJobModel.lease_expires_at < now,
+                SignalJobModel.attempt_count < max_attempts,
+            )
+            .values(
+                status=JOB_STATUS_QUEUED,
+                worker_id=None,
+                lease_expires_at=None,
+            )
+        )
+        res_requeue = await self._session.execute(stmt_requeue)
+        await self._session.flush()
+        return res_dead.rowcount + res_requeue.rowcount
+

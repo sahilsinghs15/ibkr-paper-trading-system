@@ -1,5 +1,6 @@
 """OrderManager — application facade orchestrating Signal -> OrderIntent -> RMS -> OMS."""
 
+import asyncio
 import logging
 import uuid
 from collections.abc import Sequence
@@ -410,6 +411,52 @@ class OrderManager:
             signal, handler, contexts, inbound_pk=_row_pk(inbound_row)
         )
 
+    async def _fanout_single_account(
+        self,
+        signal: Signal,
+        handler: StrategyHandler,
+        ctx: AccountExecutionContext,
+        inbound_pk: int | None = None,
+        raise_if_single: bool = False,
+    ) -> AccountExecutionOutcome:
+        bind_log_context(account_id=str(ctx.account_id))
+        self._ensure_strategy_config(ctx.strategy_id)
+        self._rms_context.account_open_limits[(ctx.account_id, ctx.strategy_id)] = (
+            ctx.max_open_positions
+        )
+        try:
+            intent = await handler.build_intent(signal, account=ctx)
+            result = await self._evaluate_and_submit(
+                intent, signal, handler=handler, inbound_pk=inbound_pk
+            )
+            logger.info(
+                "Fanout account outcome: account_id=%s success=%s orders=%d",
+                ctx.account_id,
+                getattr(result, "success", None),
+                len(result.orders) if result is not None else 0,
+            )
+            return AccountExecutionOutcome(
+                account_id=ctx.account_id,
+                ibkr_account=ctx.ibkr_account,
+                result=result,
+            )
+        except ValueError as exc:
+            logger.warning(
+                "Account %s (%s) rejected signal %s: %s",
+                ctx.account_id,
+                ctx.ibkr_account,
+                signal.signal_id,
+                exc,
+            )
+            if raise_if_single:
+                raise
+            return AccountExecutionOutcome(
+                account_id=ctx.account_id,
+                ibkr_account=ctx.ibkr_account,
+                result=None,
+                error=str(exc),
+            )
+
     async def _fanout_accounts(
         self,
         signal: Signal,
@@ -417,50 +464,14 @@ class OrderManager:
         contexts: list[AccountExecutionContext],
         inbound_pk: int | None = None,
     ) -> FanoutExecutionResult:
-        outcomes: list[AccountExecutionOutcome] = []
         raise_if_single = len(contexts) == 1
-        for ctx in contexts:
-            bind_log_context(account_id=str(ctx.account_id))
-            self._ensure_strategy_config(ctx.strategy_id)
-            self._rms_context.account_open_limits[(ctx.account_id, ctx.strategy_id)] = (
-                ctx.max_open_positions
+        tasks = [
+            self._fanout_single_account(
+                signal, handler, ctx, inbound_pk=inbound_pk, raise_if_single=raise_if_single
             )
-            try:
-                intent = await handler.build_intent(signal, account=ctx)
-                result = await self._evaluate_and_submit(
-                    intent, signal, handler=handler, inbound_pk=inbound_pk
-                )
-                outcomes.append(
-                    AccountExecutionOutcome(
-                        account_id=ctx.account_id,
-                        ibkr_account=ctx.ibkr_account,
-                        result=result,
-                    )
-                )
-                logger.info(
-                    "Fanout account outcome: account_id=%s success=%s orders=%d",
-                    ctx.account_id,
-                    getattr(result, "success", None),
-                    len(result.orders) if result is not None else 0,
-                )
-            except ValueError as exc:
-                logger.warning(
-                    "Account %s (%s) rejected signal %s: %s",
-                    ctx.account_id,
-                    ctx.ibkr_account,
-                    signal.signal_id,
-                    exc,
-                )
-                if raise_if_single:
-                    raise
-                outcomes.append(
-                    AccountExecutionOutcome(
-                        account_id=ctx.account_id,
-                        ibkr_account=ctx.ibkr_account,
-                        result=None,
-                        error=str(exc),
-                    )
-                )
+            for ctx in contexts
+        ]
+        outcomes = list(await asyncio.gather(*tasks))
         return FanoutExecutionResult(outcomes=outcomes)
 
     async def _process_legacy_single_name(
