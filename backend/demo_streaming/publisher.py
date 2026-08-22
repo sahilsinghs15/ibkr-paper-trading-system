@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime
 
@@ -23,27 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def _signal_fp(sig: dict) -> tuple:
-    orders = sig.get("orders") or []
-    events = sig.get("events") or []
-    orders_fp = tuple(
-        (
-            o.get("id"),
-            o.get("status"),
-            o.get("fill_qty"),
-            o.get("is_compensation"),
-            tuple((e.get("id"), e.get("quantity"), e.get("price")) for e in (o.get("executions") or [])),
-        )
-        for o in orders
-    )
-    events_fp = tuple((ev.get("id"), ev.get("kind")) for ev in events)
-    return (
-        sig.get("status"),
-        sig.get("canonical_status"),
-        sig.get("is_active_processing"),
-        sig.get("reject_reason"),
-        orders_fp,
-        events_fp,
-    )
+    return (json.dumps(sig, sort_keys=True, default=str),)
 
 
 class PositionBridge:
@@ -54,11 +35,13 @@ class PositionBridge:
         session_factory: async_sessionmaker[AsyncSession],
         stream: PositionStream,
         *,
-        poll_interval: float = 1.0,
+        poll_interval: float = 2.0,
+        signal_watch_limit: int = 500,
     ) -> None:
         self._session_factory = session_factory
         self._stream = stream
         self._poll_interval = poll_interval
+        self._signal_watch_limit = signal_watch_limit
         self._fingerprints: dict[tuple[int, str, str], tuple] = {}
         self._status: dict[tuple[int, str, str], str] = {}
         self._last_payload: dict[tuple[int, str, str], dict] = {}
@@ -70,7 +53,9 @@ class PositionBridge:
         """Load current rows so a bridge restart does not re-emit OPEN for existing trades."""
         async with self._session_factory() as session:
             payloads = await self._collect(session)
-            sig_res = await load_signals(session, page_size=100, return_dict=True)
+            sig_res = await load_signals(
+                session, page_size=self._signal_watch_limit, return_dict=True
+            )
             sigs = sig_res.get("signals", []) if isinstance(sig_res, dict) else sig_res
             for s in sigs:
                 s_id = int(s.get("id") or 0)
@@ -88,7 +73,9 @@ class PositionBridge:
     async def poll_once(self) -> list[dict]:
         async with self._session_factory() as session:
             payloads = await self._collect(session)
-            sig_res = await load_signals(session, page_size=100, return_dict=True)
+            sig_res = await load_signals(
+                session, page_size=self._signal_watch_limit, return_dict=True
+            )
             sigs = sig_res.get("signals", []) if isinstance(sig_res, dict) else sig_res
         emitted: list[dict] = []
         for sig in reversed(sigs):
@@ -117,6 +104,7 @@ class PositionBridge:
             current_fp = fingerprint(payload)
             previous_fp = self._fingerprints.get(key)
             previous_status = self._status.get(key)
+            previous_payload = self._last_payload.get(key)
             if previous_fp == current_fp:
                 self._last_payload[key] = payload
                 continue
@@ -128,7 +116,7 @@ class PositionBridge:
             event = classify_event(
                 previous_status=previous_status,
                 current_status=str(payload.get("status") or ""),
-                previous_fill=previous_fp[1] if previous_fp else None,
+                previous_fill=previous_payload.get("filled_quantity") if previous_payload else None,
                 current_fill=payload.get("filled_quantity"),
                 close_in_progress=bool(payload.get("close_in_progress")),
             )
@@ -172,13 +160,15 @@ class PositionBridge:
     async def run_forever(self) -> None:
         await self.restore_baseline()
         while True:
+            started = asyncio.get_running_loop().time()
             try:
                 await self.poll_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Demo position poll failed; will retry")
-            await asyncio.sleep(self._poll_interval)
+            elapsed = asyncio.get_running_loop().time() - started
+            await asyncio.sleep(max(0.0, self._poll_interval - elapsed))
 
     async def _payloads_for_vanished(
         self, keys: list[tuple[int, str, str]]

@@ -1,15 +1,21 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { ClosedPositionsTable } from '../components/ClosedPositionsTable'
 import { Kpis } from '../components/Kpis'
 import { OpenPositionsTable } from '../components/OpenPositionsTable'
 import { SignalTrayTable } from '../components/SignalTrayTable'
 import { SignalWidget } from '../components/SignalWidget'
+import { useSignalStore } from '../store/signalStore'
 
 export function PositionsPage() {
   const { ibkrAccount } = useParams<{ ibkrAccount: string }>()
   const cleanAccount = ibkrAccount ? ibkrAccount.trim().toUpperCase() : 'DUR919062'
   const [activeTab, setActiveTab] = useState<'signals' | 'open' | 'closed'>('open')
+  const fetchSignals = useSignalStore((s) => s.fetchSignals)
+
+  useEffect(() => {
+    void fetchSignals({ page: 1, account: cleanAccount })
+  }, [cleanAccount, fetchSignals])
 
   return (
     <main className="page dashboard-layout">

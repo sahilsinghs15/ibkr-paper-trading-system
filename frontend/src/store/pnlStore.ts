@@ -43,11 +43,11 @@ export const usePnlStore = create<PnlState>((set, get) => ({
     }
     if (!row.symbol && !row.trade_id) return
 
-    const { active, closed, lastTs } = get()
+    const { active, closed } = get()
     const nextActive = { ...active }
     const nextClosed = { ...closed }
-    let nextLast = lastTs
-    if (row.timestamp) nextLast = row.timestamp
+    // Header "Updated" is last receive time so it tracks the clock, not per-trade opened_at.
+    const nextLast = new Date().toISOString()
 
     const key = row.symbol ? legKey(row) : tradeKey(row)
 

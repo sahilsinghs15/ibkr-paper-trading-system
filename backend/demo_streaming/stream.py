@@ -1,5 +1,6 @@
 """Redis Streams helper. Read-only consumers; publisher only XADDs JSON payloads."""
 
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -24,21 +25,21 @@ class PositionStream:
 
     async def xread(
         self, last_id: str = "$", block_ms: int = 5000, count: int = 50
-    ) -> list[tuple[str, dict[str, str]]]:
+    ) -> list[tuple[str, dict[str, Any]]]:
         try:
             rows = await self._redis.xread(
                 {self.stream_name: last_id}, block=block_ms, count=count
             )
         except RedisTimeout:
             return []
-        out: list[tuple[str, dict[str, str]]] = []
+        out: list[tuple[str, dict[str, Any]]] = []
         if not rows:
             return out
         for _name, entries in rows:
             for entry_id, fields in entries:
                 decoded_id = entry_id.decode() if isinstance(entry_id, bytes) else str(entry_id)
                 decoded = {
-                    (k.decode() if isinstance(k, bytes) else k): (
+                    (k.decode() if isinstance(k, bytes) else k): _decode_field(
                         v.decode() if isinstance(v, bytes) else v
                     )
                     for k, v in fields.items()
@@ -48,7 +49,7 @@ class PositionStream:
 
     async def listen(
         self, last_id: str = "$", block_ms: int = 5000
-    ) -> AsyncIterator[tuple[str, dict[str, str]]]:
+    ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         cursor = last_id
         while True:
             for entry_id, fields in await self.xread(cursor, block_ms=block_ms):
@@ -57,6 +58,14 @@ class PositionStream:
 
 
 def _encode(value: Any) -> str:
-    if value is None:
-        return ""
-    return str(value)
+    return json.dumps(value, default=str)
+
+
+def _decode_field(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        # Legacy entries used str() (Python repr / bare tokens).
+        return value

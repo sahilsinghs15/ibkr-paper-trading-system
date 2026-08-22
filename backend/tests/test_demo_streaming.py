@@ -6,7 +6,12 @@ from decimal import Decimal
 import pytest
 
 from demo_streaming.publisher import PositionBridge
-from demo_streaming.snapshot import classify_event, fingerprint, position_leg_payloads
+from demo_streaming.snapshot import (
+    classify_event,
+    fingerprint,
+    position_leg_payloads,
+    reconcile_signal_status,
+)
 
 
 class _Pos:
@@ -322,3 +327,188 @@ async def test_load_signals_account_filtering_query_safety() -> None:
     res = await load_signals(session, account_id=1, ibkr_account="DU12345", return_dict=True)
     assert res["total"] == 0
     assert session.execute.called
+
+
+def test_stream_json_roundtrip_keeps_nested_signal_orders() -> None:
+    from demo_streaming.stream import _decode_field, _encode
+
+    payload = {
+        "event": "SIGNAL_RECEIVED",
+        "signal_id": "sig-1",
+        "canonical_status": "ACCEPTED",
+        "is_active_processing": False,
+        "orders": [{"id": 9, "fill_qty": 10, "status": "FILLED"}],
+        "events": [{"id": 3, "kind": "OMS_FILLED"}],
+        "raw_payload": {"pair": "SIL/GDX"},
+        "account_id": 7,
+        "close_in_progress": True,
+        "unrealized_pnl": None,
+    }
+    encoded = {key: _encode(value) for key, value in payload.items()}
+    decoded = {key: _decode_field(value) for key, value in encoded.items()}
+    assert decoded["orders"] == payload["orders"]
+    assert decoded["events"] == payload["events"]
+    assert decoded["raw_payload"] == payload["raw_payload"]
+    assert decoded["is_active_processing"] is False
+    assert decoded["close_in_progress"] is True
+    assert decoded["unrealized_pnl"] is None
+    assert decoded["account_id"] == 7
+
+
+def test_stream_decode_accepts_legacy_str_encode() -> None:
+    from demo_streaming.stream import _decode_field
+
+    assert _decode_field("ACCEPTED") == "ACCEPTED"
+    assert _decode_field("True") == "True"
+    assert _decode_field("[{'id': 1}]") == "[{'id': 1}]"
+
+
+class _SigStub:
+    def __init__(self, **kwargs) -> None:
+        self.status = kwargs.get("status", "NEW")
+        self.reject_reason = kwargs.get("reject_reason")
+        self.processed_at = kwargs.get("processed_at")
+        self.received_at = kwargs.get("received_at", datetime(2026, 8, 21, 10, 0, 0, tzinfo=UTC))
+
+
+def test_signal_with_no_orders_is_processing() -> None:
+    result = reconcile_signal_status(_SigStub(), [], [])
+    assert result[0] == "PROCESSING"
+    assert result[1] is True
+    assert result[3] is None
+    assert result[4] is None
+
+
+def test_cross_basket_legs_do_not_report_filled() -> None:
+    orders = [
+        {
+            "basket_id": 1,
+            "leg": "0",
+            "symbol": "SIL",
+            "buy_sell": "BUY",
+            "quantity": 100.0,
+            "fill_qty": 100.0,
+            "status": "FILLED",
+            "is_compensation": False,
+        },
+        {
+            "basket_id": 2,
+            "leg": "0",
+            "symbol": "SIL",
+            "buy_sell": "SELL",
+            "quantity": 100.0,
+            "fill_qty": 0.0,
+            "status": "SUBMITTED",
+            "is_compensation": False,
+        },
+    ]
+    result = reconcile_signal_status(_SigStub(), orders, [])
+    assert result[0] == "PROCESSING"
+
+
+def test_processed_at_prefers_db_value_then_last_fill() -> None:
+    db_ts = datetime(2026, 8, 21, 11, 0, 0, tzinfo=UTC)
+    received = datetime(2026, 8, 21, 10, 0, 0, tzinfo=UTC)
+    orders = [
+        {
+            "basket_id": 1,
+            "leg": "0",
+            "symbol": "SIL",
+            "buy_sell": "BUY",
+            "quantity": 100.0,
+            "fill_qty": 100.0,
+            "status": "FILLED",
+            "filled_at": "2026-08-21T10:30:00+00:00",
+            "is_compensation": False,
+        },
+        {
+            "basket_id": 1,
+            "leg": "1",
+            "symbol": "GDX",
+            "buy_sell": "SELL",
+            "quantity": 100.0,
+            "fill_qty": 100.0,
+            "status": "FILLED",
+            "filled_at": "2026-08-21T10:45:00+00:00",
+            "is_compensation": False,
+        },
+    ]
+    with_db = reconcile_signal_status(_SigStub(processed_at=db_ts, received_at=received), orders, [])
+    assert with_db[0] == "ACCEPTED"
+    assert with_db[3] == db_ts.isoformat()
+
+    without_db = reconcile_signal_status(_SigStub(received_at=received), orders, [])
+    assert without_db[3] == "2026-08-21T10:45:00+00:00"
+    assert without_db[3] != received.isoformat()
+
+
+def test_reconcile_is_deterministic() -> None:
+    orders = [
+        {
+            "basket_id": 1,
+            "leg": "0",
+            "symbol": "SIL",
+            "buy_sell": "BUY",
+            "quantity": 100.0,
+            "fill_qty": 50.0,
+            "status": "PARTIALLY_FILLED",
+            "is_compensation": False,
+        }
+    ]
+    sig = _SigStub()
+    assert reconcile_signal_status(sig, orders, []) == reconcile_signal_status(sig, orders, [])
+
+
+def test_open_leg_quantity_ignores_inflight_close_order() -> None:
+    class _Basket:
+        def __init__(self, basket_id: int, action: str, state: str = "CLOSED") -> None:
+            self.id = basket_id
+            self.action = action
+            self.state = state
+
+    class _Order:
+        def __init__(self, **kwargs) -> None:
+            self.id = kwargs["id"]
+            self.basket_id = kwargs["basket_id"]
+            self.symbol = kwargs["symbol"]
+            self.leg = kwargs.get("leg", "0")
+            self.status = kwargs["status"]
+            self.fill_qty = kwargs.get("fill_qty")
+            self.filled_at = kwargs.get("filled_at")
+            self.broker_order_id = kwargs.get("broker_order_id")
+            self.is_compensation = False
+            self.internal_order_id = kwargs.get("internal_order_id", "")
+
+    baskets = [_Basket(1, "OPEN"), _Basket(2, "CLOSE", "EXECUTING")]
+    orders = [
+        _Order(
+            id=10,
+            basket_id=1,
+            symbol="SIL",
+            status="FILLED",
+            fill_qty=Decimal(275),
+            broker_order_id="100",
+        ),
+        _Order(
+            id=20,
+            basket_id=2,
+            symbol="SIL",
+            status="SUBMITTED",
+            fill_qty=Decimal(0),
+            internal_order_id="trade:CLOSE:leg0",
+        ),
+    ]
+    legs = position_leg_payloads(_Pos(), _Acct(), baskets, orders, timestamp=datetime.now(UTC))
+    sil = next(leg for leg in legs if leg["symbol"] == "SIL")
+    assert sil["filled_quantity"] == "275"
+    assert sil["order_status"] == "FILLED"
+    assert sil["closing_order_status"] == "SUBMITTED"
+
+
+def test_fingerprint_ignores_timestamp() -> None:
+    base = {"status": "OPEN", "filled_quantity": "275", "timestamp": "2026-08-21T10:00:00+00:00"}
+    other = dict(base)
+    other["timestamp"] = "2026-08-21T11:00:00+00:00"
+    assert fingerprint(base) == fingerprint(other)
+    other["unrealized_pnl"] = "1.5"
+    assert fingerprint(base) != fingerprint(other)

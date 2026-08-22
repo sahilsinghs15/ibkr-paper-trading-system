@@ -1,5 +1,6 @@
 """Read-only snapshot of executed positions from PostgreSQL. Never writes."""
 
+import json
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -57,14 +58,24 @@ def classify_event(
     return "POSITION_UPDATE"
 
 
-def _order_for_symbol(orders: list[OrderModel], symbol: str) -> OrderModel | None:
+def _basket_id_for_action(baskets: list[BasketModel], action: str) -> int | None:
+    for row in baskets:
+        if row.action.upper() == action:
+            return row.id
+    return None
+
+
+def _order_for_symbol(
+    orders: list[OrderModel], symbol: str, *, basket_id: int | None = None
+) -> OrderModel | None:
     matches = [row for row in orders if row.symbol == symbol and not row.is_compensation]
+    if basket_id is not None:
+        scoped = [row for row in matches if row.basket_id == basket_id]
+        if scoped:
+            matches = scoped
     if not matches:
         return None
-    working = [row for row in matches if row.status not in ("FILLED", "CANCELLED", "REJECTED", "ERROR")]
-    pool = working or matches
-    pool.sort(key=lambda row: row.id, reverse=True)
-    return pool[0]
+    return max(matches, key=lambda row: row.id)
 
 
 def _basket_state(baskets: list[BasketModel], position_status: str) -> str | None:
@@ -102,12 +113,18 @@ def _leg_payload(
     orders: list[OrderModel],
     timestamp: datetime,
 ) -> dict[str, Any]:
-    order = _order_for_symbol(orders, symbol)
+    entry_order = _order_for_symbol(
+        orders, symbol, basket_id=_basket_id_for_action(baskets, "OPEN")
+    )
+    closing_order = _order_for_symbol(
+        orders, symbol, basket_id=_basket_id_for_action(baskets, "CLOSE")
+    )
     close_in_progress = _close_in_progress(baskets, orders)
-    filled = None
-    if order is not None and order.fill_qty is not None:
-        filled = _dec(order.fill_qty)
-    elif signed_qty is not None:
+    if position.risk_state == RISK_OPEN:
+        filled = _qty(signed_qty)
+    elif entry_order is not None and entry_order.fill_qty is not None:
+        filled = _dec(entry_order.fill_qty)
+    else:
         filled = _qty(signed_qty)
     live_pnl = _dec(position.live_pnl) if position.risk_state == RISK_OPEN else None
     realized_pnl = (
@@ -117,12 +134,18 @@ def _leg_payload(
     )
     opened_ts = position.opened_at if getattr(position, "opened_at", None) is not None else timestamp
     closed_ts = getattr(position, "closed_at", None)
-    if closed_ts is None and order is not None and order.filled_at is not None and position.risk_state == RISK_CLOSED:
-        closed_ts = order.filled_at
+    close_fill_order = closing_order or entry_order
+    if (
+        closed_ts is None
+        and close_fill_order is not None
+        and close_fill_order.filled_at is not None
+        and position.risk_state == RISK_CLOSED
+    ):
+        closed_ts = close_fill_order.filled_at
 
     market_status = "LIVE" if position.live_pnl is not None and position.live_pnl != Decimal(0) else "UNAVAILABLE"
     payload = {
-        "timestamp": opened_ts.isoformat(),
+        "timestamp": timestamp.isoformat(),
         "opened_at": opened_ts.isoformat() if opened_ts else None,
         "closed_at": closed_ts.isoformat() if closed_ts else None,
         "account_id": position.account_id,
@@ -144,10 +167,18 @@ def _leg_payload(
         "status": position.risk_state,
         "basket_state": _basket_state(baskets, position.risk_state),
         "position_state": position.risk_state,
-        "order_status": order.status if order is not None else None,
-        "broker_order_id": order.broker_order_id if order is not None else None,
-        "fill_status": order.status if order is not None else None,
-        "fill_timestamp": order.filled_at.isoformat() if order is not None and order.filled_at else None,
+        "order_status": entry_order.status if entry_order is not None else None,
+        "broker_order_id": entry_order.broker_order_id if entry_order is not None else None,
+        "fill_status": entry_order.status if entry_order is not None else None,
+        "fill_timestamp": (
+            entry_order.filled_at.isoformat()
+            if entry_order is not None and entry_order.filled_at
+            else None
+        ),
+        "closing_order_status": closing_order.status if closing_order is not None else None,
+        "closing_broker_order_id": (
+            closing_order.broker_order_id if closing_order is not None else None
+        ),
         "market_data_status": market_status,
         "connection_status": "OBSERVING_DB",
         "close_in_progress": close_in_progress,
@@ -193,22 +224,12 @@ def position_leg_payloads(
     return legs
 
 
+_VOLATILE_PAYLOAD_KEYS = frozenset({"timestamp"})
+
+
 def fingerprint(payload: dict[str, Any]) -> tuple:
-    return (
-        payload.get("status"),
-        payload.get("filled_quantity"),
-        payload.get("unrealized_pnl"),
-        payload.get("realized_pnl"),
-        payload.get("commission"),
-        payload.get("entry_price"),
-        payload.get("basket_state"),
-        payload.get("order_status"),
-        payload.get("broker_order_id"),
-        payload.get("close_in_progress"),
-        payload.get("opened_at"),
-        payload.get("closed_at"),
-        payload.get("market_data_status"),
-    )
+    stable = {k: v for k, v in payload.items() if k not in _VOLATILE_PAYLOAD_KEYS}
+    return (json.dumps(stable, sort_keys=True, default=str),)
 
 
 async def load_position_rows(session: AsyncSession) -> list[tuple[PositionModel, AccountModel]]:
@@ -363,26 +384,21 @@ async def load_signals(
 
     # To calculate canonical counts & filter accurately, we batch-load order & event info for all_rows
     all_sig_ids = [s.id for s in all_rows]
-    all_trade_ids = [s.trade_id for s in all_rows if s.trade_id]
 
-    order_stmt = select(OrderModel).where(
-        (OrderModel.signal_id.in_(all_sig_ids)) | (OrderModel.trade_id.in_(all_trade_ids))
-    )
+    order_stmt = select(OrderModel).where(OrderModel.signal_id.in_(all_sig_ids))
     all_orders = (await session.execute(order_stmt)).scalars().all()
 
     orders_by_sig_id: dict[int, list[OrderModel]] = {}
-    orders_by_trade_id: dict[str, list[OrderModel]] = {}
+    signal_id_by_order_id: dict[int, int] = {}
     order_ids: list[int] = []
     internal_order_ids: list[str] = []
     for o in all_orders:
         if o.id:
             order_ids.append(o.id)
+            signal_id_by_order_id[o.id] = o.signal_id
         if o.internal_order_id:
             internal_order_ids.append(o.internal_order_id)
-        if o.signal_id:
-            orders_by_sig_id.setdefault(o.signal_id, []).append(o)
-        if o.trade_id:
-            orders_by_trade_id.setdefault(o.trade_id, []).append(o)
+        orders_by_sig_id.setdefault(o.signal_id, []).append(o)
 
     all_executions: list[ExecutionModel] = []
     if order_ids or internal_order_ids:
@@ -400,7 +416,6 @@ async def load_signals(
         if ex.internal_order_id:
             execs_by_internal_id.setdefault(ex.internal_order_id, []).append(ex)
 
-    all_events: list[EventLogModel] = []
     event_stmt = select(EventLogModel).where(
         (EventLogModel.signal_id.in_(all_sig_ids))
         | (EventLogModel.order_id.in_(order_ids))
@@ -408,13 +423,10 @@ async def load_signals(
     all_events = (await session.execute(event_stmt)).scalars().all()
 
     events_by_sig_id: dict[int, list[EventLogModel]] = {}
-    events_by_trade_id: dict[str, list[EventLogModel]] = {}
     for ev in all_events:
-        if ev.signal_id:
-            events_by_sig_id.setdefault(ev.signal_id, []).append(ev)
-        tid = str((ev.detail or {}).get("trade_id") or "").strip()
-        if tid:
-            events_by_trade_id.setdefault(tid, []).append(ev)
+        owner = ev.signal_id or signal_id_by_order_id.get(ev.order_id or 0)
+        if owner:
+            events_by_sig_id.setdefault(owner, []).append(ev)
 
     # Build full reconciled signals list
     all_reconciled: list[dict[str, Any]] = []
@@ -434,7 +446,7 @@ async def load_signals(
         elif pair and ":" in pair and " / " not in pair:
             pair = pair.replace(":", " / ")
 
-        matched_orders = orders_by_sig_id.get(sig.id) or (orders_by_trade_id.get(sig.trade_id) if sig.trade_id else []) or []
+        matched_orders = orders_by_sig_id.get(sig.id, [])
         matched_orders = sorted(matched_orders, key=lambda x: x.id)
 
         orders_payload = []
@@ -459,6 +471,7 @@ async def load_signals(
                 {
                     "id": o.id,
                     "internal_order_id": o.internal_order_id,
+                    "basket_id": o.basket_id,
                     "leg": o.leg,
                     "symbol": o.symbol,
                     "buy_sell": o.buy_sell,
@@ -473,7 +486,7 @@ async def load_signals(
                 }
             )
 
-        matched_events = events_by_sig_id.get(sig.id) or (events_by_trade_id.get(sig.trade_id) if sig.trade_id else []) or []
+        matched_events = events_by_sig_id.get(sig.id, [])
         matched_events = sorted(matched_events, key=lambda x: x.id)
 
         events_payload = [
@@ -600,6 +613,21 @@ async def load_signals(
     }
 
 
+def _last_fill_ts(orders: list[dict[str, Any]]) -> str | None:
+    """Latest filled_at across the given orders. ISO-8601 strings compare lexicographically."""
+    stamps = [o["filled_at"] for o in orders if o.get("filled_at")]
+    return max(stamps) if stamps else None
+
+
+def _duration_sec(received_at: datetime | None, processed_at: str | None) -> float | None:
+    if not received_at or not processed_at:
+        return None
+    try:
+        return max(0.0, (datetime.fromisoformat(processed_at) - received_at).total_seconds())
+    except (TypeError, ValueError):
+        return None
+
+
 def reconcile_signal_status(
     sig: SignalModel,
     orders: list[dict[str, Any]],
@@ -608,57 +636,60 @@ def reconcile_signal_status(
     """Reconcile raw database status to canonical_status, is_active_processing, reason, processed_at, duration_sec."""
     raw_status = str(sig.status or "").upper()
     reject_reason = sig.reject_reason
+    db_processed = sig.processed_at.isoformat() if sig.processed_at else None
 
     # 1. RMS / OMS Rejections
-    has_reject_event = any(
-        e.get("kind") in ("RMS_REJECTED", "OMS_REJECTED", "SIGNAL_REJECTED", "EXECUTION_ERROR")
-        for e in events
+    reject_event = next(
+        (
+            e
+            for e in events
+            if e.get("kind") in ("RMS_REJECTED", "OMS_REJECTED", "SIGNAL_REJECTED", "EXECUTION_ERROR")
+        ),
+        None,
     )
+    has_reject_event = reject_event is not None
     if reject_reason or has_reject_event or raw_status in ("REJECTED", "ERROR", "FAILED"):
-        proc_at = sig.processed_at.isoformat() if sig.processed_at else (events[-1]["ts"] if events and events[-1].get("ts") else (sig.received_at.isoformat() if sig.received_at else None))
+        reject_event_ts = reject_event.get("ts") if reject_event else None
+        proc_at = db_processed or reject_event_ts
         rec_reason = reject_reason or "Declined by RMS/OMS execution pipeline"
-        duration = None
-        if sig.received_at and proc_at:
-            try:
-                dt_rec = sig.received_at
-                dt_proc = datetime.fromisoformat(proc_at)
-                duration = max(0.0, (dt_proc - dt_rec).total_seconds())
-            except Exception:
-                pass
+        duration = _duration_sec(sig.received_at, proc_at)
         return ("REJECTED", False, rec_reason, proc_at, duration)
 
     # 2. Compensation / Unwinding Orders
     primary_orders = [o for o in orders if not o.get("is_compensation")]
     comp_orders = [o for o in orders if o.get("is_compensation")]
 
+    unwind_event = next(
+        (e for e in events if e.get("kind") in ("BASKET_UNWINDING", "SQUARE_OFF")),
+        None,
+    )
     has_comp_unwound = any(
         o.get("status") in ("FILLED", "CANCELLED") for o in comp_orders
-    ) or any(e.get("kind") in ("BASKET_UNWINDING", "SQUARE_OFF") for e in events)
+    ) or unwind_event is not None
 
     if has_comp_unwound or (comp_orders and all(o.get("status") in ("FILLED", "CANCELLED") for o in comp_orders)):
-        proc_at = sig.processed_at.isoformat() if sig.processed_at else (events[-1]["ts"] if events and events[-1].get("ts") else (sig.received_at.isoformat() if sig.received_at else None))
-        duration = None
-        if sig.received_at and proc_at:
-            try:
-                dt_rec = sig.received_at
-                dt_proc = datetime.fromisoformat(proc_at)
-                duration = max(0.0, (dt_proc - dt_rec).total_seconds())
-            except Exception:
-                pass
+        unwind_event_ts = unwind_event.get("ts") if unwind_event else None
+        proc_at = db_processed or unwind_event_ts or _last_fill_ts(comp_orders)
+        duration = _duration_sec(sig.received_at, proc_at)
         return ("SQUARE-OFF", False, "Incomplete leg timeout reached — Exposure automatically squared off", proc_at, duration)
 
     # 3. Primary Orders Full Fill (Cumulative Leg Reconciliation)
     if primary_orders:
         legs_map: dict[str, dict[str, Any]] = {}
         for o in primary_orders:
-            leg_id = o.get("leg") if o.get("leg") is not None else o.get("leg_index")
+            basket = o.get("basket_id")
+            leg_id = o.get("leg")
             if leg_id is not None and str(leg_id).strip() != "":
-                key = f"leg:{leg_id}"
+                key = f"basket:{basket}:leg:{leg_id}"
             else:
-                key = f"sym:{o.get('symbol')}:{o.get('side') or o.get('buy_sell')}"
+                key = f"basket:{basket}:sym:{o.get('symbol')}:{o.get('buy_sell')}"
 
             req_qty = float(o.get("quantity") or 0.0)
-            fill_qty = float(o.get("fill_qty") if o.get("fill_qty") is not None else (o.get("filled_quantity") or 0.0))
+            fill_qty = float(
+                o.get("fill_qty")
+                if o.get("fill_qty") is not None
+                else (o.get("filled_quantity") or 0.0)
+            )
 
             if key not in legs_map:
                 legs_map[key] = {
@@ -675,20 +706,8 @@ def reconcile_signal_status(
             and all(info["cum_fill"] + 1e-6 >= info["req"] > 0 for info in legs_map.values())
         )
         if all_filled:
-            last_fill_ts = None
-            for o in primary_orders:
-                if o.get("filled_at"):
-                    if not last_fill_ts or o["filled_at"] > last_fill_ts:
-                        last_fill_ts = o["filled_at"]
-            proc_at = sig.processed_at.isoformat() if sig.processed_at else (last_fill_ts or (sig.received_at.isoformat() if sig.received_at else None))
-            duration = None
-            if sig.received_at and proc_at:
-                try:
-                    dt_rec = sig.received_at
-                    dt_proc = datetime.fromisoformat(proc_at)
-                    duration = max(0.0, (dt_proc - dt_rec).total_seconds())
-                except Exception:
-                    pass
+            proc_at = db_processed or _last_fill_ts(primary_orders)
+            duration = _duration_sec(sig.received_at, proc_at)
             return ("ACCEPTED", False, None, proc_at, duration)
 
         # Active Working Orders
@@ -701,33 +720,14 @@ def reconcile_signal_status(
 
     # 4. Explicit PROCESSED status in DB
     if raw_status in ("PROCESSED", "FILLED", "SUCCESS"):
-        proc_at = sig.processed_at.isoformat() if sig.processed_at else (sig.received_at.isoformat() if sig.received_at else None)
-        duration = None
-        if sig.received_at and proc_at:
-            try:
-                dt_rec = sig.received_at
-                dt_proc = datetime.fromisoformat(proc_at)
-                duration = max(0.0, (dt_proc - dt_rec).total_seconds())
-            except Exception:
-                pass
+        proc_at = db_processed or _last_fill_ts(primary_orders)
+        duration = _duration_sec(sig.received_at, proc_at)
         return ("ACCEPTED", False, None, proc_at, duration)
 
     # 5. Stale / Orphaned Signals (e.g. status == NEW but no active working orders)
-    proc_at = sig.processed_at.isoformat() if sig.processed_at else (sig.received_at.isoformat() if sig.received_at else None)
-    duration = None
-    if sig.received_at and proc_at:
-        try:
-            dt_rec = sig.received_at
-            dt_proc = datetime.fromisoformat(proc_at)
-            duration = max(0.0, (dt_proc - dt_rec).total_seconds())
-        except Exception:
-            pass
-
     if primary_orders and any(o.get("status") in ("CANCELLED", "REJECTED", "ERROR") for o in primary_orders):
-        # Check if the cancelled/rejected orders were superseded by retry orders that satisfied the legs
-        if 'all_filled' in locals() and all_filled:
-            return ("ACCEPTED", False, None, proc_at, duration)
+        proc_at = db_processed
+        duration = _duration_sec(sig.received_at, proc_at)
         return ("REJECTED", False, "Broker leg order rejected or cancelled", proc_at, duration)
 
-    # Truthful handling when no orders or execution evidence exists:
-    return ("EXPIRED", False, "Signal inactive — No broker orders or execution reports recorded", proc_at, duration)
+    return ("PROCESSING", True, "Awaiting broker orders", None, None)

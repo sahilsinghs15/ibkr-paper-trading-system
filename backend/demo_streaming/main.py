@@ -50,6 +50,7 @@ async def _serve() -> None:
         factory,
         stream,
         poll_interval=settings.demo_poll_interval_ms / 1000.0,
+        signal_watch_limit=settings.demo_signal_watch_limit,
     )
     app = create_demo_app(
         session_factory=factory,
@@ -69,9 +70,10 @@ async def _serve() -> None:
     poll_task = asyncio.create_task(bridge.run_forever(), name="demo-position-bridge")
     watch_task = asyncio.create_task(_watch_shutdown(server, shutdown), name="demo-shutdown-watch")
     logger.info(
-        "Demo stream serving on %s:%d",
+        "Demo stream serving on %s:%d poll=%dms",
         settings.demo_stream_host,
         settings.demo_stream_port,
+        settings.demo_poll_interval_ms,
     )
     try:
         await server.serve()

@@ -16,12 +16,17 @@ async function loadSnapshot(
       headers: { 'Cache-Control': 'no-store' },
     }).catch(() => ({ data: { closed_positions: [] } })),
   ])
-  useSignalStore.getState().fetchSignals()
+  const signalState = useSignalStore.getState()
+  if (signalState.accountFilter) {
+    void signalState.fetchSignals({ account: signalState.accountFilter })
+  }
   clearActive()
-  for (const row of openRes.data.positions || []) {
+  const openRows = openRes.data.positions || []
+  const closedRows = closedRes.data.closed_positions || []
+  for (const row of openRows) {
     apply(row)
   }
-  for (const row of closedRes.data.closed_positions || []) {
+  for (const row of closedRows) {
     apply(row)
   }
 }

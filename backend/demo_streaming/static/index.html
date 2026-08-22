@@ -516,7 +516,7 @@
           const pair = legs.map((x) => x.symbol).filter(Boolean).join(" / ");
           const headRow = `<tr class="trade-head">
             <td><span class="badge ${badgeClass(st)}">${esc(st)}</span></td>
-            <td class="muted">${esc(fmtTime(head.timestamp || head.fill_timestamp))}</td>
+            <td class="muted">${esc(fmtTime(head.opened_at || head.timestamp || head.fill_timestamp))}</td>
             <td class="tid" colspan="2">${esc(blank(head.trade_id))}<div class="dim">${esc(blank(head.ibkr_account))} · ${esc(blank(head.strategy_id))}</div></td>
             <td colspan="6" class="muted">${esc(pair)}</td>
             <td class="right ${pnlClass(head.unrealized_pnl)}">${esc(fmtPnl(head.unrealized_pnl))}</td>
@@ -525,7 +525,7 @@
           </tr>`;
           const legRows = legs.map((row) => `<tr class="leg">
             <td></td>
-            <td class="dim">${esc(fmtTime(row.fill_timestamp || row.timestamp))}</td>
+            <td class="dim">${esc(fmtTime(row.opened_at || row.fill_timestamp || row.timestamp))}</td>
             <td class="dim">${esc(blank(row.broker_order_id))}</td>
             <td class="dim">${esc(blank(row.ibkr_account))}</td>
             <td class="sym">${esc(blank(row.symbol))}</td>
@@ -553,7 +553,7 @@
             <td class="tid">${esc(blank(head.trade_id))}</td>
             <td>${esc(pair || "—")}</td>
             <td>${esc(blank(head.ibkr_account))}</td>
-            <td>${esc(fmtTime(head.timestamp || head.fill_timestamp))}</td>
+            <td>${esc(fmtTime(head.opened_at || head.closed_at || head.timestamp || head.fill_timestamp))}</td>
             <td class="right ${pnlClass(head.realized_pnl)}">${esc(fmtPnl(head.realized_pnl))}</td>
             <td class="right">${esc(fmtUsd(head.commission))}</td>
             <td><span class="badge b-closed">CLOSED</span></td>
@@ -570,7 +570,7 @@
         return;
       }
       if (!row.symbol && !row.trade_id) return;
-      if (row.timestamp) lastTs = row.timestamp;
+      lastTs = new Date().toISOString();
       const key = row.symbol ? keyOf(row) : tradeKey(row);
       const event = String(row.event || "").toUpperCase();
       if (event === "POSITION_CLOSED" || String(row.status || "").toUpperCase() === "CLOSED") {

@@ -30,14 +30,16 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 # Vite build output: app/frontend/dist (repo layout: backend/../frontend/dist)
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+# Match demo_poll_interval_ms (2s): Redis XREAD wait between SSE keepalives.
 SSE_BLOCK_MS = 2000
 
 
 def _spa_index() -> FileResponse:
     react_index = FRONTEND_DIST / "index.html"
+    headers = {"Cache-Control": "no-store"}
     if react_index.is_file():
-        return FileResponse(react_index)
-    return FileResponse(STATIC_DIR / "index.html")
+        return FileResponse(react_index, headers=headers)
+    return FileResponse(STATIC_DIR / "index.html", headers=headers)
 
 
 def create_demo_app(

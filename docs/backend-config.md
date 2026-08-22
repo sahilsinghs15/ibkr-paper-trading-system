@@ -41,7 +41,7 @@ Property: `candle_timeframe_minutes` — parses `candle_timeframe` (defaults to 
 | `redis_url` | `redis://127.0.0.1:6379/0` |
 | `demo_stream_host` | `127.0.0.1` |
 | `demo_stream_port` | `8010` |
-| `demo_poll_interval_ms` | `250` |
+| `demo_poll_interval_ms` | `2000` |
 | `demo_stream_name` | `positions:stream` |
 | `trading_api_url` | `http://127.0.0.1:8000` | Config CRUD proxy target for `:8010` dashboard saves |
 

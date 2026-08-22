@@ -43,6 +43,7 @@ export function SignalWidget({
   onViewFullTray?: () => void
 }) {
   const signals = useSignalStore((s) => s.signals)
+  const counts = useSignalStore((s) => s.counts)
   const streamState = usePnlStore((s) => s.streamState)
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
@@ -52,7 +53,7 @@ export function SignalWidget({
   const scopedSignals = useMemo(() => {
     if (!cleanFilter) return signals
     return signals.filter((sig) => {
-      if (!sig.ibkr_account) return true
+      if (!sig.ibkr_account) return false
       return String(sig.ibkr_account).trim().toUpperCase() === cleanFilter
     })
   }, [signals, cleanFilter])
@@ -120,25 +121,25 @@ export function SignalWidget({
           type="button"
           className={`signal-filter-btn amber ${statusFilter === 'PROCESSING' ? 'active' : ''}`}
           onClick={() => setStatusFilter('PROCESSING')}
-          aria-label={`Processing (${processingSignals.length})`}
+          aria-label={`Processing (${counts.processing})`}
         >
-          <span className="spin-icon" aria-hidden="true">⟳</span> PROCESSING ({processingSignals.length})
+          <span className="spin-icon" aria-hidden="true">⟳</span> PROCESSING ({counts.processing})
         </button>
         <button
           type="button"
           className={`signal-filter-btn green ${statusFilter === 'ACCEPTED' ? 'active' : ''}`}
           onClick={() => setStatusFilter('ACCEPTED')}
-          aria-label={`Accepted (${acceptedSignals.length})`}
+          aria-label={`Accepted (${counts.accepted})`}
         >
-          ✓ ACCEPTED ({acceptedSignals.length})
+          ✓ ACCEPTED ({counts.accepted})
         </button>
         <button
           type="button"
           className={`signal-filter-btn red ${statusFilter === 'REJECTED' ? 'active' : ''}`}
           onClick={() => setStatusFilter('REJECTED')}
-          aria-label={`Rejected (${rejectedSignals.length})`}
+          aria-label={`Rejected (${counts.rejected})`}
         >
-          ✕ REJECTED ({rejectedSignals.length})
+          ✕ REJECTED ({counts.rejected})
         </button>
       </div>
 

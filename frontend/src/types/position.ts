@@ -30,6 +30,8 @@ export interface PositionLeg {
   broker_order_id?: string | null
   fill_status?: string | null
   fill_timestamp?: string | null
+  closing_order_status?: string | null
+  closing_broker_order_id?: string | null
   market_data_status?: string | null
   connection_status?: string | null
   close_in_progress?: boolean

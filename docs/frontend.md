@@ -88,7 +88,7 @@ DEMO_STREAM_HOST=0.0.0.0 .venv/bin/python -m demo_streaming
 # Settings: http://PUBLIC_IP:8010/settings
 ```
 
-Defaults: port `8010`, Redis `redis://127.0.0.1:6379/0`, Postgres via `DATABASE_URL`, `trading_api_url` `http://127.0.0.1:8000`. Does **not** connect to IBKR for market data. Config writes proxy to the trading app.
+Defaults: port `8010`, Redis `redis://127.0.0.1:6379/0`, Postgres via `DATABASE_URL`, `trading_api_url` `http://127.0.0.1:8000`, poll `2000` ms. Does **not** connect to IBKR for market data. Config writes proxy to the trading app.
 
 `GET /` and `GET /settings` serve `frontend/dist/index.html` when present (after `npm run build`), and mount `frontend/dist/assets` at `/assets`. Otherwise falls back to `demo_streaming/static/index.html`.
 
