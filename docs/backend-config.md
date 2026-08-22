@@ -49,3 +49,5 @@ Property: `candle_timeframe_minutes` — parses `candle_timeframe` (defaults to 
 
 - `BROKER_MODE` — not a field; no MockBroker switch in code.
 - `ALLOCATIONS_CONFIG_PATH` — not a field; routing uses Postgres accounts / strategies / allocations.
+- Worker pool size (`10`), job lease durations, reclaim intervals — hardcoded in `main.py` / `worker_pool.py`. See [`backend-map.md`](backend-map.md).
+- Submit pacer interval (`0.2s`) — hardcoded in `main.py` when constructing `IBKRExecutionAdapter`.

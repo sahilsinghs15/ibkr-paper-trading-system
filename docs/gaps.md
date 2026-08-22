@@ -12,7 +12,8 @@ This file lists things agents must **not** claim are implemented. Items appear h
 | Nine RMS checks | Only checks 2, 3, 4, 7, 8 as classes |
 | RMS check 1 (margin), 5, 6, 9 | No check modules |
 | Dashboard config API (accounts / allocations / limits CRUD) | **Implemented** at `/api/v1/config/*` on trading app; proxied from `:8010` |
-| Kill switch UI / flatten-all / health lights | Partial — `enabled` flags editable on Settings page; no flatten-all |
+| Kill switch / flatten-all | **Partial** — HTTP API exists (`POST .../square-off`, clear, status); see [`backend-kill-switch.md`](backend-kill-switch.md). Dashboard UX may not expose all controls — verify frontend before claiming UI. |
+| `IBKRExecutionScheduler` as production pacing | **Not wired** — `OrderSubmitPacer(0.2s)` is live pacing; scheduler is tests-only |
 | Risk-engine auto exit on target / stop / time_limit | No exit-trigger loop found |
 | Redis hot margin / locks / health for trading | Redis only in `demo_streaming` |
 | `signal_legs` table | Not created |
@@ -26,18 +27,20 @@ This file lists things agents must **not** claim are implemented. Items appear h
 | Place / modify order HTTP APIs | Schemas exist; **no** routes |
 | Positions / margin / broker status HTTP APIs on `app.main` | Schemas exist; **no** routes on trading app (read-only positions live on `demo_streaming` `:8010`) |
 | Five Candle live strategy engine as product path | Model Blue webhook path is what executes; candle Settings fields are unused by that path |
+| Webhook runs pipeline synchronously in HTTP handler | **Stale** — normal path enqueues `signal_jobs`; workers execute (HTTP 202 `accepted`) |
 | React “Live Dashboard” | **Implemented** — PnL on `/` and Settings on `/settings` (Vite + `:8010`) |
 | WebSocket on main app | None (dashboard uses SSE on demo process) |
 | CORS on main app | None |
-| Account DB / position DB “not implemented” (old DEVELOPER_EXECUTION_GUIDE bullets) | **Stale** — Postgres models and repos **do** exist; prefer this docs tree |
+| Account DB / position DB “not implemented” (old DEVELOPER_EXECUTION_GUIDE bullets) | **Stale** — Postgres models and repos **do** exist |
 
 ## Frontend gaps (remaining)
 
 - No in-app auth on the `:8010` dashboard (restrict via AWS security group)
-- Mark / last price columns stay `—` (demo payload does not fill them)
+- Mark / last price columns may stay `—` when IBKR paper does not stream CFD ticks
 - No HTTPS / ngrok for `:8010` (optional ops choice)
-- No Tailwind / lightweight-charts wiring
-- Settings page does not edit target/stop/time_limit (columns exist; no exit-trigger loop)
+- No Tailwind / lightweight-charts wiring in all views
+- Settings page may not expose kill-switch square-off / clear (API exists; verify UI)
+- Settings page does not edit target/stop/time_limit exit automation (columns exist; no exit-trigger loop)
 
 ## Live PnL / market data (residual)
 

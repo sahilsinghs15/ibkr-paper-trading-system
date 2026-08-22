@@ -1,20 +1,27 @@
 # Conventions for agents
 
-**Verified from:** `backend/app/main.py`, `backend/app/api/router.py`, `backend/app/api/deps.py`, `backend/app/core/config.py`, `frontend/package.json`, `frontend/vite.config.ts`.
+**Verified from:** `backend/app/main.py`, `backend/app/api/router.py`, `backend/app/api/deps.py`, `backend/app/core/config.py`, `backend/app/core/identifiers.py`, `backend/app/services/worker_pool.py`, `frontend/package.json`, `frontend/vite.config.ts`.
 
 ## Backend
 
 ### Dependency injection
 
-- Wire long-lived services in `lifespan` on `app.state` (`client`, `ibkr_adapter`, `oms`, `order_manager`).
+- Wire long-lived services in `lifespan` on `app.state` (`session_factory`, `client`, `ibkr_adapter`, `oms`, `order_manager`, `worker_pool`).
 - Route deps use helpers such as `get_oms` in `app/api/deps.py`.
-- Do not construct a second OMS / OrderManager inside a request handler.
+- Do not construct a second OMS / OrderManager / worker pool inside a request handler.
 
 ### Config
 
 - Read settings via `get_settings()`.
 - Do not reintroduce `BROKER_MODE` / MockBroker unless you implement both the setting and the broker path in code.
 - Unknown env keys are ignored (`extra="ignore"`); documenting them as Settings fields is wrong.
+- Worker count, lease durations, and submit pacer interval are **hardcoded in code**, not Settings fields.
+
+### Identifiers
+
+- Use `normalize_strategy_id()` for any persisted strategy key or idempotency input — lowercase, trimmed.
+- Use `normalize_trade_id()` for trade identifiers — case preserved.
+- Changing normalization requires migration/backfill (see `a4c7e2f10938`).
 
 ### Adding an HTTP route
 
@@ -35,6 +42,20 @@
 - Durable state → Postgres models / repositories.
 - Do not assume Redis is available on the main trading path (demo-only).
 
+### Concurrency / execution
+
+- Webhook enqueues `signal_jobs`; workers execute. Do not make synchronous execution the default when the pool is running.
+- Job status writes must be lease-fenced (`worker_id` + live lease).
+- Execution claims: acquire after RMS + resolve, before `placeOrder`; seal on settled basket; release only if zero orders emitted.
+- Never requeue a job that already has order rows — use `RECOVERY_REQUIRED`.
+- Domain lock `(account_scope, strategy_id)` and exposure lock `(account_id, symbol)` serve different purposes — keep both.
+
+### Kill switch
+
+- Armed state survives restart — always hydrate from DB on startup.
+- Completing flatten does not disarm; only explicit clear API.
+- DB write before cache clear.
+
 ## Frontend
 
 - Prefer already-declared packages (`axios`, `@tanstack/react-query`, `zustand`, `react-router-dom`, `lightweight-charts`, `tailwindcss`) before adding new dependencies.
@@ -45,4 +66,5 @@
 
 - Current facts live under `app/docs/`.
 - [`Execution_System_Architecture.md`](../../Execution_System_Architecture.md) is target design.
-- Postman guide is historical — do not copy its endpoint list into new docs or code comments as “implemented”.
+- Postman guide and `DEVELOPER_EXECUTION_GUIDE.md` are historical — do not copy their endpoint lists into new docs or code comments as "implemented".
+- When implementing something listed in [`gaps.md`](gaps.md), update the relevant `app/docs/*.md` in the same change.

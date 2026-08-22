@@ -6,6 +6,15 @@ FastAPI IBKR paper execution engine for this repo.
 
 Prefer [`../AGENTS.md`](../AGENTS.md) and [`../docs/`](../docs/) over older guides in this folder.
 
+Key docs for backend work:
+
+- [`../docs/backend-map.md`](../docs/backend-map.md) — package tree, lifespan, where to change code
+- [`../docs/backend-concurrency.md`](../docs/backend-concurrency.md) — signal_jobs, workers, claims, recovery
+- [`../docs/backend-kill-switch.md`](../docs/backend-kill-switch.md) — emergency flatten
+- [`../docs/backend-execution.md`](../docs/backend-execution.md) — debug orders
+
+Do **not** use [`docs/DEVELOPER_EXECUTION_GUIDE.md`](docs/DEVELOPER_EXECUTION_GUIDE.md) or [`POSTMAN_API_TESTING_GUIDE.md`](POSTMAN_API_TESTING_GUIDE.md) as source of truth.
+
 ## Run
 
 ```bash

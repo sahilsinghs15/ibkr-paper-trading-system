@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
 from app.db.repositories.event_repository import EventRepository
-from app.db.repositories.order_repository import OrderRepository
 from app.db.repositories.position_repository import PositionRepository
 from app.db.session import AsyncSessionLocal, engine
 

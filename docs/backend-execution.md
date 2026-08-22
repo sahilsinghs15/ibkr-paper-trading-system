@@ -1,97 +1,136 @@
 # Backend execution path (debug orders)
 
-**Verified from:** `backend/app/api/routes/webhooks.py`, `backend/app/services/order_manager.py`, `backend/app/services/strategies/inbound.py`, `backend/app/accounts/router.py`, `backend/app/services/model_blue/`, `backend/app/rms/engine.py`, `backend/app/oms/coordinator.py`, `backend/app/oms/ibkr_adapter.py`, `backend/app/main.py`, `backend/app/core/logger.py`.
+**Verified from:** `backend/app/api/routes/webhooks.py`, `backend/app/services/worker_pool.py`, `backend/app/services/order_manager.py`, `backend/app/services/recovery.py`, `backend/app/services/strategies/inbound.py`, `backend/app/accounts/router.py`, `backend/app/services/model_blue/`, `backend/app/rms/engine.py`, `backend/app/oms/coordinator.py`, `backend/app/oms/ibkr_adapter.py`, `backend/app/main.py`, `backend/app/core/logger.py`.
 
-Use this file when a signal is missing, rejected, or incompletely filled. Root [`AGENTS.md`](../../AGENTS.md) points here as `app/docs/backend-execution.md`.
+Use this file when a signal is missing, rejected, or incompletely filled. For queue/lease details see [`backend-concurrency.md`](backend-concurrency.md). Root [`AGENTS.md`](../AGENTS.md) points here.
 
 ## Process shape
 
 One FastAPI process (`app.main:app`). Lifespan wires:
 
-`TWSClient` → `IBKRExecutionAdapter` → `OMSService` → `OrderManager` (+ `ModelBlueExecutionPersistence`, `DatabaseCommittedCapitalProvider`, `DatabaseModelBlueTradeBook`, `LivePnlService`) onto `app.state`.
+`TWSClient` → `IBKRExecutionAdapter` (+ `OrderSubmitPacer`) → `OMSService` → `OrderManager` → `RecoveryManager` → `ExecutionWorkerPool(10)` on `app.state`.
 
 There is **no** separate Listener / Strategy / per-account OMS / Risk process in this codebase.
 
-## Live path (OPEN / CLOSE)
+## Live path (ingest → queue → worker → execute)
 
 ```
-POST /api/webhooks/tradingview
+POST /api/webhooks/tradingview  (HTTP 202)
   → receive_tradingview_webhook
   → write capture JSON under backend/data/tradingview_webhooks/
+  → compute_idempotency_key (normalize strategy/trade; CLOSE → signal_id:trade_id:CLOSE)
   → OrderManager.parse_inbound_payload
        → strategies/inbound.parse_tradingview_payload
        → ModelBlueStrategy when strategy_id == "model_blue" (else legacy parse)
+  → SignalJobRepository.create_job_if_not_exists → signal_jobs (QUEUED)
+  → return status=accepted, job_id
+
+ExecutionWorkerPool (background)
+  → claim_next_jobs (lease + same-trade_id serialization)
+  → domain lock (account_scope, strategy_id)
   → OrderManager.process_signal_execution
-       → persist SignalModel (status NEW) when possible
+       → persist SignalModel (status NEW)
        → DatabaseStrategyAccountRouter.resolve(strategy_id)
-            (enabled Account × Strategy × Allocation rows only)
-       → per AccountExecutionContext: ModelBlueStrategy.build_intent (sizer + trade book)
-       → RMSEngine.evaluate (checks 2, 3, 4, 7, 8)
-       → instrument resolve (catalog / paper STK→CFD override; auto CFD conId discovery when missing)
-       → BasketCoordinator.execute (preferred when OMSService present)
-            → OMSService / IBKRExecutionAdapter.placeOrder
-            → TWSClient → IBKR
-       → ModelBlueExecutionPersistence + position / trade-book updates
-       → LivePnlService.watch_open / unwatch
+       → per AccountExecutionContext:
+            → kill-switch gate on OPEN
+            → ModelBlueStrategy.build_intent (sizer + trade book)
+            → exposure_guard → RMSEngine.evaluate (checks 2, 3, 4, 7, 8)
+            → instrument resolve (catalog / paper STK→CFD; auto CFD conId discovery)
+            → execution_claims.acquire (durable dedupe barrier)
+            → BasketCoordinator.execute
+                 → OMSService.submit_one_leg → IBKRExecutionAdapter.submit_order
+                 → TWSClient → IBKR
+            → seal claim EXECUTED on settled basket
+            → ModelBlueExecutionPersistence + position / trade-book updates
+            → LivePnlService.watch_open / unwatch
+       → update signal_jobs → COMPLETED | REJECTED | FAILED
 ```
 
-Webhook HTTP outcomes (from `webhooks.py`):
+**Legacy inline path:** synchronous `process_signal_execution` in the webhook handler only when `worker_pool is None` **and** `session_factory is None` (tests).
 
-| `status` field | Meaning in code |
-|----------------|-----------------|
-| `received` | Default success path, or broker connection error swallowed as received |
+## Webhook HTTP outcomes
+
+From `webhooks.py` (HTTP **202 Accepted** on success):
+
+| `status` field | Meaning |
+|----------------|---------|
+| `accepted` | Payload valid; job enqueued (or duplicate idempotency key) |
 | `rejected` | Invalid payload (`ValueError` at parse) |
-| `rejected_by_rms` | RMS / signal rejection (`all_rejected` or `ValueError` from pipeline) |
-| `execution_incomplete` | Pipeline returned `success=False` with some work attempted |
+| `rejected_by_rms` | Legacy inline path only — RMS rejection |
 
-Malformed JSON → HTTP 400. Unhandled pipeline exception → HTTP 500.
+RMS/OMS rejection on the normal path sets **`signal_jobs.status = REJECTED`**, not a different HTTP status. HTTP 202 `accepted` does **not** mean filled.
+
+Malformed JSON → HTTP 400.
+
+## Job outcomes (check Postgres `signal_jobs`)
+
+| `status` | Meaning |
+|----------|---------|
+| `QUEUED` / `CLAIMED` / `PROCESSING` | In progress |
+| `COMPLETED` | Pipeline finished successfully |
+| `REJECTED` | Parse or RMS/OMS policy rejection |
+| `FAILED` | Execution incomplete or exception |
+| `RECOVERY_REQUIRED` | Quarantined — orders may exist |
+| `DEAD_LETTER` | Max attempts exceeded |
 
 ## What runs at startup
 
 From `main.py` lifespan:
 
 1. `setup_logging(level=settings.log_level)` → daily file `storage/logs/trading-YYYY-MM-DD.log` + stderr.
-2. Build adapter / OMS / OrderManager.
-3. `order_manager.hydrate_runtime_from_db()` (RMS / Model Blue runtime from Postgres).
+2. Build adapter / OMS / OrderManager (+ DB capital, trade book, persistence, LivePnl).
+3. `order_manager.hydrate_runtime_from_db()` — RMS context, open positions, kill-switch cache, critical baskets, execution policy.
 4. `client.connect_and_start(...)` to `ibkr_host:ibkr_port`.
 5. On successful connect: `hydrate_live_pnl()`.
-6. Store `client`, `ibkr_adapter`, `oms`, `order_manager` on `app.state`.
+6. Store `session_factory`, `client`, `ibkr_adapter`, `oms`, `order_manager` on `app.state`.
+7. `RecoveryManager.run_startup_recovery()` — reconcile stale jobs/claims.
+8. `ExecutionWorkerPool(worker_count=10).start()` → `app.state.worker_pool`.
+
+Shutdown: stop worker pool, disconnect TWS.
 
 Orders listed by `GET /api/v1/orders` come from the **in-memory** OMS map, not a SQL query.
 
 ## Log file and useful greps
 
-Logger: `backend/app/core/logger.py` → `/home/tradingapp/storage/logs/trading-YYYY-MM-DD.log` (midnight rollover; one file per day).
+Logger: `backend/app/core/logger.py` → `/home/tradingapp/storage/logs/trading-YYYY-MM-DD.log` (midnight rollover).
 
-Format: `%(asctime)s | %(levelname)-8s | %(name)s | %(trace)s | %(message)s` where `trace` carries `req=` / `signal=` / `trade=` / `acct=` from ContextVars (or `-`).
-
-Useful substrings present in code:
+Format: `%(asctime)s | %(levelname)-8s | %(name)s | %(trace)s | %(message)s` where `trace` carries `req=` / `signal=` / `trade=` / `acct=` from ContextVars.
 
 | Grep | Stage |
 |------|--------|
-| `Received TradingView webhook payload safely` | Webhook accepted + captured |
-| `Webhook HTTP response status=` | Final HTTP status returned to TradingView |
+| `Webhook HTTP 202 accepted` | Job enqueued |
+| `Duplicate webhook received for idempotency_key` | Idempotent replay |
 | `Rejected invalid TradingView payload` | Parse failure |
-| `Inbound parse:` / `Model Blue parse` | Strategy handler / payload parse |
-| `Account router resolved` | Eligible accounts |
+| `ExecutionWorkerPool started with` | Workers ready |
+| `Worker .* starting execution for job_id` | Worker executing |
+| `Worker .* LOST its lease` | Lease fencing |
+| `Stale lease sweep` / `Orphaned claim sweep` | Reclaimer |
+| `Inbound parse:` / `Model Blue parse` | Strategy handler |
+| `KILL_SWITCH_ACTIVE: Blocking NEW open signal` | Kill switch OPEN block |
 | `Model Blue size_open` / `OPEN intent` / `CLOSE intent` | Sizing |
 | `RMS check` / `RMS evaluate` | Per-check RMS trail |
+| `Acquired execution claim` | Pre-broker dedupe barrier |
 | `BASKET_CRITICAL gate blocked` | CRITICAL open block |
-| `Basket fill wait complete` | Per-leg completeness after fill wait |
-| `Signal processed by OrderManager -> RMS -> OMS` | Pipeline finished for a signal |
-| `Incoming TradingView signal rejected` | Pipeline `ValueError` |
-| `Signal ingested but broker submission unconfirmed` | ConnectionError / RuntimeError after ingest |
-| `Error processing signal through OrderManager pipeline` | Unhandled exception |
+| `Basket fill wait complete` | Per-leg completeness |
+| `Startup recovery scan found` | Recovery scanner |
 | `Active execution pipeline: IBKRExecutionAdapter` | Lifespan ready |
 | `Initial TWS connection attempt unconfirmed` | Connect failed at startup |
-| `BASKET_CREATED` / `BASKET_UNWINDING` / `BASKET_COMPENSATED` / `BASKET_CRITICAL` | Basket coordinator (app log + event_log) |
+| `BASKET_CREATED` / `BASKET_UNWINDING` / `BASKET_COMPENSATED` / `BASKET_CRITICAL` | Basket coordinator |
 | `POSITION_OPEN persisted` / `POSITION_CLOSE persisted` | Model Blue persistence |
-| `CFD discover upserted` / `CFD discover:` | Auto CFD conId discovery (`instruments` master) |
-| `LivePnl reqMktData` / `LivePnl reqMktData without conId` | PnL market-data subscribe (CFD + conId) |
+| `CFD discover upserted` / `CFD discover:` | Auto CFD conId discovery |
+| `LivePnl reqMktData` | PnL market-data subscribe |
+| `IBKR submit paced` | OrderSubmitPacer delay |
 | `TWS placeOrder failed` | Adapter place failure |
+| `EMERGENCY KILL SWITCH ACTIVATED` | Kill switch started |
 
 ## Not on this path
 
-- No automatic target / stop / time_limit exit loop (columns may exist on positions; no risk-engine trigger process found).
-- No dashboard kill-switch HTTP API.
+- No automatic target / stop / time_limit exit loop (columns may exist on allocations; no exit-trigger process).
 - Demo SSE UI (`demo_streaming`) is a **separate** process; it does not place orders.
+- `IBKRExecutionScheduler` is not wired — production pacing is `OrderSubmitPacer(0.2s)`.
+
+## Related docs
+
+- Queue/leases/claims: [`backend-concurrency.md`](backend-concurrency.md)
+- Kill switch: [`backend-kill-switch.md`](backend-kill-switch.md)
+- RMS/basket: [`backend-rms-oms.md`](backend-rms-oms.md)
