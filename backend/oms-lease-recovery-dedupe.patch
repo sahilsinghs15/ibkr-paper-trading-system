@@ -1,0 +1,1094 @@
+--- a/app/core/logger.py
++++ b/app/core/logger.py
+@@ -115,6 +115,16 @@
+         _account_id.set(account_id)
+ 
+ 
++def get_log_context() -> dict[str, str | None]:
++    """Read the current correlation fields."""
++    return {
++        "request_id": _request_id.get(),
++        "signal_id": _signal_id.get(),
++        "trade_id": _trade_id.get(),
++        "account_id": _account_id.get(),
++    }
++
++
+ def clear_log_context() -> None:
+     """Reset all correlation ContextVars."""
+     _request_id.set(None)
+--- a/app/db/models/__init__.py
++++ b/app/db/models/__init__.py
+@@ -4,6 +4,7 @@
+ from app.db.models.basket import BasketModel
+ from app.db.models.event import EventLogModel
+ from app.db.models.execution import ExecutionModel
++from app.db.models.execution_claim import ExecutionClaimModel
+ from app.db.models.execution_settings import ExecutionSettingsModel
+ from app.db.models.instrument import InstrumentModel
+ from app.db.models.kill_switch import KillSwitchOperationModel
+@@ -17,6 +18,7 @@
+     "AllocationModel",
+     "BasketModel",
+     "EventLogModel",
++    "ExecutionClaimModel",
+     "ExecutionModel",
+     "ExecutionSettingsModel",
+     "InstrumentModel",
+--- a/app/db/models/signal.py
++++ b/app/db/models/signal.py
+@@ -50,6 +50,15 @@
+ JOB_STATUS_RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
+ JOB_STATUS_DEAD_LETTER = "DEAD_LETTER"
+ 
++# Statuses where a worker holds a live lease on the job. Every lease predicate
++# (claim, heartbeat, reclaim) MUST use this tuple -- if PROCESSING is omitted
++# from any one of them the lease silently stops being maintained the moment
++# real execution work begins.
++ACTIVE_LEASE_STATUSES = (JOB_STATUS_CLAIMED, JOB_STATUS_PROCESSING)
++
++# Statuses a worker may pick up from the queue.
++CLAIMABLE_STATUSES = (JOB_STATUS_QUEUED, JOB_STATUS_RECEIVED)
++
+ 
+ class SignalJobModel(Base):
+     """SQLAlchemy model for durable signal execution jobs."""
+--- a/app/db/repositories/signal_repository.py
++++ b/app/db/repositories/signal_repository.py
+@@ -4,18 +4,20 @@
+ from decimal import Decimal
+ from typing import Any
+ 
+-from sqlalchemy import case, literal, not_, select, update
++from sqlalchemy import case, func, literal, not_, select, update
+ from sqlalchemy.dialects.postgresql import insert
+ from sqlalchemy.ext.asyncio import AsyncSession
+ 
+ from app.db.models.signal import (
++    ACTIVE_LEASE_STATUSES,
++    CLAIMABLE_STATUSES,
+     JOB_STATUS_CLAIMED,
+     JOB_STATUS_COMPLETED,
+     JOB_STATUS_DEAD_LETTER,
+     JOB_STATUS_FAILED,
+     JOB_STATUS_PROCESSING,
+     JOB_STATUS_QUEUED,
+-    JOB_STATUS_RECEIVED,
++    JOB_STATUS_RECOVERY_REQUIRED,
+     JOB_STATUS_REJECTED,
+     SignalJobModel,
+     SignalModel,
+@@ -355,9 +357,9 @@
+         subq = (
+             select(SignalJobModel.job_id)
+             .where(
+-                (SignalJobModel.status.in_([JOB_STATUS_QUEUED, JOB_STATUS_RECEIVED]))
++                (SignalJobModel.status.in_(CLAIMABLE_STATUSES))
+                 | (
+-                    (SignalJobModel.status == JOB_STATUS_CLAIMED)
++                    (SignalJobModel.status.in_(ACTIVE_LEASE_STATUSES))
+                     & (SignalJobModel.lease_expires_at < now)
+                 )
+             )
+@@ -397,25 +399,50 @@
+         *,
+         error: str | None = None,
+         worker_id: str | None = None,
+-    ) -> None:
+-        """Update job lifecycle status."""
++        fence: bool = False,
++        lease_duration_sec: float = 30.0,
++    ) -> int:
++        """Update job lifecycle status. Returns the number of rows affected.
++
++        When ``fence`` is set the update only applies if ``worker_id`` still owns
++        the job. A return value of 0 means the caller lost its lease (the job was
++        reclaimed by another worker) and must not treat the write as applied.
++        """
+         now = datetime.now(UTC)
+         values: dict[str, Any] = {"status": status}
+         if status == JOB_STATUS_PROCESSING:
+             values["processing_started_at"] = now
++            # Extend the lease on the CLAIMED -> PROCESSING transition so there is
++            # no unprotected window before the first heartbeat fires.
++            values["lease_expires_at"] = now + timedelta(seconds=lease_duration_sec)
+         elif status in (JOB_STATUS_COMPLETED, JOB_STATUS_REJECTED, JOB_STATUS_FAILED, JOB_STATUS_DEAD_LETTER):
+             values["completed_at"] = now
++            values["lease_expires_at"] = None
+         if error is not None:
+             values["last_error"] = error
+         if worker_id is not None:
+             values["worker_id"] = worker_id
+ 
+-        stmt = update(SignalJobModel).where(SignalJobModel.job_id == job_id).values(**values)
+-        await self._session.execute(stmt)
++        predicates = [SignalJobModel.job_id == job_id]
++        if fence:
++            if worker_id is None:
++                raise ValueError("fence=True requires worker_id")
++            predicates.append(SignalJobModel.worker_id == worker_id)
++            predicates.append(SignalJobModel.status.in_(ACTIVE_LEASE_STATUSES))
++
++        stmt = update(SignalJobModel).where(*predicates).values(**values)
++        res = await self._session.execute(stmt)
+         await self._session.flush()
++        return int(res.rowcount or 0)
++
++    async def heartbeat_lease(
++        self, job_id: Any, worker_id: str, lease_duration_sec: float = 30.0
++    ) -> bool:
++        """Renew worker lease expiration timestamp.
+ 
+-    async def heartbeat_lease(self, job_id: Any, worker_id: str, lease_duration_sec: float = 30.0) -> None:
+-        """Renew worker lease expiration timestamp."""
++        Returns False if the lease is no longer held by ``worker_id`` -- the job
++        was reclaimed while this worker was still executing it.
++        """
+         now = datetime.now(UTC)
+         lease_until = now + timedelta(seconds=lease_duration_sec)
+         stmt = (
+@@ -423,20 +450,27 @@
+             .where(
+                 SignalJobModel.job_id == job_id,
+                 SignalJobModel.worker_id == worker_id,
+-                SignalJobModel.status == JOB_STATUS_CLAIMED,
++                SignalJobModel.status.in_(ACTIVE_LEASE_STATUSES),
+             )
+             .values(lease_expires_at=lease_until)
+         )
+-        await self._session.execute(stmt)
++        res = await self._session.execute(stmt)
++        return bool(res.rowcount)
++
++    async def reclaim_stale_jobs(self, max_attempts: int = 3) -> dict[str, int]:
++        """Reclaim jobs whose worker lease expired.
+ 
+-    async def reclaim_stale_jobs(self, max_attempts: int = 3) -> int:
+-        """Reclaim jobs with expired leases back to QUEUED or DEAD_LETTER."""
++        A job that expired while still CLAIMED never began execution, so it is
++        safe to requeue. A job that expired in PROCESSING may have already placed
++        orders at the broker -- requeueing it blind would re-execute the signal,
++        so it is quarantined as RECOVERY_REQUIRED for explicit reconciliation.
++        """
+         now = datetime.now(UTC)
+ 
+         stmt_dead = (
+             update(SignalJobModel)
+             .where(
+-                SignalJobModel.status == JOB_STATUS_CLAIMED,
++                SignalJobModel.status.in_(ACTIVE_LEASE_STATUSES),
+                 SignalJobModel.lease_expires_at < now,
+                 SignalJobModel.attempt_count >= max_attempts,
+             )
+@@ -444,10 +478,28 @@
+                 status=JOB_STATUS_DEAD_LETTER,
+                 last_error=f"Exceeded max attempts ({max_attempts}) due to worker lease expiry.",
+                 completed_at=now,
++                worker_id=None,
++                lease_expires_at=None,
+             )
+         )
+         res_dead = await self._session.execute(stmt_dead)
+ 
++        stmt_quarantine = (
++            update(SignalJobModel)
++            .where(
++                SignalJobModel.status == JOB_STATUS_PROCESSING,
++                SignalJobModel.lease_expires_at < now,
++                SignalJobModel.attempt_count < max_attempts,
++            )
++            .values(
++                status=JOB_STATUS_RECOVERY_REQUIRED,
++                last_error="Worker lease expired mid-execution; broker state unverified.",
++                worker_id=None,
++                lease_expires_at=None,
++            )
++        )
++        res_quarantine = await self._session.execute(stmt_quarantine)
++
+         stmt_requeue = (
+             update(SignalJobModel)
+             .where(
+@@ -463,5 +515,30 @@
+         )
+         res_requeue = await self._session.execute(stmt_requeue)
+         await self._session.flush()
+-        return res_dead.rowcount + res_requeue.rowcount
++        return {
++            "dead_lettered": int(res_dead.rowcount or 0),
++            "quarantined": int(res_quarantine.rowcount or 0),
++            "requeued": int(res_requeue.rowcount or 0),
++        }
++
++    async def count_orders_emitted(self, strategy_id: str, signal_id: str) -> int:
++        """Count broker orders already written for a job's (strategy_id, signal_id).
++
++        ``orders.signal_id`` is an FK to ``signals.id``, and ``signals.signal_id``
++        carries the ``:CLOSE`` suffix, so this distinguishes the OPEN job from the
++        CLOSE job on the same trade_id.
++        """
++        from app.db.models.order import OrderModel
++
++        stmt = (
++            select(func.count())
++            .select_from(OrderModel)
++            .join(SignalModel, OrderModel.signal_id == SignalModel.id)
++            .where(
++                SignalModel.strategy_id == strategy_id,
++                SignalModel.signal_id == signal_id,
++            )
++        )
++        res = await self._session.execute(stmt)
++        return int(res.scalar_one() or 0)
+ 
+--- a/app/services/order_manager.py
++++ b/app/services/order_manager.py
+@@ -15,9 +15,13 @@
+ from app.accounts.context import AccountExecutionContext
+ from app.accounts.router import DatabaseStrategyAccountRouter, StrategyAccountRouter
+ from app.core.config import get_settings
+-from app.core.logger import bind_log_context
++from app.core.logger import bind_log_context, get_log_context
+ from app.db.models.account import PerSymbolLimitModel
+ from app.db.repositories.event_repository import EventRepository
++from app.db.repositories.execution_claim_repository import (
++    ExecutionClaimRepository,
++    execution_dedupe_key,
++)
+ from app.db.repositories.position_repository import PositionRepository
+ from app.db.repositories.signal_repository import (
+     SIGNAL_STATUS_NEW,
+@@ -555,6 +559,67 @@
+             intent, signal, handler=None, inbound_pk=inbound_pk
+         )
+ 
++    async def _acquire_execution_claim(self, intent: OrderIntent) -> str | None:
++        """Take the durable dedupe barrier before any order reaches the broker.
++
++        Commits in its own transaction: the barrier is worthless if it only
++        becomes visible once the surrounding work succeeds.
++        """
++        if self._session_factory is None:
++            return None
++        dedupe_key = execution_dedupe_key(intent)
++        action = intent.action.value if hasattr(intent.action, "value") else str(intent.action)
++        async with self._session_factory() as session, session.begin():
++            await ExecutionClaimRepository(session).acquire(
++                dedupe_key=dedupe_key,
++                account_id=intent.account_id,
++                strategy_id=intent.strategy_id,
++                signal_id=intent.signal_id,
++                action=action,
++                correlation_id=get_log_context().get("request_id"),
++            )
++        logger.info("Acquired execution claim %s", dedupe_key)
++        return dedupe_key
++
++    async def _seal_execution_claim(self, dedupe_key: str | None) -> None:
++        """Promote a held claim to the permanent duplicate barrier."""
++        if dedupe_key is None or self._session_factory is None:
++            return
++        try:
++            async with self._session_factory() as session, session.begin():
++                await ExecutionClaimRepository(session).mark_executed(dedupe_key)
++        except Exception:
++            logger.exception("Failed to seal execution claim %s", dedupe_key)
++
++    async def _resolve_failed_claim(self, dedupe_key: str | None, intent: OrderIntent) -> None:
++        """Decide a claim's fate after a failed submission.
++
++        Release only when the order ledger proves nothing was emitted. If any
++        order exists the outcome is unknown, so the claim stays CLAIMED and the
++        reconciliation sweep resolves it against the ledger rather than letting
++        a retry fire duplicate orders.
++        """
++        if dedupe_key is None or self._session_factory is None:
++            return
++        try:
++            async with self._session_factory() as session, session.begin():
++                repo = ExecutionClaimRepository(session)
++                emitted = await repo.count_orders_emitted(
++                    intent.strategy_id, intent.signal_id
++                )
++                if emitted:
++                    logger.error(
++                        "Execution claim %s held after failure: %d order(s) already "
++                        "emitted; leaving for reconciliation.",
++                        dedupe_key,
++                        emitted,
++                    )
++                    return
++                await repo.release(dedupe_key, note="Submission failed with no orders emitted.")
++                logger.info("Released execution claim %s after clean failure", dedupe_key)
++        except Exception:
++            logger.exception("Failed to resolve execution claim %s", dedupe_key)
++
+     async def _evaluate_and_submit(
+         self,
+         intent: OrderIntent,
+@@ -604,16 +669,25 @@
+             )
+ 
+         use_leg_prices = handler is not None and handler.uses_per_leg_prices()
++
++        # Barrier goes up here: after every gate has passed, immediately before
++        # anything can reach the broker.
++        dedupe_key = await self._acquire_execution_claim(evaluated_intent)
++
+         if self._baskets is not None:
+-            basket_res = await self._baskets.execute(
+-                evaluated_intent,
+-                rms_result,
+-                order_type=self._order_type,
+-                signal_pk=inbound_pk,
+-            )
+-            child_orders = basket_res.orders or basket_res.compensation_orders
+-            if not child_orders:
+-                raise RuntimeError("Basket coordinator returned no child orders.")
++            try:
++                basket_res = await self._baskets.execute(
++                    evaluated_intent,
++                    rms_result,
++                    order_type=self._order_type,
++                    signal_pk=inbound_pk,
++                )
++                child_orders = basket_res.orders or basket_res.compensation_orders
++                if not child_orders:
++                    raise RuntimeError("Basket coordinator returned no child orders.")
++            except Exception:
++                await self._resolve_failed_claim(dedupe_key, evaluated_intent)
++                raise
+             exec_res = ExecutionResult(
+                 order=child_orders[0],
+                 rms_result=rms_result,
+@@ -622,6 +696,7 @@
+                 orders=list(basket_res.orders) + list(basket_res.compensation_orders),
+             )
+             if basket_res.state in (BasketState.OPEN, BasketState.CLOSED):
++                await self._seal_execution_claim(dedupe_key)
+                 filled_intent = self._intent_with_fills(evaluated_intent, basket_res.orders)
+                 await self._update_runtime_state(
+                     filled_intent, exec_res, handler=handler, sized_from=signal
+@@ -632,17 +707,26 @@
+                         self._live_pnl.watch_open(filled_intent)
+                     else:
+                         self._live_pnl.unwatch(intent.account_id, trade_key)
++            else:
++                # Basket did not reach a settled state. Orders may be live at the
++                # broker, so the claim stays held for reconciliation.
++                await self._resolve_failed_claim(dedupe_key, evaluated_intent)
+             return exec_res
+ 
+-        exec_res = await self._oms.submit_intent(
+-            intent=evaluated_intent,
+-            rms_result=rms_result,
+-            limit_price=None if use_leg_prices else (signal.price if signal.price is not None else self._price),
+-            order_type=self._order_type,
+-        )
+-        if not exec_res.success:
+-            raise RuntimeError(f"OMS submission failed: {exec_res.error_message}")
++        try:
++            exec_res = await self._oms.submit_intent(
++                intent=evaluated_intent,
++                rms_result=rms_result,
++                limit_price=None if use_leg_prices else (signal.price if signal.price is not None else self._price),
++                order_type=self._order_type,
++            )
++            if not exec_res.success:
++                raise RuntimeError(f"OMS submission failed: {exec_res.error_message}")
++        except Exception:
++            await self._resolve_failed_claim(dedupe_key, evaluated_intent)
++            raise
+ 
++        await self._seal_execution_claim(dedupe_key)
+         await self._update_runtime_state(evaluated_intent, exec_res, handler=handler, sized_from=signal)
+         return exec_res
+ 
+@@ -752,6 +836,7 @@
+                         Decimal(0), remaining - leg.effective_notional
+                     )
+             await handler.after_submit(sized_from, intent, exec_res)
++            await self._persist_inbound_signal(sized_from, status=SIGNAL_STATUS_PROCESSED)
+             return
+ 
+         target_symbol = intent.legs[0].symbol
+--- a/app/services/recovery.py
++++ b/app/services/recovery.py
+@@ -9,11 +9,13 @@
+ from app.db.models.basket import BasketModel
+ from app.db.models.signal import (
+     JOB_STATUS_CLAIMED,
++    JOB_STATUS_DEAD_LETTER,
+     JOB_STATUS_PROCESSING,
+     JOB_STATUS_QUEUED,
+     JOB_STATUS_RECOVERY_REQUIRED,
+     SignalJobModel,
+ )
++from app.db.repositories.execution_claim_repository import ExecutionClaimRepository
+ from app.db.repositories.signal_repository import SignalJobRepository
+ 
+ logger = logging.getLogger(__name__)
+@@ -61,38 +63,86 @@
+         )
+ 
+         adapter = getattr(getattr(self._order_manager, "_oms", None), "_adapter", None)
+-        snapshot_ok = False
+         if adapter is not None and hasattr(adapter, "fetch_broker_order_snapshot"):
+-            snapshot_ok = adapter.fetch_broker_order_snapshot()
++            # Best-effort only: reqOpenOrders/reqExecutions are fire-and-forget, the
++            # callbacks land asynchronously. Requesting it warms adapter state but
++            # tells us nothing synchronously, so it must not gate the decision below.
++            if adapter.fetch_broker_order_snapshot():
++                logger.info("Requested open orders / executions snapshot from broker")
++            else:
++                logger.warning("Broker snapshot unavailable at recovery time")
+ 
+-        recovered_count = 0
++        # Resolve execution claims left held by the crashed process before any
++        # requeued job can try to take them again.
++        async with self._session_factory() as session, session.begin():
++            claim_stats = await ExecutionClaimRepository(session).reconcile_stale_claims(
++                stale_after_sec=0.0
++            )
++        if any(claim_stats.values()):
++            logger.warning(
++                "Execution claim reconciliation: released=%d sealed=%d",
++                claim_stats["released"],
++                claim_stats["sealed"],
++            )
++
++        requeued = 0
++        quarantined = 0
+         for job in pending_jobs:
+             async with self._session_factory() as session, session.begin():
+                 repo = SignalJobRepository(session)
+-                if not snapshot_ok:
+-                    # If broker snapshot unavailable, requeue job for worker claim
++                emitted = await repo.count_orders_emitted(job.strategy_id, job.signal_id)
++
++                if emitted:
++                    # This job already wrote orders to the ledger before the crash.
++                    # Requeueing would re-send them, so quarantine for explicit
++                    # reconciliation instead.
+                     await repo.update_status(
+                         job.job_id,
+-                        JOB_STATUS_QUEUED,
+-                        error="Requeued by startup recovery manager (broker snapshot unavailable)",
++                        JOB_STATUS_RECOVERY_REQUIRED,
++                        error=(
++                            f"Crash recovery: {emitted} order(s) already emitted; "
++                            "requires reconciliation before retry."
++                        ),
+                     )
+-                    recovered_count += 1
+-                    logger.info(
+-                        "Recovery manager requeued job_id=%s signal_id=%s", job.job_id, job.signal_id
++                    quarantined += 1
++                    logger.warning(
++                        "Recovery quarantined job_id=%s signal_id=%s (%d orders already emitted)",
++                        job.job_id,
++                        job.signal_id,
++                        emitted,
+                     )
+-                else:
+-                    # Broker snapshot fetched; requeue for safe worker processing
++                    continue
++
++                if job.attempt_count >= job.max_attempts:
+                     await repo.update_status(
+                         job.job_id,
+-                        JOB_STATUS_QUEUED,
+-                        error="Requeued by startup recovery manager with broker snapshot",
++                        JOB_STATUS_DEAD_LETTER,
++                        error=f"Crash recovery: exceeded max attempts ({job.max_attempts}).",
+                     )
+-                    recovered_count += 1
+-                    logger.info(
+-                        "Recovery manager reconciled job_id=%s signal_id=%s to QUEUED",
++                    quarantined += 1
++                    logger.warning(
++                        "Recovery dead-lettered job_id=%s signal_id=%s after %d attempts",
+                         job.job_id,
+                         job.signal_id,
++                        job.attempt_count,
+                     )
++                    continue
++
++                # No orders emitted: the job never reached the broker, safe to retry.
++                await repo.update_status(
++                    job.job_id,
++                    JOB_STATUS_QUEUED,
++                    error="Requeued by startup recovery manager (no orders emitted).",
++                )
++                requeued += 1
++                logger.info(
++                    "Recovery requeued job_id=%s signal_id=%s", job.job_id, job.signal_id
++                )
++
++        recovered_count = requeued + quarantined
++        logger.info(
++            "Startup recovery complete: requeued=%d quarantined=%d", requeued, quarantined
++        )
+ 
+         # Trigger basket critical recovery on order manager if baskets exist
+         if hasattr(self._order_manager, "hydrate_runtime_from_db"):
+--- a/app/services/worker_pool.py
++++ b/app/services/worker_pool.py
+@@ -109,9 +109,14 @@
+             try:
+                 await asyncio.sleep(self._reclaim_interval_sec)
+                 async with self._session_factory() as session, session.begin():
+-                    reclaimed = await SignalJobRepository(session).reclaim_stale_jobs()
+-                    if reclaimed > 0:
+-                        logger.warning("Reclaimed %d stale signal jobs from expired leases", reclaimed)
++                    stats = await SignalJobRepository(session).reclaim_stale_jobs()
++                    if any(stats.values()):
++                        logger.warning(
++                            "Stale lease sweep: requeued=%d quarantined=%d dead_lettered=%d",
++                            stats["requeued"],
++                            stats["quarantined"],
++                            stats["dead_lettered"],
++                        )
+             except asyncio.CancelledError:
+                 break
+             except Exception:
+@@ -152,13 +157,24 @@
+         )
+ 
+         heartbeat_cancel = asyncio.Event()
++        lease_lost = asyncio.Event()
+         heartbeat_task = asyncio.create_task(
+-            self._lease_heartbeat(job.job_id, worker_id, heartbeat_cancel)
++            self._lease_heartbeat(job.job_id, worker_id, heartbeat_cancel, lease_lost)
+         )
+ 
+         try:
+             async with domain_lock:
+-                await self._execute_job(worker_id, job)
++                # The domain lock can be held for a while by a sibling job. Re-check
++                # ownership before doing any work rather than executing on a lease
++                # the reclaimer has already taken away.
++                if lease_lost.is_set():
++                    logger.warning(
++                        "Worker %s abandoning job %s: lease lost while waiting on domain lock",
++                        worker_id,
++                        job.job_id,
++                    )
++                    return
++                await self._execute_job(worker_id, job, lease_lost)
+         finally:
+             heartbeat_cancel.set()
+             heartbeat_task.cancel()
+@@ -169,10 +185,19 @@
+             clear_log_context()
+ 
+     async def _lease_heartbeat(
+-        self, job_id: Any, worker_id: str, cancel_event: asyncio.Event
++        self,
++        job_id: Any,
++        worker_id: str,
++        cancel_event: asyncio.Event,
++        lease_lost: asyncio.Event,
+     ) -> None:
+-        """Background task renewing the worker lease while processing a job."""
+-        interval = max(5.0, self._lease_duration_sec / 3.0)
++        """Background task renewing the worker lease while processing a job.
++
++        If the renewal stops matching rows the job has been reclaimed by someone
++        else; ``lease_lost`` is set so the executing coroutine can decline to
++        write a terminal status it no longer owns.
++        """
++        interval = max(2.0, self._lease_duration_sec / 3.0)
+         while not cancel_event.is_set():
+             try:
+                 await asyncio.sleep(interval)
+@@ -180,15 +205,55 @@
+                     break
+                 async with self._session_factory() as session, session.begin():
+                     repo = SignalJobRepository(session)
+-                    await repo.heartbeat_lease(
++                    renewed = await repo.heartbeat_lease(
+                         job_id, worker_id, lease_duration_sec=self._lease_duration_sec
+                     )
++                if not renewed:
++                    lease_lost.set()
++                    logger.error(
++                        "Worker %s LOST its lease on job %s -- another worker may now own it",
++                        worker_id,
++                        job_id,
++                    )
++                    break
+             except asyncio.CancelledError:
+                 break
+             except Exception:  # noqa: BLE001
+                 logger.warning("Worker %s failed to renew heartbeat for job %s", worker_id, job_id)
+ 
+-    async def _execute_job(self, worker_id: str, job: SignalJobModel) -> None:
++    async def _write_status(
++        self,
++        job_id: Any,
++        status: str,
++        worker_id: str,
++        lease_lost: asyncio.Event,
++        *,
++        error: str | None = None,
++    ) -> bool:
++        """Write a fenced job status. Returns False if this worker no longer owns the job."""
++        async with self._session_factory() as session, session.begin():
++            rows = await SignalJobRepository(session).update_status(
++                job_id,
++                status,
++                error=error,
++                worker_id=worker_id,
++                fence=True,
++                lease_duration_sec=self._lease_duration_sec,
++            )
++        if not rows:
++            lease_lost.set()
++            logger.error(
++                "Worker %s could not write status=%s for job %s: lease no longer held",
++                worker_id,
++                status,
++                job_id,
++            )
++            return False
++        return True
++
++    async def _execute_job(
++        self, worker_id: str, job: SignalJobModel, lease_lost: asyncio.Event
++    ) -> None:
+         """Invoke OrderManager execution pipeline and update job completion status."""
+         logger.info(
+             "Worker %s starting execution for job_id=%s signal_id=%s strategy_id=%s attempt=%d",
+@@ -199,11 +264,12 @@
+             job.attempt_count,
+         )
+ 
+-        # Mark job status as PROCESSING
+-        async with self._session_factory() as session, session.begin():
+-            await SignalJobRepository(session).update_status(
+-                job.job_id, JOB_STATUS_PROCESSING, worker_id=worker_id
+-            )
++        # Mark job status as PROCESSING. This also extends the lease, and the fence
++        # means we bail out here rather than executing on a lease we already lost.
++        if not await self._write_status(
++            job.job_id, JOB_STATUS_PROCESSING, worker_id, lease_lost
++        ):
++            return
+ 
+         utc_now = datetime.now(UTC)
+         try:
+@@ -217,44 +283,61 @@
+             logger.warning(
+                 "Worker %s rejected job %s: invalid payload parse: %s", worker_id, job.job_id, exc
+             )
+-            async with self._session_factory() as session, session.begin():
+-                await SignalJobRepository(session).update_status(
+-                    job.job_id, JOB_STATUS_REJECTED, error=str(exc), worker_id=worker_id
+-                )
++            await self._write_status(
++                job.job_id, JOB_STATUS_REJECTED, worker_id, lease_lost, error=str(exc)
++            )
+             return
+ 
+         try:
+             execution = await self._order_manager.process_signal_execution(domain_signal)
++
++            if lease_lost.is_set():
++                # Orders may have gone out under a lease another worker now owns.
++                # Do not write a terminal status -- leave it for reconciliation.
++                logger.error(
++                    "Worker %s finished job %s after losing its lease; leaving status for recovery",
++                    worker_id,
++                    job.job_id,
++                )
++                return
++
+             if execution is not None and getattr(execution, "all_rejected", False):
+                 logger.warning(
+                     "Worker %s: signal %s rejected by RMS/OMS policy", worker_id, job.signal_id
+                 )
+-                async with self._session_factory() as session, session.begin():
+-                    await SignalJobRepository(session).update_status(
+-                        job.job_id,
+-                        JOB_STATUS_REJECTED,
+-                        error="Execution rejected by RMS/OMS policy",
+-                        worker_id=worker_id,
+-                    )
++                await self._write_status(
++                    job.job_id,
++                    JOB_STATUS_REJECTED,
++                    worker_id,
++                    lease_lost,
++                    error="Execution rejected by RMS/OMS policy",
++                )
+                 return
+ 
+             if execution is not None and not getattr(execution, "success", True):
+                 err_msg = getattr(execution, "error_message", None) or "Execution incomplete"
+-                logger.warning("Worker %s: signal %s execution incomplete: %s", worker_id, job.signal_id, err_msg)
+-                async with self._session_factory() as session, session.begin():
+-                    await SignalJobRepository(session).update_status(
+-                        job.job_id, JOB_STATUS_FAILED, error=err_msg, worker_id=worker_id
+-                    )
++                logger.warning(
++                    "Worker %s: signal %s execution incomplete: %s",
++                    worker_id,
++                    job.signal_id,
++                    err_msg,
++                )
++                await self._write_status(
++                    job.job_id, JOB_STATUS_FAILED, worker_id, lease_lost, error=err_msg
++                )
+                 return
+ 
+-            logger.info("Worker %s completed job_id=%s signal_id=%s successfully", worker_id, job.job_id, job.signal_id)
+-            async with self._session_factory() as session, session.begin():
+-                await SignalJobRepository(session).update_status(
+-                    job.job_id, JOB_STATUS_COMPLETED, worker_id=worker_id
+-                )
++            logger.info(
++                "Worker %s completed job_id=%s signal_id=%s successfully",
++                worker_id,
++                job.job_id,
++                job.signal_id,
++            )
++            await self._write_status(
++                job.job_id, JOB_STATUS_COMPLETED, worker_id, lease_lost
++            )
+         except Exception as exc:
+             logger.exception("Worker %s failed executing job %s", worker_id, job.job_id)
+-            async with self._session_factory() as session, session.begin():
+-                await SignalJobRepository(session).update_status(
+-                    job.job_id, JOB_STATUS_FAILED, error=str(exc), worker_id=worker_id
+-                )
++            await self._write_status(
++                job.job_id, JOB_STATUS_FAILED, worker_id, lease_lost, error=str(exc)
++            )
+--- /dev/null
++++ b/app/db/models/execution_claim.py
+@@ -0,0 +1,44 @@
++"""Durable execution dedupe barrier.
++
++``RMSContext.processed_signals`` is an in-process set written *after* orders
++reach the broker, so it cannot stop a replay that crashed mid-execution and it
++does not exist at all across processes. This table is the authoritative barrier:
++a row is claimed *before* submission and promoted to EXECUTED afterwards, with a
++unique constraint doing the enforcement.
++"""
++
++from datetime import datetime
++
++from sqlalchemy import BigInteger, DateTime, String, func
++from sqlalchemy.orm import Mapped, mapped_column
++
++from app.db.base import Base
++
++CLAIM_STATE_CLAIMED = "CLAIMED"
++CLAIM_STATE_EXECUTED = "EXECUTED"
++CLAIM_STATE_ABANDONED = "ABANDONED"
++
++
++class ExecutionClaimModel(Base):
++    """One row per (account, strategy, intent signal_id) execution attempt."""
++
++    __tablename__ = "execution_claims"
++
++    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
++    dedupe_key: Mapped[str] = mapped_column(String, nullable=False, unique=True)
++    account_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
++    strategy_id: Mapped[str] = mapped_column(String, nullable=False)
++    signal_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
++    action: Mapped[str] = mapped_column(String, nullable=False)
++    state: Mapped[str] = mapped_column(
++        String, nullable=False, server_default=CLAIM_STATE_CLAIMED
++    )
++    attempt_count: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="1")
++    correlation_id: Mapped[str | None] = mapped_column(String, nullable=True)
++    last_note: Mapped[str | None] = mapped_column(String, nullable=True)
++    claimed_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), nullable=False, server_default=func.now()
++    )
++    executed_at: Mapped[datetime | None] = mapped_column(
++        DateTime(timezone=True), nullable=True
++    )
+--- /dev/null
++++ b/app/db/repositories/execution_claim_repository.py
+@@ -0,0 +1,215 @@
++"""Atomic acquire/promote/release for the execution dedupe barrier."""
++
++import logging
++from datetime import UTC, datetime, timedelta
++from typing import Any
++
++from sqlalchemy import func, select, update
++from sqlalchemy.dialects.postgresql import insert
++from sqlalchemy.ext.asyncio import AsyncSession
++
++from app.db.models.execution_claim import (
++    CLAIM_STATE_ABANDONED,
++    CLAIM_STATE_CLAIMED,
++    CLAIM_STATE_EXECUTED,
++    ExecutionClaimModel,
++)
++from app.db.models.order import OrderModel
++from app.db.models.signal import SignalModel
++
++logger = logging.getLogger(__name__)
++
++
++class DuplicateExecutionError(Exception):
++    """The intent was already executed. Never retry."""
++
++
++class ExecutionInFlightError(Exception):
++    """Another worker or process currently holds the claim."""
++
++
++class ClaimNeedsReconciliationError(Exception):
++    """A prior attempt died holding the claim; broker state is unverified."""
++
++
++class ExecutionClaimRepository:
++    """Owns the execution_claims barrier."""
++
++    def __init__(self, session: AsyncSession) -> None:
++        self._session = session
++
++    async def acquire(
++        self,
++        *,
++        dedupe_key: str,
++        account_id: int | None,
++        strategy_id: str,
++        signal_id: str,
++        action: str,
++        correlation_id: str | None = None,
++        stale_after_sec: float = 300.0,
++    ) -> ExecutionClaimModel:
++        """Claim the right to execute this intent, or raise.
++
++        Insert-or-retake in one statement: the ON CONFLICT arm only fires for a
++        previously ABANDONED claim, so EXECUTED and live CLAIMED rows are left
++        untouched and fall through to the diagnosis below.
++        """
++        now = datetime.now(UTC)
++        stmt = (
++            insert(ExecutionClaimModel)
++            .values(
++                dedupe_key=dedupe_key,
++                account_id=account_id,
++                strategy_id=strategy_id,
++                signal_id=signal_id,
++                action=action,
++                state=CLAIM_STATE_CLAIMED,
++                attempt_count=1,
++                correlation_id=correlation_id,
++                claimed_at=now,
++            )
++            .on_conflict_do_update(
++                index_elements=["dedupe_key"],
++                set_={
++                    "state": CLAIM_STATE_CLAIMED,
++                    "claimed_at": now,
++                    "attempt_count": ExecutionClaimModel.attempt_count + 1,
++                    "correlation_id": correlation_id,
++                    "last_note": None,
++                },
++                where=ExecutionClaimModel.state == CLAIM_STATE_ABANDONED,
++            )
++            .returning(ExecutionClaimModel)
++        )
++        res = await self._session.execute(stmt)
++        row = res.scalar_one_or_none()
++        if row is not None:
++            return row
++
++        existing = await self.get(dedupe_key)
++        if existing is None:
++            raise RuntimeError(f"Claim conflict but no row found for {dedupe_key}")
++
++        if existing.state == CLAIM_STATE_EXECUTED:
++            raise DuplicateExecutionError(
++                f"DUPLICATE_EXECUTION: '{signal_id}' already executed at "
++                f"{existing.executed_at} (attempt {existing.attempt_count})."
++            )
++
++        age = (now - existing.claimed_at).total_seconds()
++        if age < stale_after_sec:
++            raise ExecutionInFlightError(
++                f"EXECUTION_IN_FLIGHT: '{signal_id}' claimed {age:.0f}s ago by "
++                f"correlation_id={existing.correlation_id}."
++            )
++
++        raise ClaimNeedsReconciliationError(
++            f"CLAIM_STALE: '{signal_id}' held since {existing.claimed_at} "
++            f"({age:.0f}s); broker state unverified, refusing to re-execute."
++        )
++
++    async def get(self, dedupe_key: str) -> ExecutionClaimModel | None:
++        res = await self._session.execute(
++            select(ExecutionClaimModel).where(ExecutionClaimModel.dedupe_key == dedupe_key)
++        )
++        return res.scalar_one_or_none()
++
++    async def mark_executed(self, dedupe_key: str, *, note: str | None = None) -> bool:
++        """Promote a held claim to the permanent duplicate barrier."""
++        stmt = (
++            update(ExecutionClaimModel)
++            .where(
++                ExecutionClaimModel.dedupe_key == dedupe_key,
++                ExecutionClaimModel.state == CLAIM_STATE_CLAIMED,
++            )
++            .values(
++                state=CLAIM_STATE_EXECUTED,
++                executed_at=datetime.now(UTC),
++                last_note=note,
++            )
++        )
++        res = await self._session.execute(stmt)
++        return bool(res.rowcount)
++
++    async def release(self, dedupe_key: str, *, note: str | None = None) -> bool:
++        """Release a claim so the intent can be retried.
++
++        Only call this when it is *known* that nothing reached the broker.
++        """
++        stmt = (
++            update(ExecutionClaimModel)
++            .where(
++                ExecutionClaimModel.dedupe_key == dedupe_key,
++                ExecutionClaimModel.state == CLAIM_STATE_CLAIMED,
++            )
++            .values(state=CLAIM_STATE_ABANDONED, last_note=note)
++        )
++        res = await self._session.execute(stmt)
++        return bool(res.rowcount)
++
++    async def count_orders_emitted(self, strategy_id: str, signal_id: str) -> int:
++        """Orders already written for this (strategy_id, signal_id).
++
++        ``orders.signal_id`` FKs to ``signals.id`` and ``signals.signal_id``
++        carries the ``:CLOSE`` suffix, so OPEN and CLOSE are counted separately.
++        """
++        stmt = (
++            select(func.count())
++            .select_from(OrderModel)
++            .join(SignalModel, OrderModel.signal_id == SignalModel.id)
++            .where(
++                SignalModel.strategy_id == strategy_id,
++                SignalModel.signal_id == signal_id,
++            )
++        )
++        res = await self._session.execute(stmt)
++        return int(res.scalar_one() or 0)
++
++    async def reconcile_stale_claims(self, stale_after_sec: float = 300.0) -> dict[str, int]:
++        """Resolve claims left CLAIMED by a crashed attempt.
++
++        No orders emitted -> the attempt never reached the broker, release it.
++        Orders emitted -> promote to EXECUTED; the work was done and must not
++        be repeated even though the process died before recording it.
++        """
++        cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_sec)
++        res = await self._session.execute(
++            select(ExecutionClaimModel).where(
++                ExecutionClaimModel.state == CLAIM_STATE_CLAIMED,
++                ExecutionClaimModel.claimed_at < cutoff,
++            )
++        )
++        released = 0
++        sealed = 0
++        for claim in list(res.scalars().all()):
++            emitted = await self.count_orders_emitted(claim.strategy_id, claim.signal_id)
++            if emitted:
++                await self.mark_executed(
++                    claim.dedupe_key,
++                    note=f"Sealed by reconciliation: {emitted} order(s) already emitted.",
++                )
++                sealed += 1
++                logger.warning(
++                    "Sealed stale execution claim %s (%d orders emitted)",
++                    claim.dedupe_key,
++                    emitted,
++                )
++            else:
++                await self.release(
++                    claim.dedupe_key, note="Released by reconciliation: no orders emitted."
++                )
++                released += 1
++                logger.info("Released stale execution claim %s", claim.dedupe_key)
++        return {"released": released, "sealed": sealed}
++
++
++def execution_dedupe_key(intent: Any) -> str:
++    """Stable barrier key for an OrderIntent.
++
++    Mirrors ``duplicate_lookup_key`` but flattens to text so a single unique
++    index works regardless of whether account_id is present (Postgres treats
++    NULLs as distinct in composite unique constraints).
++    """
++    account = intent.account_id if intent.account_id is not None else "-"
++    return f"{account}:{intent.strategy_id}:{intent.signal_id}"
+--- /dev/null
++++ b/alembic/versions/e2f4a6c8d105_create_execution_claims.py
+@@ -0,0 +1,59 @@
++"""Create execution_claims durable dedupe barrier.
++
++Revision ID: e2f4a6c8d105
++Revises: d1e2f3a4b5c6
++Create Date: 2026-08-22 10:00:00.000000
++"""
++
++from typing import Sequence, Union
++
++import sqlalchemy as sa
++from alembic import op
++
++revision: str = "e2f4a6c8d105"
++down_revision: Union[str, Sequence[str], None] = "d1e2f3a4b5c6"
++branch_labels: Union[str, Sequence[str], None] = None
++depends_on: Union[str, Sequence[str], None] = None
++
++
++def upgrade() -> None:
++    op.create_table(
++        "execution_claims",
++        sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
++        sa.Column("dedupe_key", sa.String(), nullable=False),
++        sa.Column("account_id", sa.BigInteger(), nullable=True),
++        sa.Column("strategy_id", sa.String(), nullable=False),
++        sa.Column("signal_id", sa.String(), nullable=False),
++        sa.Column("action", sa.String(), nullable=False),
++        sa.Column("state", sa.String(), nullable=False, server_default="CLAIMED"),
++        sa.Column("attempt_count", sa.BigInteger(), nullable=False, server_default="1"),
++        sa.Column("correlation_id", sa.String(), nullable=True),
++        sa.Column("last_note", sa.String(), nullable=True),
++        sa.Column(
++            "claimed_at",
++            sa.DateTime(timezone=True),
++            nullable=False,
++            server_default=sa.text("now()"),
++        ),
++        sa.Column("executed_at", sa.DateTime(timezone=True), nullable=True),
++    )
++    op.create_index(
++        "uq_execution_claims_dedupe_key",
++        "execution_claims",
++        ["dedupe_key"],
++        unique=True,
++    )
++    op.create_index("ix_execution_claims_signal_id", "execution_claims", ["signal_id"])
++    # Supports the reconciliation sweep over stale held claims.
++    op.create_index(
++        "ix_execution_claims_state_claimed_at",
++        "execution_claims",
++        ["state", "claimed_at"],
++    )
++
++
++def downgrade() -> None:
++    op.drop_index("ix_execution_claims_state_claimed_at", table_name="execution_claims")
++    op.drop_index("ix_execution_claims_signal_id", table_name="execution_claims")
++    op.drop_index("uq_execution_claims_dedupe_key", table_name="execution_claims")
++    op.drop_table("execution_claims")

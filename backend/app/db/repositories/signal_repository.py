@@ -4,18 +4,21 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import case, literal, not_, select, update
+from sqlalchemy import case, func, literal, not_, select, update
+from sqlalchemy.orm import aliased
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.signal import (
+    ACTIVE_LEASE_STATUSES,
+    CLAIMABLE_STATUSES,
     JOB_STATUS_CLAIMED,
     JOB_STATUS_COMPLETED,
     JOB_STATUS_DEAD_LETTER,
     JOB_STATUS_FAILED,
     JOB_STATUS_PROCESSING,
     JOB_STATUS_QUEUED,
-    JOB_STATUS_RECEIVED,
+    JOB_STATUS_RECOVERY_REQUIRED,
     JOB_STATUS_REJECTED,
     SignalJobModel,
     SignalModel,
@@ -348,21 +351,46 @@ class SignalJobRepository:
         limit: int = 1,
         lease_duration_sec: float = 30.0,
     ) -> list[SignalJobModel]:
-        """Claim up to `limit` queued/expired jobs using FOR UPDATE SKIP LOCKED."""
+        """Claim up to `limit` queued/expired jobs using FOR UPDATE SKIP LOCKED.
+
+        Jobs sharing a ``trade_id`` are serialized: a candidate is skipped while
+        any sibling on the same trade_id holds a live lease. Combined with the
+        received_at ordering this makes an OPEN always execute before the CLOSE
+        that follows it, instead of both being handed to workers at once and
+        racing for the domain lock.
+        """
         now = datetime.now(UTC)
         lease_until = now + timedelta(seconds=lease_duration_sec)
+
+        sibling = aliased(SignalJobModel)
+        sibling_in_flight = (
+            select(literal(1))
+            .select_from(sibling)
+            .where(
+                sibling.trade_id == SignalJobModel.trade_id,
+                sibling.job_id != SignalJobModel.job_id,
+                sibling.status.in_(ACTIVE_LEASE_STATUSES),
+            )
+            .exists()
+        )
 
         subq = (
             select(SignalJobModel.job_id)
             .where(
-                (SignalJobModel.status.in_([JOB_STATUS_QUEUED, JOB_STATUS_RECEIVED]))
-                | (
-                    (SignalJobModel.status == JOB_STATUS_CLAIMED)
-                    & (SignalJobModel.lease_expires_at < now)
+                (
+                    (SignalJobModel.status.in_(CLAIMABLE_STATUSES))
+                    | (
+                        (SignalJobModel.status.in_(ACTIVE_LEASE_STATUSES))
+                        & (SignalJobModel.lease_expires_at < now)
+                    )
+                )
+                & (
+                    SignalJobModel.trade_id.is_(None)
+                    | not_(sibling_in_flight)
                 )
             )
             .order_by(SignalJobModel.received_at.asc())
-            .with_for_update(skip_locked=True)
+            .with_for_update(skip_locked=True, of=SignalJobModel)
             .limit(limit)
         )
         result = await self._session.execute(subq)
@@ -397,25 +425,50 @@ class SignalJobRepository:
         *,
         error: str | None = None,
         worker_id: str | None = None,
-    ) -> None:
-        """Update job lifecycle status."""
+        fence: bool = False,
+        lease_duration_sec: float = 30.0,
+    ) -> int:
+        """Update job lifecycle status. Returns the number of rows affected.
+
+        When ``fence`` is set the update only applies if ``worker_id`` still owns
+        the job. A return value of 0 means the caller lost its lease (the job was
+        reclaimed by another worker) and must not treat the write as applied.
+        """
         now = datetime.now(UTC)
         values: dict[str, Any] = {"status": status}
         if status == JOB_STATUS_PROCESSING:
             values["processing_started_at"] = now
+            # Extend the lease on the CLAIMED -> PROCESSING transition so there is
+            # no unprotected window before the first heartbeat fires.
+            values["lease_expires_at"] = now + timedelta(seconds=lease_duration_sec)
         elif status in (JOB_STATUS_COMPLETED, JOB_STATUS_REJECTED, JOB_STATUS_FAILED, JOB_STATUS_DEAD_LETTER):
             values["completed_at"] = now
+            values["lease_expires_at"] = None
         if error is not None:
             values["last_error"] = error
         if worker_id is not None:
             values["worker_id"] = worker_id
 
-        stmt = update(SignalJobModel).where(SignalJobModel.job_id == job_id).values(**values)
-        await self._session.execute(stmt)
-        await self._session.flush()
+        predicates = [SignalJobModel.job_id == job_id]
+        if fence:
+            if worker_id is None:
+                raise ValueError("fence=True requires worker_id")
+            predicates.append(SignalJobModel.worker_id == worker_id)
+            predicates.append(SignalJobModel.status.in_(ACTIVE_LEASE_STATUSES))
 
-    async def heartbeat_lease(self, job_id: Any, worker_id: str, lease_duration_sec: float = 30.0) -> None:
-        """Renew worker lease expiration timestamp."""
+        stmt = update(SignalJobModel).where(*predicates).values(**values)
+        res = await self._session.execute(stmt)
+        await self._session.flush()
+        return int(res.rowcount or 0)
+
+    async def heartbeat_lease(
+        self, job_id: Any, worker_id: str, lease_duration_sec: float = 30.0
+    ) -> bool:
+        """Renew worker lease expiration timestamp.
+
+        Returns False if the lease is no longer held by ``worker_id`` -- the job
+        was reclaimed while this worker was still executing it.
+        """
         now = datetime.now(UTC)
         lease_until = now + timedelta(seconds=lease_duration_sec)
         stmt = (
@@ -423,20 +476,27 @@ class SignalJobRepository:
             .where(
                 SignalJobModel.job_id == job_id,
                 SignalJobModel.worker_id == worker_id,
-                SignalJobModel.status == JOB_STATUS_CLAIMED,
+                SignalJobModel.status.in_(ACTIVE_LEASE_STATUSES),
             )
             .values(lease_expires_at=lease_until)
         )
-        await self._session.execute(stmt)
+        res = await self._session.execute(stmt)
+        return bool(res.rowcount)
 
-    async def reclaim_stale_jobs(self, max_attempts: int = 3) -> int:
-        """Reclaim jobs with expired leases back to QUEUED or DEAD_LETTER."""
+    async def reclaim_stale_jobs(self, max_attempts: int = 3) -> dict[str, int]:
+        """Reclaim jobs whose worker lease expired.
+
+        A job that expired while still CLAIMED never began execution, so it is
+        safe to requeue. A job that expired in PROCESSING may have already placed
+        orders at the broker -- requeueing it blind would re-execute the signal,
+        so it is quarantined as RECOVERY_REQUIRED for explicit reconciliation.
+        """
         now = datetime.now(UTC)
 
         stmt_dead = (
             update(SignalJobModel)
             .where(
-                SignalJobModel.status == JOB_STATUS_CLAIMED,
+                SignalJobModel.status.in_(ACTIVE_LEASE_STATUSES),
                 SignalJobModel.lease_expires_at < now,
                 SignalJobModel.attempt_count >= max_attempts,
             )
@@ -444,9 +504,27 @@ class SignalJobRepository:
                 status=JOB_STATUS_DEAD_LETTER,
                 last_error=f"Exceeded max attempts ({max_attempts}) due to worker lease expiry.",
                 completed_at=now,
+                worker_id=None,
+                lease_expires_at=None,
             )
         )
         res_dead = await self._session.execute(stmt_dead)
+
+        stmt_quarantine = (
+            update(SignalJobModel)
+            .where(
+                SignalJobModel.status == JOB_STATUS_PROCESSING,
+                SignalJobModel.lease_expires_at < now,
+                SignalJobModel.attempt_count < max_attempts,
+            )
+            .values(
+                status=JOB_STATUS_RECOVERY_REQUIRED,
+                last_error="Worker lease expired mid-execution; broker state unverified.",
+                worker_id=None,
+                lease_expires_at=None,
+            )
+        )
+        res_quarantine = await self._session.execute(stmt_quarantine)
 
         stmt_requeue = (
             update(SignalJobModel)
@@ -463,5 +541,30 @@ class SignalJobRepository:
         )
         res_requeue = await self._session.execute(stmt_requeue)
         await self._session.flush()
-        return res_dead.rowcount + res_requeue.rowcount
+        return {
+            "dead_lettered": int(res_dead.rowcount or 0),
+            "quarantined": int(res_quarantine.rowcount or 0),
+            "requeued": int(res_requeue.rowcount or 0),
+        }
+
+    async def count_orders_emitted(self, strategy_id: str, signal_id: str) -> int:
+        """Count broker orders already written for a job's (strategy_id, signal_id).
+
+        ``orders.signal_id`` is an FK to ``signals.id``, and ``signals.signal_id``
+        carries the ``:CLOSE`` suffix, so this distinguishes the OPEN job from the
+        CLOSE job on the same trade_id.
+        """
+        from app.db.models.order import OrderModel
+
+        stmt = (
+            select(func.count())
+            .select_from(OrderModel)
+            .join(SignalModel, OrderModel.signal_id == SignalModel.id)
+            .where(
+                SignalModel.strategy_id == strategy_id,
+                SignalModel.signal_id == signal_id,
+            )
+        )
+        res = await self._session.execute(stmt)
+        return int(res.scalar_one() or 0)
 

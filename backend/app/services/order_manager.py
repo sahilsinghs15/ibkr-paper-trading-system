@@ -4,6 +4,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -15,9 +16,13 @@ from app.accounts.config_service import AccountStrategyConfigService
 from app.accounts.context import AccountExecutionContext
 from app.accounts.router import DatabaseStrategyAccountRouter, StrategyAccountRouter
 from app.core.config import get_settings
-from app.core.logger import bind_log_context
+from app.core.logger import bind_log_context, get_log_context
 from app.db.models.account import PerSymbolLimitModel
 from app.db.repositories.event_repository import EventRepository
+from app.db.repositories.execution_claim_repository import (
+    ExecutionClaimRepository,
+    execution_dedupe_key,
+)
 from app.db.repositories.position_repository import PositionRepository
 from app.db.repositories.signal_repository import (
     SIGNAL_STATUS_NEW,
@@ -143,6 +148,8 @@ class OrderManager:
         self.registry = strategy_registry or StrategyRegistry([self._model_blue_strategy])
         self._live_pnl = None
         self._baskets: BasketCoordinator | None = None
+        self._exposure_locks: dict[object, asyncio.Lock] = {}
+        self._exposure_locks_guard = asyncio.Lock()
         self._instrument_catalog = None
         if session_factory is not None:
             from app.db.repositories.instrument_repository import (
@@ -193,6 +200,10 @@ class OrderManager:
         if self._baskets is not None:
             await self._baskets.hydrate_critical_from_db()
             await self._baskets.recover_incomplete_baskets()
+        # Rebuild the blocked-account cache before any signal can be processed.
+        from app.services.kill_switch import hydrate_kill_switch_cache
+
+        await hydrate_kill_switch_cache(self._session_factory)
         await self.reload_execution_policy()
         critical_count = len(getattr(self._baskets, "_critical", set()) or set())
         logger.info(
@@ -555,7 +566,118 @@ class OrderManager:
             intent, signal, handler=None, inbound_pk=inbound_pk
         )
 
+    async def _acquire_execution_claim(self, intent: OrderIntent) -> str | None:
+        """Take the durable dedupe barrier before any order reaches the broker.
+
+        Commits in its own transaction: the barrier is worthless if it only
+        becomes visible once the surrounding work succeeds.
+        """
+        if self._session_factory is None:
+            return None
+        dedupe_key = execution_dedupe_key(intent)
+        action = intent.action.value if hasattr(intent.action, "value") else str(intent.action)
+        async with self._session_factory() as session, session.begin():
+            await ExecutionClaimRepository(session).acquire(
+                dedupe_key=dedupe_key,
+                account_id=intent.account_id,
+                strategy_id=intent.strategy_id,
+                signal_id=intent.signal_id,
+                action=action,
+                correlation_id=get_log_context().get("request_id"),
+            )
+        logger.info("Acquired execution claim %s", dedupe_key)
+        return dedupe_key
+
+    async def _seal_execution_claim(self, dedupe_key: str | None) -> None:
+        """Promote a held claim to the permanent duplicate barrier."""
+        if dedupe_key is None or self._session_factory is None:
+            return
+        try:
+            async with self._session_factory() as session, session.begin():
+                await ExecutionClaimRepository(session).mark_executed(dedupe_key)
+        except Exception:
+            logger.exception("Failed to seal execution claim %s", dedupe_key)
+
+    async def _resolve_failed_claim(self, dedupe_key: str | None, intent: OrderIntent) -> None:
+        """Decide a claim's fate after a failed submission.
+
+        Release only when the order ledger proves nothing was emitted. If any
+        order exists the outcome is unknown, so the claim stays CLAIMED and the
+        reconciliation sweep resolves it against the ledger rather than letting
+        a retry fire duplicate orders.
+        """
+        if dedupe_key is None or self._session_factory is None:
+            return
+        try:
+            async with self._session_factory() as session, session.begin():
+                repo = ExecutionClaimRepository(session)
+                emitted = await repo.count_orders_emitted(
+                    intent.strategy_id, intent.signal_id
+                )
+                if emitted:
+                    logger.error(
+                        "Execution claim %s held after failure: %d order(s) already "
+                        "emitted; leaving for reconciliation.",
+                        dedupe_key,
+                        emitted,
+                    )
+                    return
+                await repo.release(dedupe_key, note="Submission failed with no orders emitted.")
+                logger.info("Released execution claim %s after clean failure", dedupe_key)
+        except Exception:
+            logger.exception("Failed to resolve execution claim %s", dedupe_key)
+
+    async def _get_exposure_lock(self, key) -> asyncio.Lock:
+        """Get or create the per-(account, symbol) exposure lock."""
+        async with self._exposure_locks_guard:
+            lock = self._exposure_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._exposure_locks[key] = lock
+            return lock
+
+    @asynccontextmanager
+    async def _exposure_guard(self, intent: OrderIntent):
+        """Serialize the read-modify-write on symbol_exposures for this intent.
+
+        MoneyPerStockCheck reads context.symbol_exposures keyed on
+        (account_id, symbol) -- a dimension that spans strategies -- but the
+        write happens in _update_runtime_state, after the broker submit. The
+        worker pool's domain lock is keyed on strategy, so two strategies
+        trading the same symbol on one account both read a pre-submit budget
+        and both pass. This holds every touched key from before RMS evaluation
+        until after the exposure write.
+
+        Keys are acquired in a stable sorted order so two intents with
+        overlapping symbol sets cannot deadlock against each other.
+        """
+        keys = sorted({exposure_key(intent, leg.symbol) for leg in intent.legs}, key=repr)
+        acquired: list[asyncio.Lock] = []
+        try:
+            for key in keys:
+                lock = await self._get_exposure_lock(key)
+                await lock.acquire()
+                acquired.append(lock)
+            yield
+        finally:
+            for lock in reversed(acquired):
+                lock.release()
+
     async def _evaluate_and_submit(
+        self,
+        intent: OrderIntent,
+        signal: Signal,
+        *,
+        handler: StrategyHandler | None,
+        inbound_pk: int | None = None,
+    ) -> ExecutionResult:
+        """Evaluate and submit under the per-symbol exposure guard."""
+        async with self._exposure_guard(intent):
+            return await self._evaluate_and_submit_locked(
+                intent, signal, handler=handler, inbound_pk=inbound_pk
+            )
+
+    async def _evaluate_and_submit_locked(
         self,
         intent: OrderIntent,
         signal: Signal,
@@ -604,16 +726,25 @@ class OrderManager:
             )
 
         use_leg_prices = handler is not None and handler.uses_per_leg_prices()
+
+        # Barrier goes up here: after every gate has passed, immediately before
+        # anything can reach the broker.
+        dedupe_key = await self._acquire_execution_claim(evaluated_intent)
+
         if self._baskets is not None:
-            basket_res = await self._baskets.execute(
-                evaluated_intent,
-                rms_result,
-                order_type=self._order_type,
-                signal_pk=inbound_pk,
-            )
-            child_orders = basket_res.orders or basket_res.compensation_orders
-            if not child_orders:
-                raise RuntimeError("Basket coordinator returned no child orders.")
+            try:
+                basket_res = await self._baskets.execute(
+                    evaluated_intent,
+                    rms_result,
+                    order_type=self._order_type,
+                    signal_pk=inbound_pk,
+                )
+                child_orders = basket_res.orders or basket_res.compensation_orders
+                if not child_orders:
+                    raise RuntimeError("Basket coordinator returned no child orders.")
+            except Exception:
+                await self._resolve_failed_claim(dedupe_key, evaluated_intent)
+                raise
             exec_res = ExecutionResult(
                 order=child_orders[0],
                 rms_result=rms_result,
@@ -622,6 +753,7 @@ class OrderManager:
                 orders=list(basket_res.orders) + list(basket_res.compensation_orders),
             )
             if basket_res.state in (BasketState.OPEN, BasketState.CLOSED):
+                await self._seal_execution_claim(dedupe_key)
                 filled_intent = self._intent_with_fills(evaluated_intent, basket_res.orders)
                 await self._update_runtime_state(
                     filled_intent, exec_res, handler=handler, sized_from=signal
@@ -632,17 +764,27 @@ class OrderManager:
                         self._live_pnl.watch_open(filled_intent)
                     else:
                         self._live_pnl.unwatch(intent.account_id, trade_key)
+            else:
+                # Basket did not reach a settled state. Orders may be live at the
+                # broker, so the claim stays held for reconciliation.
+                self._record_unsettled_exposure(evaluated_intent, basket_res.orders)
+                await self._resolve_failed_claim(dedupe_key, evaluated_intent)
             return exec_res
 
-        exec_res = await self._oms.submit_intent(
-            intent=evaluated_intent,
-            rms_result=rms_result,
-            limit_price=None if use_leg_prices else (signal.price if signal.price is not None else self._price),
-            order_type=self._order_type,
-        )
-        if not exec_res.success:
-            raise RuntimeError(f"OMS submission failed: {exec_res.error_message}")
+        try:
+            exec_res = await self._oms.submit_intent(
+                intent=evaluated_intent,
+                rms_result=rms_result,
+                limit_price=None if use_leg_prices else (signal.price if signal.price is not None else self._price),
+                order_type=self._order_type,
+            )
+            if not exec_res.success:
+                raise RuntimeError(f"OMS submission failed: {exec_res.error_message}")
+        except Exception:
+            await self._resolve_failed_claim(dedupe_key, evaluated_intent)
+            raise
 
+        await self._seal_execution_claim(dedupe_key)
         await self._update_runtime_state(evaluated_intent, exec_res, handler=handler, sized_from=signal)
         return exec_res
 
@@ -720,6 +862,54 @@ class OrderManager:
             )
         return replace(intent, legs=filled_legs)
 
+    def _record_unsettled_exposure(
+        self, intent: OrderIntent, orders: list[OMSOrder]
+    ) -> None:
+        """Book exposure for fills from a basket that never reached OPEN/CLOSED.
+
+        _update_runtime_state only runs on a settled basket, so a CRITICAL or
+        UNWINDING basket that partially filled left symbol_exposures reporting
+        zero while real risk sat at the broker. is_open_blocked only gates the
+        same (account_id, strategy_id) pair, but exposures are keyed on
+        (account_id, symbol) -- so a different strategy on the same account
+        would size against an understated budget.
+
+        Deliberately does NOT touch processed_signals or open_positions: the
+        trade is not cleanly open, and the execution claim stays held so the
+        signal cannot be retried behind our back.
+        """
+        if not orders:
+            return
+        try:
+            filled_intent = self._intent_with_fills(intent, orders)
+        except Exception:
+            logger.exception(
+                "Could not compute fills for unsettled basket trade_id=%s; "
+                "exposure NOT booked",
+                intent.signal_id,
+            )
+            return
+
+        opening = intent.action == OrderAction.OPEN
+        booked: list[tuple[object, Decimal]] = []
+        for leg in filled_intent.legs:
+            if Decimal(str(leg.quantity)) <= 0:
+                continue
+            exp_key = exposure_key(intent, leg.symbol)
+            current = self._rms_context.symbol_exposures.get(exp_key, Decimal(0))
+            delta = leg.effective_notional
+            updated = current + delta if opening else max(Decimal(0), current - delta)
+            self._rms_context.symbol_exposures[exp_key] = updated
+            booked.append((exp_key, delta))
+
+        if booked:
+            logger.warning(
+                "UNSETTLED_EXPOSURE_BOOKED: trade_id=%s action=%s entries=%s",
+                intent.signal_id,
+                "OPEN" if opening else "CLOSE",
+                [(str(k), str(v)) for k, v in booked],
+            )
+
     async def _update_runtime_state(
         self,
         intent: OrderIntent,
@@ -752,6 +942,7 @@ class OrderManager:
                         Decimal(0), remaining - leg.effective_notional
                     )
             await handler.after_submit(sized_from, intent, exec_res)
+            await self._persist_inbound_signal(sized_from, status=SIGNAL_STATUS_PROCESSED)
             return
 
         target_symbol = intent.legs[0].symbol

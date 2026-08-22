@@ -50,6 +50,15 @@ JOB_STATUS_FAILED = "FAILED"
 JOB_STATUS_RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
 JOB_STATUS_DEAD_LETTER = "DEAD_LETTER"
 
+# Statuses where a worker holds a live lease on the job. Every lease predicate
+# (claim, heartbeat, reclaim) MUST use this tuple -- if PROCESSING is omitted
+# from any one of them the lease silently stops being maintained the moment
+# real execution work begins.
+ACTIVE_LEASE_STATUSES = (JOB_STATUS_CLAIMED, JOB_STATUS_PROCESSING)
+
+# Statuses a worker may pick up from the queue.
+CLAIMABLE_STATUSES = (JOB_STATUS_QUEUED, JOB_STATUS_RECEIVED)
+
 
 class SignalJobModel(Base):
     """SQLAlchemy model for durable signal execution jobs."""

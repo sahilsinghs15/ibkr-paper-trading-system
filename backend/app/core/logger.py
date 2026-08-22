@@ -115,6 +115,16 @@ def bind_log_context(
         _account_id.set(account_id)
 
 
+def get_log_context() -> dict[str, str | None]:
+    """Read the current correlation fields."""
+    return {
+        "request_id": _request_id.get(),
+        "signal_id": _signal_id.get(),
+        "trade_id": _trade_id.get(),
+        "account_id": _account_id.get(),
+    }
+
+
 def clear_log_context() -> None:
     """Reset all correlation ContextVars."""
     _request_id.set(None)

@@ -11,13 +11,15 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models.account import AccountModel
 from app.db.models.kill_switch import (
     KILL_SWITCH_STATUS_ACTIVATING,
+    KILL_SWITCH_STATUS_CLEARED,
     KILL_SWITCH_STATUS_COMPLETE,
+    KILL_SWITCH_STATUS_FLAT,
     KILL_SWITCH_STATUS_FLATTENING,
     KILL_SWITCH_STATUS_RECONCILING,
     KILL_SWITCH_STATUS_RETRYING,
@@ -36,13 +38,100 @@ from app.rms.models import OrderSide as RMSOrderSide
 
 logger = logging.getLogger(__name__)
 
-# Active account kill-switch set to block NEW opening signals
+# In-memory cache of accounts blocked from opening new positions. This is a
+# read cache only -- kill_switch_operations is authoritative, and the cache is
+# rebuilt from it on startup. Never mutate this set directly: use
+# _arm_kill_switch_cache / clear_account_kill_switch so the DB stays in step.
 _KILL_SWITCH_ACTIVE_ACCOUNTS: set[int] = set()
+
+# Statuses that leave an account armed. Completing a flatten does NOT disarm:
+# only an explicit operator clear moves an operation to CLEARED.
+_ARMED_STATUSES = (
+    KILL_SWITCH_STATUS_ACTIVATING,
+    KILL_SWITCH_STATUS_FLATTENING,
+    KILL_SWITCH_STATUS_RECONCILING,
+    KILL_SWITCH_STATUS_RETRYING,
+    KILL_SWITCH_STATUS_FLAT,
+    KILL_SWITCH_STATUS_COMPLETE,
+    KILL_SWITCH_STATUS_UNRESOLVED,
+)
 
 
 def is_account_kill_switch_active(account_id: int) -> bool:
     """Return True if account is currently in active emergency kill-switch mode."""
     return account_id in _KILL_SWITCH_ACTIVE_ACCOUNTS
+
+
+def _arm_kill_switch_cache(account_id: int) -> None:
+    """Mark an account blocked in the in-memory cache."""
+    _KILL_SWITCH_ACTIVE_ACCOUNTS.add(account_id)
+
+
+async def hydrate_kill_switch_cache(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> set[int]:
+    """Rebuild the blocked-account cache from Postgres.
+
+    Must run before any signal is processed. The cache previously lived only in
+    process memory with no rehydration, so a restart silently disarmed every
+    active kill switch and OPENs resumed on halted accounts.
+    """
+    async with session_factory() as session:
+        result = await session.execute(
+            select(KillSwitchOperationModel.account_id)
+            .where(KillSwitchOperationModel.status.in_(_ARMED_STATUSES))
+            .distinct()
+        )
+        armed = {int(row[0]) for row in result.all()}
+
+    _KILL_SWITCH_ACTIVE_ACCOUNTS.clear()
+    _KILL_SWITCH_ACTIVE_ACCOUNTS.update(armed)
+    if armed:
+        logger.warning(
+            "KILL SWITCH REARMED FROM DB: %d account(s) blocked from new OPENs: %s",
+            len(armed),
+            sorted(armed),
+        )
+    else:
+        logger.info("Kill switch cache hydrated: no accounts armed")
+    return armed
+
+
+async def clear_account_kill_switch(
+    session_factory: async_sessionmaker[AsyncSession],
+    account_id: int,
+    *,
+    cleared_by: str = "operator",
+) -> int:
+    """Explicitly disarm an account, allowing new OPENs again.
+
+    Returns the number of operations moved to CLEARED. The DB write happens
+    first: if it fails the account stays blocked, which is the safe direction.
+    """
+    now = datetime.now(UTC)
+    async with session_factory() as session, session.begin():
+        result = await session.execute(
+            update(KillSwitchOperationModel)
+            .where(
+                KillSwitchOperationModel.account_id == account_id,
+                KillSwitchOperationModel.status.in_(_ARMED_STATUSES),
+            )
+            .values(
+                status=KILL_SWITCH_STATUS_CLEARED,
+                cleared_at=now,
+                cleared_by=cleared_by,
+            )
+        )
+        count = int(result.rowcount or 0)
+
+    _KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
+    logger.warning(
+        "KILL SWITCH CLEARED: account_id=%s operations=%d cleared_by=%s",
+        account_id,
+        count,
+        cleared_by,
+    )
+    return count
 
 
 class KillSwitchService:
@@ -121,7 +210,7 @@ class KillSwitchService:
             session.add(operation)
 
             # Block NEW opening signals for this account
-            _KILL_SWITCH_ACTIVE_ACCOUNTS.add(account_id)
+            _arm_kill_switch_cache(account_id)
 
         logger.warning(
             "EMERGENCY KILL SWITCH ACTIVATED: operation_id=%s account_id=%s ibkr_account=%s open_positions=%d",

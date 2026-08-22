@@ -4,6 +4,7 @@ from app.db.models.account import AccountModel, PerSymbolLimitModel
 from app.db.models.basket import BasketModel
 from app.db.models.event import EventLogModel
 from app.db.models.execution import ExecutionModel
+from app.db.models.execution_claim import ExecutionClaimModel
 from app.db.models.execution_settings import ExecutionSettingsModel
 from app.db.models.instrument import InstrumentModel
 from app.db.models.kill_switch import KillSwitchOperationModel
@@ -17,6 +18,7 @@ __all__ = [
     "AllocationModel",
     "BasketModel",
     "EventLogModel",
+    "ExecutionClaimModel",
     "ExecutionModel",
     "ExecutionSettingsModel",
     "InstrumentModel",

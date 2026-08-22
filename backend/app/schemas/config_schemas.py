@@ -135,3 +135,17 @@ class SquareOffResponse(BaseModel):
     status: str | None = None
 
 
+class KillSwitchClearResponse(BaseModel):
+    """Response payload for clearing an account kill switch."""
+
+    account_id: int
+    ibkr_account: str
+    operations_cleared: int
+    kill_switch_active: bool
+
+
+class KillSwitchStatusResponse(BaseModel):
+    """Response payload reporting kill switch arm state for an account."""
+
+    account_id: int
+    kill_switch_active: bool

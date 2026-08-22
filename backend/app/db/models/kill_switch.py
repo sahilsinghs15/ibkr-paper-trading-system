@@ -18,6 +18,9 @@ KILL_SWITCH_STATUS_RETRYING = "RETRYING"
 KILL_SWITCH_STATUS_FLAT = "FLAT"
 KILL_SWITCH_STATUS_COMPLETE = "COMPLETE"
 KILL_SWITCH_STATUS_UNRESOLVED = "UNRESOLVED"
+# Terminal-and-disarmed. Activation blocks new OPENs until an operator
+# explicitly clears it; completing the flatten is NOT the same as clearing.
+KILL_SWITCH_STATUS_CLEARED = "CLEARED"
 
 
 class KillSwitchOperationModel(Base):
@@ -41,6 +44,10 @@ class KillSwitchOperationModel(Base):
     unresolved_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     final_exposure: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     last_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    cleared_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cleared_by: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), server_default=func.now()
     )

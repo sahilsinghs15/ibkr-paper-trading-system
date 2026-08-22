@@ -1,0 +1,229 @@
+--- a/app/db/repositories/signal_repository.py
++++ b/app/db/repositories/signal_repository.py
+@@ -5,6 +5,7 @@
+ from typing import Any
+ 
+ from sqlalchemy import case, func, literal, not_, select, update
++from sqlalchemy.orm import aliased
+ from sqlalchemy.dialects.postgresql import insert
+ from sqlalchemy.ext.asyncio import AsyncSession
+ 
+@@ -350,21 +351,46 @@
+         limit: int = 1,
+         lease_duration_sec: float = 30.0,
+     ) -> list[SignalJobModel]:
+-        """Claim up to `limit` queued/expired jobs using FOR UPDATE SKIP LOCKED."""
++        """Claim up to `limit` queued/expired jobs using FOR UPDATE SKIP LOCKED.
++
++        Jobs sharing a ``trade_id`` are serialized: a candidate is skipped while
++        any sibling on the same trade_id holds a live lease. Combined with the
++        received_at ordering this makes an OPEN always execute before the CLOSE
++        that follows it, instead of both being handed to workers at once and
++        racing for the domain lock.
++        """
+         now = datetime.now(UTC)
+         lease_until = now + timedelta(seconds=lease_duration_sec)
+ 
++        sibling = aliased(SignalJobModel)
++        sibling_in_flight = (
++            select(literal(1))
++            .select_from(sibling)
++            .where(
++                sibling.trade_id == SignalJobModel.trade_id,
++                sibling.job_id != SignalJobModel.job_id,
++                sibling.status.in_(ACTIVE_LEASE_STATUSES),
++            )
++            .exists()
++        )
++
+         subq = (
+             select(SignalJobModel.job_id)
+             .where(
+-                (SignalJobModel.status.in_(CLAIMABLE_STATUSES))
+-                | (
+-                    (SignalJobModel.status.in_(ACTIVE_LEASE_STATUSES))
+-                    & (SignalJobModel.lease_expires_at < now)
++                (
++                    (SignalJobModel.status.in_(CLAIMABLE_STATUSES))
++                    | (
++                        (SignalJobModel.status.in_(ACTIVE_LEASE_STATUSES))
++                        & (SignalJobModel.lease_expires_at < now)
++                    )
++                )
++                & (
++                    SignalJobModel.trade_id.is_(None)
++                    | not_(sibling_in_flight)
+                 )
+             )
+             .order_by(SignalJobModel.received_at.asc())
+-            .with_for_update(skip_locked=True)
++            .with_for_update(skip_locked=True, of=SignalJobModel)
+             .limit(limit)
+         )
+         result = await self._session.execute(subq)
+--- a/app/services/order_manager.py
++++ b/app/services/order_manager.py
+@@ -4,6 +4,7 @@
+ import logging
+ import uuid
+ from collections.abc import Sequence
++from contextlib import asynccontextmanager
+ from dataclasses import replace
+ from datetime import UTC, datetime
+ from decimal import Decimal
+@@ -147,6 +148,8 @@
+         self.registry = strategy_registry or StrategyRegistry([self._model_blue_strategy])
+         self._live_pnl = None
+         self._baskets: BasketCoordinator | None = None
++        self._exposure_locks: dict[object, asyncio.Lock] = {}
++        self._exposure_locks_guard = asyncio.Lock()
+         self._instrument_catalog = None
+         if session_factory is not None:
+             from app.db.repositories.instrument_repository import (
+@@ -620,10 +623,60 @@
+         except Exception:
+             logger.exception("Failed to resolve execution claim %s", dedupe_key)
+ 
++    async def _get_exposure_lock(self, key) -> asyncio.Lock:
++        """Get or create the per-(account, symbol) exposure lock."""
++        async with self._exposure_locks_guard:
++            lock = self._exposure_locks.get(key)
++            if lock is None:
++                lock = asyncio.Lock()
++                self._exposure_locks[key] = lock
++            return lock
++
++    @asynccontextmanager
++    async def _exposure_guard(self, intent: OrderIntent):
++        """Serialize the read-modify-write on symbol_exposures for this intent.
++
++        MoneyPerStockCheck reads context.symbol_exposures keyed on
++        (account_id, symbol) -- a dimension that spans strategies -- but the
++        write happens in _update_runtime_state, after the broker submit. The
++        worker pool's domain lock is keyed on strategy, so two strategies
++        trading the same symbol on one account both read a pre-submit budget
++        and both pass. This holds every touched key from before RMS evaluation
++        until after the exposure write.
++
++        Keys are acquired in a stable sorted order so two intents with
++        overlapping symbol sets cannot deadlock against each other.
++        """
++        keys = sorted({exposure_key(intent, leg.symbol) for leg in intent.legs}, key=repr)
++        acquired: list[asyncio.Lock] = []
++        try:
++            for key in keys:
++                lock = await self._get_exposure_lock(key)
++                await lock.acquire()
++                acquired.append(lock)
++            yield
++        finally:
++            for lock in reversed(acquired):
++                lock.release()
++
+     async def _evaluate_and_submit(
+         self,
+         intent: OrderIntent,
+         signal: Signal,
++        *,
++        handler: StrategyHandler | None,
++        inbound_pk: int | None = None,
++    ) -> ExecutionResult:
++        """Evaluate and submit under the per-symbol exposure guard."""
++        async with self._exposure_guard(intent):
++            return await self._evaluate_and_submit_locked(
++                intent, signal, handler=handler, inbound_pk=inbound_pk
++            )
++
++    async def _evaluate_and_submit_locked(
++        self,
++        intent: OrderIntent,
++        signal: Signal,
+         *,
+         handler: StrategyHandler | None,
+         inbound_pk: int | None = None,
+--- a/app/services/worker_pool.py
++++ b/app/services/worker_pool.py
+@@ -17,6 +17,7 @@
+     JOB_STATUS_REJECTED,
+     SignalJobModel,
+ )
++from app.db.repositories.execution_claim_repository import ExecutionClaimRepository
+ from app.db.repositories.signal_repository import SignalJobRepository
+ 
+ logger = logging.getLogger(__name__)
+@@ -51,12 +52,14 @@
+         worker_count: int = 10,
+         lease_duration_sec: float = 30.0,
+         reclaim_interval_sec: float = 15.0,
++        claim_stale_after_sec: float = 300.0,
+     ) -> None:
+         self._session_factory = session_factory
+         self._order_manager = order_manager
+         self._worker_count = max(1, worker_count)
+         self._lease_duration_sec = lease_duration_sec
+         self._reclaim_interval_sec = reclaim_interval_sec
++        self._claim_stale_after_sec = claim_stale_after_sec
+         self._workers: list[asyncio.Task] = []
+         self._reclaimer_task: asyncio.Task | None = None
+         self._running = False
+@@ -104,7 +107,7 @@
+         logger.info("ExecutionWorkerPool stopped")
+ 
+     async def _reclaimer_loop(self) -> None:
+-        """Periodically reclaim jobs with expired worker leases."""
++        """Periodically reclaim expired job leases and orphaned execution claims."""
+         while self._running:
+             try:
+                 await asyncio.sleep(self._reclaim_interval_sec)
+@@ -117,6 +120,18 @@
+                             stats["quarantined"],
+                             stats["dead_lettered"],
+                         )
++                # Claims orphaned by a worker that died mid-execution would
++                # otherwise stay held until the next process restart.
++                async with self._session_factory() as session, session.begin():
++                    claim_stats = await ExecutionClaimRepository(session).reconcile_stale_claims(
++                        stale_after_sec=self._claim_stale_after_sec
++                    )
++                    if any(claim_stats.values()):
++                        logger.warning(
++                            "Orphaned claim sweep: released=%d sealed=%d",
++                            claim_stats["released"],
++                            claim_stats["sealed"],
++                        )
+             except asyncio.CancelledError:
+                 break
+             except Exception:
+--- /dev/null
++++ b/alembic/versions/f3a5b7d9e206_signal_jobs_trade_id_status_index.py
+@@ -0,0 +1,30 @@
++"""Composite index supporting the trade_id in-flight guard in claim_next_jobs.
++
++Revision ID: f3a5b7d9e206
++Revises: e2f4a6c8d105
++Create Date: 2026-08-22 12:00:00.000000
++"""
++
++from typing import Sequence, Union
++
++from alembic import op
++
++revision: str = "f3a5b7d9e206"
++down_revision: Union[str, Sequence[str], None] = "e2f4a6c8d105"
++branch_labels: Union[str, Sequence[str], None] = None
++depends_on: Union[str, Sequence[str], None] = None
++
++
++def upgrade() -> None:
++    # claim_next_jobs runs a correlated NOT EXISTS on (trade_id, status) for
++    # every candidate row, on every poll, from every worker. The existing
++    # ix_signal_jobs_trade_id index alone leaves status as a heap filter.
++    op.create_index(
++        "ix_signal_jobs_trade_id_status",
++        "signal_jobs",
++        ["trade_id", "status"],
++    )
++
++
++def downgrade() -> None:
++    op.drop_index("ix_signal_jobs_trade_id_status", table_name="signal_jobs")

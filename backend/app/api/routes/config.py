@@ -24,6 +24,8 @@ from app.schemas.config_schemas import (
     CreateAccountRequest,
     CreateAllocationRequest,
     ExecutionSettingsSchema,
+    KillSwitchClearResponse,
+    KillSwitchStatusResponse,
     PatchAccountRequest,
     PatchAllocationRequest,
     PatchExecutionSettingsRequest,
@@ -176,6 +178,65 @@ async def square_off_account_positions(
         trade_ids=[],
         operation_id=str(op.operation_id),
         status=op.status,
+    )
+
+
+@router.post(
+    "/accounts/{account_id}/kill-switch/clear",
+    response_model=KillSwitchClearResponse,
+    summary="Clear an account's kill switch and re-enable new OPEN signals",
+)
+async def clear_account_kill_switch_endpoint(
+    account_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+) -> KillSwitchClearResponse:
+    """Disarm an account blocked by the emergency kill switch.
+
+    The armed state is durable and survives restarts, so this is the only way
+    to resume opening positions on the account. Completing a flatten does not
+    disarm on its own -- clearing is always a deliberate operator action.
+    """
+    svc = AccountStrategyConfigService(session)
+    account = await svc.get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory is None:
+        from app.db.session import AsyncSessionLocal
+
+        session_factory = AsyncSessionLocal
+
+    from app.services.kill_switch import (
+        clear_account_kill_switch,
+        is_account_kill_switch_active,
+    )
+
+    cleared = await clear_account_kill_switch(
+        session_factory, account_id, cleared_by="operator"
+    )
+    return KillSwitchClearResponse(
+        account_id=account_id,
+        ibkr_account=account.ibkr_account,
+        operations_cleared=cleared,
+        kill_switch_active=is_account_kill_switch_active(account_id),
+    )
+
+
+@router.get(
+    "/accounts/{account_id}/kill-switch",
+    response_model=KillSwitchStatusResponse,
+    summary="Report whether an account is blocked from opening new positions",
+)
+async def get_account_kill_switch_status(
+    account_id: int,
+) -> KillSwitchStatusResponse:
+    from app.services.kill_switch import is_account_kill_switch_active
+
+    return KillSwitchStatusResponse(
+        account_id=account_id,
+        kill_switch_active=is_account_kill_switch_active(account_id),
     )
 
 
