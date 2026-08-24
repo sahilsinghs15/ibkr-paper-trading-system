@@ -11,9 +11,12 @@ This file lists things agents must **not** claim are implemented. Items appear h
 | Separate Listener / Strategy / per-account OMS / Risk processes | Single FastAPI process |
 | Nine RMS checks | Only checks 2, 3, 4, 7, 8 as classes |
 | RMS check 1 (margin), 5, 6, 9 | No check modules |
-| Dashboard config API (accounts / allocations / limits CRUD) | **Implemented** at `/api/v1/config/*` on trading app; proxied from `:8010` |
+| N IB Gateway instances / account→gateway routing | **Not built.** Multi-account today = `ib_order.account` on **one** socket. Target: [`backend-multi-gateway.md`](backend-multi-gateway.md) |
+| Per-gateway rate limiter (token bucket / fairness / Error 100) | **Not built.** Live pacing is `OrderSubmitPacer(0.2s)` on `placeOrder` only |
+| TWS reconnect / failover | **Not built.** Lifespan log claims auto-reconnect; adapter does not |
+| Dashboard config API (accounts / allocations / limits CRUD) | **Implemented** at `/api/v1/config/*` on trading app; proxied from `:8010`. Does **not** bind accounts to Gateways |
 | Kill switch / flatten-all | **Partial** — HTTP API exists (`POST .../square-off`, clear, status); see [`backend-kill-switch.md`](backend-kill-switch.md). Dashboard UX may not expose all controls — verify frontend before claiming UI. |
-| `IBKRExecutionScheduler` as production pacing | **Not wired** — `OrderSubmitPacer(0.2s)` is live pacing; scheduler is tests-only |
+| `IBKRExecutionScheduler` as production pacing | **Not wired** — `OrderSubmitPacer(0.2s)` is live pacing; scheduler is tests-only (useful as the *shape* of a future per-gateway limiter) |
 | Risk-engine auto exit on target / stop / time_limit | No exit-trigger loop found |
 | Redis hot margin / locks / health for trading | Redis only in `demo_streaming` |
 | `signal_legs` table | Not created |
@@ -47,6 +50,19 @@ This file lists things agents must **not** claim are implemented. Items appear h
 - CFD `conId` discovery and upsert are implemented; Live PnL subscribes CFD contracts with `conId` when known.
 - IBKR paper may still not stream CFD ticks even with a valid `conId`; there is **no** STK-underlying mark fallback in code.
 
+## Multi-gateway / rate limiting (target, not as-is)
+
+Design intent for N Gateways, per-gateway limiter, mapping policy, fairness, and failure semantics lives in [`backend-multi-gateway.md`](backend-multi-gateway.md). Do not describe that file as current behavior.
+
+Short list of **MISSING** items (citations in that file):
+
+- `gateways` / `account_gateway_bindings` tables and config API
+- `GatewayPool` / `GatewayRouter`
+- Per-gateway limiter shared by all accounts on that instance
+- Account-scoped market-data line cap (not a gateway limiter)
+- Reconnect without ERROR-ing in-flight OMS orders
+- Per-account `signal_jobs` / `account_scope` on ingest
+
 ## When implementing something from this list
 
-Update the relevant `app/docs/*.md` file in the same change. Do not leave architecture or Postman text as the only description of new behavior.
+Update the relevant `app/docs/*.md` file in the same change. Do not leave architecture or Postman text as the only description of new behavior. If you implement any multi-gateway item, update [`backend-multi-gateway.md`](backend-multi-gateway.md) as-is sections in the same PR.

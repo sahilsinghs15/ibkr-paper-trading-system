@@ -12,6 +12,8 @@ One FastAPI process (`app.main:app`). Lifespan wires:
 
 There is **no** separate Listener / Strategy / per-account OMS / Risk process in this codebase.
 
+**IB connectivity as-is (PARTIAL):** exactly **one** `TWSClient` socket (`Settings.ibkr_host` / `ibkr_port` / `ibkr_client_id`). Multi-account does **not** mean multi-Gateway. See [`backend-multi-gateway.md`](backend-multi-gateway.md).
+
 ## Live path (ingest → queue → worker → execute)
 
 ```
@@ -31,15 +33,16 @@ ExecutionWorkerPool (background)
   → OrderManager.process_signal_execution
        → persist SignalModel (status NEW)
        → DatabaseStrategyAccountRouter.resolve(strategy_id)
-       → per AccountExecutionContext:
+       → asyncio.gather per AccountExecutionContext  (in-process; still one job)
             → kill-switch gate on OPEN
-            → ModelBlueStrategy.build_intent (sizer + trade book)
+            → ModelBlueStrategy.build_intent (sizer uses ctx.committed_notional)
             → exposure_guard → RMSEngine.evaluate (checks 2, 3, 4, 7, 8)
             → instrument resolve (catalog / paper STK→CFD; auto CFD conId discovery)
-            → execution_claims.acquire (durable dedupe barrier)
+            → execution_claims.acquire (durable dedupe barrier, account-scoped key)
             → BasketCoordinator.execute
                  → OMSService.submit_one_leg → IBKRExecutionAdapter.submit_order
-                 → TWSClient → IBKR
+                    (ib_order.account = intent.ibkr_account; same socket for every account)
+                 → TWSClient → the single IB Gateway / TWS
             → seal claim EXECUTED on settled basket
             → ModelBlueExecutionPersistence + position / trade-book updates
             → LivePnlService.watch_open / unwatch
@@ -80,8 +83,8 @@ From `main.py` lifespan:
 1. `setup_logging(level=settings.log_level)` → daily file `storage/logs/trading-YYYY-MM-DD.log` + stderr.
 2. Build adapter / OMS / OrderManager (+ DB capital, trade book, persistence, LivePnl).
 3. `order_manager.hydrate_runtime_from_db()` — RMS context, open positions, kill-switch cache, critical baskets, execution policy.
-4. `client.connect_and_start(...)` to `ibkr_host:ibkr_port`.
-5. On successful connect: `hydrate_live_pnl()`.
+4. `client.connect_and_start(...)` to `ibkr_host:ibkr_port` (the **only** IB session).
+5. On successful connect: `hydrate_live_pnl()`. On failure: lifespan logs that the adapter will “auto-reconnect on active traffic.” **`IBKRExecutionAdapter.submit_order` does not reconnect** — it raises `ConnectionError` if `not is_connected()`. `on_connection_closed` marks in-memory working orders `ERROR` without `reqOpenOrders`.
 6. Store `session_factory`, `client`, `ibkr_adapter`, `oms`, `order_manager` on `app.state`.
 7. `RecoveryManager.run_startup_recovery()` — reconcile stale jobs/claims.
 8. `ExecutionWorkerPool(worker_count=10).start()` → `app.state.worker_pool`.
@@ -123,14 +126,24 @@ Format: `%(asctime)s | %(levelname)-8s | %(name)s | %(trace)s | %(message)s` whe
 | `TWS placeOrder failed` | Adapter place failure |
 | `EMERGENCY KILL SWITCH ACTIVATED` | Kill switch started |
 
+## Account resolution per order (as-is)
+
+1. Router: `DatabaseStrategyAccountRouter.resolve(strategy_id)` — enabled account × allocation rows (`accounts/router.py`).
+2. Intent: `ModelBlueStrategy._build_open_intent` / `_build_close_intent` set `OrderIntent.account_id` and `ibkr_account`.
+3. Broker: `IBKRExecutionAdapter._build_ibkr_order` copies `ib_order.account`. IBKR routes the order to that account **on the connected Gateway login**. There is no second `TWSClient`.
+
+One webhook → one `signal_jobs` row (`account_scope` left `NULL`) → worker → N-account fan-out. See [`backend-concurrency.md`](backend-concurrency.md).
+
 ## Not on this path
 
 - No automatic target / stop / time_limit exit loop (columns may exist on allocations; no exit-trigger process).
 - Demo SSE UI (`demo_streaming`) is a **separate** process; it does not place orders.
-- `IBKRExecutionScheduler` is not wired — production pacing is `OrderSubmitPacer(0.2s)`.
+- `IBKRExecutionScheduler` is not wired — production pacing is `OrderSubmitPacer(0.2s)` on the **single** adapter (all accounts, including kill-switch).
+- No N-Gateway pool, no per-gateway limiter, no reconnect/failover — [`backend-multi-gateway.md`](backend-multi-gateway.md) (target, not as-is).
 
 ## Related docs
 
 - Queue/leases/claims: [`backend-concurrency.md`](backend-concurrency.md)
 - Kill switch: [`backend-kill-switch.md`](backend-kill-switch.md)
 - RMS/basket: [`backend-rms-oms.md`](backend-rms-oms.md)
+- Multi-gateway target: [`backend-multi-gateway.md`](backend-multi-gateway.md)

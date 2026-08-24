@@ -14,9 +14,9 @@ Use `get_settings()`; do not construct `Settings()` ad hoc in new code.
 | `environment` | `ENVIRONMENT` | `"development"` | |
 | `log_level` | `LOG_LEVEL` | `"INFO"` | Passed to `setup_logging` |
 | `database_url` | `DATABASE_URL` | `postgresql+asyncpg://root:root123@localhost:5433/ibkr_trading` | Async SQLAlchemy URL |
-| `ibkr_host` | `IBKR_HOST` | `"127.0.0.1"` | |
+| `ibkr_host` | `IBKR_HOST` | `"127.0.0.1"` | The **only** TWS/Gateway host. No per-account override. |
 | `ibkr_port` | `IBKR_PORT` | `7497` | Paper TWS default; **not** validated against live ports |
-| `ibkr_client_id` | `IBKR_CLIENT_ID` | `1` | |
+| `ibkr_client_id` | `IBKR_CLIENT_ID` | `1` | The **only** API client id. Duplicate client ids on the same Gateway disconnect the older session. |
 | `ibkr_connection_timeout` | `IBKR_CONNECTION_TIMEOUT` | `10` | Seconds |
 | `ibkr_market_data_type` | `IBKR_MARKET_DATA_TYPE` | `3` | IBKR market data type (1–4) |
 | `ibkr_market_data_symbol` | `IBKR_MARKET_DATA_SYMBOL` | `"AAPL"` | |
@@ -51,3 +51,4 @@ Property: `candle_timeframe_minutes` — parses `candle_timeframe` (defaults to 
 - `ALLOCATIONS_CONFIG_PATH` — not a field; routing uses Postgres accounts / strategies / allocations.
 - Worker pool size (`10`), job lease durations, reclaim intervals — hardcoded in `main.py` / `worker_pool.py`. See [`backend-map.md`](backend-map.md).
 - Submit pacer interval (`0.2s`) — hardcoded in `main.py` when constructing `IBKRExecutionAdapter`.
+- Gateway pool / per-account `IBKR_HOST` — **not fields**. `accounts.ibkr_account` is the IB account string tagged on `placeOrder`, not a socket. Target schema: [`backend-multi-gateway.md`](backend-multi-gateway.md).

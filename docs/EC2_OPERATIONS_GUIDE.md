@@ -4,6 +4,16 @@ This is the onboarding map for anyone who must access, inspect, or operate the *
 
 It is written from live inspection of host `ip-172-31-5-91` (public `98.81.69.227`) as of 18 Aug 2026. Treat secrets as living in files, not in chat logs. **Never paste IBKR passwords, ngrok tokens, or the SSH private key into tickets, PRs, or Slack.**
 
+**Accuracy vs current application code (not the host snapshot):**
+
+| Claim in this file (dated 18 Aug 2026) | Current code (`app/core/config.py` and routers) |
+|----------------------------------------|--------------------------------------------------|
+| `BROKER_MODE=ibkr` on EC2 `.env` | **Ignored.** `Settings` has `extra="ignore"` and no `BROKER_MODE` field. |
+| “There is no `DATABASE_URL` on EC2 today. Capital comes from YAML.” | **STALE vs product.** Trading app requires Postgres (`DATABASE_URL`); allocations live in `accounts` / `allocations` tables. YAML is not the runtime router. |
+| One Gateway on `127.0.0.1:4002` | **ACCURATE as-is topology:** the app still opens **one** `TWSClient`. N Gateways are target-only — [`backend-multi-gateway.md`](backend-multi-gateway.md). |
+
+Keep using this file for SSH / IBC / tmux paths on that host. For application behavior, prefer [`backend-config.md`](backend-config.md) and [`backend-execution.md`](backend-execution.md).
+
 ---
 
 ## 0. Mental model (read this first)

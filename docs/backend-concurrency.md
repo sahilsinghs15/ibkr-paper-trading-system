@@ -36,6 +36,8 @@ HTTP **202 `accepted`** means the job was enqueued — **not** that it filled. C
 
 Duplicate webhooks with the same key return the existing job (no second row). Changing normalization requires a data backfill (migration `a4c7e2f10938`).
 
+The key is **not** account-scoped. One TradingView alert is one job even when the router later fans out to N accounts. Splitting jobs per account is target-state (see [`backend-multi-gateway.md`](backend-multi-gateway.md)); doing it now would rotate hashes.
+
 ### Job status machine
 
 ```
@@ -96,6 +98,8 @@ Also runs `ExecutionClaimRepository.reconcile_stale_claims(stale_after_sec=300)`
 ### Domain lock
 
 Per `(account_scope || "default", strategy_id)` — serializes jobs for the same strategy partition so RMS/exposure state does not interleave.
+
+**As-is:** `receive_tradingview_webhook` calls `create_job_if_not_exists` **without** `account_scope`, so the column stays `NULL` and every live job uses `("default", strategy_id)`. Fan-out to multiple `ibkr_account`s happens inside `OrderManager._fanout_accounts` **after** this lock is held. The lock therefore serializes the whole strategy’s signal, not one IB account. Target: optional per-account child jobs / `account_scope` — not built.
 
 ### Exposure lock (separate)
 
@@ -214,3 +218,8 @@ Workers drive execution; `SignalRepository` records inbound audit regardless.
 6. Do not construct a second `ExecutionWorkerPool` in a request handler.
 7. HTTP 202 `accepted` is not a fill confirmation.
 8. Changing `normalize_strategy_id` or idempotency inputs requires migration/backfill.
+
+## Related docs
+
+- Execution path: [`backend-execution.md`](backend-execution.md)
+- Multi-gateway / per-account jobs (target): [`backend-multi-gateway.md`](backend-multi-gateway.md)

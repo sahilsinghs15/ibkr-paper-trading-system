@@ -47,6 +47,7 @@ Main FastAPI (`app.main`) does **not** serve any frontend. The dashboard is serv
 - Per account: edit `total_margin`, `enabled`, allocation `alloc_pct` (with enabled-sum ≤ 100% guard), per-account `max_open_positions`, and `per_symbol_limits` CRUD
 - Auto square-off & retry: `GET/PATCH /api/v1/config/execution`
 - Saves via PATCH/PUT/DELETE on `/api/v1/config/*` (proxied to `:8000`)
+- **No** Gateway host/port/clientId binding. `ibkr_account` is the IB account id tagged on orders, not a socket. Target UI: [`backend-multi-gateway.md`](backend-multi-gateway.md).
 
 ### Scripts (`package.json`)
 
