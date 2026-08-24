@@ -145,6 +145,52 @@ async def test_webhook_query_param_secret_rejected_security(
     assert "Unauthorized" in resp.json()["detail"]
 
 
+@pytest.mark.asyncio
+async def test_webhook_auth_disabled_accepts_missing_or_wrong_secret(
+    test_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify that when WEBHOOK_AUTH_ENABLED=false, requests with missing or wrong secret are accepted (HTTP 202) and enqueued."""
+    monkeypatch.setattr(
+        "app.api.routes.webhooks.get_settings",
+        lambda: Settings(
+            webhook_auth_secret="super-secret-token-123",
+            webhook_auth_enabled=False,
+        ),
+    )
+
+    session_factory: async_sessionmaker[AsyncSession] = test_app.state.session_factory
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://testserver"
+    ) as client:
+        # Request with missing secret header
+        resp_missing = await client.post(
+            "/api/webhooks/tradingview",
+            json={"strategy": "model_blue", "trade_id": "T-DISABLED-1", "action": "OPEN"},
+        )
+        assert resp_missing.status_code == 202
+
+        # Request with wrong secret header
+        resp_wrong = await client.post(
+            "/api/webhooks/tradingview",
+            headers={"X-Webhook-Secret": "wrong-secret-token"},
+            json={"strategy": "model_blue", "trade_id": "T-DISABLED-2", "action": "OPEN"},
+        )
+        assert resp_wrong.status_code == 202
+
+    async with session_factory() as session:
+        result1 = await session.execute(
+            select(SignalJobModel).where(SignalJobModel.signal_id == "T-DISABLED-1")
+        )
+        assert result1.scalar_one_or_none() is not None
+
+        result2 = await session.execute(
+            select(SignalJobModel).where(SignalJobModel.signal_id == "T-DISABLED-2")
+        )
+        assert result2.scalar_one_or_none() is not None
+
+
+
 
 @pytest.mark.asyncio
 async def test_webhook_unauthorized_request_zero_db_writes(

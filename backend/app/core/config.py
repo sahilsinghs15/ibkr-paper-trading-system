@@ -66,6 +66,8 @@ class Settings(BaseSettings):
 
     # Webhook Security Settings
     webhook_auth_secret: str | None = None
+    webhook_auth_enabled: bool = True
+
 
 
     @property

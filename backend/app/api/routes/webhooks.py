@@ -36,8 +36,11 @@ def _save_raw_capture_file(capture_data: dict[str, Any], filename: str) -> None:
 def _verify_webhook_authentication(request: Request) -> None:
     """Validate webhook authentication secret from X-Webhook-Secret header using constant-time comparison."""
     settings = get_settings()
-    expected_secret = settings.webhook_auth_secret
+    if not settings.webhook_auth_enabled:
+        logger.info("Webhook authentication is disabled (WEBHOOK_AUTH_ENABLED=false)")
+        return
 
+    expected_secret = settings.webhook_auth_secret
     if expected_secret:
         incoming_secret = request.headers.get("X-Webhook-Secret")
         if not incoming_secret or not hmac.compare_digest(
@@ -48,6 +51,7 @@ def _verify_webhook_authentication(request: Request) -> None:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Unauthorized: Missing or invalid authentication secret.",
             )
+
 
 
 
