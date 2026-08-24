@@ -7,6 +7,7 @@
 ### Dependency injection
 
 - Wire long-lived services in `lifespan` on `app.state` (`session_factory`, `client`, `ibkr_adapter`, `oms`, `order_manager`, `worker_pool`).
+- There is **one** `TWSClient`. Do not construct another in a request handler or worker. A second client with the same `IBKR_CLIENT_ID` disconnects the first; an unpaced client bypasses `OrderSubmitPacer`.
 - Route deps use helpers such as `get_oms` in `app/api/deps.py`.
 - Do not construct a second OMS / OrderManager / worker pool inside a request handler.
 
@@ -41,6 +42,7 @@
 
 - Durable state → Postgres models / repositories.
 - Do not assume Redis is available on the main trading path (demo-only).
+- Run `app.main` as **one process** (do not `uvicorn --workers N` against the same Gateway). The live limiter is in-process (`OrderSubmitPacer`). Multiple workers each get a bucket and can exceed IB’s ~50 msg/sec. Target policy: [`backend-multi-gateway.md`](backend-multi-gateway.md).
 
 ### Concurrency / execution
 
@@ -65,6 +67,7 @@
 ## Documentation hygiene
 
 - Current facts live under `app/docs/`.
-- [`Execution_System_Architecture.md`](../../Execution_System_Architecture.md) is target design.
+- [`Execution_System_Architecture.md`](../../Execution_System_Architecture.md) is target design (parent dir, not this repo).
+- Multi-gateway / per-gateway rate-limit **target** (as-is vs plan): [`backend-multi-gateway.md`](backend-multi-gateway.md).
 - Postman guide and `DEVELOPER_EXECUTION_GUIDE.md` are historical — do not copy their endpoint lists into new docs or code comments as "implemented".
 - When implementing something listed in [`gaps.md`](gaps.md), update the relevant `app/docs/*.md` in the same change.

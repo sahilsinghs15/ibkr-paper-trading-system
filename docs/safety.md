@@ -71,4 +71,6 @@ Suggested retention is 14 days; run it from cron on long-lived hosts. `backend/d
 
 ## Submit pacing
 
-Production uses `OrderSubmitPacer(min_interval_sec=0.2)` on the IBKR adapter — all orders including kill-switch flatten share this minimum interval. `IBKRExecutionScheduler` priority queues are **not** wired in production.
+Production uses `OrderSubmitPacer(min_interval_sec=0.2)` on the IBKR adapter — all `placeOrder` calls including kill-switch flatten share this **process-global** minimum interval. It is not 50 msg/sec, not per account, not per Gateway (there is only one socket), and it does not cover `reqMktData`. `IBKRExecutionScheduler` priority queues are **not** wired in production.
+
+`main.py` may log that the adapter will auto-reconnect if the startup handshake fails. **That reconnect is not implemented** (`IBKRExecutionAdapter.submit_order` raises `ConnectionError`; `on_connection_closed` marks in-memory working orders `ERROR` without querying IB). Treat a dropped socket as operator action + restart until reconnect is built. See [`backend-multi-gateway.md`](backend-multi-gateway.md).

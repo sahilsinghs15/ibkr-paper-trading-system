@@ -41,6 +41,8 @@ Mounted in `create_app()`:
 
 Config validation errors → HTTP 400 with `AllocationConfigError` message in `detail`.
 
+Account create/patch fields: `name`, `ibkr_account`, `total_margin`, `enabled` (`schemas/config_schemas.py`). **No** gateway host, port, clientId, or binding. `ibkr_account` is the IB account string copied onto `IBOrder.account`, not a socket selector.
+
 Webhook HTTP **202 Accepted**. `status` values: `accepted`, `rejected` (invalid payload). Legacy inline path may return `rejected_by_rms`. Invalid JSON → HTTP 400.
 
 Global unhandled `Exception` → HTTP 500 `{"detail":"Internal server error. Please try again later."}`.
@@ -78,3 +80,4 @@ Set `DEMO_STREAM_HOST=0.0.0.0` to listen on all interfaces. Do not confuse with 
 
 - Kill switch endpoints: [`backend-kill-switch.md`](backend-kill-switch.md)
 - Execution settings: [`backend-rms-oms.md`](backend-rms-oms.md)
+- Gateway binding APIs: **not implemented** — [`backend-multi-gateway.md`](backend-multi-gateway.md)

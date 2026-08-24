@@ -22,7 +22,7 @@ app/
 │       ├── orders.py          # OMS order list/get/cancel
 │       └── config.py          # Account/allocation/limits/execution/kill-switch CRUD
 ├── broker/ibkr/
-│   ├── tws_client.py          # IBAPI TWS TCP client wrapper
+│   ├── tws_client.py          # IBAPI TWS TCP client wrapper (one instance in lifespan)
 │   └── scheduler.py           # Token-bucket rate limiter (tests only; not wired in main)
 ├── core/
 │   ├── config.py              # Settings (pydantic-settings)
@@ -93,13 +93,17 @@ Shutdown:
 | Attribute | Type | Role |
 |-----------|------|------|
 | `session_factory` | `AsyncSessionLocal` | DB sessions for routes/repos |
-| `client` | `TWSClient` | IBKR TCP transport |
-| `ibkr_adapter` | `IBKRExecutionAdapter` | placeOrder / cancel / fill callbacks |
+| `client` | `TWSClient` | **The** IBKR TCP transport — not a pool |
+| `ibkr_adapter` | `IBKRExecutionAdapter` | placeOrder / cancel / fill callbacks; one pacer |
 | `oms` | `OMSService` | In-memory order lifecycle |
 | `order_manager` | `OrderManager` | Pipeline facade |
 | `worker_pool` | `ExecutionWorkerPool` | Background job consumers |
 
 Kill-switch armed cache is **not** on `app.state`; it lives in `kill_switch.py` module memory and is rebuilt during `hydrate_runtime_from_db()`.
+
+## IB session (as-is)
+
+Lifespan constructs **one** `TWSClient` and **one** `IBKRExecutionAdapter` from `IBKR_HOST` / `IBKR_PORT` / `IBKR_CLIENT_ID`. Adding a second unpaced `TWSClient` in a route or worker would bypass `OrderSubmitPacer` and fight for `client_id`. Target N-Gateway pool: [`backend-multi-gateway.md`](backend-multi-gateway.md).
 
 ## Domain vs ORM
 
@@ -124,7 +128,8 @@ Kill-switch armed cache is **not** on `app.state`; it lives in `kill_switch.py` 
 | IBKR placeOrder | `oms/ibkr_adapter.py`, `broker/ibkr/tws_client.py` |
 | Submit pacing (production) | `oms/submit_pacer.py` (wired in `main.py`) |
 | Paper retry / square-off knobs | `oms/retry_policy.py`, `db/models/execution_settings.py`, config API |
-| Account routing | `accounts/router.py` |
+| Account routing (DB fan-out, not multi-Gateway) | `accounts/router.py` |
+| Multi-gateway target (not built) | [`backend-multi-gateway.md`](backend-multi-gateway.md) |
 | Instrument STK→CFD | `instruments/execution_override.py`, `resolver.py`, `cfd_discover.py` |
 | Config CRUD | `accounts/config_service.py`, `api/routes/config.py` |
 | Live PnL marks | `services/pnl.py` |

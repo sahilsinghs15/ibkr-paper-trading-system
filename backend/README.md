@@ -12,6 +12,7 @@ Key docs for backend work:
 - [`../docs/backend-concurrency.md`](../docs/backend-concurrency.md) — signal_jobs, workers, claims, recovery
 - [`../docs/backend-kill-switch.md`](../docs/backend-kill-switch.md) — emergency flatten
 - [`../docs/backend-execution.md`](../docs/backend-execution.md) — debug orders
+- [`../docs/backend-multi-gateway.md`](../docs/backend-multi-gateway.md) — as-is one socket vs target N Gateways / per-gateway limiter
 
 Do **not** use [`docs/DEVELOPER_EXECUTION_GUIDE.md`](docs/DEVELOPER_EXECUTION_GUIDE.md) or [`POSTMAN_API_TESTING_GUIDE.md`](POSTMAN_API_TESTING_GUIDE.md) as source of truth.
 

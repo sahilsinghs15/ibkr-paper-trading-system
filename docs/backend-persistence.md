@@ -8,7 +8,7 @@
 |-------|-------|------|
 | `signals` | `SignalModel` | `db/models/signal.py` |
 | `signal_jobs` | `SignalJobModel` | `db/models/signal.py` (not exported in `__init__.py`) |
-| `accounts` | `AccountModel` | `db/models/account.py` |
+| `accounts` | `AccountModel` | `db/models/account.py` | `id`, `name`, `ibkr_account`, `total_margin`, `enabled`. **No** gateway host/port/clientId. |
 | `strategies` | `StrategyModel` | `db/models/strategy.py` |
 | `allocations` | `AllocationModel` | `db/models/strategy.py` |
 | `per_symbol_limits` | `PerSymbolLimitModel` | `db/models/account.py` |
@@ -23,6 +23,8 @@
 | `kill_switch_operations` | `KillSwitchOperationModel` | `db/models/kill_switch.py` |
 
 There is **no** `signal_legs` table. Legs live in signal payload / pair columns on `signals` (and related persistence helpers), not a child table.
+
+There are **no** `gateways`, `gateway_clients`, or `account_gateway_bindings` tables. Multi-gateway mapping is target-only ([`backend-multi-gateway.md`](backend-multi-gateway.md)).
 
 ## Alembic revisions (16 files, HEAD `b6d8f0a2c147`)
 
@@ -85,5 +87,5 @@ For job/claim semantics see [`backend-concurrency.md`](backend-concurrency.md).
 
 ## Redis
 
-- **Main trading package `backend/app/`:** no `redis` imports (verified by search).
+- **Main trading package `backend/app/`:** no `redis` imports (verified by search). An in-process `OrderSubmitPacer` is correct **only** while a single process submits to IBKR. Multiple uvicorn workers would each have their own pacer (over-budget). Target limiter policy: [`backend-multi-gateway.md`](backend-multi-gateway.md).
 - **`demo_streaming/`:** Redis Streams for SSE (`demo_stream_name`, default `positions:stream`). Postgres is polled by `PositionBridge`; Redis fans out to `/demo/stream`.

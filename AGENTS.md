@@ -2,7 +2,7 @@
 
 **Verified from:** `backend/app/main.py`, `backend/app/api/routes/*`, `backend/app/core/config.py`, `backend/demo_streaming/*`, `frontend/src/*`.
 
-One FastAPI process ingests TradingView webhooks into a durable Postgres queue (`signal_jobs`), executes them via a 10-worker pool through Model Blue → RMS (checks 2/3/4/7/8) → basket OMS → IBKR TWS, with execution claims, crash recovery, and kill-switch support. The Vite React app under `frontend/` is a live PnL dashboard plus a **Settings** page for RMS limits and capital allocation. It is served by a separate demo SSE process on port **8010** (not by `app.main`).
+One FastAPI process ingests TradingView webhooks into a durable Postgres queue (`signal_jobs`), executes them via a 10-worker pool through Model Blue → RMS (checks 2/3/4/7/8) → basket OMS → IBKR TWS, with execution claims, crash recovery, and kill-switch support. Multi-account routing tags `ib_order.account` on **one** TWS/Gateway socket (`OrderSubmitPacer` 0.2s). N IB Gateways and per-gateway rate limits are **not** built — [`docs/backend-multi-gateway.md`](docs/backend-multi-gateway.md). The Vite React app under `frontend/` is a live PnL dashboard plus a **Settings** page for RMS limits and capital allocation. It is served by a separate demo SSE process on port **8010** (not by `app.main`).
 
 Do **not** treat [`../Execution_System_Architecture.md`](../Execution_System_Architecture.md) as current code. Do **not** use [`backend/POSTMAN_API_TESTING_GUIDE.md`](backend/POSTMAN_API_TESTING_GUIDE.md) as an API inventory (it documents endpoints that do not exist).
 
@@ -18,6 +18,7 @@ Do **not** treat [`../Execution_System_Architecture.md`](../Execution_System_Arc
 | Env / Settings fields | [`docs/backend-config.md`](docs/backend-config.md) |
 | Tables, repos, in-memory vs DB | [`docs/backend-persistence.md`](docs/backend-persistence.md) |
 | RMS checks / basket / TWS adapter | [`docs/backend-rms-oms.md`](docs/backend-rms-oms.md) |
+| Multi-account vs multi-gateway / rate limits | [`docs/backend-multi-gateway.md`](docs/backend-multi-gateway.md) |
 | pytest / ruff | [`docs/backend-testing.md`](docs/backend-testing.md) |
 | React PnL dashboard + demo UI | [`docs/frontend.md`](docs/frontend.md) |
 | How to add a route / DI rules | [`docs/conventions.md`](docs/conventions.md) |
@@ -57,7 +58,8 @@ Runtime logs for the main app: `/home/tradingapp/storage/logs/trading-YYYY-MM-DD
 - **Execution claims** are acquired after RMS + instrument resolve, before broker submit — the durable dedupe barrier across crashes/workers.
 - Kill switch **stays armed** after flatten completes until operator `POST .../kill-switch/clear`.
 - Paper basket retries only on IBKR ports `{7497, 4002}`. Live ports are **not** rejected for ordinary trading.
-- Production submit pacing is `OrderSubmitPacer(0.2s)` — not `IBKRExecutionScheduler` (tests-only).
+- Production submit pacing is `OrderSubmitPacer(0.2s)` — not `IBKRExecutionScheduler` (tests-only). One pacer, one socket, all accounts.
+- Multi-Gateway pool / per-gateway limiter / reconnect-on-drop: **not implemented**. Do not describe `ibkr_account` as a Gateway mapping.
 - Main app HTTP surface: health, webhook, orders, and **config CRUD** under `/api/v1/config/*`. No CORS, WebSocket, or static files on `app.main`.
 - Default IBKR port is `7497` (paper TWS).
 - There is **no** `BROKER_MODE` / MockBroker in `Settings`. Extra env keys are ignored (`extra="ignore"`).

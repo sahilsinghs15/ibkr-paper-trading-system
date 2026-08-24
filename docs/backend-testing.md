@@ -54,7 +54,7 @@ Dev extras: `httpx`, `mypy`, `pytest`, `pytest-asyncio`, `ruff` (`[project.optio
 | `test_market_data_pipeline.py` | Live PnL / market data |
 | `test_instrument_master_discover.py` | Discover script (mocked) |
 | `test_seed_fetcher.py` | NASDAQ seed fetcher fixtures |
-| `test_pacer.py` | RatePacer token bucket |
+| `test_pacer.py` | `scripts.instrument_master.pacer.RatePacer` (discover CLI) — **not** `OrderSubmitPacer` |
 | `test_kill_switch.py` | Kill switch service + EMERGENCY_FLATTEN RMS bypass |
 | `test_kill_switch_reconciliation_fix.py` | Kill switch position reconciliation |
 | `test_repair_historical_killswitch_positions.py` | Historical kill-switch repair script |

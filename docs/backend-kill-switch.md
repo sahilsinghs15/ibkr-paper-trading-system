@@ -99,7 +99,9 @@ Normal CLOSE signals from TradingView still go through full RMS evaluation.
 
 ## Submit pacing note
 
-Kill-switch flatten orders go through the same `OrderSubmitPacer(0.2s)` on `IBKRExecutionAdapter` as ordinary orders. `IBKRExecutionScheduler` priority 0 exists in `broker/ibkr/scheduler.py` but is **not wired** in production — do not assume emergency priority queueing.
+Kill-switch flatten orders go through the same `OrderSubmitPacer(0.2s)` on the **one** `IBKRExecutionAdapter` as ordinary orders. There is no emergency token reserve in production. `IBKRExecutionScheduler` priority 0 exists in `broker/ibkr/scheduler.py` but is **not wired**. Flatten also uses the same TWS socket; if that Gateway is down, flatten cannot fail over to another instance.
+
+Target: per-gateway limiter with a reserved emergency slice — [`backend-multi-gateway.md`](backend-multi-gateway.md) (not built).
 
 ## Events
 

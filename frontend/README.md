@@ -52,4 +52,5 @@ Keep `./ngrok http 8000` for TradingView only. Do not tunnel the dashboard throu
 | Package | Role |
 |---------|------|
 | `axios`, `zustand` | Snapshot + live state |
-| `@tanstack/react-query`, `react-router-dom`, `lightweight-charts`, `tailwindcss` | Declared; unused in this pass |
+| `@tanstack/react-query`, `react-router-dom` | Used (`Settings` + routes) |
+| `lightweight-charts`, `tailwindcss` | Declared; unused |

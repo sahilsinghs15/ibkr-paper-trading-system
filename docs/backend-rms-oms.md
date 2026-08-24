@@ -43,11 +43,14 @@ Also present: `rms/checks/base.py` (`BaseRMSCheck`).
 
 Both must remain; do not remove either without replacing its role.
 
-## Multi-account routing
+## Multi-account routing (as-is — PARTIAL)
 
-- `DatabaseStrategyAccountRouter` loads rows where `accounts.enabled`, `strategies.enabled`, and `allocations.enabled` are true for the incoming `strategy_id`.
-- Builds `AccountExecutionContext` with committed notional from margin × allocation and **per-account** `allocations.max_open_positions` (RMS check 7 cap).
-- Fan-out happens inside `OrderManager` (in-process concurrent tasks). There is **not** one OS process per IBKR account.
+This is **multi-account on one IB socket**, not multi-Gateway. Target N Gateways: [`backend-multi-gateway.md`](backend-multi-gateway.md).
+
+- `DatabaseStrategyAccountRouter` (`accounts/router.py`) loads rows where `accounts.enabled`, `strategies.enabled`, and `allocations.enabled` are true for the incoming `strategy_id`.
+- Builds `AccountExecutionContext` with committed notional from margin × allocation and **per-account** `allocations.max_open_positions` (RMS check 7 cap). Fields: `account_id`, `ibkr_account`, `committed_notional`, … — **no** host/port/clientId.
+- Fan-out: `OrderManager._fanout_accounts` (`asyncio.gather`). There is **not** one OS process per IBKR account and **not** one `TWSClient` per account.
+- Broker identity: `IBKRExecutionAdapter._build_ibkr_order` sets `ib_order.account = intent.ibkr_account`. That only works when the **connected Gateway login** is authorized for those account ids (same paper user or FA master). Independent IB logins need separate Gateway processes — **MISSING**.
 - `AccountStrategyConfigService` enforces allocation uniqueness / sum ≤ 1 for enabled allocations; mounted at `/api/v1/config/*`.
 - Symbol-limit writes call `OrderManager.reload_rms_limits()` so check 8 applies without restart.
 
@@ -93,9 +96,9 @@ Knobs in singleton `execution_settings` row; API at `GET/PATCH /api/v1/config/ex
 | `OMSService` | In-memory order lifecycle; `_orders` map; `_submitted_signals` dedup |
 | `IBKRExecutionAdapter` | Maps OMS orders ↔ IBKR contracts / `placeOrder` / cancels; sets `ib_order.account` from intent |
 | `TWSClient` | Sole broker transport under `app/broker/` (IBKR EClient/EWrapper) |
-| `OrderSubmitPacer` | **Production** pacing — min 0.2s between `placeOrder` calls (wired in `main.py`) |
+| `OrderSubmitPacer` | **Production** pacing — min 0.2s between `placeOrder` calls (wired in `main.py`). Process-local `asyncio.Lock`. Shared by **all** accounts and kill-switch flatten. Does **not** pace `reqMktData` / `reqContractDetails` / `cancelOrder`. Waits forever (no timeout, no reject). |
 
-There is **no** MockBroker class and **no** `BROKER_MODE` switch in `Settings`.
+There is **no** MockBroker class and **no** `BROKER_MODE` switch in `Settings`. **No** per-gateway limiter. **No** connection pool.
 
 ### Adapter invariants
 
@@ -103,9 +106,11 @@ There is **no** MockBroker class and **no** `BROKER_MODE` switch in `Settings`.
 - Never CFD→STK fallback
 - Paper STK→CFD override lives in `instruments/execution_override.py`, not in adapter/TWS/RMS
 
-### IBKRExecutionScheduler (tests-only)
+### IBKRExecutionScheduler (tests-only — ASPIRATIONAL shape)
 
-`broker/ibkr/scheduler.py` defines token-bucket priority scheduling (`PRIORITY_EMERGENCY_FLATTEN = 0`, etc.). It is **not wired** in `main.py` or the adapter. Only exercised in `tests/test_mft_concurrency_recovery.py`. Do not document it as live submit pacing.
+`broker/ibkr/scheduler.py` defines token-bucket priority scheduling (`PRIORITY_EMERGENCY_FLATTEN = 0`, etc.), comments Error 100 = 50 msg/sec, and splits 30/24/6 with emergency reserve. It is **not wired** in `main.py` or the adapter. Only exercised in `tests/test_mft_concurrency_recovery.py`. Do not document it as live submit pacing.
+
+Target: wire **one scheduler/limiter per Gateway instance**, not one global scheduler for N Gateways. See [`backend-multi-gateway.md`](backend-multi-gateway.md).
 
 ## Execution settings
 
@@ -138,7 +143,7 @@ There is **no** MockBroker class and **no** `BROKER_MODE` switch in `Settings`.
 4. Claim after RMS, before broker — see [`backend-concurrency.md`](backend-concurrency.md).
 5. Paper retries only on ports `{7497, 4002}`.
 6. Compensation / unwind failure → CRITICAL; reconcile before new OPENs.
-7. Single TWS socket — do not add unpaced burst submitters.
+7. Single TWS socket today — do not add unpaced burst submitters. A second `TWSClient` with the same `client_id` will disconnect the first. N-Gateway pool is target-only.
 8. Prefer N-leg `OrderIntent.legs` model throughout OMS/RMS.
 
 ## Related tests
