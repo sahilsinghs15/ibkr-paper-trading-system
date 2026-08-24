@@ -1,6 +1,7 @@
 """TradingView Webhook router definition."""
 
 import asyncio
+import hmac
 import json
 import logging
 import uuid
@@ -10,10 +11,10 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 
+from app.core.config import get_settings
 from app.core.logger import bind_log_context, clear_log_context
 from app.db.repositories.signal_repository import SignalJobRepository
 from app.schemas.webhook import TradingViewWebhookResponse
-from app.services.strategies.inbound import parse_tradingview_payload
 from app.services.worker_pool import compute_idempotency_key
 
 logger = logging.getLogger(__name__)
@@ -32,15 +33,36 @@ def _save_raw_capture_file(capture_data: dict[str, Any], filename: str) -> None:
     file_path.write_text(json.dumps(capture_data, indent=2), encoding="utf-8")
 
 
+def _verify_webhook_authentication(request: Request) -> None:
+    """Validate webhook authentication secret from X-Webhook-Secret header using constant-time comparison."""
+    settings = get_settings()
+    expected_secret = settings.webhook_auth_secret
+
+    if expected_secret:
+        incoming_secret = request.headers.get("X-Webhook-Secret")
+        if not incoming_secret or not hmac.compare_digest(
+            expected_secret.encode("utf-8"), incoming_secret.encode("utf-8")
+        ):
+            logger.warning("Unauthorized webhook request: missing or invalid X-Webhook-Secret header")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: Missing or invalid authentication secret.",
+            )
+
+
+
 @router.post(
     "/tradingview",
     response_model=TradingViewWebhookResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Receive TradingView Webhook",
-    description="Fast ingestion endpoint to validate, capture, and durably queue TradingView alerts.",
+    description="Fast, secure ingestion endpoint to authenticate and durably queue TradingView alerts.",
 )
 async def receive_tradingview_webhook(request: Request) -> TradingViewWebhookResponse:
-    """Ingest, validate, safely log, locally capture, and persist a TradingView JSON alert payload into PostgreSQL durable queue."""
+    """Ingest, authenticate, validate JSON, compute idempotency key, and persist into PostgreSQL queue."""
+    # Enforce authentication BEFORE any database access or payload processing
+    _verify_webhook_authentication(request)
+
     body_bytes = await request.body()
     raw_body = body_bytes.decode("utf-8", errors="replace")
 
@@ -95,104 +117,60 @@ async def _process_tradingview_webhook(
         "parsed_json": payload,
     }
 
-    timestamp_str = utc_now.strftime("%Y%m%d_%H%M%S_%f")
-    filename = f"webhook_{timestamp_str}_{request_id}.json"
-
-    # Non-blocking disk persistence off the event loop
-    await asyncio.to_thread(_save_raw_capture_file, capture_data, filename)
-
     strategy_id, signal_id, trade_id, idempotency_key = compute_idempotency_key(payload)
     bind_log_context(signal_id=signal_id, trade_id=trade_id or signal_id)
 
-    order_manager = getattr(request.app.state, "order_manager", None)
     session_factory = getattr(request.app.state, "session_factory", None)
-    if session_factory is None and order_manager is not None:
-        session_factory = getattr(order_manager, "_session_factory", None)
+    if session_factory is None:
+        order_manager = getattr(request.app.state, "order_manager", None)
+        if order_manager is not None:
+            session_factory = getattr(order_manager, "_session_factory", None)
 
-    # Validate signal payload structure via strategy parser
-    try:
-        if order_manager is not None:
-            domain_signal = order_manager.parse_inbound_payload(
-                payload,
-                timestamp=utc_now,
-                request_id=request_id,
-                capture_data=capture_data,
-            )
-        else:
-            domain_signal = parse_tradingview_payload(
-                payload,
-                timestamp=utc_now,
-                request_id=request_id,
-                capture_data=capture_data,
-            )
-    except ValueError as val_err:
-        logger.warning("Rejected invalid TradingView payload: %s", val_err)
-        if order_manager is not None:
-            await order_manager.record_rejected_inbound(
-                payload, capture_data=capture_data, reason=str(val_err)
-            )
-        return TradingViewWebhookResponse(
-            status="rejected",
-            source="tradingview",
-            signal_id=signal_id,
-            request_id=request_id,
+    if session_factory is None:
+        logger.error("Database session factory unavailable; cannot persist signal job")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="System unavailable: Database session factory not configured.",
         )
 
-    job_id_str = None
-    if session_factory is not None:
-        try:
-            async with session_factory() as session, session.begin():
-                job, created = await SignalJobRepository(session).create_job_if_not_exists(
-                    signal_id=domain_signal.signal_id,
-                    strategy_id=domain_signal.strategy_id or strategy_id,
-                    trade_id=domain_signal.trade_id or trade_id,
-                    idempotency_key=idempotency_key,
-                    raw_payload=payload,
-                    capture_data=capture_data,
-                    correlation_id=request_id,
-                )
-                job_id_str = str(job.job_id)
-                if not created:
-                    logger.info(
-                        "Duplicate webhook received for idempotency_key=%s signal_id=%s (job_id=%s)",
-                        idempotency_key,
-                        domain_signal.signal_id,
-                        job_id_str,
-                    )
-        except Exception:
-            logger.exception("Failed to persist durable signal job into PostgreSQL queue")
-
-    # If legacy in-line execution mode is required (e.g. worker pool not running and order_manager present)
-    worker_pool = getattr(request.app.state, "worker_pool", None)
-    if worker_pool is None and order_manager is not None and session_factory is None:
-        try:
-            execution = await order_manager.process_signal_execution(domain_signal)
-            if execution is not None and getattr(execution, "all_rejected", False) and not execution.orders:
-                return TradingViewWebhookResponse(
-                    status="rejected_by_rms",
-                    source="tradingview",
-                    signal_id=domain_signal.signal_id,
-                    request_id=request_id,
-                )
-        except ValueError:
-            return TradingViewWebhookResponse(
-                status="rejected_by_rms",
-                source="tradingview",
-                signal_id=domain_signal.signal_id,
-                request_id=request_id,
+    try:
+        async with session_factory() as session, session.begin():
+            job, created = await SignalJobRepository(session).create_job_if_not_exists(
+                signal_id=signal_id,
+                strategy_id=strategy_id,
+                trade_id=trade_id,
+                idempotency_key=idempotency_key,
+                raw_payload=payload,
+                capture_data=capture_data,
+                correlation_id=request_id,
             )
+            job_id_str = str(job.job_id)
+            if not created:
+                logger.info(
+                    "Duplicate webhook received for idempotency_key=%s signal_id=%s (job_id=%s)",
+                    idempotency_key,
+                    signal_id,
+                    job_id_str,
+                )
+    except Exception as exc:
+        logger.exception("Failed to persist durable signal job into PostgreSQL queue")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to durably persist signal job.",
+        ) from exc
 
     logger.info(
         "Webhook HTTP 202 accepted: signal_id=%s job_id=%s request_id=%s",
-        domain_signal.signal_id,
+        signal_id,
         job_id_str,
         request_id,
     )
     return TradingViewWebhookResponse(
         status="accepted",
         source="tradingview",
-        signal_id=domain_signal.signal_id,
+        signal_id=signal_id,
         job_id=job_id_str,
         request_id=request_id,
     )
+
 

@@ -4,9 +4,11 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.core.config import get_settings
 from app.db.models.account import AccountModel
+
 from app.db.models.kill_switch import (
     KILL_SWITCH_STATUS_ACTIVATING,
 )
@@ -26,9 +28,13 @@ from app.services.kill_switch import KillSwitchService, is_account_kill_switch_a
 
 @pytest.fixture
 async def session_factory():
-    from app.db.session import AsyncSessionLocal, engine
-    yield AsyncSessionLocal
+    settings = get_settings()
+    engine = create_async_engine(settings.database_url)
+    sf = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False, autoflush=False)
+    yield sf
     await engine.dispose()
+
+
 
 
 @pytest.mark.asyncio
@@ -71,10 +77,11 @@ async def test_kill_switch_idempotency_and_active_flag(session_factory: async_se
     ibkr_acc = f"DU{test_id}"
 
     async with session_factory() as session, session.begin():
-        acc = AccountModel(name="KillSwitchTestAcc", ibkr_account=ibkr_acc, total_margin=Decimal("100000.00"))
+        acc = AccountModel(name=f"KillSwitchTestAcc-{test_id}", ibkr_account=ibkr_acc, total_margin=Decimal("100000.00"))
         session.add(acc)
         await session.flush()
         acc_id = acc.id
+
 
     svc = KillSwitchService(session_factory=session_factory)
 

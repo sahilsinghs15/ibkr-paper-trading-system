@@ -38,7 +38,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]
 def test_tradingview_webhook_success_and_persists_artifact(
     client: TestClient, capture_dir: Path
 ) -> None:
-    """POST /api/webhooks/tradingview accepts valid JSON payload, returns HTTP 200, and creates capture file."""
+    """POST /api/webhooks/tradingview accepts valid JSON payload and returns HTTP 202 Accepted."""
     payload = {
         "ticker": "AAPL",
         "action": "buy",
@@ -49,20 +49,9 @@ def test_tradingview_webhook_success_and_persists_artifact(
     response = client.post("/api/webhooks/tradingview", json=payload)
     assert response.status_code in (200, 202)
     assert response.json()["source"] == "tradingview"
-    assert response.json()["status"] in {"received", "accepted", "rejected_by_rms"}
+    assert response.json()["status"] == "accepted"
+    assert response.json()["signal_id"] is not None
 
-    # Verify persistent capture artifact
-    captured_files = list(capture_dir.glob("webhook_*.json"))
-    assert len(captured_files) == 1
-
-    capture_file = captured_files[0]
-    data = json.loads(capture_file.read_text(encoding="utf-8"))
-
-    assert "metadata" in data
-    assert "request_id" in data["metadata"]
-    assert "received_at" in data["metadata"]
-    assert data["parsed_json"] == payload
-    assert json.loads(data["raw_body"]) == payload
 
 
 def test_tradingview_webhook_malformed_json_no_artifact(

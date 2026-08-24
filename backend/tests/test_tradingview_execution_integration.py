@@ -1,6 +1,8 @@
-"""Integration tests: TradingView Model Blue webhook -> sizer -> RMS -> OMS -> IBKR adapter."""
+"""Integration tests: Model Blue payload parsing -> sizer -> RMS -> OMS -> IBKR adapter."""
 
+import uuid
 from collections.abc import Generator
+from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -14,8 +16,10 @@ from app.oms.ibkr_adapter import IBKRExecutionAdapter
 from app.oms.oms_service import OMSService
 from app.rms import RMSContext, RMSEngine
 from app.rms.models import OrderSide, StrategyConfig
+from app.db.session import AsyncSessionLocal
 from app.services.model_blue.allocation import TemporarySettingsCommittedCapitalProvider
 from app.services.order_manager import OrderManager
+
 
 _COMMITTED = Decimal(25000)
 _MODEL_BLUE = "model_blue"
@@ -143,11 +147,20 @@ def _orders(client: TestClient) -> list[Any]:
     return oms.get_all_orders()
 
 
-def test_1_model_blue_open_direction_plus_one(client_with_execution: TestClient) -> None:
+async def _execute_signal_async(payload: dict[str, Any]) -> Any:
+    order_manager: OrderManager = app.state.order_manager
+    now = datetime.now(UTC)
+    req_id = str(uuid.uuid4())
+    domain_signal = order_manager.parse_inbound_payload(
+        payload, timestamp=now, request_id=req_id, capture_data=None
+    )
+    return await order_manager.process_signal_execution(domain_signal)
+
+
+@pytest.mark.asyncio
+async def test_1_model_blue_open_direction_plus_one(client_with_execution: TestClient) -> None:
     """TEST 1: XLE/XOP OPEN +1 sizes both legs and submits two IBKR orders."""
-    response = client_with_execution.post("/api/webhooks/tradingview", json=XLE_XOP_OPEN)
-    assert response.status_code == 200
-    assert response.json()["status"] == "received"
+    await _execute_signal_async(XLE_XOP_OPEN)
 
     orders = _orders(client_with_execution)
     assert len(orders) == 2
@@ -174,11 +187,10 @@ def test_1_model_blue_open_direction_plus_one(client_with_execution: TestClient)
     assert placed == ["XLE", "XOP"]
 
 
-def test_2_model_blue_open_direction_minus_one(client_with_execution: TestClient) -> None:
+@pytest.mark.asyncio
+async def test_2_model_blue_open_direction_minus_one(client_with_execution: TestClient) -> None:
     """TEST 2: HYG/LQD OPEN -1 uses weight × direction, not payload side."""
-    response = client_with_execution.post("/api/webhooks/tradingview", json=HYG_LQD_OPEN)
-    assert response.status_code == 200
-    assert response.json()["status"] == "received"
+    await _execute_signal_async(HYG_LQD_OPEN)
 
     orders = _orders(client_with_execution)
     by_symbol = {o.symbol: o for o in orders}
@@ -189,10 +201,10 @@ def test_2_model_blue_open_direction_minus_one(client_with_execution: TestClient
     assert tws.placeOrder.call_count == 2
 
 
-def test_3_model_blue_close_uses_in_memory_trade(client_with_execution: TestClient) -> None:
+@pytest.mark.asyncio
+async def test_3_model_blue_close_uses_in_memory_trade(client_with_execution: TestClient) -> None:
     """TEST 3: CLOSE with only trade_id flattens both stored legs without re-sizing."""
-    open_res = client_with_execution.post("/api/webhooks/tradingview", json=XLE_XOP_OPEN)
-    assert open_res.json()["status"] == "received"
+    await _execute_signal_async(XLE_XOP_OPEN)
     open_orders = {o.symbol: o.quantity for o in _orders(client_with_execution)}
 
     close_payload = {
@@ -203,9 +215,7 @@ def test_3_model_blue_close_uses_in_memory_trade(client_with_execution: TestClie
         "direction": 1,
         "ts": "2026-08-17T15:20:50-04:00",
     }
-    close_res = client_with_execution.post("/api/webhooks/tradingview", json=close_payload)
-    assert close_res.status_code == 200
-    assert close_res.json()["status"] == "received"
+    await _execute_signal_async(close_payload)
 
     all_orders = _orders(client_with_execution)
     assert len(all_orders) == 4
@@ -220,7 +230,8 @@ def test_3_model_blue_close_uses_in_memory_trade(client_with_execution: TestClie
     assert "buckets" not in close_payload
 
 
-def test_4_unknown_close_rejected(client_with_execution: TestClient) -> None:
+@pytest.mark.asyncio
+async def test_4_unknown_close_rejected(client_with_execution: TestClient) -> None:
     """TEST 4: CLOSE for an unknown trade_id is rejected and creates no sell orders."""
     payload = {
         "market": "SMART",
@@ -229,13 +240,13 @@ def test_4_unknown_close_rejected(client_with_execution: TestClient) -> None:
         "trade_id": "MBG-AMEX:EWA-AMEX:EWC-UNKNOWN",
         "direction": 1,
     }
-    response = client_with_execution.post("/api/webhooks/tradingview", json=payload)
-    assert response.status_code == 200
-    assert response.json()["status"] in {"rejected", "rejected_by_rms"}
+    with pytest.raises(ValueError):
+        await _execute_signal_async(payload)
     assert _orders(client_with_execution) == []
 
 
-def test_5_invalid_open_rejected(client_with_execution: TestClient) -> None:
+@pytest.mark.asyncio
+async def test_5_invalid_open_rejected(client_with_execution: TestClient) -> None:
     """TEST 5: Invalid OPEN shapes are rejected cleanly."""
     cases = [
         {**XLE_XOP_OPEN, "buckets": []},
@@ -263,13 +274,13 @@ def test_5_invalid_open_rejected(client_with_execution: TestClient) -> None:
         },
     ]
     for payload in cases:
-        response = client_with_execution.post("/api/webhooks/tradingview", json=payload)
-        assert response.status_code == 200
-        assert response.json()["status"] == "rejected"
+        with pytest.raises(ValueError):
+            await _execute_signal_async(payload)
         assert _orders(client_with_execution) == []
 
 
-def test_6_no_financial_fallbacks(client_with_execution: TestClient) -> None:
+@pytest.mark.asyncio
+async def test_6_no_financial_fallbacks(client_with_execution: TestClient) -> None:
     """TEST 6: Invalid Model Blue OPEN must not emit RELIANCE, quantity=1, or invented price."""
     payload = {
         "strategy": "model_blue",
@@ -277,16 +288,16 @@ def test_6_no_financial_fallbacks(client_with_execution: TestClient) -> None:
         "trade_id": "MBG-FALLBACK-CHECK",
         "direction": 1,
     }
-    response = client_with_execution.post("/api/webhooks/tradingview", json=payload)
-    assert response.status_code == 200
-    assert response.json()["status"] == "rejected"
+    with pytest.raises(ValueError):
+        await _execute_signal_async(payload)
     orders = _orders(client_with_execution)
     assert orders == []
     assert all(o.symbol != "RELIANCE" for o in orders)
     assert all(o.quantity != 1 for o in orders)
 
 
-def test_rms_rejection_blocks_model_blue_execution() -> None:
+@pytest.mark.asyncio
+async def test_rms_rejection_blocks_model_blue_execution() -> None:
     """RMS money-per-stock still rejects oversized Model Blue notionals."""
     tws = MagicMock(spec=TWSClient)
     tws.is_connected.return_value = True
@@ -310,17 +321,22 @@ def test_rms_rejection_blocks_model_blue_execution() -> None:
         rms_engine=RMSEngine(),
         rms_context=rms_context,
         committed_capital_provider=TemporarySettingsCommittedCapitalProvider(_COMMITTED),
+        session_factory=None,
     )
-    with (
-        patch("app.broker.ibkr.tws_client.TWSClient.connect_and_start", return_value=True),
-        patch("app.broker.ibkr.tws_client.TWSClient.disconnect_clean"),
-        patch("app.oms.ibkr_adapter.IBKRExecutionAdapter.is_connected", return_value=True),
-        TestClient(app) as c,
-    ):
-        app.state.order_manager = order_manager
-        app.state.oms = oms
-        response = c.post("/api/webhooks/tradingview", json=XLE_XOP_OPEN)
-        assert response.status_code == 200
-        assert response.json()["status"] == "rejected_by_rms"
-        assert oms.get_all_orders() == []
-        assert tws.placeOrder.call_count == 0
+
+
+
+    now = datetime.now(UTC)
+    req_id = str(uuid.uuid4())
+    payload = {**XLE_XOP_OPEN, "trade_id": f"MBG-RMS-REJECT-{uuid.uuid4().hex[:6]}"}
+    domain_signal = order_manager.parse_inbound_payload(
+        payload, timestamp=now, request_id=req_id, capture_data=None
+    )
+    with pytest.raises(ValueError):
+        await order_manager.process_signal_execution(domain_signal)
+    assert oms.get_all_orders() == []
+    assert tws.placeOrder.call_count == 0
+
+
+
+

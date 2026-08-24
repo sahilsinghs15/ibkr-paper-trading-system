@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     # Disable with PAPER_EXECUTE_STK_AS_CFD=false.
     paper_execute_stk_as_cfd: bool = True
 
+    # Webhook Security Settings
+    webhook_auth_secret: str | None = None
+
+
     @property
     def candle_timeframe_minutes(self) -> int:
         """Parse candle_timeframe string to get the timeframe in minutes."""
