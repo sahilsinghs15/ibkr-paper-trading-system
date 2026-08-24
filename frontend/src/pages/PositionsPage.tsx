@@ -14,7 +14,7 @@ export function PositionsPage() {
   const fetchSignals = useSignalStore((s) => s.fetchSignals)
 
   useEffect(() => {
-    void fetchSignals({ page: 1, account: cleanAccount })
+    void fetchSignals({ account: cleanAccount })
   }, [cleanAccount, fetchSignals])
 
   return (

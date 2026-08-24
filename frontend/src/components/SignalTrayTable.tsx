@@ -224,27 +224,27 @@ function buildUnifiedTimeline(sig: SignalItem): TimelineItem[] {
 }
 
 export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
-  const signals = useSignalStore((s) => s.signals)
-  const isLoading = useSignalStore((s) => s.isLoading)
-  const page = useSignalStore((s) => s.page)
-  const pageSize = useSignalStore((s) => s.pageSize)
-  const total = useSignalStore((s) => s.total)
-  const totalPages = useSignalStore((s) => s.totalPages)
+  const signals = useSignalStore((s) => s.traySignals)
+  const isLoading = useSignalStore((s) => s.trayLoading)
+  const page = useSignalStore((s) => s.trayPage)
+  const pageSize = useSignalStore((s) => s.trayPageSize)
+  const total = useSignalStore((s) => s.trayTotal)
+  const totalPages = useSignalStore((s) => s.trayTotalPages)
   const counts = useSignalStore((s) => s.counts)
-  const fetchSignals = useSignalStore((s) => s.fetchSignals)
-  const setPage = useSignalStore((s) => s.setPage)
-  const storeSetStatusFilter = useSignalStore((s) => s.setStatusFilter)
+  const activeStatus = useSignalStore((s) => s.trayStatusFilter)
+  const fetchTraySignals = useSignalStore((s) => s.fetchTraySignals)
+  const setPage = useSignalStore((s) => s.setTrayPage)
+  const setStatusFilter = useSignalStore((s) => s.setTrayStatusFilter)
 
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
 
-  const [activeStatus, setActiveStatus] = useState<string>('ALL')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [soundOn, setSoundOn] = useState(() => isSoundEnabled())
 
   useEffect(() => {
-    fetchSignals({ page: 1, account: cleanFilter })
-  }, [cleanFilter, fetchSignals])
+    void fetchTraySignals({ page: 1, account: cleanFilter })
+  }, [cleanFilter, fetchTraySignals])
 
   const handleToggleSound = () => {
     unlockAudioContext()
@@ -253,8 +253,7 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
   }
 
   const handleFilterClick = (status: string) => {
-    setActiveStatus(status)
-    storeSetStatusFilter(status, cleanFilter)
+    void setStatusFilter(status, cleanFilter)
   }
 
   const toggleExpand = (idKey: string) => {
@@ -284,9 +283,9 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
             type="button"
             className={`signal-filter-btn ${activeStatus === 'ALL' ? 'active' : ''}`}
             onClick={() => handleFilterClick('ALL')}
-            aria-label={`All Signals (${total})`}
+            aria-label={`All Signals (${counts.total})`}
           >
-            ALL ({total})
+            ALL ({counts.total})
           </button>
           <button
             type="button"

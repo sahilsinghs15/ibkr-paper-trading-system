@@ -19,6 +19,7 @@ async function loadSnapshot(
   const signalState = useSignalStore.getState()
   if (signalState.accountFilter) {
     void signalState.fetchSignals({ account: signalState.accountFilter })
+    void signalState.fetchTraySignals({ account: signalState.accountFilter })
   }
   clearActive()
   const openRows = openRes.data.positions || []

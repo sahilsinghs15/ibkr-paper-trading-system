@@ -113,19 +113,34 @@ const EMPTY_COUNTS: SignalCounts = {
   square_off: 0,
 }
 
-interface SignalState {
+interface SignalPageResult {
   signals: SignalItem[]
-  isLoading: boolean
   page: number
   pageSize: number
   total: number
   totalPages: number
-  statusFilter: string
+  counts: SignalCounts
+}
+
+interface SignalState {
+  // Shared source of truth: account-scoped, never status-filtered. Used by Signal Monitor.
+  signals: SignalItem[]
+  isLoading: boolean
+  pageSize: number
   accountFilter: string
   counts: SignalCounts
+  // Signal Tray has independent pagination + status filtering over the same API/live events.
+  traySignals: SignalItem[]
+  trayLoading: boolean
+  trayPage: number
+  trayPageSize: number
+  trayTotal: number
+  trayTotalPages: number
+  trayStatusFilter: string
   fetchSignals: (opts?: { page?: number; status?: string; account?: string }) => Promise<void>
-  setPage: (page: number, account?: string) => Promise<void>
-  setStatusFilter: (status: string, account?: string) => Promise<void>
+  fetchTraySignals: (opts?: { page?: number; status?: string; account?: string }) => Promise<void>
+  setTrayPage: (page: number, account?: string) => Promise<void>
+  setTrayStatusFilter: (status: string, account?: string) => Promise<void>
   handleSignalEvent: (evt: Record<string, unknown>) => void
 }
 
@@ -166,6 +181,63 @@ function statusMatchesFilter(
   if (!filter || filter === 'ALL') return true
   if (filter.toUpperCase() === 'REJECTED') return status === 'REJECTED' || status === 'SQUARE-OFF'
   return status === filter.toUpperCase()
+}
+
+function findSignalIndex(list: SignalItem[], evtOrSig: { signal_id?: unknown; id?: unknown }): number {
+  const sid = String(evtOrSig.signal_id || '')
+  const id = asNumber(evtOrSig.id, 0)
+  return list.findIndex((s) => (sid && s.signal_id === sid) || (id > 0 && s.id === id))
+}
+
+const seenSignalKeys = new Set<string>()
+let monitorFetchGen = 0
+let trayFetchGen = 0
+let resyncTimer: ReturnType<typeof setTimeout> | null = null
+
+function rememberSignalKeys(signals: SignalItem[]): void {
+  for (const s of signals) {
+    if (s.signal_id) seenSignalKeys.add(String(s.signal_id))
+    if (s.id) seenSignalKeys.add(String(s.id))
+  }
+}
+
+function sortSignalsByReceived(signals: SignalItem[]): SignalItem[] {
+  return [...signals].sort((a, b) => {
+    const ta = a.received_at ? Date.parse(a.received_at) : 0
+    const tb = b.received_at ? Date.parse(b.received_at) : 0
+    return tb - ta
+  })
+}
+
+async function fetchSignalPage(args: {
+  page: number
+  pageSize: number
+  status: string
+  account: string
+}): Promise<SignalPageResult | null> {
+  const accountParam = args.account
+    ? `&ibkr_account=${encodeURIComponent(args.account)}`
+    : ''
+  const url = `/demo/signals?page=${args.page}&page_size=${args.pageSize}&status=${encodeURIComponent(args.status)}${accountParam}`
+  const res = await fetch(url)
+  if (!res.ok) return null
+  const data = await res.json()
+  if (!Array.isArray(data.signals)) return null
+  rememberSignalKeys(data.signals)
+  const serverTotal =
+    typeof data.filtered_total === 'number'
+      ? data.filtered_total
+      : typeof data.total === 'number'
+        ? data.total
+        : data.signals.length
+  return {
+    signals: sortSignalsByReceived(data.signals as SignalItem[]),
+    page: data.page || args.page,
+    pageSize: data.page_size || args.pageSize,
+    total: serverTotal,
+    totalPages: data.total_pages || 1,
+    counts: data.counts || EMPTY_COUNTS,
+  }
 }
 
 function eventToSignal(evt: Record<string, unknown>, existing?: SignalItem): SignalItem {
@@ -228,156 +300,203 @@ function eventToSignal(evt: Record<string, unknown>, existing?: SignalItem): Sig
   }
 }
 
-// In-memory set of signal keys already seen during this browser session
-const seenSignalKeys = new Set<string>()
-let fetchGeneration = 0
-let resyncTimer: ReturnType<typeof setTimeout> | null = null
-
 function scheduleCountsResync(): void {
   if (resyncTimer) return
   resyncTimer = setTimeout(() => {
     resyncTimer = null
-    void useSignalStore.getState().fetchSignals()
+    const store = useSignalStore.getState()
+    void store.fetchSignals()
+    void store.fetchTraySignals()
   }, 3000)
+}
+
+const ACCOUNT_RESET = {
+  signals: [] as SignalItem[],
+  counts: { ...EMPTY_COUNTS },
+  traySignals: [] as SignalItem[],
+  trayPage: 1,
+  trayTotal: 0,
+  trayTotalPages: 1,
 }
 
 export const useSignalStore = create<SignalState>((set, get) => ({
   signals: [],
   isLoading: false,
-  page: 1,
   pageSize: 100,
-  total: 0,
-  totalPages: 1,
-  statusFilter: 'ALL',
   accountFilter: '',
   counts: { ...EMPTY_COUNTS },
+  traySignals: [],
+  trayLoading: false,
+  trayPage: 1,
+  trayPageSize: 100,
+  trayTotal: 0,
+  trayTotalPages: 1,
+  trayStatusFilter: 'ALL',
 
-  setPage: async (page: number, account?: string) => {
-    const { fetchSignals } = get()
-    await fetchSignals({ page, account })
+  setTrayPage: async (page: number, account?: string) => {
+    await get().fetchTraySignals({ page, account })
   },
 
-  setStatusFilter: async (status: string, account?: string) => {
-    const { fetchSignals } = get()
-    await fetchSignals({ page: 1, status, account })
+  setTrayStatusFilter: async (status: string, account?: string) => {
+    await get().fetchTraySignals({ page: 1, status, account })
   },
 
   fetchSignals: async (opts) => {
     const state = get()
-    const targetPage = opts?.page ?? state.page
-    const targetStatus = opts?.status !== undefined ? opts.status : state.statusFilter
     const targetAccount =
       opts?.account !== undefined ? (opts.account || '').trim().toUpperCase() : state.accountFilter
-    const gen = ++fetchGeneration
     const accountChanged = targetAccount !== state.accountFilter
-
-    if (accountChanged) seenSignalKeys.clear()
+    if (accountChanged) {
+      seenSignalKeys.clear()
+    }
+    const gen = ++monitorFetchGen
 
     set({
       isLoading: true,
       accountFilter: targetAccount,
-      ...(accountChanged
-        ? { signals: [], counts: { ...EMPTY_COUNTS }, page: 1, total: 0, totalPages: 1 }
-        : {}),
+      ...(accountChanged ? ACCOUNT_RESET : {}),
     })
 
     try {
-      const accountParam = targetAccount
-        ? `&ibkr_account=${encodeURIComponent(targetAccount)}`
-        : ''
-      const url = `/demo/signals?page=${targetPage}&page_size=${state.pageSize}&status=${targetStatus}${accountParam}`
-      const res = await fetch(url)
-      if (gen !== fetchGeneration) return
-      if (res.ok) {
-        const data = await res.json()
-        if (Array.isArray(data.signals)) {
-          for (const s of data.signals) {
-            if (s.signal_id) seenSignalKeys.add(String(s.signal_id))
-            if (s.id) seenSignalKeys.add(String(s.id))
-          }
-
-          const pageSignals = [...data.signals] as SignalItem[]
-          pageSignals.sort((a, b) => {
-            const ta = a.received_at ? Date.parse(a.received_at) : 0
-            const tb = b.received_at ? Date.parse(b.received_at) : 0
-            return tb - ta
-          })
-
-          const serverTotal =
-            typeof data.filtered_total === 'number'
-              ? data.filtered_total
-              : typeof data.total === 'number'
-                ? data.total
-                : pageSignals.length
-
-          set({
-            signals: pageSignals,
-            page: data.page || targetPage,
-            pageSize: data.page_size || state.pageSize,
-            total: serverTotal,
-            totalPages: data.total_pages || 1,
-            statusFilter: targetStatus,
-            accountFilter: targetAccount,
-            counts: data.counts || EMPTY_COUNTS,
-            isLoading: false,
-          })
-          return
-        }
+      const page = await fetchSignalPage({
+        page: 1,
+        pageSize: state.pageSize,
+        status: 'ALL',
+        account: targetAccount,
+      })
+      if (gen !== monitorFetchGen) return
+      if (get().accountFilter !== targetAccount) return
+      if (page) {
+        set({
+          signals: page.signals,
+          pageSize: page.pageSize,
+          accountFilter: targetAccount,
+          counts: page.counts,
+          isLoading: false,
+        })
+        return
       }
     } catch {
       /* ignore fetch error */
     }
-    if (gen === fetchGeneration) set({ isLoading: false })
+    if (gen === monitorFetchGen) set({ isLoading: false })
+  },
+
+  fetchTraySignals: async (opts) => {
+    const state = get()
+    const targetPage = opts?.page ?? state.trayPage
+    const targetStatus = opts?.status !== undefined ? opts.status : state.trayStatusFilter
+    const targetAccount =
+      opts?.account !== undefined ? (opts.account || '').trim().toUpperCase() : state.accountFilter
+    const accountChanged = targetAccount !== state.accountFilter
+    if (accountChanged) {
+      seenSignalKeys.clear()
+    }
+    const gen = ++trayFetchGen
+
+    set({
+      trayLoading: true,
+      trayStatusFilter: targetStatus,
+      accountFilter: targetAccount,
+      ...(accountChanged
+        ? { traySignals: [], trayPage: 1, trayTotal: 0, trayTotalPages: 1 }
+        : {}),
+    })
+
+    try {
+      const page = await fetchSignalPage({
+        page: targetPage,
+        pageSize: state.trayPageSize,
+        status: targetStatus,
+        account: targetAccount,
+      })
+      if (gen !== trayFetchGen) return
+      if (get().accountFilter !== targetAccount) return
+      if (page) {
+        set({
+          traySignals: page.signals,
+          trayPage: page.page,
+          trayPageSize: page.pageSize,
+          trayTotal: page.total,
+          trayTotalPages: page.totalPages,
+          trayStatusFilter: targetStatus,
+          accountFilter: targetAccount,
+          counts: page.counts,
+          trayLoading: false,
+        })
+        return
+      }
+    } catch {
+      /* ignore fetch error */
+    }
+    if (gen === trayFetchGen) set({ trayLoading: false })
   },
 
   handleSignalEvent: (evt) => {
     if (!evt || evt.event !== 'SIGNAL_RECEIVED' || !evt.signal_id) return
 
     set((state) => {
-      const existingIdx = state.signals.findIndex(
-        (s) =>
-          s.signal_id === String(evt.signal_id) ||
-          (asNumber(evt.id, 0) > 0 && s.id === asNumber(evt.id, 0)),
-      )
-      const existing = existingIdx >= 0 ? state.signals[existingIdx] : undefined
-      const newSig = eventToSignal(evt, existing)
+      const monitorIdx = findSignalIndex(state.signals, evt)
+      const trayIdx = findSignalIndex(state.traySignals, evt)
+      const existing =
+        (monitorIdx >= 0 ? state.signals[monitorIdx] : undefined) ||
+        (trayIdx >= 0 ? state.traySignals[trayIdx] : undefined)
+      const incoming = eventToSignal(evt, existing)
 
-      if (!accountMatches(newSig.ibkr_account, state.accountFilter)) {
+      if (!accountMatches(incoming.ibkr_account, state.accountFilter)) {
         return state
       }
 
-      const isKnownBySignalId = seenSignalKeys.has(newSig.signal_id)
-      const isKnownById = newSig.id > 0 && seenSignalKeys.has(String(newSig.id))
-      const isGenuinelyNew = !isKnownBySignalId && !isKnownById && existingIdx < 0
+      const isKnownBySignalId = seenSignalKeys.has(incoming.signal_id)
+      const isKnownById = incoming.id > 0 && seenSignalKeys.has(String(incoming.id))
+      const isGenuinelyNew = !isKnownBySignalId && !isKnownById && monitorIdx < 0 && trayIdx < 0
 
-      if (newSig.signal_id) seenSignalKeys.add(newSig.signal_id)
-      if (newSig.id > 0) seenSignalKeys.add(String(newSig.id))
+      if (incoming.signal_id) seenSignalKeys.add(incoming.signal_id)
+      if (incoming.id > 0) seenSignalKeys.add(String(incoming.id))
 
-      if (existingIdx >= 0 && existing) {
-        const prevStatus = getCanonicalStatus(existing)
-        const merged = { ...existing, ...newSig }
-        const nextStatus = getCanonicalStatus(merged)
-        const updated = [...state.signals]
-        updated[existingIdx] = merged
-        if (prevStatus !== nextStatus) scheduleCountsResync()
-        return { signals: updated }
-      }
+      const merged = existing ? { ...existing, ...incoming } : incoming
+      const prevStatus = existing ? getCanonicalStatus(existing) : null
+      const nextStatus = getCanonicalStatus(merged)
 
       if (isGenuinelyNew) {
-        playSignalNotificationSound(newSig.ibkr_account)
+        playSignalNotificationSound(merged.ibkr_account)
+        scheduleCountsResync()
+      } else if (prevStatus && prevStatus !== nextStatus) {
         scheduleCountsResync()
       }
 
-      const nextStatus = getCanonicalStatus(newSig)
-      const canShowOnPage =
-        state.page === 1 && isGenuinelyNew && statusMatchesFilter(nextStatus, state.statusFilter)
-      if (canShowOnPage) {
-        return {
-          signals: [newSig, ...state.signals].slice(0, state.pageSize),
-        }
+      let signals = state.signals
+      if (monitorIdx >= 0) {
+        signals = [...state.signals]
+        signals[monitorIdx] = merged
+      } else if (isGenuinelyNew) {
+        signals = [merged, ...state.signals].slice(0, state.pageSize)
       }
 
-      return state
+      const matchesTray = statusMatchesFilter(nextStatus, state.trayStatusFilter)
+      const previouslyMatchedTray = prevStatus
+        ? statusMatchesFilter(prevStatus, state.trayStatusFilter)
+        : false
+      let traySignals = state.traySignals
+      if (trayIdx >= 0) {
+        if (matchesTray) {
+          traySignals = [...state.traySignals]
+          traySignals[trayIdx] = merged
+        } else {
+          traySignals = state.traySignals.filter((_, i) => i !== trayIdx)
+        }
+      } else if (
+        matchesTray &&
+        state.trayPage === 1 &&
+        (isGenuinelyNew || (monitorIdx >= 0 && !previouslyMatchedTray))
+      ) {
+        traySignals = [merged, ...state.traySignals].slice(0, state.trayPageSize)
+      }
+
+      if (signals === state.signals && traySignals === state.traySignals) {
+        return state
+      }
+      return { signals, traySignals }
     })
   },
 }))

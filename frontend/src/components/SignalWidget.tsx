@@ -43,7 +43,6 @@ export function SignalWidget({
   onViewFullTray?: () => void
 }) {
   const signals = useSignalStore((s) => s.signals)
-  const counts = useSignalStore((s) => s.counts)
   const streamState = usePnlStore((s) => s.streamState)
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
@@ -61,6 +60,15 @@ export function SignalWidget({
   const processingSignals = useMemo(() => scopedSignals.filter(isProcessingSig), [scopedSignals])
   const acceptedSignals = useMemo(() => scopedSignals.filter(isAcceptedSig), [scopedSignals])
   const rejectedSignals = useMemo(() => scopedSignals.filter(isRejectedSig), [scopedSignals])
+
+  const monitorCounts = useMemo(
+    () => ({
+      processing: processingSignals.length,
+      accepted: acceptedSignals.length,
+      rejected: rejectedSignals.length,
+    }),
+    [processingSignals, acceptedSignals, rejectedSignals],
+  )
 
   const filteredSignals = useMemo(() => {
     if (statusFilter === 'ACCEPTED') return acceptedSignals
@@ -121,25 +129,25 @@ export function SignalWidget({
           type="button"
           className={`signal-filter-btn amber ${statusFilter === 'PROCESSING' ? 'active' : ''}`}
           onClick={() => setStatusFilter('PROCESSING')}
-          aria-label={`Processing (${counts.processing})`}
+          aria-label={`Processing (${monitorCounts.processing})`}
         >
-          <span className="spin-icon" aria-hidden="true">⟳</span> PROCESSING ({counts.processing})
+          <span className="spin-icon" aria-hidden="true">⟳</span> PROCESSING ({monitorCounts.processing})
         </button>
         <button
           type="button"
           className={`signal-filter-btn green ${statusFilter === 'ACCEPTED' ? 'active' : ''}`}
           onClick={() => setStatusFilter('ACCEPTED')}
-          aria-label={`Accepted (${counts.accepted})`}
+          aria-label={`Accepted (${monitorCounts.accepted})`}
         >
-          ✓ ACCEPTED ({counts.accepted})
+          ✓ ACCEPTED ({monitorCounts.accepted})
         </button>
         <button
           type="button"
           className={`signal-filter-btn red ${statusFilter === 'REJECTED' ? 'active' : ''}`}
           onClick={() => setStatusFilter('REJECTED')}
-          aria-label={`Rejected (${counts.rejected})`}
+          aria-label={`Rejected (${monitorCounts.rejected})`}
         >
-          ✕ REJECTED ({counts.rejected})
+          ✕ REJECTED ({monitorCounts.rejected})
         </button>
       </div>
 
