@@ -18,6 +18,9 @@ class AccountModel(Base):
     ibkr_account: Mapped[str] = mapped_column(String, nullable=False)
     total_margin: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    default_symbol_limit: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 4), nullable=True, default=Decimal("10000000.0000")
+    )
 
     __table_args__ = (
         CheckConstraint("total_margin > 0", name="ck_accounts_total_margin_positive"),

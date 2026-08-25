@@ -5,12 +5,15 @@ import {
   deleteSymbolLimit,
   fetchAccountByIdentifier,
   fetchExecutionSettings,
+  fetchKillSwitchStatus,
   patchAccount,
   patchAllocation,
   patchExecutionSettings,
   putSymbolLimit,
+  updateDefaultSymbolLimit,
 } from '../api/configApi'
 import { KillSwitchModal } from '../components/KillSwitchModal'
+import { StartAgainModal } from '../components/StartAgainModal'
 import { usePnlStore } from '../store/pnlStore'
 import type { ExecutionSettings } from '../types/config'
 import {
@@ -227,7 +230,7 @@ function ExecutionSettingsCard() {
 
 export function AccountSettingsPage() {
   const { ibkrAccount } = useParams<{ ibkrAccount: string }>()
-  const cleanAccount = (ibkrAccount || 'DUR919062').trim().toUpperCase()
+  const cleanAccount = (ibkrAccount || 'Unknown').trim().toUpperCase()
 
   const queryClient = useQueryClient()
   const { data: account, isLoading, isError, error, refetch } = useQuery({
@@ -235,14 +238,24 @@ export function AccountSettingsPage() {
     queryFn: () => fetchAccountByIdentifier(cleanAccount),
   })
 
+  const { data: killSwitchData } = useQuery({
+    queryKey: ['config', 'kill-switch', account?.id],
+    queryFn: () => (account ? fetchKillSwitchStatus(account.id) : Promise.resolve(null)),
+    enabled: !!account,
+  })
+
+  const isKillSwitchActive = killSwitchData?.kill_switch_active ?? account?.kill_switch_active ?? false
+
   const [margin, setMargin] = useState('')
   const [enabled, setEnabled] = useState(true)
+  const [defaultLimitInput, setDefaultLimitInput] = useState('10000000')
   const [drafts, setDrafts] = useState<Record<number, AllocationDraft>>({})
   const [newSymbol, setNewSymbol] = useState('')
   const [newLimit, setNewLimit] = useState('')
   const [message, setMessage] = useState<string | null>(null)
   const [localError, setLocalError] = useState<string | null>(null)
   const [isKillSwitchOpen, setIsKillSwitchOpen] = useState(false)
+  const [isStartAgainOpen, setIsStartAgainOpen] = useState(false)
 
   // Query active store positions count for Kill Switch modal
   const activeMap = usePnlStore((s) => s.active)
@@ -264,6 +277,9 @@ export function AccountSettingsPage() {
     if (account) {
       setMargin(cleanNumberInput(account.total_margin))
       setEnabled(account.enabled)
+      if (account.default_symbol_limit !== undefined && account.default_symbol_limit !== null) {
+        setDefaultLimitInput(cleanNumberInput(String(account.default_symbol_limit)))
+      }
       setDrafts(
         Object.fromEntries(
           account.allocations.map((a) => [
@@ -352,6 +368,27 @@ export function AccountSettingsPage() {
     },
   })
 
+  const defaultLimitMutation = useMutation({
+    mutationFn: (limitStr: string) => {
+      if (!account) throw new Error('Account not loaded')
+      const val = parseFloat(limitStr)
+      if (isNaN(val) || val <= 0) {
+        throw new Error('Default symbol limit must be greater than 0.')
+      }
+      return updateDefaultSymbolLimit(account.id, val)
+    },
+    onSuccess: () => {
+      setMessage('Default symbol limit saved.')
+      setLocalError(null)
+      void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
+      void queryClient.invalidateQueries({ queryKey: ['config', 'accounts'] })
+    },
+    onError: (err: unknown) => {
+      setLocalError(extractError(err))
+      setMessage(null)
+    },
+  })
+
   function updateDraft(id: number, patch: Partial<AllocationDraft>) {
     setDrafts((prev) => ({
       ...prev,
@@ -379,9 +416,16 @@ export function AccountSettingsPage() {
             <span>·</span>
             <span className="paper-pill">PAPER</span>
             {account ? (
-              <span className={`account-status-pill ${enabled ? 'enabled' : 'disabled'}`}>
-                ● {enabled ? 'ENABLED' : 'DISABLED'}
-              </span>
+              <>
+                <span className={`account-status-pill ${enabled ? 'enabled' : 'disabled'}`}>
+                  ● {enabled ? 'ENABLED' : 'DISABLED'}
+                </span>
+                {isKillSwitchActive ? (
+                  <span className="account-status-pill disabled" style={{ background: '#7f1d1d', color: '#fca5a5' }}>
+                    ⛔ STOPPED (KILL SWITCH)
+                  </span>
+                ) : null}
+              </>
             ) : null}
           </div>
         </div>
@@ -547,19 +591,54 @@ export function AccountSettingsPage() {
             <section className="settings-card">
               <div className="settings-block">
                 <div className="settings-block-h">
-                  <h2>PER-SYMBOL MONEY LIMITS</h2>
+                  <h2>SYMBOL RISK LIMITS</h2>
                 </div>
                 <p className="field-hint">
-                  Limits max notional across all positions for a specific symbol on account{' '}
-                  <span className="mono">{cleanAccount}</span>.
+                  Configure the global default symbol limit for account{' '}
+                  <span className="mono">{cleanAccount}</span> and optional specific symbol overrides.
                 </p>
 
-                <div style={{ marginTop: 12, overflowX: 'auto' }}>
+                {/* Default Symbol Limit Block */}
+                <div style={{ marginTop: 12, padding: '12px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <label className="field" style={{ marginBottom: 8 }}>
+                    <span style={{ fontWeight: 600, color: 'var(--amber)' }}>DEFAULT SYMBOL LIMIT (FALLBACK)</span>
+                    <div className="money-field">
+                      <span className="money-prefix">$</span>
+                      <input
+                        type="number"
+                        min="1"
+                        step="100000"
+                        value={defaultLimitInput}
+                        onChange={(e) => setDefaultLimitInput(e.target.value)}
+                      />
+                    </div>
+                  </label>
+                  <p className="field-hint dim" style={{ marginBottom: 8 }}>
+                    Automatically applies to any symbol without a specific override below.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn primary"
+                    disabled={!defaultLimitInput.trim() || defaultLimitMutation.isPending}
+                    onClick={() => defaultLimitMutation.mutate(defaultLimitInput.trim())}
+                  >
+                    Save Default Limit
+                  </button>
+                </div>
+
+                <div style={{ marginTop: 16 }}>
+                  <h3 style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.05em', marginBottom: 6 }}>
+                    SPECIFIC SYMBOL OVERRIDES
+                  </h3>
+                </div>
+
+                <div style={{ marginTop: 6, overflowX: 'auto' }}>
                   <table>
                     <thead>
                       <tr>
                         <th>SYMBOL</th>
-                        <th>MONEY LIMIT</th>
+                        <th>EFFECTIVE LIMIT</th>
+                        <th>TYPE</th>
                         <th style={{ textAlign: 'right' }}>ACTION</th>
                       </tr>
                     </thead>
@@ -568,6 +647,11 @@ export function AccountSettingsPage() {
                         <tr key={lim.symbol}>
                           <td className="mono bold">{lim.symbol}</td>
                           <td className="mono">{fmtUsd(lim.money_limit)}</td>
+                          <td>
+                            <span style={{ fontSize: '10px', background: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa', padding: '2px 6px', borderRadius: '4px', fontWeight: 600 }}>
+                              SPECIFIC OVERRIDE
+                            </span>
+                          </td>
                           <td style={{ textAlign: 'right' }}>
                             <button
                               type="button"
@@ -582,8 +666,8 @@ export function AccountSettingsPage() {
                       ))}
                       {account.symbol_limits.length === 0 ? (
                         <tr>
-                          <td colSpan={3} className="empty">
-                            No symbol limits configured.
+                          <td colSpan={4} className="empty">
+                            No specific overrides. All symbols currently fall back to the Default Limit ({fmtUsd(account.default_symbol_limit || 10000000)}).
                           </td>
                         </tr>
                       ) : null}
@@ -639,12 +723,43 @@ export function AccountSettingsPage() {
                 <div className="settings-block-h">
                   <h2>EMERGENCY / KILL SWITCH</h2>
                 </div>
-                <p className="field-hint" style={{ color: 'var(--ink)' }}>
-                  Close every currently open position for account{' '}
-                  <span className="mono bold">{cleanAccount}</span>.
-                </p>
 
-                <div style={{ marginTop: 12 }}>
+                {isKillSwitchActive ? (
+                  <div
+                    className="killswitch-stopped-banner"
+                    style={{
+                      background: '#3b1219',
+                      border: '1px solid #7f1d1d',
+                      padding: '12px 16px',
+                      borderRadius: '6px',
+                      marginBottom: 12,
+                    }}
+                  >
+                    <strong style={{ color: '#f87171', fontSize: '13px', display: 'block', marginBottom: 4 }}>
+                      ⛔ STOPPED BY KILL SWITCH
+                    </strong>
+                    <p className="field-hint" style={{ color: '#fca5a5', margin: 0 }}>
+                      This account is currently blocked from receiving or processing new opening trading signals.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="field-hint" style={{ color: 'var(--ink)' }}>
+                    Close every currently open position for account{' '}
+                    <span className="mono bold">{cleanAccount}</span>.
+                  </p>
+                )}
+
+                <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                  {isKillSwitchActive ? (
+                    <button
+                      type="button"
+                      className="btn primary"
+                      style={{ padding: '10px 16px', fontSize: '11px', background: '#16a34a', borderColor: '#15803d' }}
+                      onClick={() => setIsStartAgainOpen(true)}
+                    >
+                      ▶ START AGAIN
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className="btn danger"
@@ -664,18 +779,34 @@ export function AccountSettingsPage() {
       {localError ? <p className="settings-msg err">{localError}</p> : null}
 
       {account ? (
-        <KillSwitchModal
-          isOpen={isKillSwitchOpen}
-          accountId={account.id}
-          ibkrAccount={account.ibkr_account}
-          openCount={accountOpenPositionsCount}
-          onClose={() => setIsKillSwitchOpen(false)}
-          onSuccess={(closedCount) => {
-            setMessage(`Kill Switch executed: squared off ${closedCount} position(s).`)
-            setLocalError(null)
-            void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
-          }}
-        />
+        <>
+          <KillSwitchModal
+            isOpen={isKillSwitchOpen}
+            accountId={account.id}
+            ibkrAccount={account.ibkr_account}
+            openCount={accountOpenPositionsCount}
+            onClose={() => setIsKillSwitchOpen(false)}
+            onSuccess={(closedCount) => {
+              setMessage(`Kill Switch executed: squared off ${closedCount} position(s).`)
+              setLocalError(null)
+              void queryClient.invalidateQueries({ queryKey: ['config', 'kill-switch', account.id] })
+              void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
+            }}
+          />
+          <StartAgainModal
+            isOpen={isStartAgainOpen}
+            accountId={account.id}
+            ibkrAccount={account.ibkr_account}
+            onClose={() => setIsStartAgainOpen(false)}
+            onSuccess={() => {
+              setMessage(`Account execution state changed back to ACTIVE. Account is allowed to receive trading signals again.`)
+              setLocalError(null)
+              void queryClient.invalidateQueries({ queryKey: ['config', 'kill-switch', account.id] })
+              void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
+              void queryClient.invalidateQueries({ queryKey: ['config', 'accounts'] })
+            }}
+          />
+        </>
       ) : null}
     </main>
   )

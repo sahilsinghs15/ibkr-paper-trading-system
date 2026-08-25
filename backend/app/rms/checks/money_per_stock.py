@@ -54,6 +54,8 @@ class MoneyPerStockCheck(BaseRMSCheck):
             account_limit = None
             if intent.account_id is not None:
                 account_limit = context.per_symbol_limits.get((intent.account_id, symbol))
+                if account_limit is None:
+                    account_limit = context.default_symbol_limits.get(intent.account_id)
             limit_per_symbol = account_limit if account_limit is not None else strategy_limit
             if limit_per_symbol is None:
                 continue

@@ -6,8 +6,7 @@ execution separation, and concurrent signal burst stress performance.
 
 import asyncio
 import time
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI

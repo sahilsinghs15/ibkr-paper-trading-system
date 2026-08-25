@@ -21,6 +21,7 @@ from app.schemas.config_schemas import (
     AccountDeleteCheckResponse,
     AccountsConfigResponse,
     AllocationConfigSchema,
+    ClosePairResponse,
     CreateAccountRequest,
     CreateAllocationRequest,
     ExecutionSettingsSchema,
@@ -29,6 +30,7 @@ from app.schemas.config_schemas import (
     PatchAccountRequest,
     PatchAllocationRequest,
     PatchExecutionSettingsRequest,
+    PutDefaultSymbolLimitRequest,
     PutSymbolLimitRequest,
     SquareOffResponse,
     SymbolLimitSchema,
@@ -75,6 +77,8 @@ async def list_accounts_config(
         limits_by_account.setdefault(limit.account_id, []).append(limit)
 
     payload: list[AccountConfigSchema] = []
+    from app.services.kill_switch import is_account_kill_switch_active
+
     for account in accounts:
         payload.append(
             AccountConfigSchema(
@@ -83,6 +87,8 @@ async def list_accounts_config(
                 ibkr_account=account.ibkr_account,
                 total_margin=account.total_margin,
                 enabled=account.enabled,
+                default_symbol_limit=account.default_symbol_limit,
+                kill_switch_active=is_account_kill_switch_active(account.id),
                 allocations=[
                     AllocationConfigSchema.model_validate(a)
                     for a in allocs_by_account.get(account.id, [])
@@ -127,12 +133,16 @@ async def get_account_by_identifier(
         )
     ).scalars().all()
 
+    from app.services.kill_switch import is_account_kill_switch_active
+
     return AccountConfigSchema(
         id=account.id,
         name=account.name,
         ibkr_account=account.ibkr_account,
         total_margin=account.total_margin,
         enabled=account.enabled,
+        default_symbol_limit=account.default_symbol_limit,
+        kill_switch_active=is_account_kill_switch_active(account.id),
         allocations=[AllocationConfigSchema.model_validate(a) for a in allocations],
         symbol_limits=[SymbolLimitSchema.model_validate(l) for l in limits],
     )
@@ -231,13 +241,47 @@ async def clear_account_kill_switch_endpoint(
 )
 async def get_account_kill_switch_status(
     account_id: int,
+    session: AsyncSession = Depends(get_db_session),
 ) -> KillSwitchStatusResponse:
+    svc = AccountStrategyConfigService(session)
+    account = await svc.get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
     from app.services.kill_switch import is_account_kill_switch_active
 
     return KillSwitchStatusResponse(
         account_id=account_id,
         kill_switch_active=is_account_kill_switch_active(account_id),
     )
+
+
+@router.post(
+    "/accounts/{account_id}/positions/{trade_id}/close",
+    response_model=ClosePairResponse,
+    summary="Close a single selected open position/pair for an account",
+)
+async def close_selected_pair_endpoint(
+    account_id: int,
+    trade_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+) -> ClosePairResponse:
+    """Close only the selected open pair without affecting other positions or activating the global Kill Switch."""
+    order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory is None:
+        from app.db.session import AsyncSessionLocal
+
+        session_factory = AsyncSessionLocal
+
+    from app.services.position_close_service import SinglePairCloseService
+
+    close_svc = SinglePairCloseService(
+        session_factory=session_factory,
+        order_manager=order_manager,
+    )
+    return await close_svc.close_pair(account_id=account_id, trade_id=trade_id)
 
 
 @router.post(
@@ -257,18 +301,20 @@ async def create_account(
             ibkr_account=body.ibkr_account,
             total_margin=body.total_margin,
             enabled=body.enabled,
+            default_symbol_limit=body.default_symbol_limit,
         )
         await session.commit()
     except AllocationConfigError as exc:
         await session.rollback()
         raise _config_error(exc) from exc
     logger.info(
-        "Config POST account id=%s name=%s ibkr=%s margin=%s enabled=%s",
+        "Config POST account id=%s name=%s ibkr=%s margin=%s enabled=%s default_limit=%s",
         account.id,
         account.name,
         account.ibkr_account,
         account.total_margin,
         account.enabled,
+        account.default_symbol_limit,
     )
     return AccountConfigSchema(
         id=account.id,
@@ -276,6 +322,7 @@ async def create_account(
         ibkr_account=account.ibkr_account,
         total_margin=account.total_margin,
         enabled=account.enabled,
+        default_symbol_limit=account.default_symbol_limit,
         allocations=[],
         symbol_limits=[],
     )
@@ -290,6 +337,7 @@ async def patch_account(
     account_id: int,
     body: PatchAccountRequest,
     session: AsyncSession = Depends(get_db_session),
+    request: Request = None,
 ) -> AccountConfigSchema:
     svc = AccountStrategyConfigService(session)
     account = await svc.get_account(account_id)
@@ -300,6 +348,7 @@ async def patch_account(
         and body.ibkr_account is None
         and body.total_margin is None
         and body.enabled is None
+        and body.default_symbol_limit is None
     ):
         raise HTTPException(status_code=400, detail="No fields to update.")
     try:
@@ -309,18 +358,24 @@ async def patch_account(
             ibkr_account=body.ibkr_account,
             total_margin=body.total_margin,
             enabled=body.enabled,
+            default_symbol_limit=body.default_symbol_limit,
         )
         await session.commit()
     except AllocationConfigError as exc:
         await session.rollback()
         raise _config_error(exc) from exc
+
+    if request is not None and getattr(request.app.state, "order_manager", None) is not None:
+        await request.app.state.order_manager.reload_rms_limits()
+
     logger.info(
-        "Config PATCH account id=%s name=%s ibkr=%s margin=%s enabled=%s",
+        "Config PATCH account id=%s name=%s ibkr=%s margin=%s enabled=%s default_limit=%s",
         account_id,
         body.name,
         body.ibkr_account,
         body.total_margin,
         body.enabled,
+        body.default_symbol_limit,
     )
     allocations = (
         await session.execute(
@@ -332,12 +387,16 @@ async def patch_account(
             select(PerSymbolLimitModel).where(PerSymbolLimitModel.account_id == account_id)
         )
     ).scalars().all()
+    from app.services.kill_switch import is_account_kill_switch_active
+
     return AccountConfigSchema(
         id=account.id,
         name=account.name,
         ibkr_account=account.ibkr_account,
         total_margin=account.total_margin,
         enabled=account.enabled,
+        default_symbol_limit=account.default_symbol_limit,
+        kill_switch_active=is_account_kill_switch_active(account.id),
         allocations=[AllocationConfigSchema.model_validate(a) for a in allocations],
         symbol_limits=[SymbolLimitSchema.model_validate(l) for l in limits],
     )
@@ -393,6 +452,9 @@ async def check_account_deletable_api(
     session: AsyncSession = Depends(get_db_session),
 ) -> AccountDeleteCheckResponse:
     svc = AccountStrategyConfigService(session)
+    account = await svc.get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
     can_del, reason = await svc.check_account_deletable(account_id)
     history = await svc.has_trading_history(account_id) if not can_del else False
     return AccountDeleteCheckResponse(
@@ -409,15 +471,28 @@ async def check_account_deletable_api(
 )
 async def delete_account_api(
     account_id: int,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> None:
     svc = AccountStrategyConfigService(session)
+    account = await svc.get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
     try:
         await svc.delete_account(account_id)
         await session.commit()
     except AllocationConfigError as exc:
         await session.rollback()
         raise _config_error(exc) from exc
+
+    order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
+    if order_manager is not None:
+        await order_manager.reload_rms_limits()
+
+    from app.services.kill_switch import _KILL_SWITCH_ACTIVE_ACCOUNTS
+
+    _KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
+
     logger.info("Config DELETE account id=%s", account_id)
 
 
@@ -493,6 +568,59 @@ async def put_symbol_limit(
         body.money_limit,
     )
     return SymbolLimitSchema.model_validate(row)
+
+
+@router.put(
+    "/accounts/{account_id}/default-symbol-limit",
+    response_model=AccountConfigSchema,
+    summary="Update default symbol money limit for account",
+)
+async def put_default_symbol_limit(
+    account_id: int,
+    body: PutDefaultSymbolLimitRequest,
+    session: AsyncSession = Depends(get_db_session),
+    order_manager: OrderManager = Depends(get_order_manager),
+) -> AccountConfigSchema:
+    svc = AccountStrategyConfigService(session)
+    account = await svc.get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+    try:
+        await svc.update_account(account, default_symbol_limit=body.default_symbol_limit)
+        await session.commit()
+    except AllocationConfigError as exc:
+        await session.rollback()
+        raise _config_error(exc) from exc
+
+    await order_manager.reload_rms_limits()
+    logger.info(
+        "Config PUT default symbol limit account=%s limit=%s",
+        account_id,
+        body.default_symbol_limit,
+    )
+    allocations = (
+        await session.execute(
+            select(AllocationModel).where(AllocationModel.account_id == account_id)
+        )
+    ).scalars().all()
+    limits = (
+        await session.execute(
+            select(PerSymbolLimitModel).where(PerSymbolLimitModel.account_id == account_id)
+        )
+    ).scalars().all()
+    from app.services.kill_switch import is_account_kill_switch_active
+
+    return AccountConfigSchema(
+        id=account.id,
+        name=account.name,
+        ibkr_account=account.ibkr_account,
+        total_margin=account.total_margin,
+        enabled=account.enabled,
+        default_symbol_limit=account.default_symbol_limit,
+        kill_switch_active=is_account_kill_switch_active(account.id),
+        allocations=[AllocationConfigSchema.model_validate(a) for a in allocations],
+        symbol_limits=[SymbolLimitSchema.model_validate(l) for l in limits],
+    )
 
 
 @router.delete(

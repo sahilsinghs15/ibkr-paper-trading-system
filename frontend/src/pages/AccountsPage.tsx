@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import {
@@ -162,7 +162,7 @@ function EditAccountModal({
   const [hasHistory, setHasHistory] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  useState(() => {
+  useEffect(() => {
     if (account) {
       setName(account.name)
       setIbkrAccount(account.ibkr_account)
@@ -173,7 +173,7 @@ function EditAccountModal({
         .then((res) => setHasHistory(res.has_history))
         .catch(() => setHasHistory(false))
     }
-  })
+  }, [account])
 
   const mutation = useMutation({
     mutationFn: () => {
@@ -417,7 +417,7 @@ function DeleteAccountModal({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  useState(() => {
+  useEffect(() => {
     if (account) {
       setLoading(true)
       setError(null)
@@ -426,7 +426,7 @@ function DeleteAccountModal({
         .catch((err) => setError(extractError(err)))
         .finally(() => setLoading(false))
     }
-  })
+  }, [account])
 
   const deleteMutation = useMutation({
     mutationFn: () => {

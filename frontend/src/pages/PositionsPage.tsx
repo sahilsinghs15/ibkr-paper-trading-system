@@ -9,7 +9,7 @@ import { useSignalStore } from '../store/signalStore'
 
 export function PositionsPage() {
   const { ibkrAccount } = useParams<{ ibkrAccount: string }>()
-  const cleanAccount = ibkrAccount ? ibkrAccount.trim().toUpperCase() : 'DUR919062'
+  const cleanAccount = ibkrAccount ? ibkrAccount.trim().toUpperCase() : 'Unknown'
   const [activeTab, setActiveTab] = useState<'signals' | 'open' | 'closed'>('open')
   const fetchSignals = useSignalStore((s) => s.fetchSignals)
 

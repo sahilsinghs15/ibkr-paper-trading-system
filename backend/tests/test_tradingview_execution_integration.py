@@ -16,10 +16,8 @@ from app.oms.ibkr_adapter import IBKRExecutionAdapter
 from app.oms.oms_service import OMSService
 from app.rms import RMSContext, RMSEngine
 from app.rms.models import OrderSide, StrategyConfig
-from app.db.session import AsyncSessionLocal
 from app.services.model_blue.allocation import TemporarySettingsCommittedCapitalProvider
 from app.services.order_manager import OrderManager
-
 
 _COMMITTED = Decimal(25000)
 _MODEL_BLUE = "model_blue"

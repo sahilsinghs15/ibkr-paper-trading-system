@@ -1,6 +1,5 @@
 """TradingView Webhook router definition."""
 
-import asyncio
 import hmac
 import json
 import logging

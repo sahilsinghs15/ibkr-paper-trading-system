@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.account import AccountModel, PerSymbolLimitModel
 from app.db.models.execution_settings import ExecutionSettingsModel
+from app.db.models.kill_switch import KillSwitchOperationModel
 from app.db.models.strategy import AllocationModel, StrategyModel
 from app.oms.retry_policy import ExecutionRetryPolicy
 
@@ -122,6 +123,7 @@ class AccountStrategyConfigService:
         ibkr_account: str,
         total_margin: Decimal,
         enabled: bool = True,
+        default_symbol_limit: Decimal | None = Decimal("10000000.00"),
     ) -> AccountModel:
         clean_name = name.strip()
         clean_ibkr = ibkr_account.strip().upper()
@@ -131,6 +133,8 @@ class AccountStrategyConfigService:
             raise AllocationConfigError("INVALID_IBKR_ACCOUNT: IBKR account identifier required.")
         if total_margin <= ZERO:
             raise AllocationConfigError("INVALID_TOTAL_MARGIN: total_margin must be greater than 0.")
+        if default_symbol_limit is not None and default_symbol_limit <= ZERO:
+            raise AllocationConfigError("INVALID_DEFAULT_SYMBOL_LIMIT: default_symbol_limit must be greater than 0.")
 
         existing = (
             await self._session.execute(
@@ -147,6 +151,7 @@ class AccountStrategyConfigService:
             ibkr_account=clean_ibkr,
             total_margin=total_margin,
             enabled=enabled,
+            default_symbol_limit=default_symbol_limit,
         )
         self._session.add(row)
         await self._session.flush()
@@ -204,6 +209,14 @@ class AccountStrategyConfigService:
         for lim in limits:
             await self._session.delete(lim)
 
+        ks_ops = (
+            await self._session.execute(
+                select(KillSwitchOperationModel).where(KillSwitchOperationModel.account_id == account_id)
+            )
+        ).scalars().all()
+        for ks_op in ks_ops:
+            await self._session.delete(ks_op)
+
         await self._session.delete(account)
         await self._session.flush()
 
@@ -215,6 +228,7 @@ class AccountStrategyConfigService:
         ibkr_account: str | None = None,
         total_margin: Decimal | None = None,
         enabled: bool | None = None,
+        default_symbol_limit: Decimal | None = None,
     ) -> AccountModel:
         if name is not None:
             clean_name = name.strip()
@@ -249,6 +263,12 @@ class AccountStrategyConfigService:
             await self.validate_account_margin(account)
         if enabled is not None:
             account.enabled = enabled
+        if default_symbol_limit is not None:
+            if default_symbol_limit <= ZERO:
+                raise AllocationConfigError(
+                    "INVALID_DEFAULT_SYMBOL_LIMIT: default_symbol_limit must be greater than 0."
+                )
+            account.default_symbol_limit = default_symbol_limit
         await self._session.flush()
         return account
 

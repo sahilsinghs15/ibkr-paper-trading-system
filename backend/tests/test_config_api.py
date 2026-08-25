@@ -217,3 +217,135 @@ def test_account_delete_lifecycle_api(client: TestClient) -> None:
     del_res = client.delete(f"/api/v1/config/accounts/{account_id}")
     assert del_res.status_code == 204
 
+    # Subsequent delete of deleted account should return 404
+    del_again = client.delete(f"/api/v1/config/accounts/{account_id}")
+    assert del_again.status_code == 404
+
+
+def test_delete_nonexistent_account_returns_404(client: TestClient) -> None:
+    res = client.delete("/api/v1/config/accounts/999999")
+    assert res.status_code == 404
+    assert "Account 999999 not found" in res.json()["detail"]
+
+
+def test_check_deletable_nonexistent_account_returns_404(client: TestClient) -> None:
+    res = client.get("/api/v1/config/accounts/999999/deletable")
+    assert res.status_code == 404
+    assert "Account 999999 not found" in res.json()["detail"]
+
+
+def test_delete_account_cleans_allocations_and_limits(client: TestClient) -> None:
+    suffix = uuid.uuid4().hex[:6]
+    ibkr = f"DUDELALL{suffix}"
+    create_res = client.post(
+        "/api/v1/config/accounts",
+        json={
+            "name": f"AccountWithLimits {suffix}",
+            "ibkr_account": ibkr,
+            "total_margin": 100000.0,
+            "enabled": True,
+        },
+    )
+    assert create_res.status_code == 201
+    acc_id = create_res.json()["id"]
+
+    # Add symbol limit
+    sym_res = client.put(
+        f"/api/v1/config/accounts/{acc_id}/symbol-limits/AAPL",
+        json={"money_limit": "25000.00"},
+    )
+    assert sym_res.status_code == 200
+
+    # Delete account
+    del_res = client.delete(f"/api/v1/config/accounts/{acc_id}")
+    assert del_res.status_code == 204
+
+    # Verify account is gone
+    get_res = client.get(f"/api/v1/config/accounts/by-identifier/{ibkr}")
+    assert get_res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_account_cleans_kill_switch_operations_and_cache(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Issue 3 Regression Test:
+
+    1. Account with Kill Switch operations can be deleted if no trading history exists.
+    2. Deletion cleans up KillSwitchOperationModel records and in-memory cache.
+    3. Backend restart (hydrate_kill_switch_cache) does not rehydrate deleted account.
+    4. Account B's Kill Switch state remains untouched.
+    5. Account with trading history remains protected from deletion.
+    """
+    from app.db.models.account import AccountModel
+    from app.db.models.position import PositionModel
+    from app.db.repositories.position_repository import PositionRepository
+    from app.services.kill_switch import (
+        KillSwitchService,
+        hydrate_kill_switch_cache,
+        is_account_kill_switch_active,
+    )
+
+    suffix = uuid.uuid4().hex[:6]
+    async with session_factory() as session, session.begin():
+        acc_a = AccountModel(name=f"AccDelKS-A-{suffix}", ibkr_account=f"DUKSA{suffix}", total_margin=Decimal("100000.00"))
+        acc_b = AccountModel(name=f"AccDelKS-B-{suffix}", ibkr_account=f"DUKSB{suffix}", total_margin=Decimal("100000.00"))
+        acc_c = AccountModel(name=f"AccWithHist-{suffix}", ibkr_account=f"DUHIST{suffix}", total_margin=Decimal("100000.00"))
+        session.add_all([acc_a, acc_b, acc_c])
+        await session.flush()
+        id_a, id_b, id_c = acc_a.id, acc_b.id, acc_c.id
+
+        # Insert trading history for Account C
+        await session.execute(
+            PositionModel.__table__.insert().values(
+                account_id=id_c,
+                trade_id=f"HIST-{suffix}",
+                strategy_id="model_blue",
+                leg_a_symbol="EWP",
+                leg_a_signed_qty=Decimal(10),
+                leg_a_entry_mark=Decimal("30.00"),
+                target=Decimal(500),
+                stop=Decimal(250),
+                time_limit=3600,
+                risk_state="CLOSED",
+            )
+        )
+
+    ks_svc = KillSwitchService(session_factory=session_factory)
+    await ks_svc.initiate_square_off(id_a, requested_by="operator")
+    await ks_svc.initiate_square_off(id_b, requested_by="operator")
+
+    assert is_account_kill_switch_active(id_a) is True
+    assert is_account_kill_switch_active(id_b) is True
+
+    svc = AccountStrategyConfigService(session_factory())
+    # 5. Account C with trading history is protected from deletion
+    can_del_c, _ = await svc.check_account_deletable(id_c)
+    assert can_del_c is False
+
+    # Account A has no trading history, so it can be deleted
+    can_del_a, _ = await svc.check_account_deletable(id_a)
+    assert can_del_a is True
+
+    # Perform deletion of Account A
+    async with session_factory() as session, session.begin():
+        svc_del = AccountStrategyConfigService(session)
+        await svc_del.delete_account(id_a)
+
+    from app.services.kill_switch import clear_account_kill_switch_cache
+    clear_account_kill_switch_cache(id_a)
+
+    # 1. Account A kill switch state cleared from memory
+    assert is_account_kill_switch_active(id_a) is False
+    # 4. Account B kill switch state remains untouched
+    assert is_account_kill_switch_active(id_b) is True
+
+    # 3. Simulate backend restart: rehydrate kill switch cache from DB
+    await hydrate_kill_switch_cache(session_factory)
+
+    # Account A must NOT be rehydrated
+    assert is_account_kill_switch_active(id_a) is False
+    # Account B must remain active
+    assert is_account_kill_switch_active(id_b) is True
+
+

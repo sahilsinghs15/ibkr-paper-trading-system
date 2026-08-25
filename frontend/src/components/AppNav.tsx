@@ -5,7 +5,7 @@ export function AppNav() {
   const accountMatch =
     matchPath('/account/:ibkrAccount/*', location.pathname) ||
     matchPath('/account/:ibkrAccount', location.pathname)
-  const activeAccount = accountMatch?.params?.ibkrAccount || 'DUR919062'
+  const activeAccount = accountMatch?.params?.ibkrAccount || 'Unknown'
 
   return (
     <nav className="app-nav" aria-label="Main">

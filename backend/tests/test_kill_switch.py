@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.core.config import get_settings
 from app.db.models.account import AccountModel
-
 from app.db.models.kill_switch import (
     KILL_SWITCH_STATUS_ACTIVATING,
 )

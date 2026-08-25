@@ -4,9 +4,12 @@ import type {
   AccountDeleteCheck,
   AccountsConfigResponse,
   AllocationConfig,
+  ClosePairResponse,
   CreateAccountPayload,
   CreateAllocationPayload,
   ExecutionSettings,
+  KillSwitchClearResponse,
+  KillSwitchStatusResponse,
   PatchAccountPayload,
   SymbolLimit,
 } from '../types/config'
@@ -21,6 +24,34 @@ export async function fetchAccountsConfig(): Promise<AccountsConfigResponse> {
 export async function fetchAccountByIdentifier(ibkrAccount: string): Promise<AccountConfig> {
   const { data } = await axios.get<AccountConfig>(
     `${base}/accounts/by-identifier/${encodeURIComponent(ibkrAccount)}`,
+  )
+  return data
+}
+
+export async function closeSinglePair(
+  accountId: number,
+  tradeId: string,
+): Promise<ClosePairResponse> {
+  const { data } = await axios.post<ClosePairResponse>(
+    `${base}/accounts/${accountId}/positions/${encodeURIComponent(tradeId)}/close`,
+  )
+  return data
+}
+
+export async function fetchKillSwitchStatus(
+  accountId: number,
+): Promise<KillSwitchStatusResponse> {
+  const { data } = await axios.get<KillSwitchStatusResponse>(
+    `${base}/accounts/${accountId}/kill-switch`,
+  )
+  return data
+}
+
+export async function clearKillSwitch(
+  accountId: number,
+): Promise<KillSwitchClearResponse> {
+  const { data } = await axios.post<KillSwitchClearResponse>(
+    `${base}/accounts/${accountId}/kill-switch/clear`,
   )
   return data
 }
@@ -102,6 +133,17 @@ export async function putSymbolLimit(
   const { data } = await axios.put<SymbolLimit>(
     `${base}/accounts/${accountId}/symbol-limits/${encodeURIComponent(symbol)}`,
     { money_limit },
+  )
+  return data
+}
+
+export async function updateDefaultSymbolLimit(
+  accountId: number,
+  defaultSymbolLimit: string | number,
+): Promise<AccountConfig> {
+  const { data } = await axios.put<AccountConfig>(
+    `${base}/accounts/${accountId}/default-symbol-limit`,
+    { default_symbol_limit: defaultSymbolLimit },
   )
   return data
 }

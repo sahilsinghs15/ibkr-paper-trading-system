@@ -1,6 +1,5 @@
 """API integration tests for TradingView webhook endpoint."""
 
-import json
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import patch

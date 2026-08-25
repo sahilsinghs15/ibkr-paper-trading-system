@@ -20,6 +20,8 @@ export interface AccountConfig {
   ibkr_account: string
   total_margin: string
   enabled: boolean
+  default_symbol_limit?: string | number | null
+  kill_switch_active?: boolean
   allocations: AllocationConfig[]
   symbol_limits: SymbolLimit[]
 }
@@ -66,4 +68,29 @@ export interface AccountDeleteCheck {
   reason: string | null
   has_history: boolean
 }
+
+export interface KillSwitchClearResponse {
+  account_id: number
+  ibkr_account: string
+  operations_cleared: number
+  kill_switch_active: boolean
+}
+
+export interface KillSwitchStatusResponse {
+  account_id: number
+  kill_switch_active: boolean
+}
+
+export interface ClosePairResponse {
+  account_id: number
+  ibkr_account: string
+  trade_id: string
+  leg_a_symbol: string
+  leg_b_symbol?: string | null
+  status: string
+  success: boolean
+  message?: string | null
+}
+
+
 

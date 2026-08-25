@@ -39,6 +39,8 @@ class AccountConfigSchema(BaseModel):
     ibkr_account: str
     total_margin: Decimal
     enabled: bool
+    default_symbol_limit: Decimal | None = Decimal("10000000.00")
+    kill_switch_active: bool = False
     allocations: list[AllocationConfigSchema] = Field(default_factory=list)
     symbol_limits: list[SymbolLimitSchema] = Field(default_factory=list)
 
@@ -56,6 +58,7 @@ class CreateAccountRequest(BaseModel):
     ibkr_account: str = Field(..., min_length=1)
     total_margin: Decimal = Field(..., gt=0)
     enabled: bool = True
+    default_symbol_limit: Decimal | None = Field(None, gt=0)
 
 
 class PatchAccountRequest(BaseModel):
@@ -65,6 +68,7 @@ class PatchAccountRequest(BaseModel):
     ibkr_account: str | None = Field(None, min_length=1)
     total_margin: Decimal | None = Field(None, gt=0)
     enabled: bool | None = None
+    default_symbol_limit: Decimal | None = Field(None, gt=0)
 
 
 class CreateAllocationRequest(BaseModel):
@@ -99,6 +103,12 @@ class PutSymbolLimitRequest(BaseModel):
     """Upsert per-symbol money limit."""
 
     money_limit: Decimal = Field(..., gt=0)
+
+
+class PutDefaultSymbolLimitRequest(BaseModel):
+    """Update account default symbol money limit."""
+
+    default_symbol_limit: Decimal = Field(..., gt=0)
 
 
 class ExecutionSettingsSchema(BaseModel):
@@ -149,3 +159,17 @@ class KillSwitchStatusResponse(BaseModel):
 
     account_id: int
     kill_switch_active: bool
+
+
+class ClosePairResponse(BaseModel):
+    """Response payload for closing a single selected open position/pair."""
+
+    account_id: int
+    ibkr_account: str
+    trade_id: str
+    leg_a_symbol: str
+    leg_b_symbol: str | None = None
+    status: str
+    success: bool
+    message: str | None = None
+

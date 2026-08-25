@@ -5,9 +5,9 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import case, func, literal, not_, select, update
-from sqlalchemy.orm import aliased
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.db.models.signal import (
     ACTIVE_LEASE_STATUSES,

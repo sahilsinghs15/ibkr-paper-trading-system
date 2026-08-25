@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react'
+import { ClosePairModal } from './ClosePairModal'
 import { groupLegs, usePnlStore } from '../store/pnlStore'
+import type { ClosePairResponse } from '../types/config'
 import {
   calcAgeDays,
   calcRMultiple,
@@ -17,12 +19,22 @@ function getEpochMs(isoStr?: string | null): number {
   return isNaN(ms) ? 0 : ms
 }
 
+interface PairToClose {
+  accountId: number
+  ibkrAccount: string
+  tradeId: string
+  legASymbol: string
+  legBSymbol?: string | null
+}
+
 export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }) {
   const active = usePnlStore((s) => s.active)
   const streamState = usePnlStore((s) => s.streamState)
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
   const [historyOrder, setHistoryOrder] = useState<'RECENT' | 'OLDER'>('RECENT')
+  const [pairToClose, setPairToClose] = useState<PairToClose | null>(null)
+  const [closeMessage, setCloseMessage] = useState<string | null>(null)
 
   const filteredActive = useMemo(() => {
     if (!cleanFilter) return active
@@ -86,23 +98,30 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
         </div>
       </div>
 
+      {closeMessage ? (
+        <p className="settings-msg ok" style={{ margin: '8px 16px' }}>
+          {closeMessage}
+        </p>
+      ) : null}
+
       <div className="board factory-board scrollable-table-container">
         <table className="factory-table">
           <thead>
             <tr>
               <th style={{ width: '4%' }}>SNO</th>
-              <th style={{ width: '14%' }}>ENTRY</th>
+              <th style={{ width: '13%' }}>ENTRY</th>
               <th style={{ width: '7%' }}>AGE</th>
-              <th style={{ width: '15%' }}>PAIR</th>
-              <th style={{ width: '36%' }}>EXPOSURE BALANCE</th>
-              <th style={{ width: '12%', textAlign: 'right' }}>PL</th>
-              <th style={{ width: '12%', textAlign: 'right' }}>PROGRESS</th>
+              <th style={{ width: '14%' }}>PAIR</th>
+              <th style={{ width: '32%' }}>EXPOSURE BALANCE</th>
+              <th style={{ width: '11%', textAlign: 'right' }}>PL</th>
+              <th style={{ width: '10%', textAlign: 'right' }}>PROGRESS</th>
+              <th style={{ width: '9%', textAlign: 'right' }}>ACTION</th>
             </tr>
           </thead>
           <tbody>
             {trades.length === 0 ? (
               <tr>
-                <td colSpan={7} className="empty">
+                <td colSpan={8} className="empty">
                   No active positions open.
                 </td>
               </tr>
@@ -211,6 +230,27 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                         <span className={`r-pill ${r.isPos ? 'pos' : 'neg'}`}>{r.text}</span>
                       </div>
                     </td>
+
+                    {/* 8. ACTION */}
+                    <td className="right action-cell">
+                      <button
+                        type="button"
+                        className="btn danger"
+                        style={{ padding: '4px 8px', fontSize: '10px', fontWeight: 600 }}
+                        onClick={() => {
+                          if (head.account_id === undefined || head.account_id === null || !head.trade_id) return
+                          setPairToClose({
+                            accountId: Number(head.account_id),
+                            ibkrAccount: head.ibkr_account || cleanFilter || 'Unknown',
+                            tradeId: head.trade_id,
+                            legASymbol: legA.symbol || '—',
+                            legBSymbol: legs.length > 1 ? legB.symbol : null,
+                          })
+                        }}
+                      >
+                        Close Pair
+                      </button>
+                    </td>
                   </tr>
                 )
               })
@@ -218,6 +258,26 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
           </tbody>
         </table>
       </div>
+
+      {pairToClose ? (
+        <ClosePairModal
+          isOpen={!!pairToClose}
+          accountId={pairToClose.accountId}
+          ibkrAccount={pairToClose.ibkrAccount}
+          tradeId={pairToClose.tradeId}
+          legASymbol={pairToClose.legASymbol}
+          legBSymbol={pairToClose.legBSymbol}
+          onClose={() => setPairToClose(null)}
+          onSuccess={(res: ClosePairResponse) => {
+            if (res.success) {
+              setCloseMessage(`Pair ${res.trade_id} closed successfully.`)
+            } else {
+              setCloseMessage(`Pair ${res.trade_id} close status: ${res.status}. ${res.message || ''}`)
+            }
+          }}
+        />
+      ) : null}
     </section>
   )
 }
+

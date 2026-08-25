@@ -17,7 +17,7 @@ from app.accounts.context import AccountExecutionContext
 from app.accounts.router import DatabaseStrategyAccountRouter, StrategyAccountRouter
 from app.core.config import get_settings
 from app.core.logger import bind_log_context, get_log_context
-from app.db.models.account import PerSymbolLimitModel
+from app.db.models.account import AccountModel, PerSymbolLimitModel
 from app.db.repositories.event_repository import EventRepository
 from app.db.repositories.execution_claim_repository import (
     ExecutionClaimRepository,
@@ -196,7 +196,8 @@ class OrderManager:
                 )
                 self._add_row_exposure(row)
             limits = (await session.execute(select(PerSymbolLimitModel))).scalars().all()
-            self._apply_symbol_limits(limits)
+            accounts = (await session.execute(select(AccountModel))).scalars().all()
+            self._apply_symbol_limits(limits, accounts)
         if self._baskets is not None:
             await self._baskets.hydrate_critical_from_db()
             await self._baskets.recover_incomplete_baskets()
@@ -213,24 +214,35 @@ class OrderManager:
             critical_count,
         )
 
-    def _apply_symbol_limits(self, limits: Sequence[PerSymbolLimitModel] | list) -> None:
-        """Replace in-memory per-symbol money limits from DB rows."""
+    def _apply_symbol_limits(
+        self,
+        limits: Sequence[PerSymbolLimitModel] | list,
+        accounts: Sequence[AccountModel] | list | None = None,
+    ) -> None:
+        """Replace in-memory per-symbol money limits and default symbol limits from DB rows."""
         self._rms_context.per_symbol_limits.clear()
         for limit in limits:
             self._rms_context.per_symbol_limits[(limit.account_id, limit.symbol)] = (
                 limit.money_limit
             )
+        if accounts is not None:
+            self._rms_context.default_symbol_limits.clear()
+            for acc in accounts:
+                if acc.default_symbol_limit is not None:
+                    self._rms_context.default_symbol_limits[acc.id] = acc.default_symbol_limit
 
     async def reload_rms_limits(self) -> None:
-        """Reload per-symbol money limits from Postgres into RMSContext."""
+        """Reload per-symbol money limits and default symbol limits from Postgres into RMSContext."""
         if self._session_factory is None:
             return
         async with self._session_factory() as session:
             limits = (await session.execute(select(PerSymbolLimitModel))).scalars().all()
-            self._apply_symbol_limits(limits)
+            accounts = (await session.execute(select(AccountModel))).scalars().all()
+            self._apply_symbol_limits(limits, accounts)
         logger.info(
-            "Reloaded RMS per_symbol_limits: count=%d",
+            "Reloaded RMS per_symbol_limits: count=%d default_limits_count=%d",
             len(self._rms_context.per_symbol_limits),
+            len(self._rms_context.default_symbol_limits),
         )
 
     async def reload_execution_policy(self) -> None:

@@ -160,6 +160,7 @@ class RMSContext:
     open_positions: dict[str | tuple[int, str], int] = field(default_factory=dict)
     symbol_exposures: dict[str | tuple[int, str], Decimal] = field(default_factory=dict)
     per_symbol_limits: dict[tuple[int, str], Decimal] = field(default_factory=dict)
+    default_symbol_limits: dict[int, Decimal] = field(default_factory=dict)
     account_open_limits: dict[tuple[int, str], int] = field(default_factory=dict)
     current_time: datetime = field(default_factory=lambda: datetime.now(UTC))
     rollover_window_days: int = 7
