@@ -221,6 +221,74 @@ class KillSwitchService:
         )
         return operation, True
 
+    async def arm_account_kill_switch_only(
+        self, account_id: int, requested_by: str = "emergency_webhook"
+    ) -> tuple[KillSwitchOperationModel, bool]:
+        """Atomically arm existing account Kill Switch without executing broker flatten orders.
+
+        Returns:
+            (operation, created_new_bool)
+        """
+        async with self._session_factory() as session, session.begin():
+            account = await session.get(AccountModel, account_id)
+            if account is None:
+                raise ValueError(f"Account {account_id} not found.")
+
+            # Check for existing active operation to enforce strict idempotency
+            stmt = select(KillSwitchOperationModel).where(
+                KillSwitchOperationModel.account_id == account_id,
+                KillSwitchOperationModel.status.in_(_ARMED_STATUSES),
+            )
+            result = await session.execute(stmt)
+            existing_op = result.scalars().first()
+            if existing_op is not None or is_account_kill_switch_active(account_id):
+                _arm_kill_switch_cache(account_id)
+                if existing_op is not None:
+                    logger.info(
+                        "Kill Switch emergency arm requested for account_id=%s (%s), returning existing operation_id=%s status=%s",
+                        account_id,
+                        account.ibkr_account,
+                        existing_op.operation_id,
+                        existing_op.status,
+                    )
+                    return existing_op, False
+
+            # Query open positions for account
+            pos_result = await session.execute(
+                select(PositionModel).where(
+                    PositionModel.account_id == account_id,
+                    PositionModel.risk_state == "OPEN",
+                )
+            )
+            open_positions = pos_result.scalars().all()
+
+            operation = KillSwitchOperationModel(
+                operation_id=uuid4(),
+                account_id=account_id,
+                ibkr_account=account.ibkr_account,
+                status=KILL_SWITCH_STATUS_ACTIVATING,
+                requested_by=requested_by,
+                initial_position_count=len(open_positions),
+                flattened_count=0,
+                working_count=0,
+                retrying_count=0,
+                unresolved_count=0,
+                final_exposure=0.0,
+            )
+            session.add(operation)
+
+            # Block NEW opening signals for this account
+            _arm_kill_switch_cache(account_id)
+
+        logger.warning(
+            "EMERGENCY KILL SWITCH ARMED (NO BROKER FLATTEN): operation_id=%s account_id=%s ibkr_account=%s open_positions=%d",
+            operation.operation_id,
+            account_id,
+            operation.ibkr_account,
+            operation.initial_position_count,
+        )
+        return operation, True
+
     async def execute_flatten_operation_background(self, operation_id: UUID) -> None:
         """Trigger background worker task to execute non-blocking position flattening."""
         asyncio.create_task(

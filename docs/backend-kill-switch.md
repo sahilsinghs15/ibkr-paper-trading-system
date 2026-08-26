@@ -6,15 +6,26 @@ Operator emergency subsystem: flatten all open positions for an account, block n
 
 ## HTTP API
 
-Mounted under `/api/v1/config/accounts/{account_id}/...` in `api/routes/config.py`:
+Mounted under `/api/v1/config/accounts/{account_id}/...` in `api/routes/config.py` and `/api/v1/emergency-kill-switch` in `api/routes/emergency.py`:
 
 | Method | Path | Status | Role |
 |--------|------|--------|------|
-| `POST` | `/square-off` | 202 | Start emergency flatten (background task) |
-| `GET` | `/kill-switch` | 200 | Report whether account is armed (blocks OPEN) |
-| `POST` | `/kill-switch/clear` | 200 | Disarm account — only way to resume OPENs |
+| `POST` | `/api/v1/config/accounts/{account_id}/square-off` | 202 | Start EC2 emergency flatten (background worker task) |
+| `GET` | `/api/v1/config/accounts/{account_id}/kill-switch` | 200 | Report whether account is armed (blocks OPEN) |
+| `POST` | `/api/v1/config/accounts/{account_id}/kill-switch/clear` | 200 | Disarm account — only way to resume OPENs (Start Again) |
+| `POST` | `/api/v1/emergency-kill-switch` | 200 | External pre-flight webhook: arms existing Kill Switch (NO broker flatten on EC2) |
 
 Proxied from demo dashboard `:8010` via `/api/v1/config/*` proxy.
+
+### External Emergency Pre-Flight Webhook
+
+Mounted at `POST /api/v1/emergency-kill-switch`:
+- **Auth**: `Authorization: Bearer <EMERGENCY_KILLSWITCH_AUTH_SECRET>` (constant-time verification; fails closed 401 if secret unconfigured)
+- **Payload**: `{"ibkr_account_id": "DU1234567"}`
+- **Behavior**: Resolves `ibkr_account_id` string to internal `account_id` and arms the **SAME** existing account Kill Switch state (`_KILL_SWITCH_ACTIVE_ACCOUNTS` and PostgreSQL `kill_switch_operations`).
+- **NO BROKER EXECUTION**: The webhook does **NOT** submit IBKR orders, call OMS, or run position flattening on EC2. The local Emergency Kill Switch system handles the actual IBKR broker position flattening. If EC2 is unreachable, the local emergency system proceeds directly with its own broker flatten.
+- **Idempotency**: Repeated requests return HTTP 200 with `"message": "Kill switch was already active for account"`.
+- **Start Again**: Disarmed using the standard `POST /api/v1/config/accounts/{account_id}/kill-switch/clear` endpoint.
 
 ### Square-off response
 

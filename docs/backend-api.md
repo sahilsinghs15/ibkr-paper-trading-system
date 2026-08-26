@@ -30,6 +30,7 @@ Mounted in `create_app()`:
 | `POST` | `/api/v1/config/accounts/{account_id}/square-off` | `square_off_account_positions` | — | `SquareOffResponse` (202) | Kill switch: emergency flatten |
 | `GET` | `/api/v1/config/accounts/{account_id}/kill-switch` | `get_account_kill_switch_status` | — | `KillSwitchStatusResponse` | Armed? |
 | `POST` | `/api/v1/config/accounts/{account_id}/kill-switch/clear` | `clear_account_kill_switch_endpoint` | — | `KillSwitchClearResponse` | Disarm kill switch |
+| `POST` | `/api/v1/emergency-kill-switch` | `emergency_kill_switch_endpoint` | `EmergencyKillSwitchRequest` | `EmergencyKillSwitchResponse` | Pre-flight webhook: arm existing Kill Switch (NO broker flatten on EC2) |
 | `POST` | `/api/v1/config/accounts/{account_id}/allocations` | `create_account_allocation` | `CreateAllocationRequest` | `AllocationConfigSchema` (201) | Create allocation |
 | `PATCH` | `/api/v1/config/allocations/{allocation_id}` | `patch_allocation` | `PatchAllocationRequest` | `AllocationConfigSchema` | Update alloc_pct / enabled / max_open_positions |
 | `PUT` | `/api/v1/config/accounts/{account_id}/symbol-limits/{symbol}` | `put_symbol_limit` | `PutSymbolLimitRequest` | `SymbolLimitSchema` | Upsert limit; reload RMS limits |

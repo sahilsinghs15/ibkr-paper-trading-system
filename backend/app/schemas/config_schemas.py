@@ -173,3 +173,18 @@ class ClosePairResponse(BaseModel):
     success: bool
     message: str | None = None
 
+
+class EmergencyKillSwitchRequest(BaseModel):
+    """Payload to arm emergency Kill Switch for an account by IBKR account ID."""
+
+    ibkr_account_id: str = Field(..., min_length=1)
+
+
+class EmergencyKillSwitchResponse(BaseModel):
+    """Response payload for emergency Kill Switch activation."""
+
+    success: bool
+    ibkr_account_id: str
+    kill_switch_active: bool
+    message: str
+

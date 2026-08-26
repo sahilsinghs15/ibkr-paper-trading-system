@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     webhook_auth_secret: str | None = None
     webhook_auth_enabled: bool = True
 
+    # Emergency Kill Switch Security Settings
+    emergency_killswitch_auth_secret: str | None = None
+    emergency_killswitch_auth_enabled: bool = True
+
 
 
     @property
