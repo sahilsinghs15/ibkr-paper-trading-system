@@ -17,6 +17,7 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.schemas.system_monitor import (
     AlertItem,
     CpuMetrics,
@@ -39,6 +40,10 @@ async def collect_system_monitor_data(
     redis_client: Redis | None = None,
 ) -> SystemMonitorResponse:
     """Collect complete system metrics and service health states safely without side-effects."""
+    settings = get_settings()
+    gw_host = settings.ibkr_host
+    gw_port = settings.ibkr_port
+
     now = datetime.now(UTC)
     
     # 1. System Info
@@ -127,7 +132,7 @@ async def collect_system_monitor_data(
     )
 
     demo_stream_status = await _check_demo_stream_health()
-    ib_gateway_status = await _check_ib_gateway_health(tws_client)
+    ib_gateway_status = await _check_ib_gateway_health(tws_client, gw_host=gw_host, gw_port=gw_port)
     postgres_status = await _check_postgresql_health(session)
     redis_status = await _check_redis_health(redis_client)
 
@@ -153,7 +158,7 @@ async def collect_system_monitor_data(
         "hostname": hostname,
         "private_ip": private_ip,
         "binding_loopback": "127.0.0.1",
-        "open_ports": [8000, 8010, 5432, 6379, 7497],
+        "open_ports": [8000, 8010, 5432, 6379, gw_port],
     }
 
     # 7. Top Processes (Top 5 by CPU/Memory)
@@ -286,23 +291,33 @@ async def _check_demo_stream_health() -> ServiceStatus:
         )
 
 
-async def _check_ib_gateway_health(tws_client: Any | None = None) -> ServiceStatus:
+async def _check_ib_gateway_health(
+    tws_client: Any | None = None,
+    gw_host: str | None = None,
+    gw_port: int | None = None,
+) -> ServiceStatus:
     start_t = time.perf_counter()
+    if gw_host is None or gw_port is None:
+        settings = get_settings()
+        gw_host = settings.ibkr_host
+        gw_port = settings.ibkr_port
+
     # Check if TWSClient object reports active connection
     if tws_client is not None and getattr(tws_client, "is_connected", lambda: False)():
         elapsed_ms = round((time.perf_counter() - start_t) * 1000, 1)
+        client_id = getattr(tws_client, "client_id", 1)
         return ServiceStatus(
             name="IB Gateway",
             status="RUNNING",
-            port=7497,
-            health_detail="Connected to IBKR Paper socket (ClientID=1)",
+            port=gw_port,
+            health_detail=f"Connected to IBKR Paper socket (ClientID={client_id})",
             latency_ms=elapsed_ms,
         )
 
-    # Fallback to direct TCP socket check on port 7497
+    # Fallback to direct TCP socket check on configured gw_host:gw_port
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection("127.0.0.1", 7497),
+            asyncio.open_connection(gw_host, gw_port),
             timeout=1.5,
         )
         elapsed_ms = round((time.perf_counter() - start_t) * 1000, 1)
@@ -311,15 +326,15 @@ async def _check_ib_gateway_health(tws_client: Any | None = None) -> ServiceStat
         return ServiceStatus(
             name="IB Gateway",
             status="RUNNING",
-            port=7497,
-            health_detail="Listening on socket port 7497",
+            port=gw_port,
+            health_detail=f"Listening on socket port {gw_port}",
             latency_ms=elapsed_ms,
         )
     except Exception as exc:
         return ServiceStatus(
             name="IB Gateway",
             status="STOPPED",
-            port=7497,
+            port=gw_port,
             health_detail=f"Socket unreachable: {exc}",
             latency_ms=None,
         )

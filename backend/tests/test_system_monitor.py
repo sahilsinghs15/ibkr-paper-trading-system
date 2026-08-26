@@ -60,3 +60,48 @@ async def test_partial_service_failure_does_not_crash():
         assert res.overall_status in ("DEGRADED", "CRITICAL")
         # Ensure non-crashing valid object
         assert res.system.hostname != ""
+
+
+@pytest.mark.asyncio
+async def test_ib_gateway_dynamic_port_configuration():
+    """Verify IB Gateway probe dynamically uses get_settings().ibkr_port and host."""
+    from app.core.config import Settings, get_settings
+
+    # Mock settings with port 4002 (MAIN EC2 posture)
+    mock_settings_4002 = Settings(ibkr_host="127.0.0.1", ibkr_port=4002)
+
+    with patch("app.services.system_monitor_service.get_settings", return_value=mock_settings_4002):
+        with patch("asyncio.open_connection", new_callable=AsyncMock) as mock_open:
+            mock_reader = AsyncMock()
+            mock_writer = AsyncMock()
+            mock_open.return_value = (mock_reader, mock_writer)
+
+            res = await collect_system_monitor_data(session=None, tws_client=None, redis_client=None)
+
+            # Check open_connection was called with 127.0.0.1:4002
+            mock_open.assert_any_call("127.0.0.1", 4002)
+            assert res.services.ib_gateway.port == 4002
+            assert res.services.ib_gateway.status == "RUNNING"
+            assert 4002 in res.network["open_ports"]
+
+
+@pytest.mark.asyncio
+async def test_ib_gateway_dynamic_port_7497():
+    """Verify IB Gateway probe dynamically uses port 7497 when configured."""
+    from app.core.config import Settings
+
+    mock_settings_7497 = Settings(ibkr_host="127.0.0.1", ibkr_port=7497)
+
+    with patch("app.services.system_monitor_service.get_settings", return_value=mock_settings_7497):
+        with patch("asyncio.open_connection", new_callable=AsyncMock) as mock_open:
+            mock_reader = AsyncMock()
+            mock_writer = AsyncMock()
+            mock_open.return_value = (mock_reader, mock_writer)
+
+            res = await collect_system_monitor_data(session=None, tws_client=None, redis_client=None)
+
+            mock_open.assert_any_call("127.0.0.1", 7497)
+            assert res.services.ib_gateway.port == 7497
+            assert res.services.ib_gateway.status == "RUNNING"
+            assert 7497 in res.network["open_ports"]
+
