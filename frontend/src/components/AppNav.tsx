@@ -28,6 +28,12 @@ export function AppNav() {
       >
         Settings
       </NavLink>
+      <NavLink
+        to={`/account/${activeAccount}/system-monitor`}
+        className={({ isActive }) => (isActive ? 'on' : undefined)}
+      >
+        System Monitor
+      </NavLink>
     </nav>
   )
 }

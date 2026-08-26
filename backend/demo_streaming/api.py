@@ -206,12 +206,13 @@ def create_demo_app(
         )
 
     @app.api_route(
-        "/api/v1/config/{full_path:path}",
+        "/api/v1/{full_path:path}",
         methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
     )
-    async def proxy_config_api(request: Request, full_path: str) -> Response:
-        """Forward config CRUD to the trading API for same-origin dashboard saves."""
-        url = f"{config_base}/{full_path}" if full_path else config_base
+    async def proxy_trading_api(request: Request, full_path: str) -> Response:
+        """Forward /api/v1/* requests to the trading API for same-origin dashboard access."""
+        api_base = trading_api_url.rstrip("/") + "/api/v1"
+        url = f"{api_base}/{full_path}" if full_path else api_base
         if request.url.query:
             url = f"{url}?{request.url.query}"
         body = await request.body()
@@ -229,7 +230,7 @@ def create_demo_app(
                     headers=headers,
                 )
         except httpx.RequestError as exc:
-            logger.exception("Config proxy failed: url=%s", url)
+            logger.exception("Trading API proxy failed: url=%s", url)
             raise HTTPException(status_code=502, detail=f"Trading API unreachable: {exc}") from exc
         return Response(
             content=upstream.content,
@@ -240,6 +241,7 @@ def create_demo_app(
     @app.get("/")
     @app.get("/accounts")
     @app.get("/settings")
+    @app.get("/system-monitor")
     @app.get("/account/{path:path}")
     async def index() -> FileResponse:
         return _spa_index()

@@ -3,6 +3,7 @@ import { AppHeader } from './components/AppHeader'
 import { AccountsPage } from './pages/AccountsPage'
 import { PositionsPage } from './pages/PositionsPage'
 import { AccountSettingsPage } from './pages/AccountSettingsPage'
+import { SystemMonitorPage } from './pages/SystemMonitorPage'
 import { usePnlStream } from './hooks/usePnlStream'
 import './App.css'
 
@@ -16,7 +17,9 @@ function App() {
         <Route path="/accounts" element={<AccountsPage />} />
         <Route path="/account/:ibkrAccount" element={<PositionsPage />} />
         <Route path="/account/:ibkrAccount/settings" element={<AccountSettingsPage />} />
+        <Route path="/account/:ibkrAccount/system-monitor" element={<SystemMonitorPage />} />
         <Route path="/settings" element={<Navigate to="/account/DUR919062/settings" replace />} />
+        <Route path="/system-monitor" element={<Navigate to="/account/DUR919062/system-monitor" replace />} />
         <Route path="/" element={<Navigate to="/accounts" replace />} />
       </Routes>
     </>
