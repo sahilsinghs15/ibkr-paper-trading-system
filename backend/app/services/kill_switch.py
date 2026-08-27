@@ -67,6 +67,11 @@ def _arm_kill_switch_cache(account_id: int) -> None:
     _KILL_SWITCH_ACTIVE_ACCOUNTS.add(account_id)
 
 
+def clear_account_kill_switch_cache(account_id: int) -> None:
+    """Remove an account from the in-memory blocked-account cache."""
+    _KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
+
+
 async def hydrate_kill_switch_cache(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> set[int]:

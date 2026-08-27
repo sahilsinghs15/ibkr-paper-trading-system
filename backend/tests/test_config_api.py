@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.accounts.config_service import AccountStrategyConfigService
 from app.db.models.account import AccountModel
 from app.db.models.strategy import AllocationModel, StrategyModel
 from app.db.session import create_engine_from_settings
@@ -26,6 +27,10 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]
         patch(
             "app.broker.ibkr.tws_client.TWSClient.is_connected",
             return_value=True,
+        ),
+        patch(
+            "app.services.order_manager.OrderManager.hydrate_live_pnl",
+            return_value=None,
         ),
         TestClient(app) as c,
     ):
@@ -318,14 +323,15 @@ async def test_delete_account_cleans_kill_switch_operations_and_cache(
     assert is_account_kill_switch_active(id_a) is True
     assert is_account_kill_switch_active(id_b) is True
 
-    svc = AccountStrategyConfigService(session_factory())
-    # 5. Account C with trading history is protected from deletion
-    can_del_c, _ = await svc.check_account_deletable(id_c)
-    assert can_del_c is False
+    async with session_factory() as session:
+        svc = AccountStrategyConfigService(session)
+        # 5. Account C with trading history is protected from deletion
+        can_del_c, _ = await svc.check_account_deletable(id_c)
+        assert can_del_c is False
 
-    # Account A has no trading history, so it can be deleted
-    can_del_a, _ = await svc.check_account_deletable(id_a)
-    assert can_del_a is True
+        # Account A has no trading history, so it can be deleted
+        can_del_a, _ = await svc.check_account_deletable(id_a)
+        assert can_del_a is True
 
     # Perform deletion of Account A
     async with session_factory() as session, session.begin():

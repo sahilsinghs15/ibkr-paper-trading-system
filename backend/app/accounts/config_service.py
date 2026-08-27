@@ -217,6 +217,8 @@ class AccountStrategyConfigService:
         for ks_op in ks_ops:
             await self._session.delete(ks_op)
 
+        await self._session.flush()
+
         await self._session.delete(account)
         await self._session.flush()
 
