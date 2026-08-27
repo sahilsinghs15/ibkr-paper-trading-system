@@ -52,12 +52,6 @@ def client() -> Generator[TestClient, None, None]:
         yield c
 
 
-@pytest.fixture
-async def session_factory() -> async_sessionmaker[AsyncSession]:
-    from app.db.session import AsyncSessionLocal
-
-    yield AsyncSessionLocal
-
 
 def _filled_order(side: OrderSide, qty: float, symbol: str = "AAPL") -> MagicMock:
     order = MagicMock()
