@@ -90,8 +90,9 @@ def create_demo_app(
         now = datetime.now(UTC)
         async with session_factory() as session:
             rows = await load_position_rows(session)
-            baskets = await load_baskets(session)
-            orders = await load_orders(session)
+            keys = {(position.account_id, position.trade_id) for position, _account in rows}
+            baskets = await load_baskets(session, keys)
+            orders = await load_orders(session, keys)
         payload = []
         for position, account in rows:
             if position.risk_state != "OPEN":
@@ -113,8 +114,9 @@ def create_demo_app(
         now = datetime.now(UTC)
         async with session_factory() as session:
             rows = await load_closed_position_rows(session, account_id=account_id)
-            baskets = await load_baskets(session)
-            orders = await load_orders(session)
+            keys = {(position.account_id, position.trade_id) for position, _account in rows}
+            baskets = await load_baskets(session, keys)
+            orders = await load_orders(session, keys)
         payload = []
         for position, account in rows:
             key = (position.account_id, position.trade_id)

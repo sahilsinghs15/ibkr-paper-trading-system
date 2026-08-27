@@ -60,8 +60,10 @@ export function unlockAudioContext(): void {
 function getActiveAccountFromUrl(): string | null {
   if (typeof window === 'undefined') return null
   const pathname = window.location.pathname
-  const match = pathname.match(/\/account\/([^\/]+)/i)
-  return match ? match[1].trim().toUpperCase() : null
+  const match = pathname.match(/\/account\/([^/]+)/i)
+  const clean = match ? match[1].trim().toUpperCase() : ''
+  if (!clean || clean === 'UNKNOWN') return null
+  return clean
 }
 
 /**

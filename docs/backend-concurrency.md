@@ -94,6 +94,9 @@ Also runs `ExecutionClaimRepository.reconcile_stale_claims(stale_after_sec=300)`
 | `lease_duration_sec` | 30 |
 | `reclaim_interval_sec` | 15 |
 | `claim_stale_after_sec` | 300 |
+| `idle_poll_interval_sec` | 0.5 |
+
+When the queue is empty each worker sleeps `idle_poll_interval_sec` before the next `claim_next_jobs` (~20 polls/sec total with 10 workers, vs ~200/sec at 50ms). Jobs are processed immediately when claimed — no extra sleep after a successful claim.
 
 ### Domain lock
 

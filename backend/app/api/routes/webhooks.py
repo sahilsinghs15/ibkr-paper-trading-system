@@ -1,8 +1,11 @@
 """TradingView Webhook router definition."""
 
+import asyncio
+import csv
 import hmac
 import json
 import logging
+import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,12 +27,118 @@ WEBHOOK_CAPTURE_DIR = (
     Path(__file__).resolve().parents[3] / "data" / "tradingview_webhooks"
 )
 
+# TEMPORARY: append-only CSV of every accepted webhook. Remove later.
+INCOMING_SIGNALS_CSV_NAME = "incoming_signals.csv"
+_CSV_LOCK = threading.Lock()
+_INCOMING_SIGNAL_CSV_FIELDS = (
+    "received_at",
+    "request_id",
+    "signal_id",
+    "trade_id",
+    "job_id",
+    "duplicate",
+    "strategy",
+    "action",
+    "direction",
+    "market",
+    "ts",
+    "leg_a_symbol",
+    "leg_a_side",
+    "leg_a_weight",
+    "leg_a_price",
+    "leg_a_instrument_type",
+    "leg_b_symbol",
+    "leg_b_side",
+    "leg_b_weight",
+    "leg_b_price",
+    "leg_b_instrument_type",
+    "raw_json",
+)
+
 
 def _save_raw_capture_file(capture_data: dict[str, Any], filename: str) -> None:
     """Save raw capture JSON payload to disk off the FastAPI event loop."""
     WEBHOOK_CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
     file_path = WEBHOOK_CAPTURE_DIR / filename
     file_path.write_text(json.dumps(capture_data, indent=2), encoding="utf-8")
+
+
+def _csv_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _bucket_leg_csv_fields(payload: dict[str, Any], index: int, prefix: str) -> dict[str, str]:
+    empty = {
+        f"{prefix}_symbol": "",
+        f"{prefix}_side": "",
+        f"{prefix}_weight": "",
+        f"{prefix}_price": "",
+        f"{prefix}_instrument_type": "",
+    }
+    buckets = payload.get("buckets")
+    if not isinstance(buckets, list) or index >= len(buckets):
+        return empty
+    bucket = buckets[index]
+    if not isinstance(bucket, dict):
+        return empty
+    legs = bucket.get("legs")
+    leg = legs[0] if isinstance(legs, list) and legs and isinstance(legs[0], dict) else {}
+    return {
+        f"{prefix}_symbol": _csv_cell(bucket.get("underlying")),
+        f"{prefix}_side": _csv_cell(leg.get("side")),
+        f"{prefix}_weight": _csv_cell(leg.get("weight")),
+        f"{prefix}_price": _csv_cell(leg.get("price")),
+        f"{prefix}_instrument_type": _csv_cell(leg.get("instrument_type")),
+    }
+
+
+def _incoming_signal_csv_row(
+    *,
+    payload: dict[str, Any],
+    received_at: str,
+    request_id: str,
+    signal_id: str,
+    trade_id: str | None,
+    job_id: str,
+    duplicate: bool,
+) -> dict[str, str]:
+    """Flatten an accepted webhook into one CSV row. TEMPORARY."""
+    row = {
+        "received_at": received_at,
+        "request_id": request_id,
+        "signal_id": signal_id,
+        "trade_id": _csv_cell(trade_id),
+        "job_id": job_id,
+        "duplicate": "true" if duplicate else "false",
+        "strategy": _csv_cell(payload.get("strategy") or payload.get("strategy_id")),
+        "action": _csv_cell(payload.get("action")),
+        "direction": _csv_cell(payload.get("direction")),
+        "market": _csv_cell(payload.get("market")),
+        "ts": _csv_cell(payload.get("ts") or payload.get("time")),
+        "raw_json": json.dumps(payload, separators=(",", ":")),
+    }
+    row.update(_bucket_leg_csv_fields(payload, 0, "leg_a"))
+    row.update(_bucket_leg_csv_fields(payload, 1, "leg_b"))
+    return row
+
+
+def _append_incoming_signal_csv(row: dict[str, str]) -> None:
+    """Append one accepted-signal row to the temporary CSV (process-local lock)."""
+    WEBHOOK_CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+    path = WEBHOOK_CAPTURE_DIR / INCOMING_SIGNALS_CSV_NAME
+    with _CSV_LOCK:
+        new_file = not path.exists() or path.stat().st_size == 0
+        with path.open("a", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=_INCOMING_SIGNAL_CSV_FIELDS,
+                extrasaction="ignore",
+            )
+            if new_file:
+                writer.writeheader()
+            writer.writerow(row)
 
 
 def _verify_webhook_authentication(request: Request) -> None:
@@ -168,6 +277,24 @@ async def _process_tradingview_webhook(
         job_id_str,
         request_id,
     )
+
+    # TEMPORARY: also dump every accepted signal to CSV. Remove later.
+    try:
+        await asyncio.to_thread(
+            _append_incoming_signal_csv,
+            _incoming_signal_csv_row(
+                payload=payload,
+                received_at=received_at,
+                request_id=request_id,
+                signal_id=signal_id,
+                trade_id=trade_id,
+                job_id=job_id_str,
+                duplicate=not created,
+            ),
+        )
+    except Exception:
+        logger.exception("TEMPORARY: failed to append incoming signal CSV row")
+
     return TradingViewWebhookResponse(
         status="accepted",
         source="tradingview",

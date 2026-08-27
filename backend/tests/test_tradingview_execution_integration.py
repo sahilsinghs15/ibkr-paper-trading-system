@@ -5,7 +5,7 @@ from collections.abc import Generator
 from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -132,6 +132,20 @@ def client_with_execution() -> Generator[TestClient, None, None]:
         patch("app.broker.ibkr.tws_client.TWSClient.connect_and_start", return_value=True),
         patch("app.broker.ibkr.tws_client.TWSClient.disconnect_clean"),
         patch("app.oms.ibkr_adapter.IBKRExecutionAdapter.is_connected", return_value=True),
+        patch("app.services.worker_pool.ExecutionWorkerPool.start", new_callable=AsyncMock),
+        patch("app.services.worker_pool.ExecutionWorkerPool.stop", new_callable=AsyncMock),
+        patch(
+            "app.services.position_reconciler.PositionReconciler.start",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.position_reconciler.PositionReconciler.stop",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.order_manager.OrderManager.hydrate_live_pnl",
+            new_callable=AsyncMock,
+        ),
         TestClient(app) as c,
     ):
         app.state.order_manager = order_manager

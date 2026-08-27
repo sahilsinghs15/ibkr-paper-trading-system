@@ -10,6 +10,7 @@ import {
   patchAccount,
 } from '../api/configApi'
 import type { AccountConfig, AccountDeleteCheck } from '../types/config'
+import { writeLastIbkrAccount } from '../utils/activeAccount'
 import { displayStrategy, fmtPct, fmtUsd } from '../utils/format'
 
 function extractError(err: unknown): string {
@@ -616,13 +617,17 @@ export function AccountsPage() {
                             <button
                               type="button"
                               className="btn primary"
-                              onClick={() => navigate(`/account/${acc.ibkr_account}`)}
+                              onClick={() => {
+                                writeLastIbkrAccount(acc.ibkr_account)
+                                navigate(`/account/${acc.ibkr_account}`)
+                              }}
                             >
                               View
                             </button>
                             <Link
                               to={`/account/${acc.ibkr_account}/settings`}
                               className="btn"
+                              onClick={() => writeLastIbkrAccount(acc.ibkr_account)}
                             >
                               Settings
                             </Link>

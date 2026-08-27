@@ -11,7 +11,29 @@ from app.services.system_monitor_service import collect_system_monitor_data
 
 @pytest.fixture
 def client():
-    with TestClient(app) as c:
+    with (
+        patch(
+            "app.broker.ibkr.tws_client.TWSClient.connect_and_start",
+            return_value=True,
+        ),
+        patch("app.broker.ibkr.tws_client.TWSClient.disconnect_clean"),
+        patch("app.broker.ibkr.tws_client.TWSClient.is_connected", return_value=False),
+        patch("app.services.worker_pool.ExecutionWorkerPool.start", new_callable=AsyncMock),
+        patch("app.services.worker_pool.ExecutionWorkerPool.stop", new_callable=AsyncMock),
+        patch(
+            "app.services.position_reconciler.PositionReconciler.start",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.position_reconciler.PositionReconciler.stop",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.order_manager.OrderManager.hydrate_live_pnl",
+            new_callable=AsyncMock,
+        ),
+        TestClient(app) as c,
+    ):
         yield c
 
 

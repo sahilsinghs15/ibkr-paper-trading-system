@@ -109,3 +109,120 @@ async def test_load_signals_includes_account_metadata_and_rejected_signals(
         if s["signal_id"] in (sig_id_accepted, sig_id_rejected):
             assert s["ibkr_account"] == ibkr_acc
             assert s["account_id"] == acc_id
+
+
+@pytest.mark.asyncio
+async def test_load_signals_scopes_fanout_orders_and_counts_to_requested_account(
+    session_factory: async_sessionmaker[AsyncSession],
+):
+    """A signal with legs on two accounts is attributed and counted per requested account."""
+    test_id = uuid4().hex[:6]
+    ibkr_a = f"DUA{test_id}"
+    ibkr_b = f"dub{test_id}"
+    sig_id = f"SIG-FANOUT-{test_id}"
+
+    async with session_factory() as session, session.begin():
+        acc_a = AccountModel(name="FanoutA", ibkr_account=ibkr_a, total_margin=Decimal("100000.00"))
+        acc_b = AccountModel(name="FanoutB", ibkr_account=ibkr_b, total_margin=Decimal("100000.00"))
+        session.add_all([acc_a, acc_b])
+        await session.flush()
+
+        sig = SignalModel(
+            signal_id=sig_id,
+            strategy_id="model_blue",
+            action="OPEN",
+            pair="EWA / EZU",
+            side="BUY",
+            ref_price_a=Decimal("30.0"),
+            ref_price_b=Decimal("70.0"),
+            status="PROCESSED",
+            raw_payload={},
+        )
+        session.add(sig)
+        await session.flush()
+
+        session.add_all(
+            [
+                OrderModel(
+                    signal_id=sig.id,
+                    account_id=acc_b.id,
+                    strategy_id="model_blue",
+                    leg="L0",
+                    symbol="EWA",
+                    ibkr_contract="STK",
+                    buy_sell="BUY",
+                    quantity=Decimal("100.0"),
+                    limit_price=Decimal("30.0"),
+                    status="FILLED",
+                    fill_qty=Decimal("100.0"),
+                ),
+                OrderModel(
+                    signal_id=sig.id,
+                    account_id=acc_b.id,
+                    strategy_id="model_blue",
+                    leg="L1",
+                    symbol="EZU",
+                    ibkr_contract="STK",
+                    buy_sell="SELL",
+                    quantity=Decimal("50.0"),
+                    limit_price=Decimal("70.0"),
+                    status="FILLED",
+                    fill_qty=Decimal("50.0"),
+                ),
+                OrderModel(
+                    signal_id=sig.id,
+                    account_id=acc_a.id,
+                    strategy_id="model_blue",
+                    leg="L0",
+                    symbol="EWA",
+                    ibkr_contract="STK",
+                    buy_sell="BUY",
+                    quantity=Decimal("100.0"),
+                    limit_price=Decimal("30.0"),
+                    status="REJECTED",
+                    fill_qty=Decimal("0.0"),
+                ),
+                OrderModel(
+                    signal_id=sig.id,
+                    account_id=acc_a.id,
+                    strategy_id="model_blue",
+                    leg="L1",
+                    symbol="EZU",
+                    ibkr_contract="STK",
+                    buy_sell="SELL",
+                    quantity=Decimal("50.0"),
+                    limit_price=Decimal("70.0"),
+                    status="REJECTED",
+                    fill_qty=Decimal("0.0"),
+                ),
+            ]
+        )
+
+    async with session_factory() as session:
+        res_a = await load_signals(session, ibkr_account=ibkr_a.upper(), return_dict=True)
+        res_b = await load_signals(session, ibkr_account=ibkr_b, return_dict=True)
+
+    assert isinstance(res_a, dict)
+    assert isinstance(res_b, dict)
+    row_a = next(s for s in res_a["signals"] if s["signal_id"] == sig_id)
+    row_b = next(s for s in res_b["signals"] if s["signal_id"] == sig_id)
+
+    assert row_a["ibkr_account"] == ibkr_a
+    assert {o["status"] for o in row_a["orders"]} == {"REJECTED"}
+    assert row_a["canonical_status"] == "REJECTED"
+    assert res_a["counts"]["total"] == 1
+    assert res_a["counts"]["rejected"] == 1
+    assert res_a["counts"]["accepted"] == 0
+    assert all(
+        str(s.get("ibkr_account") or "").upper() == ibkr_a.upper() for s in res_a["signals"]
+    )
+
+    assert row_b["ibkr_account"] == ibkr_b
+    assert {o["status"] for o in row_b["orders"]} == {"FILLED"}
+    assert row_b["canonical_status"] == "ACCEPTED"
+    assert res_b["counts"]["total"] == 1
+    assert res_b["counts"]["accepted"] == 1
+    assert res_b["counts"]["rejected"] == 0
+    assert all(
+        str(s.get("ibkr_account") or "").upper() == ibkr_b.upper() for s in res_b["signals"]
+    )

@@ -86,6 +86,26 @@ export const usePnlStore = create<PnlState>((set, get) => ({
         ...row,
         opened_at: row.opened_at || prev.opened_at || row.timestamp,
       }
+      // Pair PnL is shared; coalesced SSE may emit only one leg per trade.
+      if (row.unrealized_pnl !== undefined || row.market_data_status !== undefined) {
+        for (const [sibKey, sib] of Object.entries(nextActive)) {
+          if (sibKey === key) continue
+          if (
+            String(sib.account_id) === String(row.account_id) &&
+            sib.trade_id === row.trade_id
+          ) {
+            nextActive[sibKey] = {
+              ...sib,
+              ...(row.unrealized_pnl !== undefined
+                ? { unrealized_pnl: row.unrealized_pnl }
+                : {}),
+              ...(row.market_data_status !== undefined
+                ? { market_data_status: row.market_data_status }
+                : {}),
+            }
+          }
+        }
+      }
     }
 
     set({ active: nextActive, closed: nextClosed, lastTs: nextLast })

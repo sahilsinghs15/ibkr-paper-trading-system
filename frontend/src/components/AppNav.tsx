@@ -1,11 +1,9 @@
-import { NavLink, useLocation, matchPath } from 'react-router-dom'
+import { NavLink } from 'react-router-dom'
+import { useActiveIbkrAccount } from '../hooks/useActiveIbkrAccount'
 
 export function AppNav() {
-  const location = useLocation()
-  const accountMatch =
-    matchPath('/account/:ibkrAccount/*', location.pathname) ||
-    matchPath('/account/:ibkrAccount', location.pathname)
-  const activeAccount = accountMatch?.params?.ibkrAccount || 'Unknown'
+  const activeAccount = useActiveIbkrAccount()
+  const accountHome = activeAccount ? `/account/${activeAccount}` : '/accounts'
 
   return (
     <nav className="app-nav" aria-label="Main">
@@ -16,21 +14,27 @@ export function AppNav() {
         Accounts
       </NavLink>
       <NavLink
-        to={`/account/${activeAccount}`}
+        to={accountHome}
         end
-        className={({ isActive }) => (isActive ? 'on' : undefined)}
+        className={({ isActive }) => (activeAccount && isActive ? 'on' : undefined)}
       >
         Positions
       </NavLink>
       <NavLink
-        to={`/account/${activeAccount}/settings`}
-        className={({ isActive }) => (isActive ? 'on' : undefined)}
+        to={activeAccount ? `${accountHome}/settings` : '/accounts'}
+        className={({ isActive }) => (activeAccount && isActive ? 'on' : undefined)}
       >
         Settings
       </NavLink>
       <NavLink
-        to={`/account/${activeAccount}/system-monitor`}
-        className={({ isActive }) => (isActive ? 'on' : undefined)}
+        to={activeAccount ? `${accountHome}/reconcile` : '/accounts'}
+        className={({ isActive }) => (activeAccount && isActive ? 'on' : undefined)}
+      >
+        Reconcile
+      </NavLink>
+      <NavLink
+        to={activeAccount ? `${accountHome}/system-monitor` : '/accounts'}
+        className={({ isActive }) => (activeAccount && isActive ? 'on' : undefined)}
       >
         System Monitor
       </NavLink>

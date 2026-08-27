@@ -169,9 +169,11 @@ function asNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback
 }
 
-function accountMatches(ibkrAccount: string | null | undefined, filter: string): boolean {
+export function accountMatches(ibkrAccount: string | null | undefined, filter: string): boolean {
   if (!filter) return true
-  return String(ibkrAccount || '').trim().toUpperCase() === filter
+  const account = String(ibkrAccount || '').trim().toUpperCase()
+  if (!account) return false
+  return account === filter
 }
 
 function statusMatchesFilter(

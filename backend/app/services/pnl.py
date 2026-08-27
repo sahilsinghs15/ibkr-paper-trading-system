@@ -1,6 +1,9 @@
 """Unrealized P&L from signed quantities and an external mark. Does not invent prices."""
 
+import asyncio
 import logging
+import threading
+import time
 from decimal import Decimal
 from typing import Any
 
@@ -28,6 +31,9 @@ _LAST_TICKS = {_TICK_LAST, _TICK_DELAYED_LAST, _TICK_MARK}
 _BID_TICKS = {_TICK_BID, _TICK_DELAYED_BID}
 _ASK_TICKS = {_TICK_ASK, _TICK_DELAYED_ASK}
 _CLOSE_TICKS = {_TICK_CLOSE, _TICK_DELAYED_CLOSE}
+
+# Minimum seconds between Postgres writes for the same (account_id, trade_id).
+_PERSIST_MIN_INTERVAL_SEC = 1.0
 
 
 def unrealized_leg(signed_qty: Decimal, entry: Decimal, mark: Decimal) -> Decimal:
@@ -87,6 +93,12 @@ class LivePnlService:
         self._cooldowns: dict[tuple, float] = {}
         self._loop = None
         self._catalog = None
+        self._persist_lock = threading.Lock()
+        self._pending_pnl: dict[tuple[int, str], Decimal] = {}
+        self._last_persisted_pnl: dict[tuple[int, str], Decimal] = {}
+        self._last_persist_at: dict[tuple[int, str], float] = {}
+        self._persist_in_flight: set[tuple[int, str]] = set()
+        self._persist_delayed: set[tuple[int, str]] = set()
         if client is not None and hasattr(client, "register_market_data_listener"):
             client.register_market_data_listener(self)
 
@@ -154,7 +166,14 @@ class LivePnlService:
             )
 
     def unwatch(self, account_id: int, trade_id: str) -> None:
-        self._legs.pop((account_id, trade_id), None)
+        trade_key = (account_id, trade_id)
+        self._legs.pop(trade_key, None)
+        with self._persist_lock:
+            self._pending_pnl.pop(trade_key, None)
+            self._last_persisted_pnl.pop(trade_key, None)
+            self._last_persist_at.pop(trade_key, None)
+            self._persist_in_flight.discard(trade_key)
+            self._persist_delayed.discard(trade_key)
         cancel = getattr(self._client, "cancelMktData", None)
 
         for req_id, listeners in list(self._listeners_by_req.items()):
@@ -583,11 +602,12 @@ class LivePnlService:
         loop = getattr(self, "_loop", None)
         if loop is None or not loop.is_running():
             return
-        import asyncio
-
+        trade_key = (account_id, trade_id)
+        with self._persist_lock:
+            self._pending_pnl[trade_key] = pnl
         try:
-            future = asyncio.run_coroutine_threadsafe(
-                self._persist(account_id, trade_id, pnl), loop
+            asyncio.run_coroutine_threadsafe(
+                self._schedule_persist(account_id, trade_id), loop
             )
         except Exception:
             logger.exception(
@@ -595,19 +615,63 @@ class LivePnlService:
                 account_id,
                 trade_id,
             )
+
+    async def _schedule_persist(self, account_id: int, trade_id: str) -> None:
+        """Coalesce pending pnl into at most one in-flight persist per trade."""
+        trade_key = (account_id, trade_id)
+        pnl_to_write: Decimal | None = None
+
+        with self._persist_lock:
+            if trade_key not in self._legs:
+                return
+            pending = self._pending_pnl.get(trade_key)
+            if pending is None:
+                return
+            if pending == self._last_persisted_pnl.get(trade_key):
+                self._pending_pnl.pop(trade_key, None)
+                return
+            if trade_key in self._persist_in_flight:
+                return
+            now = time.monotonic()
+            last_at = self._last_persist_at.get(trade_key)
+            if last_at is not None and (now - last_at) < _PERSIST_MIN_INTERVAL_SEC:
+                wait = _PERSIST_MIN_INTERVAL_SEC - (now - last_at)
+                if trade_key not in self._persist_delayed:
+                    self._persist_delayed.add(trade_key)
+                    loop = asyncio.get_running_loop()
+                    loop.call_later(
+                        wait,
+                        lambda ak=account_id, tid=trade_id: asyncio.create_task(
+                            self._schedule_persist(ak, tid)
+                        ),
+                    )
+                return
+            pnl_to_write = pending
+            self._persist_in_flight.add(trade_key)
+
+        if pnl_to_write is None:
             return
 
-        def _log_persist_error(done) -> None:
-            try:
-                done.result()
-            except Exception:
-                logger.exception(
-                    "LivePnl persist failed: account_id=%s trade_id=%s",
-                    account_id,
-                    trade_id,
-                )
+        try:
+            await self._persist(account_id, trade_id, pnl_to_write)
+        except Exception:
+            logger.exception(
+                "LivePnl persist failed: account_id=%s trade_id=%s",
+                account_id,
+                trade_id,
+            )
+        else:
+            with self._persist_lock:
+                self._last_persisted_pnl[trade_key] = pnl_to_write
+                self._last_persist_at[trade_key] = time.monotonic()
+                if self._pending_pnl.get(trade_key) == pnl_to_write:
+                    self._pending_pnl.pop(trade_key, None)
+        finally:
+            with self._persist_lock:
+                self._persist_in_flight.discard(trade_key)
+                self._persist_delayed.discard(trade_key)
 
-        future.add_done_callback(_log_persist_error)
+        await self._schedule_persist(account_id, trade_id)
 
     async def _persist(self, account_id: int, trade_id: str, pnl: Decimal) -> None:
         async with self._session_factory() as session, session.begin():

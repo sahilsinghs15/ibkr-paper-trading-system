@@ -8,7 +8,7 @@ Mounted in `create_app()`:
 
 - `health_router` — no prefix
 - `webhooks_router` — prefix `/api`
-- `api_router` — prefix `/api/v1` (orders + config routers)
+- `api_router` — prefix `/api/v1` (orders + config + system-monitor + reconcile routers)
 
 **No** `CORSMiddleware`, **no** WebSocket routes, **no** `StaticFiles` / HTML mount on this app.
 
@@ -37,6 +37,9 @@ Mounted in `create_app()`:
 | `DELETE` | `/api/v1/config/accounts/{account_id}/symbol-limits/{symbol}` | `delete_symbol_limit` | — | 204 | Delete limit; reload RMS limits |
 | `GET` | `/api/v1/config/execution` | `get_execution_settings` | — | `ExecutionSettingsSchema` | Read/create singleton paper retry row |
 | `PATCH` | `/api/v1/config/execution` | `patch_execution_settings` | `PatchExecutionSettingsRequest` | `ExecutionSettingsSchema` | Persist retry knobs; reload basket coordinator |
+| `GET` | `/api/v1/system-monitor` | `get_system_monitor` | — | `SystemMonitorResponse` | Read-only EC2/service observability |
+| `GET` | `/api/v1/reconcile/positions` | `get_reconcile_positions` | query `ibkr_account` (optional) | `ReconcilePositionsResponse` | Latest `broker_positions` snapshot, OPEN ledger rows, fresh diffs (no live `reqPositions`) |
+| `POST` | `/api/v1/reconcile/positions/flatten` | `flatten_broker_position_line` | `FlattenBrokerPositionRequest` | `FlattenBrokerPositionResponse` | MARKET flatten one broker snapshot line (qty from DB); no kill switch, no ledger close |
 
 `OrderSchema` fields: `order_id`, `symbol`, `side`, `quantity`, `order_type`, `status`, `timestamp`, `price`, `filled_quantity`, `average_fill_price`.
 

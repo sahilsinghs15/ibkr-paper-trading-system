@@ -14,13 +14,17 @@ Tests cover:
 11. unrealized_pair requires marks for both legs when Leg B is defined.
 """
 
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.broker.ibkr.tws_client import TWSClient
 from app.rms.models import OrderAction, OrderIntent, OrderLeg, OrderSide
 from app.services.pnl import LivePnlService, unrealized_pair
+from app.services.worker_pool import ExecutionWorkerPool
 
 
 def _make_intent(
@@ -474,3 +478,101 @@ def test_14_preresolved_cfd_leg_overrides_to_stk_for_market_data() -> None:
     assert contract.symbol == "EWC"
     assert contract.secType == "STK"
     assert contract.conId != 134770252
+
+
+def _tick_req_ids(svc: LivePnlService, symbols: list[str]) -> dict[str, int]:
+    return {
+        sym: next(rid for rid, mapped in svc._by_req.items() if mapped[2] == sym)
+        for sym in symbols
+    }
+
+
+@pytest.mark.asyncio
+async def test_persist_coalesces_many_ticks_within_min_interval() -> None:
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+    client.reqMarketDataType = MagicMock()
+    factory = MagicMock()
+    svc = LivePnlService(factory, client)
+    persist_calls: list[tuple[int, str, Decimal]] = []
+
+    async def mock_persist(account_id: int, trade_id: str, pnl: Decimal) -> None:
+        persist_calls.append((account_id, trade_id, pnl))
+
+    svc._persist = mock_persist  # type: ignore[method-assign]
+
+    intent = _make_intent("T-COALESCE-1", account_id=1, symbols=["GS", "JPM"])
+    svc.watch_open(intent)
+    reqs = _tick_req_ids(svc, ["GS", "JPM"])
+
+    for price in (150.0, 150.5, 151.0, 151.5, 152.0):
+        svc.on_tick_price(reqs["GS"], 4, price)
+        svc.on_tick_price(reqs["JPM"], 4, 200.0)
+
+    await asyncio.sleep(0.15)
+    assert len(persist_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_persist_skips_unchanged_pnl() -> None:
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+    client.reqMarketDataType = MagicMock()
+    factory = MagicMock()
+    svc = LivePnlService(factory, client)
+    persist_calls: list[tuple[int, str, Decimal]] = []
+
+    async def mock_persist(account_id: int, trade_id: str, pnl: Decimal) -> None:
+        persist_calls.append((account_id, trade_id, pnl))
+
+    svc._persist = mock_persist  # type: ignore[method-assign]
+
+    intent = _make_intent("T-COALESCE-2", account_id=1, symbols=["GS", "JPM"])
+    svc.watch_open(intent)
+    reqs = _tick_req_ids(svc, ["GS", "JPM"])
+
+    svc.on_tick_price(reqs["GS"], 4, 150.0)
+    svc.on_tick_price(reqs["JPM"], 4, 200.0)
+    await asyncio.sleep(0.15)
+    assert len(persist_calls) == 1
+
+    for _ in range(10):
+        svc.on_tick_price(reqs["GS"], 4, 150.0)
+        svc.on_tick_price(reqs["JPM"], 4, 200.0)
+    await asyncio.sleep(0.2)
+    assert len(persist_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_persist_follow_up_after_min_interval_on_new_pnl() -> None:
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+    client.reqMarketDataType = MagicMock()
+    factory = MagicMock()
+    svc = LivePnlService(factory, client)
+    persist_calls: list[tuple[int, str, Decimal]] = []
+
+    async def mock_persist(account_id: int, trade_id: str, pnl: Decimal) -> None:
+        persist_calls.append((account_id, trade_id, pnl))
+
+    svc._persist = mock_persist  # type: ignore[method-assign]
+
+    intent = _make_intent("T-COALESCE-3", account_id=1, symbols=["GS", "JPM"])
+    svc.watch_open(intent)
+    reqs = _tick_req_ids(svc, ["GS", "JPM"])
+
+    svc.on_tick_price(reqs["GS"], 4, 150.0)
+    svc.on_tick_price(reqs["JPM"], 4, 200.0)
+    await asyncio.sleep(0.15)
+    assert len(persist_calls) == 1
+
+    svc.on_tick_price(reqs["GS"], 4, 160.0)
+    svc.on_tick_price(reqs["JPM"], 4, 200.0)
+    await asyncio.sleep(1.15)
+    assert len(persist_calls) == 2
+    assert persist_calls[0][2] != persist_calls[1][2]
+
+
+def test_worker_pool_idle_poll_interval_default() -> None:
+    pool = ExecutionWorkerPool(MagicMock(), MagicMock())
+    assert pool._idle_poll_interval_sec == 0.5

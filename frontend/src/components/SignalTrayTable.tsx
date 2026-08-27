@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { usePnlStore } from '../store/pnlStore'
-import { getCanonicalStatus, type SignalItem, useSignalStore } from '../store/signalStore'
+import { accountMatches, getCanonicalStatus, type SignalItem, useSignalStore } from '../store/signalStore'
 import { isSoundEnabled, toggleSoundEnabled, unlockAudioContext } from '../utils/audioNotification'
 import { displayStrategy, fmtTime } from '../utils/format'
 
@@ -224,7 +224,7 @@ function buildUnifiedTimeline(sig: SignalItem): TimelineItem[] {
 }
 
 export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
-  const signals = useSignalStore((s) => s.traySignals)
+  const traySignals = useSignalStore((s) => s.traySignals)
   const isLoading = useSignalStore((s) => s.trayLoading)
   const page = useSignalStore((s) => s.trayPage)
   const pageSize = useSignalStore((s) => s.trayPageSize)
@@ -238,6 +238,11 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
 
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
+
+  const signals = useMemo(() => {
+    if (!cleanFilter) return traySignals
+    return traySignals.filter((sig) => accountMatches(sig.ibkr_account, cleanFilter))
+  }, [traySignals, cleanFilter])
 
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [soundOn, setSoundOn] = useState(() => isSoundEnabled())

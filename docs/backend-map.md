@@ -23,6 +23,7 @@ app/
 │       └── config.py          # Account/allocation/limits/execution/kill-switch CRUD
 ├── broker/ibkr/
 │   ├── tws_client.py          # IBAPI TWS TCP client wrapper (one instance in lifespan)
+│   ├── positions.py           # BrokerPositionLine + PositionSnapshotCollector
 │   └── scheduler.py           # Token-bucket rate limiter (tests only; not wired in main)
 ├── core/
 │   ├── config.py              # Settings (pydantic-settings)
@@ -64,6 +65,7 @@ app/
     ├── recovery.py            # Startup crash recovery scanner
     ├── kill_switch.py         # Emergency flatten + armed-account cache
     ├── pnl.py                 # Live unrealized P&L via TWS marks
+    ├── position_reconciler.py # Periodic IBKR snapshot vs ledger diff (log only)
     ├── model_blue/            # Parse, size, trade book, persistence
     └── strategies/            # Handler registry / inbound parse / legacy
 ```
@@ -82,11 +84,13 @@ Startup:
 6. Store on `app.state`: `session_factory`, `client`, `ibkr_adapter`, `oms`, `order_manager`
 7. `RecoveryManager.run_startup_recovery()` — reconcile stale jobs/claims before workers
 8. `ExecutionWorkerPool(worker_count=10).start()` → `app.state.worker_pool`
+9. `PositionReconciler(interval=30s).start()` → `app.state.position_reconciler`
 
 Shutdown:
 
-1. `worker_pool.stop()`
-2. `client.disconnect_clean()`
+1. `position_reconciler.stop()`
+2. `worker_pool.stop()`
+3. `client.disconnect_clean()`
 
 ## `app.state` attributes
 
@@ -98,6 +102,7 @@ Shutdown:
 | `oms` | `OMSService` | In-memory order lifecycle |
 | `order_manager` | `OrderManager` | Pipeline facade |
 | `worker_pool` | `ExecutionWorkerPool` | Background job consumers |
+| `position_reconciler` | `PositionReconciler` | IBKR position snapshot + ledger diff loop |
 
 Kill-switch armed cache is **not** on `app.state`; it lives in `kill_switch.py` module memory and is rebuilt during `hydrate_runtime_from_db()`.
 
@@ -133,11 +138,12 @@ Lifespan constructs **one** `TWSClient` and **one** `IBKRExecutionAdapter` from 
 | Instrument STK→CFD | `instruments/execution_override.py`, `resolver.py`, `cfd_discover.py` |
 | Config CRUD | `accounts/config_service.py`, `api/routes/config.py` |
 | Live PnL marks | `services/pnl.py` |
+| IBKR position reconcile | `services/position_reconciler.py`, `broker/ibkr/positions.py`, `services/reconcile_service.py`, `services/broker_flatten_service.py`, `api/routes/reconcile.py` |
 | Idempotency / strategy keys | `core/identifiers.py`, `worker_pool.compute_idempotency_key` |
 
 ## Alembic HEAD
 
-Chain ends at revision **`b6d8f0a2c147`** (`kill_switch_clear_columns.py` — adds `cleared_at`, `cleared_by` on `kill_switch_operations`). Full chain in [`backend-persistence.md`](backend-persistence.md).
+Chain ends at revision **`f4a8c2d1e903`** (`broker_positions_reconcile.py`). Full chain in [`backend-persistence.md`](backend-persistence.md).
 
 ## Ignore / do not treat as source of truth
 
@@ -158,3 +164,4 @@ Chain ends at revision **`b6d8f0a2c147`** (`kill_switch_clear_columns.py` — ad
 | Claim stale after | `worker_pool.py` | `300s` |
 | Submit min interval | `main.py` → adapter | `0.2s` |
 | Kill-switch flatten concurrency | `kill_switch.py` | `5` |
+| Position reconcile interval | `position_reconciler.py` | `30s` |

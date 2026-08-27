@@ -132,7 +132,8 @@ Target: wire **one scheduler/limiter per Gateway instance**, not one global sche
 
 - Subscribes IBKR market data for open legs via `TWSClient.reqMktData`
 - Mark = last → mid(bid/ask) → close; never uses entry as mark
-- Persists `positions.live_pnl`; hydrate on startup after TWS connect
+- Persists `positions.live_pnl` with coalescing: at most one in-flight write per trade, minimum 1s between successful persists for the same `(account_id, trade_id)`, skips DB write when pnl is unchanged; first mark may persist immediately after hydrate
+- Hydrate on startup after TWS connect
 - Health via `get_market_data_health()` (exposed on demo `:8010/demo/market-data-health`)
 
 ## Hard invariants for agents

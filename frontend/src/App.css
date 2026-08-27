@@ -2327,4 +2327,230 @@ thead th {
   padding: 0 4px;
 }
 
+/* Reconcile dashboard */
+.reconcile-page {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.reconcile-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 16px;
+}
+
+.reconcile-title-block h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.reconcile-subtitle {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.reconcile-meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.reconcile-refresh-btn {
+  padding: 6px 14px;
+  background: var(--panel-2);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.reconcile-loading {
+  color: var(--muted);
+  padding: 24px 0;
+}
+
+.reconcile-error {
+  padding: 12px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.reconcile-alert {
+  padding: 10px 14px;
+  font-size: 12px;
+}
+
+.reconcile-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.reconcile-kpi {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.reconcile-kpi .kpi-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.reconcile-kpi .kpi-value {
+  font-size: 22px;
+  font-weight: 700;
+  font-family: var(--mono);
+}
+
+.reconcile-kpi.match .kpi-value { color: var(--green); }
+.reconcile-kpi.ghost .kpi-value { color: var(--amber); }
+.reconcile-kpi.orphan .kpi-value { color: var(--red); }
+.reconcile-kpi.drift .kpi-value { color: var(--blue); }
+.reconcile-kpi.unmapped .kpi-value { color: var(--muted); }
+
+.reconcile-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.reconcile-panel-head {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.reconcile-panel-head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.reconcile-panel-hint {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.reconcile-table-wrap {
+  overflow-x: auto;
+}
+
+.reconcile-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+}
+
+.reconcile-table thead tr {
+  background: var(--panel-2);
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+
+.reconcile-table th,
+.reconcile-table td {
+  padding: 10px 16px;
+}
+
+.reconcile-table tbody tr {
+  border-bottom: 1px solid var(--line);
+}
+
+.reconcile-table td.mono {
+  font-family: var(--mono);
+}
+
+.reconcile-empty {
+  color: var(--dim);
+  text-align: center;
+  padding: 24px 16px !important;
+}
+
+.reconcile-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.reconcile-badge.match {
+  background: rgba(62, 207, 142, 0.15);
+  color: var(--green);
+}
+
+.reconcile-badge.ghost {
+  background: rgba(245, 166, 35, 0.15);
+  color: var(--amber);
+}
+
+.reconcile-badge.orphan {
+  background: rgba(255, 92, 92, 0.15);
+  color: var(--red);
+}
+
+.reconcile-badge.drift {
+  background: rgba(91, 156, 255, 0.15);
+  color: var(--blue);
+}
+
+.reconcile-badge.unmapped {
+  background: rgba(140, 150, 170, 0.15);
+  color: var(--muted);
+}
+
+.reconcile-squareoff-btn {
+  padding: 4px 10px;
+  background: var(--panel-2);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.reconcile-squareoff-btn:hover:not(:disabled) {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.reconcile-squareoff-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 

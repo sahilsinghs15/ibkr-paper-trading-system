@@ -18,7 +18,7 @@ Dev extras: `httpx`, `mypy`, `pytest`, `pytest-asyncio`, `ruff` (`[project.optio
 
 `conftest.py` defaults `PAPER_EXECUTE_STK_AS_CFD=false` for tests (overrides the production Settings default of `True`).
 
-## Test files (47) → intent
+## Test files (48) → intent
 
 | File | Intent |
 |------|--------|
@@ -51,6 +51,9 @@ Dev extras: `httpx`, `mypy`, `pytest`, `pytest-asyncio`, `ruff` (`[project.optio
 | `test_demo_streaming.py` | Demo streaming helpers (no IBKR) |
 | `test_demo_streaming_signal_persistence.py` | Demo signal display / persistence |
 | `test_tws_connection.py` | TWSClient lifecycle |
+| `test_position_reconciler.py` | IBKR snapshot + ledger diff (no live TWS) |
+| `test_reconcile_api.py` | GET `/api/v1/reconcile/positions` |
+| `test_broker_flatten_api.py` | POST `/api/v1/reconcile/positions/flatten` |
 | `test_market_data_pipeline.py` | Live PnL / market data |
 | `test_instrument_master_discover.py` | Discover script (mocked) |
 | `test_seed_fetcher.py` | NASDAQ seed fetcher fixtures |
@@ -78,6 +81,7 @@ Dev extras: `httpx`, `mypy`, `pytest`, `pytest-asyncio`, `ruff` (`[project.optio
 | OMS / basket | `.venv/bin/pytest tests/test_oms.py tests/test_basket_coordinator.py tests/test_basket_retry.py` |
 | Concurrency / claims | `.venv/bin/pytest tests/test_mft_concurrency_recovery.py tests/test_tradingview_webhook.py` |
 | Kill switch | `.venv/bin/pytest tests/test_kill_switch.py tests/test_kill_switch_reconciliation_fix.py` |
+| Position reconcile | `.venv/bin/pytest tests/test_position_reconciler.py tests/test_reconcile_api.py tests/test_broker_flatten_api.py` |
 | Full integration (mocked IBKR) | `.venv/bin/pytest tests/test_tradingview_execution_integration.py tests/test_hardening_lifecycle.py` |
 | Stress (heavy) | `.venv/bin/pytest tests/test_burst_stress_150_300.py tests/test_burst_stress_500_and_kill_switch.py` |
 

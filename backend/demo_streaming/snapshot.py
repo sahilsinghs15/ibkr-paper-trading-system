@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.account import AccountModel
@@ -20,10 +20,42 @@ RISK_OPEN = "OPEN"
 RISK_CLOSED = "CLOSED"
 
 
+def _norm_ibkr(value: str | None) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip().upper()
+    return s or None
+
+
+def _payload_matches_account(
+    raw_payload: Any,
+    target_acc_id: int | None,
+    target_ibkr_acc: str | None,
+) -> bool:
+    if not raw_payload or not isinstance(raw_payload, dict):
+        return False
+    p_acc = raw_payload.get("account") or raw_payload.get("ibkr_account") or raw_payload.get("account_id")
+    if p_acc is None or str(p_acc).strip() == "":
+        return False
+    p_str = str(p_acc).strip()
+    if target_ibkr_acc and p_str.upper() == target_ibkr_acc.upper():
+        return True
+    if target_acc_id is not None and p_str.isdigit() and int(p_str) == target_acc_id:
+        return True
+    return False
+
+
 def _dec(value: Decimal | None) -> str | None:
     if value is None:
         return None
     return format(value, "f")
+
+
+def _quantize_pnl(value: Decimal | None) -> Decimal | None:
+    """Round OPEN live_pnl to cents so sub-cent IBKR ticks do not churn fingerprints."""
+    if value is None:
+        return None
+    return value.quantize(Decimal("0.01"))
 
 
 def _side(signed_qty: Decimal | None) -> str | None:
@@ -126,7 +158,11 @@ def _leg_payload(
         filled = _dec(entry_order.fill_qty)
     else:
         filled = _qty(signed_qty)
-    live_pnl = _dec(position.live_pnl) if position.risk_state == RISK_OPEN else None
+    live_pnl = (
+        _dec(_quantize_pnl(position.live_pnl))
+        if position.risk_state == RISK_OPEN
+        else None
+    )
     realized_pnl = (
         _dec(position.realised_pnl)
         if (position.risk_state == RISK_CLOSED or position.realised_pnl != Decimal(0))
@@ -225,11 +261,24 @@ def position_leg_payloads(
 
 
 _VOLATILE_PAYLOAD_KEYS = frozenset({"timestamp"})
+_PNL_ONLY_PAYLOAD_KEYS = frozenset({"timestamp", "unrealized_pnl", "market_data_status"})
 
 
 def fingerprint(payload: dict[str, Any]) -> tuple:
+    """Full payload fingerprint (legacy). Prefer structural_fingerprint + pnl_fingerprint."""
     stable = {k: v for k, v in payload.items() if k not in _VOLATILE_PAYLOAD_KEYS}
     return (json.dumps(stable, sort_keys=True, default=str),)
+
+
+def structural_fingerprint(payload: dict[str, Any]) -> tuple:
+    """Fingerprint excluding timestamp and PnL fields (fills, status, etc.)."""
+    stable = {k: v for k, v in payload.items() if k not in _PNL_ONLY_PAYLOAD_KEYS}
+    return (json.dumps(stable, sort_keys=True, default=str),)
+
+
+def pnl_fingerprint(payload: dict[str, Any]) -> tuple:
+    """Fingerprint for quantized unrealized_pnl only."""
+    return (payload.get("unrealized_pnl"),)
 
 
 async def load_position_rows(session: AsyncSession) -> list[tuple[PositionModel, AccountModel]]:
@@ -273,16 +322,32 @@ async def load_position_with_account(
     return result.first()
 
 
-async def load_baskets(session: AsyncSession) -> dict[tuple[int, str], list[BasketModel]]:
-    rows = (await session.execute(select(BasketModel))).scalars().all()
+async def load_baskets(
+    session: AsyncSession,
+    keys: set[tuple[int, str]] | None = None,
+) -> dict[tuple[int, str], list[BasketModel]]:
+    if keys is not None and not keys:
+        return {}
+    stmt = select(BasketModel)
+    if keys is not None:
+        stmt = stmt.where(tuple_(BasketModel.account_id, BasketModel.trade_id).in_(list(keys)))
+    rows = (await session.execute(stmt)).scalars().all()
     grouped: dict[tuple[int, str], list[BasketModel]] = {}
     for row in rows:
         grouped.setdefault((row.account_id, row.trade_id), []).append(row)
     return grouped
 
 
-async def load_orders(session: AsyncSession) -> dict[tuple[int, str], list[OrderModel]]:
-    rows = (await session.execute(select(OrderModel))).scalars().all()
+async def load_orders(
+    session: AsyncSession,
+    keys: set[tuple[int, str]] | None = None,
+) -> dict[tuple[int, str], list[OrderModel]]:
+    if keys is not None and not keys:
+        return {}
+    stmt = select(OrderModel).where(OrderModel.trade_id.is_not(None))
+    if keys is not None:
+        stmt = stmt.where(tuple_(OrderModel.account_id, OrderModel.trade_id).in_(list(keys)))
+    rows = (await session.execute(stmt)).scalars().all()
     grouped: dict[tuple[int, str], list[OrderModel]] = {}
     for row in rows:
         if not row.trade_id:
@@ -301,6 +366,7 @@ async def load_signals(
     account_id: int | None = None,
     ibkr_account: str | None = None,
     return_dict: bool = False,
+    for_watch: bool = False,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     if session is None or not hasattr(session, "execute"):
         return {"signals": [], "page": 1, "page_size": page_size, "total": 0, "total_pages": 1, "counts": {"total": 0, "processing": 0, "accepted": 0, "rejected": 0, "square_off": 0}} if return_dict else []
@@ -312,10 +378,12 @@ async def load_signals(
     # Load Account map for account_id <-> ibkr_account resolution
     acc_rows = (await session.execute(select(AccountModel))).scalars().all()
     acc_by_id: dict[int, AccountModel] = {a.id: a for a in acc_rows}
-    acc_by_ibkr: dict[str, AccountModel] = {a.ibkr_account: a for a in acc_rows if a.ibkr_account}
+    acc_by_ibkr: dict[str, AccountModel] = {
+        a.ibkr_account.strip().upper(): a for a in acc_rows if a.ibkr_account
+    }
 
     target_acc_id: int | None = account_id
-    target_ibkr_acc: str | None = ibkr_account
+    target_ibkr_acc: str | None = _norm_ibkr(ibkr_account)
     if target_ibkr_acc and not target_acc_id:
         acc_obj = acc_by_ibkr.get(target_ibkr_acc)
         if acc_obj:
@@ -323,9 +391,15 @@ async def load_signals(
     elif target_acc_id and not target_ibkr_acc:
         acc_obj = acc_by_id.get(target_acc_id)
         if acc_obj:
-            target_ibkr_acc = acc_obj.ibkr_account
+            target_ibkr_acc = _norm_ibkr(acc_obj.ibkr_account)
+    target_ibkr_canonical = (
+        acc_by_id[target_acc_id].ibkr_account
+        if target_acc_id is not None and target_acc_id in acc_by_id
+        else (ibkr_account.strip() if ibkr_account else None)
+    )
 
     stmt = select(SignalModel)
+    job_scopes_by_sig: dict[str, list[str]] = {}
     if target_acc_id is not None or target_ibkr_acc:
         matched_sig_ids: set[int] = set()
 
@@ -345,7 +419,10 @@ async def load_signals(
             if not acc_scope:
                 continue
             scope_str = str(acc_scope).strip()
-            if (target_acc_id and scope_str == str(target_acc_id)) or (target_ibkr_acc and scope_str.upper() == target_ibkr_acc.upper()):
+            job_scopes_by_sig.setdefault(str(sig_str_id), []).append(scope_str)
+            if (target_acc_id and scope_str == str(target_acc_id)) or (
+                target_ibkr_acc and scope_str.upper() == target_ibkr_acc.upper()
+            ):
                 s_stmt = select(SignalModel.id).where(SignalModel.signal_id == sig_str_id)
                 s_res = (await session.execute(s_stmt)).scalars().all()
                 matched_sig_ids.update(s_res)
@@ -375,12 +452,13 @@ async def load_signals(
 
     stmt = stmt.order_by(SignalModel.received_at.desc(), SignalModel.id.desc())
 
+    if for_watch:
+        stmt = stmt.limit(eff_page_size)
+
     all_rows = (await session.execute(stmt)).scalars().all()
     if not all_rows:
         empty_res = {"signals": [], "page": eff_page, "page_size": eff_page_size, "total": 0, "total_pages": 1, "counts": {"total": 0, "processing": 0, "accepted": 0, "rejected": 0, "square_off": 0}}
         return empty_res if return_dict else []
-
-    total_count = len(all_rows)
 
     # To calculate canonical counts & filter accurately, we batch-load order & event info for all_rows
     all_sig_ids = [s.id for s in all_rows]
@@ -449,6 +527,33 @@ async def load_signals(
         matched_orders = orders_by_sig_id.get(sig.id, [])
         matched_orders = sorted(matched_orders, key=lambda x: x.id)
 
+        sig_acc_id: int | None = None
+        sig_ibkr_acc: str | None = None
+        if target_acc_id is not None or target_ibkr_acc:
+            account_orders = [
+                o for o in matched_orders
+                if target_acc_id is None or o.account_id == target_acc_id
+            ]
+            payload_match = _payload_matches_account(sig.raw_payload, target_acc_id, target_ibkr_acc)
+            job_match = False
+            for scope_str in job_scopes_by_sig.get(str(sig.signal_id), []):
+                if target_acc_id is not None and scope_str == str(target_acc_id):
+                    job_match = True
+                    break
+                if target_ibkr_acc and scope_str.upper() == target_ibkr_acc.upper():
+                    job_match = True
+                    break
+            if account_orders:
+                matched_orders = account_orders
+            elif job_match or payload_match:
+                matched_orders = []
+            else:
+                continue
+            sig_acc_id = target_acc_id
+            sig_ibkr_acc = target_ibkr_canonical
+
+        scoped_order_ids = {o.id for o in matched_orders if o.id}
+
         orders_payload = []
         for o in matched_orders:
             m_execs = execs_by_order_id.get(o.id) or (execs_by_internal_id.get(o.internal_order_id) if o.internal_order_id else []) or []
@@ -487,6 +592,11 @@ async def load_signals(
             )
 
         matched_events = events_by_sig_id.get(sig.id, [])
+        if target_acc_id is not None or target_ibkr_acc:
+            matched_events = [
+                ev for ev in matched_events
+                if ev.order_id is None or ev.order_id in scoped_order_ids
+            ]
         matched_events = sorted(matched_events, key=lambda x: x.id)
 
         events_payload = [
@@ -503,21 +613,7 @@ async def load_signals(
             sig, orders_payload, events_payload
         )
 
-        if c_status == "PROCESSING":
-            count_processing += 1
-        elif c_status == "ACCEPTED":
-            count_accepted += 1
-        elif c_status == "SQUARE-OFF":
-            count_square_off += 1
-            count_rejected += 1
-        else:
-            count_rejected += 1
-
-        # Resolve account_id and ibkr_account for sig
-        sig_acc_id: int | None = None
-        sig_ibkr_acc: str | None = None
-
-        if matched_orders:
+        if not sig_ibkr_acc and matched_orders:
             for mo in matched_orders:
                 if mo.account_id:
                     sig_acc_id = mo.account_id
@@ -549,9 +645,25 @@ async def load_signals(
                         sig_ibkr_acc = acc_obj.ibkr_account
                 else:
                     sig_ibkr_acc = p_str
-                    acc_obj = acc_by_ibkr.get(p_str)
+                    acc_obj = acc_by_ibkr.get(p_str.upper())
                     if acc_obj:
                         sig_acc_id = acc_obj.id
+
+        if target_ibkr_acc and sig_ibkr_acc and _norm_ibkr(sig_ibkr_acc) != target_ibkr_acc:
+            continue
+        if target_acc_id is not None and sig_acc_id is not None and sig_acc_id != target_acc_id:
+            continue
+
+        if not for_watch:
+            if c_status == "PROCESSING":
+                count_processing += 1
+            elif c_status == "ACCEPTED":
+                count_accepted += 1
+            elif c_status == "SQUARE-OFF":
+                count_square_off += 1
+                count_rejected += 1
+            else:
+                count_rejected += 1
 
         all_reconciled.append(
             {
@@ -577,6 +689,27 @@ async def load_signals(
                 "events": events_payload,
             }
         )
+
+    if for_watch:
+        if not return_dict:
+            return all_reconciled
+        return {
+            "signals": all_reconciled,
+            "page": 1,
+            "page_size": eff_page_size,
+            "total": len(all_reconciled),
+            "filtered_total": len(all_reconciled),
+            "total_pages": 1,
+            "counts": {
+                "total": 0,
+                "processing": 0,
+                "accepted": 0,
+                "rejected": 0,
+                "square_off": 0,
+            },
+        }
+
+    total_count = len(all_reconciled)
 
     # Filter by canonical status if requested
     filtered = all_reconciled
@@ -717,6 +850,11 @@ def reconcile_signal_status(
         )
         if has_working:
             return ("PROCESSING", True, "Working orders executing in IBKR", None, None)
+
+        if any(o.get("status") in ("CANCELLED", "REJECTED", "ERROR") for o in primary_orders):
+            proc_at = db_processed
+            duration = _duration_sec(sig.received_at, proc_at)
+            return ("REJECTED", False, "Broker leg order rejected or cancelled", proc_at, duration)
 
     # 4. Explicit PROCESSED status in DB
     if raw_status in ("PROCESSED", "FILLED", "SUCCESS"):

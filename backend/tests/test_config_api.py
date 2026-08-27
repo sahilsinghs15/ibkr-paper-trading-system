@@ -3,7 +3,7 @@
 import uuid
 from collections.abc import Generator
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,7 +26,21 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]
         patch("app.broker.ibkr.tws_client.TWSClient.disconnect_clean"),
         patch(
             "app.broker.ibkr.tws_client.TWSClient.is_connected",
-            return_value=True,
+            return_value=False,
+        ),
+        patch("app.services.worker_pool.ExecutionWorkerPool.start", new_callable=AsyncMock),
+        patch("app.services.worker_pool.ExecutionWorkerPool.stop", new_callable=AsyncMock),
+        patch(
+            "app.services.position_reconciler.PositionReconciler.start",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.position_reconciler.PositionReconciler.stop",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.order_manager.OrderManager.hydrate_live_pnl",
+            new_callable=AsyncMock,
         ),
         patch(
             "app.services.order_manager.OrderManager.hydrate_live_pnl",

@@ -11,16 +11,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from demo_streaming.snapshot import (
     classify_event,
-    fingerprint,
     load_baskets,
     load_orders,
     load_position_rows,
     load_signals,
+    pnl_fingerprint,
     position_leg_payloads,
+    structural_fingerprint,
 )
 from demo_streaming.stream import PositionStream
 
 logger = logging.getLogger(__name__)
+
+_MIN_POLL_SLEEP_SEC = 0.25
 
 
 def _signal_fp(sig: dict) -> tuple:
@@ -37,16 +40,20 @@ class PositionBridge:
         *,
         poll_interval: float = 2.0,
         signal_watch_limit: int = 500,
+        pnl_emit_interval: float = 5.0,
     ) -> None:
         self._session_factory = session_factory
         self._stream = stream
         self._poll_interval = poll_interval
         self._signal_watch_limit = signal_watch_limit
-        self._fingerprints: dict[tuple[int, str, str], tuple] = {}
+        self._pnl_emit_interval = pnl_emit_interval
+        self._structural_fingerprints: dict[tuple[int, str, str], tuple] = {}
+        self._pnl_fingerprints: dict[tuple[int, str, str], tuple] = {}
         self._status: dict[tuple[int, str, str], str] = {}
         self._last_payload: dict[tuple[int, str, str], dict] = {}
         self._signal_fingerprints: dict[int, tuple] = {}
         self._last_signal_id = 0
+        self._last_pnl_emit: dict[tuple[int, str], float] = {}
         self._baseline_ready = False
 
     async def restore_baseline(self) -> None:
@@ -54,9 +61,16 @@ class PositionBridge:
         async with self._session_factory() as session:
             payloads = await self._collect(session)
             sig_res = await load_signals(
-                session, page_size=self._signal_watch_limit, return_dict=True
+                session,
+                page_size=self._signal_watch_limit,
+                return_dict=True,
+                for_watch=True,
             )
             sigs = sig_res.get("signals", []) if isinstance(sig_res, dict) else sig_res
+            watch_ids = {int(s.get("id") or 0) for s in sigs if int(s.get("id") or 0) > 0}
+            self._signal_fingerprints = {
+                sid: fp for sid, fp in self._signal_fingerprints.items() if sid in watch_ids
+            }
             for s in sigs:
                 s_id = int(s.get("id") or 0)
                 if s_id > 0:
@@ -64,19 +78,31 @@ class PositionBridge:
                     self._last_signal_id = max(self._last_signal_id, s_id)
         for payload in payloads:
             key = _key(payload)
-            self._fingerprints[key] = fingerprint(payload)
+            self._structural_fingerprints[key] = structural_fingerprint(payload)
+            self._pnl_fingerprints[key] = pnl_fingerprint(payload)
             self._status[key] = str(payload.get("status") or "")
             self._last_payload[key] = payload
         self._baseline_ready = True
-        logger.info("Demo stream baseline restored: %d legs, last_signal_id=%d", len(self._fingerprints), self._last_signal_id)
+        logger.info(
+            "Demo stream baseline restored: %d legs, last_signal_id=%d",
+            len(self._structural_fingerprints),
+            self._last_signal_id,
+        )
 
     async def poll_once(self) -> list[dict]:
         async with self._session_factory() as session:
             payloads = await self._collect(session)
             sig_res = await load_signals(
-                session, page_size=self._signal_watch_limit, return_dict=True
+                session,
+                page_size=self._signal_watch_limit,
+                return_dict=True,
+                for_watch=True,
             )
             sigs = sig_res.get("signals", []) if isinstance(sig_res, dict) else sig_res
+        watch_ids = {int(s.get("id") or 0) for s in sigs if int(s.get("id") or 0) > 0}
+        self._signal_fingerprints = {
+            sid: fp for sid, fp in self._signal_fingerprints.items() if sid in watch_ids
+        }
         emitted: list[dict] = []
         for sig in reversed(sigs):
             sig_id = int(sig.get("id") or 0)
@@ -98,41 +124,74 @@ class PositionBridge:
                     len(sig.get("orders") or []),
                 )
         seen: set[tuple[int, str, str]] = set()
+        pnl_only_by_trade: dict[tuple[int, str], dict] = {}
         for payload in payloads:
             key = _key(payload)
             seen.add(key)
-            current_fp = fingerprint(payload)
-            previous_fp = self._fingerprints.get(key)
+            cur_struct = structural_fingerprint(payload)
+            cur_pnl = pnl_fingerprint(payload)
+            prev_struct = self._structural_fingerprints.get(key)
+            prev_pnl = self._pnl_fingerprints.get(key)
             previous_status = self._status.get(key)
             previous_payload = self._last_payload.get(key)
-            if previous_fp == current_fp:
+
+            if prev_struct == cur_struct and prev_pnl == cur_pnl:
                 self._last_payload[key] = payload
                 continue
+
             if not self._baseline_ready:
-                self._fingerprints[key] = current_fp
+                self._structural_fingerprints[key] = cur_struct
+                self._pnl_fingerprints[key] = cur_pnl
                 self._status[key] = str(payload.get("status") or "")
                 self._last_payload[key] = payload
                 continue
-            event = classify_event(
-                previous_status=previous_status,
-                current_status=str(payload.get("status") or ""),
-                previous_fill=previous_payload.get("filled_quantity") if previous_payload else None,
-                current_fill=payload.get("filled_quantity"),
-                close_in_progress=bool(payload.get("close_in_progress")),
-            )
-            record = {"event": event, **payload}
+
+            struct_changed = prev_struct != cur_struct
+            pnl_changed = prev_pnl != cur_pnl
+
+            if struct_changed:
+                event = classify_event(
+                    previous_status=previous_status,
+                    current_status=str(payload.get("status") or ""),
+                    previous_fill=previous_payload.get("filled_quantity") if previous_payload else None,
+                    current_fill=payload.get("filled_quantity"),
+                    close_in_progress=bool(payload.get("close_in_progress")),
+                )
+                record = {"event": event, **payload}
+                await self._stream.xadd(record)
+                self._structural_fingerprints[key] = cur_struct
+                self._pnl_fingerprints[key] = cur_pnl
+                self._status[key] = str(payload.get("status") or "")
+                self._last_payload[key] = payload
+                emitted.append(record)
+                self._log_position_event(event, key)
+            elif pnl_changed:
+                trade_key = (key[0], key[1])
+                existing = pnl_only_by_trade.get(trade_key)
+                sym = str(payload.get("symbol") or "")
+                if existing is None or sym < str(existing.get("symbol") or ""):
+                    pnl_only_by_trade[trade_key] = payload
+
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        for trade_key, payload in pnl_only_by_trade.items():
+            last_emit = self._last_pnl_emit.get(trade_key, 0.0)
+            if now - last_emit < self._pnl_emit_interval:
+                continue
+            key = _key(payload)
+            record = {"event": "POSITION_UPDATE", **payload}
             await self._stream.xadd(record)
-            self._fingerprints[key] = current_fp
-            self._status[key] = str(payload.get("status") or "")
-            self._last_payload[key] = payload
+            self._last_pnl_emit[trade_key] = now
             emitted.append(record)
-            logger.info(
-                "Demo stream published: event=%s account_id=%s trade_id=%s symbol=%s",
-                event,
-                key[0],
-                key[1],
-                key[2],
-            )
+            self._log_position_event("POSITION_UPDATE", key)
+            for leg in payloads:
+                if (leg["account_id"], leg["trade_id"]) != trade_key:
+                    continue
+                leg_key = _key(leg)
+                self._structural_fingerprints[leg_key] = structural_fingerprint(leg)
+                self._pnl_fingerprints[leg_key] = pnl_fingerprint(leg)
+                self._last_payload[leg_key] = leg
+
         vanished = [
             key for key in list(self._status) if key not in seen and self._status[key] == "OPEN"
         ]
@@ -151,11 +210,26 @@ class PositionBridge:
             record["symbol"] = key[2]
             await self._stream.xadd(record)
             self._status[key] = "CLOSED"
-            self._fingerprints.pop(key, None)
+            self._structural_fingerprints.pop(key, None)
+            self._pnl_fingerprints.pop(key, None)
             self._last_payload.pop(key, None)
             emitted.append(record)
+            logger.info(
+                "Demo stream published: event=POSITION_CLOSED account_id=%s trade_id=%s symbol=%s",
+                key[0],
+                key[1],
+                key[2],
+            )
         self._baseline_ready = True
         return emitted
+
+    def _log_position_event(self, event: str, key: tuple[int, str, str]) -> None:
+        msg = "Demo stream published: event=%s account_id=%s trade_id=%s symbol=%s"
+        args = (event, key[0], key[1], key[2])
+        if event == "POSITION_UPDATE":
+            logger.debug(msg, *args)
+        else:
+            logger.info(msg, *args)
 
     async def run_forever(self) -> None:
         await self.restore_baseline()
@@ -168,7 +242,7 @@ class PositionBridge:
             except Exception:
                 logger.exception("Demo position poll failed; will retry")
             elapsed = asyncio.get_running_loop().time() - started
-            await asyncio.sleep(max(0.0, self._poll_interval - elapsed))
+            await asyncio.sleep(max(_MIN_POLL_SLEEP_SEC, self._poll_interval - elapsed))
 
     async def _payloads_for_vanished(
         self, keys: list[tuple[int, str, str]]
@@ -199,8 +273,9 @@ class PositionBridge:
     async def _collect(self, session: AsyncSession) -> list[dict]:
         now = datetime.now(UTC)
         rows = await load_position_rows(session)
-        baskets = await load_baskets(session)
-        orders = await load_orders(session)
+        keys = {(position.account_id, position.trade_id) for position, _account in rows}
+        baskets = await load_baskets(session, keys)
+        orders = await load_orders(session, keys)
         payloads: list[dict] = []
         for position, account in rows:
             key = (position.account_id, position.trade_id)

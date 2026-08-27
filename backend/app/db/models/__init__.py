@@ -2,6 +2,7 @@
 
 from app.db.models.account import AccountModel, PerSymbolLimitModel
 from app.db.models.basket import BasketModel
+from app.db.models.broker_position import BrokerPositionModel, PositionReconcileRunModel
 from app.db.models.event import EventLogModel
 from app.db.models.execution import ExecutionModel
 from app.db.models.execution_claim import ExecutionClaimModel
@@ -17,6 +18,7 @@ __all__ = [
     "AccountModel",
     "AllocationModel",
     "BasketModel",
+    "BrokerPositionModel",
     "EventLogModel",
     "ExecutionClaimModel",
     "ExecutionModel",
@@ -26,6 +28,7 @@ __all__ = [
     "OrderModel",
     "PerSymbolLimitModel",
     "PositionModel",
+    "PositionReconcileRunModel",
     "SignalModel",
     "StrategyModel",
 ]

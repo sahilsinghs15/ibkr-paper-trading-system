@@ -17,6 +17,8 @@ class DemoStreamSettings(BaseSettings):
     demo_stream_port: int = 8010
     demo_poll_interval_ms: int = 2000
     demo_signal_watch_limit: int = 500
+    demo_pnl_emit_interval_ms: int = 5000
+    demo_stream_maxlen: int = 10000
     demo_stream_name: str = "positions:stream"
     trading_api_url: str = "http://127.0.0.1:8000"
 

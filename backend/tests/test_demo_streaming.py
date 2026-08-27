@@ -7,11 +7,17 @@ import pytest
 
 from demo_streaming.publisher import PositionBridge
 from demo_streaming.snapshot import (
+    _quantize_pnl,
     classify_event,
     fingerprint,
+    load_baskets,
+    load_orders,
+    pnl_fingerprint,
     position_leg_payloads,
     reconcile_signal_status,
+    structural_fingerprint,
 )
+from demo_streaming.stream import PositionStream
 
 
 class _Pos:
@@ -166,7 +172,7 @@ async def test_bridge_emits_position_update_when_live_pnl_changes() -> None:
     emitted = await bridge.poll_once()
     assert emitted
     assert emitted[0]["event"] == "POSITION_UPDATE"
-    assert emitted[0]["unrealized_pnl"] == "492"
+    assert emitted[0]["unrealized_pnl"] == "492.00"
     assert emitted[0]["trade_id"] == "MBG-PAPER-DEMO"
     assert emitted[0]["instrument_type"] == "CFD"
 
@@ -512,3 +518,215 @@ def test_fingerprint_ignores_timestamp() -> None:
     assert fingerprint(base) == fingerprint(other)
     other["unrealized_pnl"] = "1.5"
     assert fingerprint(base) != fingerprint(other)
+
+
+def test_pnl_quantize_sub_cent_equal() -> None:
+    assert _quantize_pnl(Decimal("1.001")) == Decimal("1.00")
+    assert _quantize_pnl(Decimal("1.004")) == Decimal("1.00")
+    assert _quantize_pnl(Decimal("1.006")) == Decimal("1.01")
+
+
+def test_structural_fingerprint_ignores_pnl() -> None:
+    base = {"status": "OPEN", "filled_quantity": "275", "unrealized_pnl": "0", "market_data_status": "LIVE"}
+    other = dict(base)
+    other["unrealized_pnl"] = "492.00"
+    other["market_data_status"] = "UNAVAILABLE"
+    assert structural_fingerprint(base) == structural_fingerprint(other)
+    assert pnl_fingerprint(base) != pnl_fingerprint(other)
+
+
+@pytest.mark.asyncio
+async def test_load_baskets_empty_keys_skips_query() -> None:
+    from unittest.mock import AsyncMock
+
+    session = AsyncMock()
+    result = await load_baskets(session, set())
+    assert result == {}
+    session.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_load_orders_empty_keys_skips_query() -> None:
+    from unittest.mock import AsyncMock
+
+    session = AsyncMock()
+    result = await load_orders(session, set())
+    assert result == {}
+    session.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_load_orders_with_keys_uses_in_clause() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from demo_streaming.snapshot import load_orders
+
+    session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    session.execute.return_value = mock_result
+
+    await load_orders(session, {(7, "MBG-PAPER-DEMO")})
+    assert session.execute.called
+    compiled = str(session.execute.call_args[0][0])
+    assert "account_id" in compiled.lower() or "trade_id" in compiled.lower()
+
+
+@pytest.mark.asyncio
+async def test_watch_load_signals_applies_sql_limit() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from demo_streaming.snapshot import load_signals
+
+    session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    session.execute.return_value = mock_result
+
+    await load_signals(session, page_size=50, return_dict=True, for_watch=True)
+    stmt = session.execute.call_args[0][0]
+    assert getattr(stmt, "_limit_clause", None) is not None or "LIMIT" in str(stmt).upper()
+
+
+@pytest.mark.asyncio
+async def test_pnl_coalesce_emits_one_leg_per_trade() -> None:
+    class _CM:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *args):
+            return None
+
+    class _Factory:
+        def __call__(self):
+            return _CM()
+
+    stream = FakeStream()
+    bridge = PositionBridge(
+        session_factory=_Factory(),  # type: ignore[arg-type]
+        stream=stream,
+        poll_interval=0.01,
+        pnl_emit_interval=5.0,
+    )
+    ts = datetime.now(UTC)
+    open_legs = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=ts)
+    updated = _Pos()
+    updated.live_pnl = Decimal(492)
+    live_legs = position_leg_payloads(updated, _Acct(), [], [], timestamp=ts)
+
+    async def baseline(_session=None):
+        return open_legs
+
+    async def live(_session=None):
+        return live_legs
+
+    bridge._collect = baseline  # type: ignore[method-assign]
+    await bridge.restore_baseline()
+    bridge._collect = live  # type: ignore[method-assign]
+    emitted = await bridge.poll_once()
+    pnl_events = [e for e in emitted if e.get("event") == "POSITION_UPDATE"]
+    assert len(pnl_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_pnl_coalesce_respects_interval() -> None:
+    class _CM:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *args):
+            return None
+
+    class _Factory:
+        def __call__(self):
+            return _CM()
+
+    stream = FakeStream()
+    bridge = PositionBridge(
+        session_factory=_Factory(),  # type: ignore[arg-type]
+        stream=stream,
+        poll_interval=0.01,
+        pnl_emit_interval=60.0,
+    )
+    ts = datetime.now(UTC)
+    legs_v1 = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=ts)
+    pos_v2 = _Pos()
+    pos_v2.live_pnl = Decimal(100)
+    legs_v2 = position_leg_payloads(pos_v2, _Acct(), [], [], timestamp=ts)
+    pos_v3 = _Pos()
+    pos_v3.live_pnl = Decimal(200)
+    legs_v3 = position_leg_payloads(pos_v3, _Acct(), [], [], timestamp=ts)
+
+    async def collect_v1(_session=None):
+        return legs_v1
+
+    async def collect_v2(_session=None):
+        return legs_v2
+
+    async def collect_v3(_session=None):
+        return legs_v3
+
+    bridge._collect = collect_v1  # type: ignore[method-assign]
+    await bridge.restore_baseline()
+    bridge._collect = collect_v2  # type: ignore[method-assign]
+    first = await bridge.poll_once()
+    assert any(e.get("event") == "POSITION_UPDATE" for e in first)
+
+    bridge._collect = collect_v3  # type: ignore[method-assign]
+    second = await bridge.poll_once()
+    assert not any(e.get("event") == "POSITION_UPDATE" for e in second)
+
+
+@pytest.mark.asyncio
+async def test_structural_fill_change_emits_immediately() -> None:
+    class _CM:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *args):
+            return None
+
+    class _Factory:
+        def __call__(self):
+            return _CM()
+
+    stream = FakeStream()
+    bridge = PositionBridge(
+        session_factory=_Factory(),  # type: ignore[arg-type]
+        stream=stream,
+        poll_interval=0.01,
+        pnl_emit_interval=60.0,
+    )
+    ts = datetime.now(UTC)
+    partial = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=ts)
+    partial[0] = dict(partial[0])
+    partial[0]["filled_quantity"] = "100"
+
+    async def baseline(_session=None):
+        return partial
+
+    async def filled(_session=None):
+        full = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=ts)
+        full[0] = dict(full[0])
+        full[0]["filled_quantity"] = "275"
+        return full
+
+    bridge._collect = baseline  # type: ignore[method-assign]
+    await bridge.restore_baseline()
+    bridge._collect = filled  # type: ignore[method-assign]
+    emitted = await bridge.poll_once()
+    assert any(e.get("event") == "POSITION_UPDATE" for e in emitted)
+
+
+@pytest.mark.asyncio
+async def test_position_stream_xadd_passes_maxlen() -> None:
+    from unittest.mock import AsyncMock
+
+    redis = AsyncMock()
+    redis.xadd.return_value = b"1-0"
+    ps = PositionStream(redis, "positions:stream", stream_maxlen=10000)
+    await ps.xadd({"event": "hello"})
+    assert redis.xadd.called
+    kwargs = redis.xadd.call_args.kwargs
+    assert kwargs.get("maxlen") == 10000
+    assert kwargs.get("approximate") is True

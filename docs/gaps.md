@@ -20,7 +20,7 @@ This file lists things agents must **not** claim are implemented. Items appear h
 | Risk-engine auto exit on target / stop / time_limit | No exit-trigger loop found |
 | Redis hot margin / locks / health for trading | Redis only in `demo_streaming` |
 | `signal_legs` table | Not created |
-| Dedicated IBKR reconciler engine as described | Not present as that process |
+| Dedicated IBKR reconciler engine as described | **Partial** — in-process `PositionReconciler` snapshots IBKR lines to `broker_positions`, diffs vs OPEN `positions`, logs to `event_log` / `position_reconcile_runs`. Dashboard at `/account/:ibkrAccount/reconcile` via `GET /api/v1/reconcile/positions`; per-row broker flatten via `POST /api/v1/reconcile/positions/flatten` (no ledger repair, no kill switch) |
 
 ## vs stale product / Postman / old guide claims
 

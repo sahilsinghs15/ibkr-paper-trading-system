@@ -16,6 +16,7 @@ import { KillSwitchModal } from '../components/KillSwitchModal'
 import { StartAgainModal } from '../components/StartAgainModal'
 import { usePnlStore } from '../store/pnlStore'
 import type { ExecutionSettings } from '../types/config'
+import { normalizeIbkrAccount } from '../utils/activeAccount'
 import {
   cleanNumberInput,
   displayStrategy,
@@ -230,7 +231,7 @@ function ExecutionSettingsCard() {
 
 export function AccountSettingsPage() {
   const { ibkrAccount } = useParams<{ ibkrAccount: string }>()
-  const cleanAccount = (ibkrAccount || 'Unknown').trim().toUpperCase()
+  const cleanAccount = normalizeIbkrAccount(ibkrAccount)
 
   const queryClient = useQueryClient()
   const { data: account, isLoading, isError, error, refetch } = useQuery({

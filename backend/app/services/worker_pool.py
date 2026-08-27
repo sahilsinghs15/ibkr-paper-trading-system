@@ -59,6 +59,7 @@ class ExecutionWorkerPool:
         lease_duration_sec: float = 30.0,
         reclaim_interval_sec: float = 15.0,
         claim_stale_after_sec: float = 300.0,
+        idle_poll_interval_sec: float = 0.5,
     ) -> None:
         self._session_factory = session_factory
         self._order_manager = order_manager
@@ -66,6 +67,7 @@ class ExecutionWorkerPool:
         self._lease_duration_sec = lease_duration_sec
         self._reclaim_interval_sec = reclaim_interval_sec
         self._claim_stale_after_sec = claim_stale_after_sec
+        self._idle_poll_interval_sec = idle_poll_interval_sec
         self._workers: list[asyncio.Task] = []
         self._reclaimer_task: asyncio.Task | None = None
         self._running = False
@@ -149,7 +151,7 @@ class ExecutionWorkerPool:
             try:
                 jobs = await self._claim_job(worker_id)
                 if not jobs:
-                    await asyncio.sleep(0.05)
+                    await asyncio.sleep(self._idle_poll_interval_sec)
                     continue
 
                 for job in jobs:

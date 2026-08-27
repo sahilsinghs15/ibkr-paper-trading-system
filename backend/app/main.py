@@ -22,6 +22,7 @@ from app.services.model_blue.db_trade_book import DatabaseModelBlueTradeBook
 from app.services.model_blue.persistence import ModelBlueExecutionPersistence
 from app.services.order_manager import OrderManager
 from app.services.pnl import LivePnlService
+from app.services.position_reconciler import PositionReconciler
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,10 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     await worker_pool.start()
     fastapi_app.state.worker_pool = worker_pool
 
+    position_reconciler = PositionReconciler(AsyncSessionLocal, client)
+    await position_reconciler.start()
+    fastapi_app.state.position_reconciler = position_reconciler
+
     critical_count = 0
     baskets = getattr(order_manager, "_baskets", None)
     if baskets is not None:
@@ -129,6 +134,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     yield
 
     logger.info("Shutting down paper-trading application...")
+    if hasattr(fastapi_app.state, "position_reconciler"):
+        await fastapi_app.state.position_reconciler.stop()
     if hasattr(fastapi_app.state, "worker_pool"):
         await fastapi_app.state.worker_pool.stop()
     client.disconnect_clean()

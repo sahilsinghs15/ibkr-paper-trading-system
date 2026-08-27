@@ -21,12 +21,14 @@
 | `execution_settings` | `ExecutionSettingsModel` | `db/models/execution_settings.py` |
 | `execution_claims` | `ExecutionClaimModel` | `db/models/execution_claim.py` |
 | `kill_switch_operations` | `KillSwitchOperationModel` | `db/models/kill_switch.py` |
+| `broker_positions` | `BrokerPositionModel` | `db/models/broker_position.py` | Latest IBKR inventory snapshot (full replace each sweep) |
+| `position_reconcile_runs` | `PositionReconcileRunModel` | `db/models/broker_position.py` | One row per reconcile sweep + mismatch summary |
 
 There is **no** `signal_legs` table. Legs live in signal payload / pair columns on `signals` (and related persistence helpers), not a child table.
 
 There are **no** `gateways`, `gateway_clients`, or `account_gateway_bindings` tables. Multi-gateway mapping is target-only ([`backend-multi-gateway.md`](backend-multi-gateway.md)).
 
-## Alembic revisions (16 files, HEAD `b6d8f0a2c147`)
+## Alembic revisions (18 files, HEAD `f4a8c2d1e903`)
 
 | Revision | File | Topic |
 |----------|------|-------|
@@ -46,6 +48,8 @@ There are **no** `gateways`, `gateway_clients`, or `account_gateway_bindings` ta
 | `f3a5b7d9e206` | `f3a5b7d9e206_signal_jobs_trade_id_status_index.py` | index on trade_id + status |
 | `a4c7e2f10938` | `a4c7e2f10938_normalize_strategy_id_keys.py` | backfill normalized strategy_id keys |
 | `b6d8f0a2c147` | `b6d8f0a2c147_kill_switch_clear_columns.py` | cleared_at / cleared_by on kill switch |
+| `e9f2a7b4c610` | `e9f2a7b4c610_account_default_symbol_limit.py` | accounts.default_symbol_limit |
+| `f4a8c2d1e903` | `f4a8c2d1e903_broker_positions_reconcile.py` | broker_positions + position_reconcile_runs |
 
 ## Repositories
 
@@ -65,6 +69,7 @@ Under `backend/app/db/repositories/`:
 | `InstrumentRepository` | `upsert`, `list_all` |
 | `DatabaseInstrumentCatalog` | `find_all`, `find_all_async` |
 | `AllocationRepository` | `get_account`, `get_enabled_account`, `get_allocation`, `get_committed_notional` |
+| `BrokerPositionRepository` | `replace_snapshot`, `insert_run` |
 
 ## In-memory vs durable
 
@@ -75,7 +80,8 @@ Under `backend/app/db/repositories/`:
 | Basket CRITICAL set / live basket objects | `BasketCoordinator` in-memory + `baskets` table |
 | Kill-switch armed accounts | `_KILL_SWITCH_ACTIVE_ACCOUNTS` in-memory; **authoritative** in `kill_switch_operations` |
 | Worker domain locks / exposure locks | `ExecutionWorkerPool` / `OrderManager` in-memory |
-| Live marks / PnL subscriptions | `LivePnlService` in-memory; writes `positions.live_pnl` |
+| Live marks / PnL subscriptions | `LivePnlService` in-memory; coalesced writes to `positions.live_pnl` (not one Postgres commit per IBKR tick) |
+| IBKR broker position snapshot | `broker_positions` table; refreshed every 30s by `PositionReconciler` |
 | Durable execution queue | `signal_jobs` table |
 | Durable dedupe barrier | `execution_claims` table |
 | Durable ledger | Postgres tables above |
@@ -88,4 +94,4 @@ For job/claim semantics see [`backend-concurrency.md`](backend-concurrency.md).
 ## Redis
 
 - **Main trading package `backend/app/`:** no `redis` imports (verified by search). An in-process `OrderSubmitPacer` is correct **only** while a single process submits to IBKR. Multiple uvicorn workers would each have their own pacer (over-budget). Target limiter policy: [`backend-multi-gateway.md`](backend-multi-gateway.md).
-- **`demo_streaming/`:** Redis Streams for SSE (`demo_stream_name`, default `positions:stream`). Postgres is polled by `PositionBridge`; Redis fans out to `/demo/stream`.
+- **`demo_streaming/`:** Redis Streams for SSE (`demo_stream_name`, default `positions:stream`). Postgres is polled by `PositionBridge`; Redis fans out to `/demo/stream`. Stream entries are capped with approximate `MAXLEN` (`demo_stream_maxlen`, default `10000`).

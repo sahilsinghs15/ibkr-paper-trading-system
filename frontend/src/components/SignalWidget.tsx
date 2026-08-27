@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { usePnlStore } from '../store/pnlStore'
-import { getCanonicalStatus, type SignalItem, useSignalStore } from '../store/signalStore'
+import { getCanonicalStatus, type SignalItem, useSignalStore, accountMatches } from '../store/signalStore'
 import { isSoundEnabled, toggleSoundEnabled, unlockAudioContext } from '../utils/audioNotification'
 import { displayStrategy, fmtTime } from '../utils/format'
 
@@ -43,6 +43,7 @@ export function SignalWidget({
   onViewFullTray?: () => void
 }) {
   const signals = useSignalStore((s) => s.signals)
+  const counts = useSignalStore((s) => s.counts)
   const streamState = usePnlStore((s) => s.streamState)
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
@@ -51,24 +52,12 @@ export function SignalWidget({
 
   const scopedSignals = useMemo(() => {
     if (!cleanFilter) return signals
-    return signals.filter((sig) => {
-      if (!sig.ibkr_account) return false
-      return String(sig.ibkr_account).trim().toUpperCase() === cleanFilter
-    })
+    return signals.filter((sig) => accountMatches(sig.ibkr_account, cleanFilter))
   }, [signals, cleanFilter])
 
   const processingSignals = useMemo(() => scopedSignals.filter(isProcessingSig), [scopedSignals])
   const acceptedSignals = useMemo(() => scopedSignals.filter(isAcceptedSig), [scopedSignals])
   const rejectedSignals = useMemo(() => scopedSignals.filter(isRejectedSig), [scopedSignals])
-
-  const monitorCounts = useMemo(
-    () => ({
-      processing: processingSignals.length,
-      accepted: acceptedSignals.length,
-      rejected: rejectedSignals.length,
-    }),
-    [processingSignals, acceptedSignals, rejectedSignals],
-  )
 
   const filteredSignals = useMemo(() => {
     if (statusFilter === 'ACCEPTED') return acceptedSignals
@@ -129,25 +118,25 @@ export function SignalWidget({
           type="button"
           className={`signal-filter-btn amber ${statusFilter === 'PROCESSING' ? 'active' : ''}`}
           onClick={() => setStatusFilter('PROCESSING')}
-          aria-label={`Processing (${monitorCounts.processing})`}
+          aria-label={`Processing (${counts.processing})`}
         >
-          <span className="spin-icon" aria-hidden="true">⟳</span> PROCESSING ({monitorCounts.processing})
+          <span className="spin-icon" aria-hidden="true">⟳</span> PROCESSING ({counts.processing})
         </button>
         <button
           type="button"
           className={`signal-filter-btn green ${statusFilter === 'ACCEPTED' ? 'active' : ''}`}
           onClick={() => setStatusFilter('ACCEPTED')}
-          aria-label={`Accepted (${monitorCounts.accepted})`}
+          aria-label={`Accepted (${counts.accepted})`}
         >
-          ✓ ACCEPTED ({monitorCounts.accepted})
+          ✓ ACCEPTED ({counts.accepted})
         </button>
         <button
           type="button"
           className={`signal-filter-btn red ${statusFilter === 'REJECTED' ? 'active' : ''}`}
           onClick={() => setStatusFilter('REJECTED')}
-          aria-label={`Rejected (${monitorCounts.rejected})`}
+          aria-label={`Rejected (${counts.rejected})`}
         >
-          ✕ REJECTED ({monitorCounts.rejected})
+          ✕ REJECTED ({counts.rejected})
         </button>
       </div>
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { matchPath, useLocation } from 'react-router-dom'
 import { usePnlStore } from '../store/pnlStore'
+import { useActiveIbkrAccount } from '../hooks/useActiveIbkrAccount'
 import { TZ_IN, TZ_NY, type DisplayTimezone } from '../types/position'
 import {
   formatInTz,
@@ -11,11 +11,7 @@ import {
 import { AppNav } from './AppNav'
 
 export function AppHeader() {
-  const location = useLocation()
-  const accountMatch =
-    matchPath('/account/:ibkrAccount/*', location.pathname) ||
-    matchPath('/account/:ibkrAccount', location.pathname)
-  const currentAccount = accountMatch?.params?.ibkrAccount
+  const currentAccount = useActiveIbkrAccount()
 
   const streamState = usePnlStore((s) => s.streamState)
   const lastTs = usePnlStore((s) => s.lastTs)

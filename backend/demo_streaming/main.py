@@ -39,7 +39,11 @@ async def _serve() -> None:
         socket_timeout=5,
         socket_connect_timeout=5,
     )
-    stream = PositionStream(redis, settings.demo_stream_name)
+    stream = PositionStream(
+        redis,
+        settings.demo_stream_name,
+        stream_maxlen=settings.demo_stream_maxlen,
+    )
     try:
         await stream.ping()
         logger.info("Demo Redis connected: url=%s stream=%s", settings.redis_url, settings.demo_stream_name)
@@ -51,6 +55,7 @@ async def _serve() -> None:
         stream,
         poll_interval=settings.demo_poll_interval_ms / 1000.0,
         signal_watch_limit=settings.demo_signal_watch_limit,
+        pnl_emit_interval=settings.demo_pnl_emit_interval_ms / 1000.0,
     )
     app = create_demo_app(
         session_factory=factory,

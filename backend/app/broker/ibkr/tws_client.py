@@ -8,6 +8,8 @@ from typing import Any
 from ibapi.client import EClient  # type: ignore[import-untyped]
 from ibapi.wrapper import EWrapper  # type: ignore[import-untyped]
 
+from app.broker.ibkr.positions import BrokerPositionLine, PositionSnapshotCollector
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +39,9 @@ class TWSClient(EWrapper, EClient):
         self._contract_details_events: dict[int, threading.Event] = {}
         self._contract_details_results: dict[int, list[Any]] = {}
         self._next_contract_details_req = 60000
+
+        self._positions_request_lock = threading.Lock()
+        self._position_collector = PositionSnapshotCollector()
 
     def register_request_id(self, req_id: int, req_type: str) -> None:
         """Register a request ID with its type under lock."""
@@ -398,6 +403,56 @@ class TWSClient(EWrapper, EClient):
     ) -> list[Any]:
         """Request IBKR contract details asynchronously off the event loop."""
         return await asyncio.to_thread(self.request_contract_details, contract, timeout=timeout)
+
+    def request_positions(self, *, timeout: float = 15.0) -> tuple[list[BrokerPositionLine], bool]:
+        """Request IBKR positions and block until positionEnd or timeout.
+
+        Returns (lines, timed_out). Lines may be partial when timed_out is True.
+        """
+        if not self.is_connected():
+            logger.warning("request_positions: TWS not connected")
+            return [], False
+
+        with self._positions_request_lock:
+            collector = self._position_collector
+            collector.reset()
+            if collector not in self._listeners:
+                self.register_listener(collector)
+
+            try:
+                cancel = getattr(self, "cancelPositions", None)
+                if callable(cancel):
+                    try:
+                        cancel()
+                    except Exception:
+                        logger.exception("cancelPositions before snapshot failed")
+
+                self.reqPositions()
+                completed = collector.wait(timeout=timeout)
+                lines = collector.snapshot()
+
+                if callable(cancel):
+                    try:
+                        cancel()
+                    except Exception:
+                        logger.exception("cancelPositions after snapshot failed")
+
+                if not completed:
+                    logger.warning(
+                        "request_positions timed out after %.1fs; returning %d line(s)",
+                        timeout,
+                        len(lines),
+                    )
+                return lines, not completed
+            except Exception:
+                logger.exception("request_positions failed")
+                return collector.snapshot(), True
+
+    async def request_positions_async(
+        self, *, timeout: float = 15.0
+    ) -> tuple[list[BrokerPositionLine], bool]:
+        """Request IBKR positions asynchronously off the event loop."""
+        return await asyncio.to_thread(self.request_positions, timeout=timeout)
 
     def _clear_contract_details_request(self, req_id: int) -> None:
         with self._contract_details_lock:

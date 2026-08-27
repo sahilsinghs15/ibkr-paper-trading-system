@@ -11,16 +11,27 @@ STREAM_NAME = "positions:stream"
 
 
 class PositionStream:
-    def __init__(self, redis: Redis, stream_name: str = STREAM_NAME) -> None:
+    def __init__(
+        self,
+        redis: Redis,
+        stream_name: str = STREAM_NAME,
+        *,
+        stream_maxlen: int | None = 10000,
+    ) -> None:
         self._redis = redis
         self.stream_name = stream_name
+        self._stream_maxlen = stream_maxlen
 
     async def ping(self) -> bool:
         return bool(await self._redis.ping())
 
     async def xadd(self, payload: dict[str, Any]) -> str:
         fields = {key: _encode(value) for key, value in payload.items()}
-        entry_id = await self._redis.xadd(self.stream_name, fields)
+        kwargs: dict[str, Any] = {}
+        if self._stream_maxlen is not None and self._stream_maxlen > 0:
+            kwargs["maxlen"] = self._stream_maxlen
+            kwargs["approximate"] = True
+        entry_id = await self._redis.xadd(self.stream_name, fields, **kwargs)
         return entry_id.decode() if isinstance(entry_id, bytes) else str(entry_id)
 
     async def xread(

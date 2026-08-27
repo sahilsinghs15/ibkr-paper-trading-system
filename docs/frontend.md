@@ -21,9 +21,10 @@ Main FastAPI (`app.main`) does **not** serve any frontend. The dashboard is serv
 
 ### `src/` layout
 
-- `pages/PositionsPage.tsx` — PnL view (header, KPIs, tables)
-- `pages/SettingsPage.tsx` — account margin, allocations, per-symbol limits
-- `api/configApi.ts` — axios client for `/api/v1/config/*`
+- `pages/SystemMonitorPage.tsx` — operational metrics (polls `/api/v1/system-monitor`)
+- `pages/ReconcilePage.tsx` — broker vs ledger reconcile view (polls `/api/v1/reconcile/positions`)
+- `api/reconcileApi.ts` — axios client for `/api/v1/reconcile/positions`
+- `types/reconcile.ts` — reconcile API types
 - `types/position.ts` — demo stream payload types
 - `types/config.ts` — config API types
 - `store/pnlStore.ts` — Zustand active/closed leg maps + stream state
@@ -48,6 +49,13 @@ Main FastAPI (`app.main`) does **not** serve any frontend. The dashboard is serv
 - Auto square-off & retry: `GET/PATCH /api/v1/config/execution`
 - Saves via PATCH/PUT/DELETE on `/api/v1/config/*` (proxied to `:8000`)
 - **No** Gateway host/port/clientId binding. `ibkr_account` is the IB account id tagged on orders, not a socket. Target UI: [`backend-multi-gateway.md`](backend-multi-gateway.md).
+
+### Reconcile page (`/account/:ibkrAccount/reconcile`)
+
+- `GET /api/v1/reconcile/positions?ibkr_account=` — latest persisted IBKR snapshot, OPEN ledger pair rows, and freshly classified diffs
+- Poll every 30s (same pattern as System Monitor)
+- **Differences table only** (broker vs ledger classified diffs); KPI chips and snapshot/ledger tables removed from UI
+- Per-row **Square off**: `POST /api/v1/reconcile/positions/flatten` — closes the IBKR broker line only (snapshot qty); does not arm kill switch or close OPEN ledger pairs
 
 ### Scripts (`package.json`)
 
@@ -89,7 +97,7 @@ DEMO_STREAM_HOST=0.0.0.0 .venv/bin/python -m demo_streaming
 # Settings: http://PUBLIC_IP:8010/settings
 ```
 
-Defaults: port `8010`, Redis `redis://127.0.0.1:6379/0`, Postgres via `DATABASE_URL`, `trading_api_url` `http://127.0.0.1:8000`, poll `2000` ms. Does **not** connect to IBKR for market data. Config writes proxy to the trading app.
+Defaults: port `8010`, Redis `redis://127.0.0.1:6379/0`, Postgres via `DATABASE_URL`, `trading_api_url` `http://127.0.0.1:8000`, poll `2000` ms, PnL SSE coalesce `5000` ms (one event per trade). Does **not** connect to IBKR for market data. Config writes proxy to the trading app.
 
 `GET /` and `GET /settings` serve `frontend/dist/index.html` when present (after `npm run build`), and mount `frontend/dist/assets` at `/assets`. Otherwise falls back to `demo_streaming/static/index.html`.
 
