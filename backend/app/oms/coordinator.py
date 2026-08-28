@@ -8,8 +8,12 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+if TYPE_CHECKING:
+    from app.services.critical_recovery import CriticalRecoveryService
 
 from app.db.models.signal import SignalModel
 from app.db.repositories.basket_repository import BasketRepository
@@ -75,6 +79,7 @@ class BasketCoordinator:
         self._critical: set[tuple[int, str]] = set()
         self._order_baskets: dict[str, Basket] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._recovery_service: CriticalRecoveryService | None = None
         adapter = getattr(oms, "_adapter", None)
         add_listener = getattr(adapter, "add_order_state_listener", None)
         if callable(add_listener):
@@ -89,6 +94,72 @@ class BasketCoordinator:
         if account_id is None:
             return
         self._critical.add((account_id, strategy_id))
+
+    def set_recovery_service(self, service: CriticalRecoveryService) -> None:
+        self._recovery_service = service
+
+    async def clear_critical(
+        self,
+        *,
+        account_id: int,
+        strategy_id: str,
+        trade_id: str,
+        action: str,
+        recovery_detail: str | None = None,
+    ) -> bool:
+        """Mark one basket RECOVERED and drop the OPEN latch when no CRITICAL rows remain."""
+        if self._session_factory is None:
+            return False
+        now = datetime.now(UTC)
+        async with self._session_factory() as session, session.begin():
+            repo = BasketRepository(session)
+            row = await repo.update_recovery(
+                account_id=account_id,
+                trade_id=trade_id,
+                action=action,
+                state=BasketState.RECOVERED.value,
+                recovery_status="CLEARED",
+                recovery_detail=recovery_detail or "Broker flat; OPEN latch cleared.",
+                recovered_at=now,
+            )
+            if row is None:
+                return False
+            still_critical = await repo.has_critical(
+                account_id=account_id, strategy_id=strategy_id
+            )
+        if not still_critical:
+            self._critical.discard((account_id, strategy_id))
+        basket = Basket(
+            id=row.id,
+            account_id=account_id,
+            trade_id=trade_id,
+            strategy_id=strategy_id,
+            action=action,
+            intended_leg_count=row.intended_leg_count,
+            state=BasketState.RECOVERED,
+            recovery_status="CLEARED",
+            recovery_detail=recovery_detail,
+            recovered_at=now,
+        )
+        await self._event(
+            "BASKET_CRITICAL_CLEARED",
+            {
+                "account_id": account_id,
+                "trade_id": trade_id,
+                "strategy_id": strategy_id,
+                "action": action,
+            },
+            basket=basket,
+            idempotency_key=f"basket_critical_cleared:{account_id}:{trade_id}:{action}",
+        )
+        logger.info(
+            "BASKET_CRITICAL_CLEARED: account_id=%s trade_id=%s strategy_id=%s still_latched=%s",
+            account_id,
+            trade_id,
+            strategy_id,
+            still_critical,
+        )
+        return True
 
     def apply_retry_policy(
         self,
@@ -118,6 +189,8 @@ class BasketCoordinator:
             rows = await BasketRepository(session).list_critical()
             for row in rows:
                 self._critical.add((row.account_id, row.strategy_id))
+        if self._recovery_service is not None:
+            await self._recovery_service.enqueue_all_critical()
 
     async def execute(
         self,
@@ -845,6 +918,7 @@ class BasketCoordinator:
         signal_pk: int | None,
     ) -> None:
         basket.state = BasketState.CRITICAL
+        basket.recovery_status = "RECOVERING"
         self.mark_critical(intent.account_id, intent.strategy_id)
         await self._persist_basket(basket)
         for order in submitted + compensation:
@@ -866,6 +940,13 @@ class BasketCoordinator:
             intent.signal_id,
             intent.strategy_id,
         )
+        if self._recovery_service is not None and intent.account_id is not None:
+            self._recovery_service.schedule_recovery(
+                account_id=intent.account_id,
+                trade_id=intent.signal_id,
+                action=basket.action,
+                strategy_id=intent.strategy_id,
+            )
 
     async def _persist_basket(self, basket: Basket) -> None:
         if self._session_factory is None or basket.account_id is None:
@@ -878,6 +959,9 @@ class BasketCoordinator:
                 action=basket.action,
                 state=basket.state.value,
                 intended_leg_count=basket.intended_leg_count,
+                recovery_status=basket.recovery_status,
+                recovery_detail=basket.recovery_detail,
+                recovered_at=basket.recovered_at,
             )
             basket.id = row.id
 

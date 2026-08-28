@@ -31,6 +31,14 @@ class OrderRepository:
         )
         return list(result.scalars().all())
 
+    async def list_by_basket_id(self, basket_id: int) -> list[OrderModel]:
+        result = await self._session.execute(
+            select(OrderModel)
+            .where(OrderModel.basket_id == basket_id)
+            .order_by(OrderModel.id)
+        )
+        return list(result.scalars().all())
+
     async def record_oms_order(
         self,
         order: OMSOrder,

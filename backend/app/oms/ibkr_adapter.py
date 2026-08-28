@@ -11,6 +11,12 @@ from typing import Any
 from ibapi.contract import Contract  # type: ignore[import-untyped]
 from ibapi.order import Order as IBOrder  # type: ignore[import-untyped]
 
+from app.broker.ibkr.gateway_rate_limiter import (
+    PRIORITY_EMERGENCY_FLATTEN,
+    PRIORITY_ORDER_EXECUTION,
+    GatewayPacingTimeout,
+    GatewayRateLimiter,
+)
 from app.broker.ibkr.tws_client import TWSClient
 from app.instruments.models import InstrumentResolutionError
 from app.instruments.resolver import ibkr_contract_from_resolved
@@ -21,8 +27,7 @@ from app.oms.models import (
     executions_commission_total,
     executions_weighted_average,
 )
-from app.oms.submit_pacer import OrderSubmitPacer
-from app.rms.models import OrderSide
+from app.rms.models import ExecutionIntentMode, OrderSide
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +58,7 @@ class IBKRExecutionAdapter:
         sec_type: str = "STK",
         exchange: str = "SMART",
         currency: str = "USD",
-        submit_pacer: OrderSubmitPacer | None = None,
+        rate_limiter: GatewayRateLimiter | None = None,
     ) -> None:
         """Initialize IBKR Execution Adapter with connection config and state tracking."""
         self._client = client or TWSClient()
@@ -64,7 +69,7 @@ class IBKRExecutionAdapter:
         self._sec_type = sec_type
         self._exchange = exchange
         self._currency = currency
-        self._submit_pacer = submit_pacer
+        self._rate_limiter = rate_limiter
 
         self._lock = threading.Lock()
 
@@ -176,6 +181,28 @@ class IBKRExecutionAdapter:
             ib_order.account = order.intent.ibkr_account
         return ib_order
 
+    @staticmethod
+    def _order_priority(order: OMSOrder) -> int:
+        if order.intent.intent_mode == ExecutionIntentMode.EMERGENCY_FLATTEN:
+            return PRIORITY_EMERGENCY_FLATTEN
+        return PRIORITY_ORDER_EXECUTION
+
+    async def _acquire_for_order(
+        self, order: OMSOrder, request_type: str
+    ) -> bool:
+        """Acquire a gateway token. Returns False on pacing timeout."""
+        if self._rate_limiter is None:
+            return True
+        priority = self._order_priority(order)
+        try:
+            result = await self._rate_limiter.acquire(priority, request_type)
+            order.pacer_delayed = result.delayed
+            return True
+        except GatewayPacingTimeout:
+            order.status = OMSOrderStatus.ERROR
+            order.error_message = "Gateway pacing timeout"
+            return False
+
     async def submit_order(self, order: OMSOrder) -> OMSOrder:
         """Submit internal OMSOrder to IBKR TWS API."""
         if not self.is_connected():
@@ -183,8 +210,8 @@ class IBKRExecutionAdapter:
             order.error_message = "TWS connection unavailable"
             raise ConnectionError("Cannot submit order: TWS is not connected.")
 
-        if self._submit_pacer is not None:
-            order.pacer_delayed = await self._submit_pacer.acquire()
+        if not await self._acquire_for_order(order, "placeOrder"):
+            return order
 
         with self._lock:
             if order.internal_order_id in self._orders_by_internal_id:
@@ -301,6 +328,8 @@ class IBKRExecutionAdapter:
             raise ValueError(f"Order {internal_order_id} has no IBKR order ID assigned.")
 
         logger.info("Canceling IBKR order: internal_id=%s, tws_id=%d", internal_order_id, tws_order_id)
+        if not await self._acquire_for_order(order, "cancelOrder"):
+            raise GatewayPacingTimeout(order.error_message or "Gateway pacing timeout")
         self._client.cancelOrder(tws_order_id)
         return order
 
@@ -727,6 +756,8 @@ class IBKRExecutionAdapter:
 
     def on_error(self, reqId: int, errorCode: int, errorString: str) -> None:
         """Handle TWS error callback."""
+        if errorCode == 100 and self._rate_limiter is not None:
+            self._rate_limiter.notify_error_100()
         # Check if error corresponds to an active order
         req_type = self._client.get_request_type(reqId)
         with self._lock:
@@ -735,6 +766,13 @@ class IBKRExecutionAdapter:
             if order and order.status in self._TERMINAL_STATUSES:
                 captured = None
             elif order:
+                if errorCode == 100:
+                    logger.warning(
+                        "TWS pacing error for order %s (non-terminal): %s",
+                        order.internal_order_id,
+                        errorString,
+                    )
+                    return
                 # Code 202 is Order Canceled by user/system
                 if errorCode == 202:
                     order.status = OMSOrderStatus.CANCELLED

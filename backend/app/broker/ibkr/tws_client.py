@@ -1,14 +1,19 @@
 """IBKR TWS API connection client and wrapper."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ibapi.client import EClient  # type: ignore[import-untyped]
 from ibapi.wrapper import EWrapper  # type: ignore[import-untyped]
 
 from app.broker.ibkr.positions import BrokerPositionLine, PositionSnapshotCollector
+
+if TYPE_CHECKING:
+    from app.broker.ibkr.gateway_rate_limiter import GatewayRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +47,11 @@ class TWSClient(EWrapper, EClient):
 
         self._positions_request_lock = threading.Lock()
         self._position_collector = PositionSnapshotCollector()
+        self._rate_limiter: GatewayRateLimiter | None = None
+
+    def register_rate_limiter(self, limiter: GatewayRateLimiter) -> None:
+        """Attach the shared gateway rate limiter for outbound API pacing."""
+        self._rate_limiter = limiter
 
     def register_request_id(self, req_id: int, req_type: str) -> None:
         """Register a request ID with its type under lock."""
@@ -99,6 +109,8 @@ class TWSClient(EWrapper, EClient):
                     errorString,
                 )
         else:
+            if errorCode == 100 and self._rate_limiter is not None:
+                self._rate_limiter.notify_error_100()
             logger.warning(
                 "TWS API Error: reqId=%d, code=%d, message=%s",
                 reqId,
@@ -373,6 +385,19 @@ class TWSClient(EWrapper, EClient):
         if not self.is_connected():
             logger.warning("request_contract_details: TWS not connected")
             return []
+        if self._rate_limiter is not None:
+            from app.broker.ibkr.gateway_rate_limiter import PRIORITY_CONTRACT_DETAILS
+
+            acquired = self._rate_limiter.blocking_acquire(
+                PRIORITY_CONTRACT_DETAILS,
+                "reqContractDetails",
+                timeout=min(timeout, self._rate_limiter.max_wait_sec),
+            )
+            if acquired is None:
+                logger.warning(
+                    "request_contract_details: gateway pacing timeout reqContractDetails"
+                )
+                return []
         with self._contract_details_lock:
             req_id = self._next_contract_details_req
             self._next_contract_details_req += 1

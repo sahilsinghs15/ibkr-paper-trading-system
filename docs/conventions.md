@@ -7,7 +7,7 @@
 ### Dependency injection
 
 - Wire long-lived services in `lifespan` on `app.state` (`session_factory`, `client`, `ibkr_adapter`, `oms`, `order_manager`, `worker_pool`).
-- There is **one** `TWSClient`. Do not construct another in a request handler or worker. A second client with the same `IBKR_CLIENT_ID` disconnects the first; an unpaced client bypasses `OrderSubmitPacer`.
+- There is **one** `TWSClient`. Do not construct another in a request handler or worker. A second client with the same `IBKR_CLIENT_ID` disconnects the first; an unpaced client bypasses `GatewayRateLimiter`.
 - Route deps use helpers such as `get_oms` in `app/api/deps.py`.
 - Do not construct a second OMS / OrderManager / worker pool inside a request handler.
 
@@ -16,7 +16,7 @@
 - Read settings via `get_settings()`.
 - Do not reintroduce `BROKER_MODE` / MockBroker unless you implement both the setting and the broker path in code.
 - Unknown env keys are ignored (`extra="ignore"`); documenting them as Settings fields is wrong.
-- Worker count, lease durations, and submit pacer interval are **hardcoded in code**, not Settings fields.
+- Worker count, lease durations — hardcoded in `main.py` / `worker_pool.py`. Gateway limiter knobs are Settings fields (`IBKR_GATEWAY_*`). See [`backend-map.md`](backend-map.md).
 
 ### Identifiers
 
@@ -35,14 +35,14 @@
 
 - `logging.getLogger(__name__)`.
 - Prefer `%s` formatting (existing style).
-- Call `setup_logging` once at startup; daily files under workspace `storage/logs/trading-YYYY-MM-DD.log` (demo: `demo-YYYY-MM-DD.log`).
+- Call `setup_logging` once at startup; daily files under workspace `storage/logs/{YYYY-MM-DD}/{prefix}.log` (e.g. `trading.log`, `demo.log`).
 - Correlation via `bind_log_context` / `clear_log_context` (`request_id`, `signal_id`, `trade_id`, `account_id`) → `%(trace)s` on every line.
 
 ### Persistence
 
 - Durable state → Postgres models / repositories.
 - Do not assume Redis is available on the main trading path (demo-only).
-- Run `app.main` as **one process** (do not `uvicorn --workers N` against the same Gateway). The live limiter is in-process (`OrderSubmitPacer`). Multiple workers each get a bucket and can exceed IB’s ~50 msg/sec. Target policy: [`backend-multi-gateway.md`](backend-multi-gateway.md).
+- Run `app.main` as **one process** (do not `uvicorn --workers N` against the same Gateway). The live limiter is in-process (`GatewayRateLimiter`). Multiple workers each get a bucket and can exceed IB’s ~50 msg/sec. Target policy: [`backend-multi-gateway.md`](backend-multi-gateway.md).
 
 ### Concurrency / execution
 

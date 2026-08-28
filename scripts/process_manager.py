@@ -10,7 +10,10 @@ Supervises three processes for the One Alpha trading stack:
 Design notes:
   - Xvfb and IB Gateway are treated as a dependent pair: if Xvfb dies,
     Gateway is restarted too (it needs a live DISPLAY).
-  - FastAPI is independent and can be restarted on its own.
+  - FastAPI starts only after IBC logs "Login has completed" *and* the
+    Gateway API port accepts TCP. Port-up during authentication is not
+    enough (TWS 502 / handshake timeout). The adapter does not reconnect,
+    so a Gateway bounce also restarts FastAPI after the new login.
   - Each child is launched in its own process group (start_new_session=True)
     so we can cleanly signal the whole subtree (e.g. ibcstart.sh spawns
     Xvfb-using java processes underneath it).
@@ -20,6 +23,9 @@ Design notes:
 
 Run this as the foreground process under systemd (Type=simple) or a
 long-lived screen/tmux session -- it IS the supervisor, not a one-shot script.
+
+Logs: ``/home/tradingapp/storage/logs/{YYYY-MM-DD}/`` only
+(supervisor.log, xvfb.log, ib_gateway.log, fastapi.log). Not ``/home/tradingapp/logs``.
 """
 
 import os
@@ -43,8 +49,8 @@ from zoneinfo import ZoneInfo
 # ---------------------------------------------------------------------------
 
 HOME = "/home/tradingapp"
-LOG_DIR = Path(f"{HOME}/logs/process_manager")
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+# Same tree as app.core.logger: storage/logs/{YYYY-MM-DD}/{name}.log
+STORAGE_LOG_ROOT = Path(f"{HOME}/storage/logs")
 
 BACKEND_DIR = f"{HOME}/app/backend"
 VENV_PYTHON = f"{BACKEND_DIR}/.venv/bin/python"
@@ -89,15 +95,51 @@ SHUTDOWN_GRACE_SEC = 15
 # Seconds to wait after starting Xvfb before starting Gateway
 XVFB_SETTLE_SEC = 2
 
+# Paper Gateway API socket (must match IBC / backend IBKR_PORT on this host)
+GATEWAY_API_HOST = "127.0.0.1"
+GATEWAY_API_PORT = 4002
+# IBC writes this after a successful paper/live logon (see ib_gateway.log)
+GATEWAY_LOGIN_MARKER = "Login has completed"
+GATEWAY_READY_TIMEOUT_SEC = 180
+GATEWAY_READY_POLL_SEC = 1.0
+# API bind can lag IBC's login line by a few seconds
+GATEWAY_API_SETTLE_SEC = 5.0
+
 # ---------------------------------------------------------------------------
-# Logging
+# Logging — storage/logs/{YYYY-MM-DD}/ only (do not write /home/tradingapp/logs)
 # ---------------------------------------------------------------------------
+
+def dated_log_dir() -> Path:
+    """Return ``storage/logs/{YYYY-MM-DD}``, creating it if needed."""
+    date_str = datetime.now().astimezone().strftime("%Y-%m-%d")
+    path = STORAGE_LOG_ROOT / date_str
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+class DatedFileHandler(logging.FileHandler):
+    """Append to ``storage/logs/{YYYY-MM-DD}/{basename}``, reopening at midnight."""
+
+    def __init__(self, basename: str) -> None:
+        self._basename = basename
+        self._date = datetime.now().astimezone().strftime("%Y-%m-%d")
+        super().__init__(dated_log_dir() / basename, mode="a", encoding="utf-8")
+
+    def emit(self, record: logging.LogRecord) -> None:
+        today = datetime.now().astimezone().strftime("%Y-%m-%d")
+        if today != self._date:
+            self.close()
+            self.baseFilename = str(dated_log_dir() / self._basename)
+            self._date = today
+            self.stream = self._open()
+        super().emit(record)
+
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
-        logging.FileHandler(LOG_DIR / "supervisor.log"),
+        DatedFileHandler("supervisor.log"),
         logging.StreamHandler(sys.stdout),
     ],
 )
@@ -123,7 +165,7 @@ class ManagedProcess:
         env = os.environ.copy()
         env.update(self.env_overrides)
 
-        log_path = self.logfile or (LOG_DIR / f"{self.name}.log")
+        log_path = self.logfile or (dated_log_dir() / f"{self.name}.log")
         log_fh = open(log_path, "a", buffering=1)
 
         log.info(f"Starting {self.name}: {' '.join(cmd)}")
@@ -204,6 +246,51 @@ def clear_stale_xvfb_lock():
                 log.error(f"Could not remove {p}: {e}")
 
 
+def kill_orphaned_xvfb():
+    """
+    If a previous process_manager run was force-killed (kill -9, double
+    Ctrl+C) rather than stopped gracefully, its Xvfb child can be left
+    running and genuinely holding the display -- lock-file cleanup alone
+    won't fix that, since the conflict is real, not stale. Find and
+    terminate any Xvfb process already bound to our target display
+    before attempting to start a new one.
+    """
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", f"Xvfb {DISPLAY} "],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        log.debug("pgrep not available -- skipping orphaned Xvfb check")
+        return
+
+    pids = [int(p) for p in result.stdout.split() if p.strip()]
+    if not pids:
+        return
+
+    for pid in pids:
+        log.warning(
+            f"Found orphaned Xvfb process PID {pid} already bound to "
+            f"{DISPLAY} (likely left over from an unclean shutdown) -- terminating it"
+        )
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+    time.sleep(1)
+
+    # Escalate if still alive after the grace period
+    for pid in pids:
+        try:
+            os.kill(pid, 0)  # existence check
+            log.warning(f"PID {pid} still alive after SIGTERM, sending SIGKILL")
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 def ib_gateway_cmd():
     return [
         IBC_SCRIPT,
@@ -222,6 +309,91 @@ def fastapi_cmd():
         "--host", FASTAPI_HOST,
         "--port", str(FASTAPI_PORT),
     ]
+
+
+def gateway_log_path() -> Path:
+    return dated_log_dir() / "ib_gateway.log"
+
+
+def log_file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:
+        return 0
+
+
+def log_contains_since(path: Path, marker: str, offset: int) -> bool:
+    """True if *marker* appears in *path* at or after byte *offset*."""
+    try:
+        with open(path, "r", errors="replace") as fh:
+            fh.seek(offset)
+            return marker in fh.read()
+    except FileNotFoundError:
+        return False
+
+
+def wait_for_gateway_ready(
+    *,
+    log_path: Path,
+    log_offset: int,
+    is_alive: Callable[[], bool],
+    port_check: Callable[[], bool],
+    should_abort: Callable[[], bool] | None = None,
+    timeout_sec: float = GATEWAY_READY_TIMEOUT_SEC,
+    poll_sec: float = GATEWAY_READY_POLL_SEC,
+    settle_sec: float = GATEWAY_API_SETTLE_SEC,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> bool:
+    """Block until IBC login completed (this session) and the API port is up.
+
+    A previous run's "Login has completed" line is ignored via *log_offset*.
+    """
+    deadline = time.time() + timeout_sec
+    logged_in = False
+    port_up = False
+
+    while time.time() < deadline:
+        if should_abort is not None and should_abort():
+            log.info("Aborting Gateway ready wait (shutdown requested)")
+            return False
+        if not is_alive():
+            log.error("IB Gateway process exited before login completed")
+            return False
+
+        if not logged_in:
+            logged_in = log_contains_since(
+                log_path, GATEWAY_LOGIN_MARKER, log_offset
+            )
+            if logged_in:
+                log.info("IBC reported Login has completed")
+
+        if not port_up:
+            port_up = port_check()
+            if port_up:
+                log.info(
+                    f"Gateway API listening on {GATEWAY_API_HOST}:{GATEWAY_API_PORT}"
+                )
+
+        if logged_in and port_up:
+            if settle_sec > 0:
+                sleeper(settle_sec)
+            if not is_alive():
+                log.error("IB Gateway process died during API settle")
+                return False
+            if not port_check():
+                log.warning("Gateway API port dropped during settle; continuing to wait")
+                port_up = False
+                continue
+            log.info("Gateway is logged in and API port is ready")
+            return True
+
+        sleeper(poll_sec)
+
+    log.error(
+        f"Gateway not ready after {timeout_sec:.0f}s "
+        f"(login={logged_in} port={port_up})"
+    )
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -299,14 +471,73 @@ class Supervisor:
             cwd=BACKEND_DIR,
         )
 
+        # Byte offset / path of ib_gateway.log for the current Gateway session.
+        self._gateway_log_offset = 0
+        self._gateway_log_path = dated_log_dir() / "ib_gateway.log"
+        self._gateway_epoch = 0
+        self._fastapi_epoch = 0
+
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
+
+    def _start_gateway(self):
+        """Start Gateway and remember the log offset for this session."""
+        log_path = dated_log_dir() / "ib_gateway.log"
+        self.gateway.logfile = log_path
+        self._gateway_log_path = log_path
+        self._gateway_log_offset = log_file_size(log_path)
+        self.gateway.start()
+        self._gateway_epoch += 1
+
+    def _gateway_is_ready(self) -> bool:
+        return (
+            self.gateway.is_alive()
+            and log_contains_since(
+                self._gateway_log_path,
+                GATEWAY_LOGIN_MARKER,
+                self._gateway_log_offset,
+            )
+            and port_open(GATEWAY_API_HOST, GATEWAY_API_PORT)
+        )
+
+    def _wait_for_gateway_ready(self) -> bool:
+        log.info(
+            f"Waiting for IB Gateway login and API {GATEWAY_API_HOST}:{GATEWAY_API_PORT}"
+        )
+        return wait_for_gateway_ready(
+            log_path=self._gateway_log_path,
+            log_offset=self._gateway_log_offset,
+            is_alive=self.gateway.is_alive,
+            port_check=lambda: port_open(GATEWAY_API_HOST, GATEWAY_API_PORT),
+            should_abort=lambda: self.stopping,
+        )
+
+    def _ensure_fastapi(self):
+        """Start or reconnect FastAPI only after this Gateway session is ready."""
+        if not self._gateway_is_ready():
+            return
+        if self.fastapi.is_alive() and self._fastapi_epoch == self._gateway_epoch:
+            return
+        if not Path(VENV_PYTHON).is_file():
+            log.error(
+                f"venv python not found at {VENV_PYTHON} -- check that the "
+                f"virtualenv exists and the path is correct"
+            )
+            return
+        if self.fastapi.is_alive():
+            log.info(
+                "Restarting FastAPI so it can handshake with the new Gateway session"
+            )
+            self.fastapi.terminate(grace_sec=5)
+        self.fastapi.start()
+        self._fastapi_epoch = self._gateway_epoch
 
     # -- lifecycle ----------------------------------------------------------
 
     def start_all(self):
         log.info("=== Starting trading stack ===")
 
+        kill_orphaned_xvfb()
         clear_stale_xvfb_lock()
         self.xvfb.start()
         time.sleep(XVFB_SETTLE_SEC)
@@ -314,15 +545,14 @@ class Supervisor:
             log.error("Xvfb failed to start; aborting startup")
             sys.exit(1)
 
-        self.gateway.start()
-
-        if not Path(VENV_PYTHON).is_file():
+        self._start_gateway()
+        if self._wait_for_gateway_ready():
+            self._ensure_fastapi()
+        else:
             log.error(
-                f"venv python not found at {VENV_PYTHON} -- check that the "
-                f"virtualenv exists and the path is correct"
+                "Gateway did not become ready in time; FastAPI will start "
+                "once IBC login completes and the API port is up"
             )
-            sys.exit(1)
-        self.fastapi.start()
 
         log.info("=== Startup sequence complete, entering supervision loop ===")
 
@@ -358,14 +588,21 @@ class Supervisor:
             proc.record_restart()
         proc.terminate(grace_sec=5)  # in case it's half-alive
         if proc is self.xvfb:
+            kill_orphaned_xvfb()
             clear_stale_xvfb_lock()
-        proc.start()
+        if proc is self.gateway:
+            self._start_gateway()
+        else:
+            proc.start()
 
         if also_restart:
             also_restart.record_restart()
             also_restart.terminate(grace_sec=5)
             time.sleep(XVFB_SETTLE_SEC if proc is self.xvfb else 0)
-            also_restart.start()
+            if also_restart is self.gateway:
+                self._start_gateway()
+            else:
+                also_restart.start()
 
         return True
 
@@ -385,6 +622,7 @@ class Supervisor:
                     ok = self._restart(self.xvfb, also_restart=self.gateway)
                     if not ok:
                         continue
+                    self._wait_for_gateway_ready()
 
                 elif not self.gateway.is_alive():
                     # Gateway can exit on its own (e.g. IBC-driven daily
@@ -403,10 +641,14 @@ class Supervisor:
                             "window -- treating as unexpected, restarting"
                         )
                         self._restart(self.gateway)
+                    self._wait_for_gateway_ready()
 
-                if not self.fastapi.is_alive():
-                    log.warning("FastAPI process is down -- restarting FastAPI")
-                    self._restart(self.fastapi)
+                if self._gateway_is_ready():
+                    self._ensure_fastapi()
+                elif not self.fastapi.is_alive():
+                    log.debug(
+                        "FastAPI is down; waiting for Gateway login before starting it"
+                    )
                 elif not fastapi_healthy():
                     # Process exists but isn't answering on its port yet/anymore.
                     # Give it a little time before treating as unhealthy (e.g.

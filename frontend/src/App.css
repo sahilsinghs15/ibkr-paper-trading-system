@@ -2396,6 +2396,87 @@ thead th {
 .reconcile-alert {
   padding: 10px 14px;
   font-size: 12px;
+  margin-bottom: 12px;
+}
+
+.critical-incidents-panel {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border: 1px solid rgba(220, 80, 60, 0.55);
+  border-radius: 8px;
+  background: rgba(220, 80, 60, 0.08);
+}
+
+.critical-incidents-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.critical-incidents-header strong {
+  color: #ffb4a8;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+}
+
+.critical-incidents-sub {
+  color: var(--text-muted, #9aa3b2);
+  font-size: 0.85rem;
+}
+
+.critical-incidents-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.critical-incidents-table th,
+.critical-incidents-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.critical-recovery-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.critical-recovery-badge.recovering {
+  background: rgba(255, 180, 60, 0.2);
+  color: #ffc870;
+}
+
+.critical-recovery-badge.failed {
+  background: rgba(220, 80, 60, 0.25);
+  color: #ff9a8a;
+}
+
+.critical-recovery-badge.critical {
+  background: rgba(220, 80, 60, 0.2);
+  color: #ffb4a8;
+}
+
+.critical-legs-list {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.critical-detail-cell {
+  max-width: 280px;
+  word-break: break-word;
+  color: var(--text-muted, #9aa3b2);
+}
+
+.critical-incidents-footer {
+  margin: 10px 0 0;
+  font-size: 0.82rem;
+  color: var(--text-muted, #9aa3b2);
 }
 
 .reconcile-kpi-row {

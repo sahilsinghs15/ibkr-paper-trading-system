@@ -19,7 +19,7 @@ Agent entrypoint: [`../AGENTS.md`](../AGENTS.md).
 | Debug webhook → fill path / log greps | [`backend-execution.md`](backend-execution.md) |
 | Package tree / where to change code | [`backend-map.md`](backend-map.md) |
 | Jobs, workers, leases, claims, recovery | [`backend-concurrency.md`](backend-concurrency.md) |
-| Kill switch / emergency flatten | [`backend-kill-switch.md`](backend-kill-switch.md) |
+| Kill switch / emergency flatten / IBKR leftover flatten script | [`backend-kill-switch.md`](backend-kill-switch.md) |
 | Exact HTTP methods and paths | [`backend-api.md`](backend-api.md) |
 | Every `Settings` / demo env field | [`backend-config.md`](backend-config.md) |
 | Postgres tables, Alembic, Redis scope | [`backend-persistence.md`](backend-persistence.md) |
@@ -48,7 +48,7 @@ Produced by reading the files in this tree plus `AGENTS.md` / READMEs, then trac
 | [`backend-execution.md`](backend-execution.md) | Webhook → RMS → basket → IBKR; log greps | ACCURATE; as-is now states **one socket**, **one job / N-account fan-out**, **no reconnect** |
 | [`backend-map.md`](backend-map.md) | Package tree, lifespan, `app.state` | ACCURATE; singular `client` / adapter called out |
 | [`backend-concurrency.md`](backend-concurrency.md) | Jobs, leases, claims, recovery | ACCURATE; `account_scope` unused on ingest now documented |
-| [`backend-kill-switch.md`](backend-kill-switch.md) | Flatten API, armed vs cleared | ACCURATE; shares the one pacer/socket |
+| [`backend-kill-switch.md`](backend-kill-switch.md) | Flatten API, armed vs cleared, IBKR leftover flatten script | ACCURATE; shares the one limiter/socket; sidecar client id 99 |
 | [`backend-api.md`](backend-api.md) | HTTP inventory | ACCURATE; account CRUD has no gateway fields |
 | [`backend-config.md`](backend-config.md) | `Settings` / demo env | ACCURATE; single `IBKR_*` triple |
 | [`backend-persistence.md`](backend-persistence.md) | Tables, repos, Redis scope | ACCURATE; `accounts` has no gateway columns |

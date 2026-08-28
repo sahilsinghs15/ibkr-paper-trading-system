@@ -24,11 +24,16 @@ _trade_id: ContextVar[str | None] = ContextVar("log_trade_id", default=None)
 _account_id: ContextVar[str | None] = ContextVar("log_account_id", default=None)
 
 
-def _today_log_path(prefix: str = "trading") -> Path:
-    """Return today's dated log path for *prefix* (e.g. trading-YYYY-MM-DD.log)."""
-    # Local calendar date for daily files (matches TimedRotatingFileHandler when=midnight)
+def _today_log_dir() -> Path:
+    """Return today's date directory under ``storage/logs``."""
     date_str = datetime.now().astimezone().strftime("%Y-%m-%d")
-    return LOG_DIR / f"{prefix}-{date_str}.log"
+    return LOG_DIR / date_str
+
+
+def _today_log_path(prefix: str = "trading") -> Path:
+    """Return today's log path for *prefix* (``storage/logs/{date}/{prefix}.log``)."""
+    # Local calendar date for daily files (matches TimedRotatingFileHandler when=midnight)
+    return _today_log_dir() / f"{prefix}.log"
 
 
 def current_log_file(prefix: str = "trading") -> Path:
@@ -37,7 +42,7 @@ def current_log_file(prefix: str = "trading") -> Path:
 
 
 class DatedTimedRotatingFileHandler(TimedRotatingFileHandler):
-    """Midnight rollover that writes directly to ``{prefix}-YYYY-MM-DD.log``.
+    """Midnight rollover that writes to ``storage/logs/{YYYY-MM-DD}/{prefix}.log``.
 
     Unlike the stock TimedRotatingFileHandler, yesterday's file is already
     correctly named, so rollover only closes the stream and opens the new
@@ -47,6 +52,7 @@ class DatedTimedRotatingFileHandler(TimedRotatingFileHandler):
     def __init__(self, prefix: str = "trading", encoding: str = "utf-8") -> None:
         self._prefix = prefix
         LOG_DIR.mkdir(parents=True, exist_ok=True)
+        _today_log_dir().mkdir(parents=True, exist_ok=True)
         filename = str(_today_log_path(prefix))
         super().__init__(
             filename,
@@ -64,6 +70,7 @@ class DatedTimedRotatingFileHandler(TimedRotatingFileHandler):
             self.stream.close()
             self.stream = None  # type: ignore[assignment]
 
+        _today_log_dir().mkdir(parents=True, exist_ok=True)
         self.baseFilename = str(_today_log_path(self._prefix))
         if not self.delay:
             self.stream = self._open()
@@ -162,8 +169,8 @@ def setup_logging(level: str = "INFO", *, filename_prefix: str = "trading") -> N
 
     Args:
         level: Root log level (e.g. "DEBUG", "INFO", "WARNING").
-        filename_prefix: File stem before the date
-            (``{prefix}-YYYY-MM-DD.log`` under ``storage/logs``).
+        filename_prefix: Log file stem
+            (``storage/logs/{YYYY-MM-DD}/{prefix}.log``).
     """
     numeric_level = getattr(logging, level.upper(), logging.INFO)
 

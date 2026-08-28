@@ -24,7 +24,7 @@ Start at [`AGENTS.md`](AGENTS.md). In-depth topics: [`docs/`](docs/). Target arc
 - TradingView webhook ingestion and execution
 - Model Blue sizing / multi-account DB routing
 - Paper order execution via OMS + basket coordinator
-- Structured logging to `storage/logs/trading-YYYY-MM-DD.log` (daily files)
+- Structured logging to `storage/logs/{YYYY-MM-DD}/trading.log` (daily directories)
 - Read-only live PnL dashboard (React + HTML fallback on `:8010`)
 
 See [`docs/gaps.md`](docs/gaps.md) for what is explicitly not implemented.

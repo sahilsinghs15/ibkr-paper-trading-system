@@ -30,7 +30,9 @@ Main FastAPI (`app.main`) does **not** serve any frontend. The dashboard is serv
 - `store/pnlStore.ts` — Zustand active/closed leg maps + stream state
 - `hooks/usePnlStream.ts` — `GET /demo/positions` + `EventSource("/demo/stream")` (positions route only)
 - `utils/format.ts` — USD/PnL/time/instrument helpers
-- `components/` — `DashboardHeader`, `AppNav`, `Kpis`, `OpenPositionsTable`, `ClosedPositionsTable`
+- `components/` — `DashboardHeader`, `AppNav`, `Kpis`, `OpenPositionsTable`, `ClosedPositionsTable`, `CriticalIncidentsBanner`
+- `api/criticalBasketsApi.ts` — axios client for `/api/v1/baskets/critical`
+- `types/criticalBaskets.ts` — critical incident API types
 - `App.css` — demo-matching dark theme (no Tailwind)
 
 ### Positions page (`/`)
@@ -39,8 +41,9 @@ Main FastAPI (`app.main`) does **not** serve any frontend. The dashboard is serv
 2. `EventSource("/demo/stream")` — SSE updates
 3. On SSE error: mark reconnecting, wait 1s, reload snapshot, reconnect
 4. KPIs + open/closed tables; group by `(account_id, trade_id)`; use **one** pair `unrealized_pnl` per trade (do not sum both legs)
-5. NY vs IST timezone in `localStorage` key `modelBlue.displayTimezone`
-6. Display maps instrument `STK` → label `CFD`
+5. Poll `GET /api/v1/baskets/critical?ibkr_account=` every 5s — banner + incident table when any CRITICAL basket exists; empty list means OPEN trading resumed for that account
+6. NY vs IST timezone in `localStorage` key `modelBlue.displayTimezone`
+7. Display maps instrument `STK` → label `CFD`
 
 ### Settings page (`/settings`)
 

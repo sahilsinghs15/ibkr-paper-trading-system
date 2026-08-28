@@ -12,11 +12,11 @@ This file lists things agents must **not** claim are implemented. Items appear h
 | Nine RMS checks | Only checks 2, 3, 4, 7, 8 as classes |
 | RMS check 1 (margin), 5, 6, 9 | No check modules |
 | N IB Gateway instances / account→gateway routing | **Not built.** Multi-account today = `ib_order.account` on **one** socket. Target: [`backend-multi-gateway.md`](backend-multi-gateway.md) |
-| Per-gateway rate limiter (token bucket / fairness / Error 100) | **Not built.** Live pacing is `OrderSubmitPacer(0.2s)` on `placeOrder` only |
+| Per-gateway rate limiter (token bucket / fairness / Error 100) | **Partial.** One `GatewayRateLimiter` on the single socket (~30/24/6, P0 reserve, Error 100 cooldown). Not per-gateway, not fair across accounts |
 | TWS reconnect / failover | **Not built.** Lifespan log claims auto-reconnect; adapter does not |
 | Dashboard config API (accounts / allocations / limits CRUD) | **Implemented** at `/api/v1/config/*` on trading app; proxied from `:8010`. Does **not** bind accounts to Gateways |
 | Kill switch / flatten-all | **Partial** — HTTP API exists (`POST .../square-off`, clear, status); see [`backend-kill-switch.md`](backend-kill-switch.md). Dashboard UX may not expose all controls — verify frontend before claiming UI. |
-| `IBKRExecutionScheduler` as production pacing | **Not wired** — `OrderSubmitPacer(0.2s)` is live pacing; scheduler is tests-only (useful as the *shape* of a future per-gateway limiter) |
+| `IBKRExecutionScheduler` / `OrderSubmitPacer` | **Removed** — replaced by `GatewayRateLimiter` |
 | Risk-engine auto exit on target / stop / time_limit | No exit-trigger loop found |
 | Redis hot margin / locks / health for trading | Redis only in `demo_streaming` |
 | `signal_legs` table | Not created |

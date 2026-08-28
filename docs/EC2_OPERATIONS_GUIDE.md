@@ -87,7 +87,7 @@ Do **not** run Gateway, IBC, or uvicorn as `ubuntu`.
 │   └── frontend/                      # Vite scaffold only
 ├── ibc/                               # IBC install + config.ini (SECRETS)
 ├── Jts/                               # IB Gateway settings + installed Gateway bits
-├── storage/logs/                      # daily trading-YYYY-MM-DD.log
+├── storage/logs/                      # daily {YYYY-MM-DD}/*.log directories
 ├── ngrok                              # ngrok binary
 ├── .ngrok2/ngrok.yml                  # ngrok authtoken (SECRET)
 └── ibgateway-stable-standalone-linux-x64.sh   # Gateway installer (already used)
@@ -114,7 +114,7 @@ There is **no** `/home/tradingapp/ibgateway/` directory. Gateway lives under **`
 | Paper capital YAML | `/home/tradingapp/app/backend/config/paper_allocations.yaml` | backend | `total_margin × alloc_pct` → committed notional |
 | ngrok token | `/home/tradingapp/.ngrok2/ngrok.yml` | ngrok | **SECRET** |
 | Webhook captures | `/home/tradingapp/app/backend/data/tradingview_webhooks/` | backend | gitignored JSON dumps |
-| App logs (workspace) | `/home/tradingapp/storage/logs/` | ops | Daily files |
+| App logs (workspace) | `/home/tradingapp/storage/logs/{YYYY-MM-DD}/` | ops | Daily directories |
 | IBC user guide | `/home/tradingapp/ibc/userguide.pdf` | humans | Official IBC docs |
 
 ### 3.1 IBC keys that matter (names, not values)

@@ -93,5 +93,5 @@ For job/claim semantics see [`backend-concurrency.md`](backend-concurrency.md).
 
 ## Redis
 
-- **Main trading package `backend/app/`:** no `redis` imports (verified by search). An in-process `OrderSubmitPacer` is correct **only** while a single process submits to IBKR. Multiple uvicorn workers would each have their own pacer (over-budget). Target limiter policy: [`backend-multi-gateway.md`](backend-multi-gateway.md).
+- **Main trading package `backend/app/`:** no `redis` imports (verified by search). An in-process `GatewayRateLimiter` is correct **only** while a single process submits to IBKR. Multiple uvicorn workers would each have their own limiter (over-budget). Target limiter policy: [`backend-multi-gateway.md`](backend-multi-gateway.md).
 - **`demo_streaming/`:** Redis Streams for SSE (`demo_stream_name`, default `positions:stream`). Postgres is polled by `PositionBridge`; Redis fans out to `/demo/stream`. Stream entries are capped with approximate `MAXLEN` (`demo_stream_maxlen`, default `10000`).

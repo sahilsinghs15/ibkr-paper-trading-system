@@ -1,6 +1,6 @@
 # Multi-account, multi-gateway, and rate limiting
 
-**Verified from:** `backend/app/main.py`, `backend/app/core/config.py`, `backend/app/accounts/router.py`, `backend/app/accounts/context.py`, `backend/app/db/models/account.py`, `backend/app/services/order_manager.py`, `backend/app/services/model_blue/strategy.py`, `backend/app/oms/ibkr_adapter.py`, `backend/app/oms/submit_pacer.py`, `backend/app/oms/oms_service.py`, `backend/app/broker/ibkr/tws_client.py`, `backend/app/broker/ibkr/scheduler.py`, `backend/app/api/routes/webhooks.py`, `backend/app/services/worker_pool.py`, `backend/app/db/repositories/signal_repository.py`, `backend/app/db/repositories/execution_claim_repository.py`, `backend/app/services/kill_switch.py`, `backend/app/services/recovery.py`, `backend/app/core/logger.py`, `backend/scripts/instrument_master/pacer.py`.
+**Verified from:** `backend/app/main.py`, `backend/app/core/config.py`, `backend/app/accounts/router.py`, `backend/app/accounts/context.py`, `backend/app/db/models/account.py`, `backend/app/services/order_manager.py`, `backend/app/services/model_blue/strategy.py`, `backend/app/oms/ibkr_adapter.py`, `backend/app/broker/ibkr/gateway_rate_limiter.py`, `backend/app/oms/oms_service.py`, `backend/app/broker/ibkr/tws_client.py`, `backend/app/api/routes/webhooks.py`, `backend/app/services/worker_pool.py`, `backend/app/db/repositories/signal_repository.py`, `backend/app/db/repositories/execution_claim_repository.py`, `backend/app/services/kill_switch.py`, `backend/app/services/recovery.py`, `backend/app/core/logger.py`, `backend/scripts/instrument_master/pacer.py`.
 
 **Why this file exists.** No existing topic file covers N IB Gateway instances, account→gateway routing, or a per-gateway rate budget. RMS, jobs, and kill-switch behavior stay in their own docs; this file is the as-is vs target vs plan for **connectivity and routing**. Design intent that is not built lives here, labeled as target — it is not current code.
 
@@ -47,17 +47,18 @@ Never read the target section as implemented. Each row below is what the process
 
 ### Rate limiting — PARTIAL
 
-Three different pacers exist. Only one is on the live `placeOrder` path.
+Two pacers exist in the repo. One is on the live IB path.
 
 | Mechanism | File | Wired in `main.py`? | What it limits |
 |-----------|------|---------------------|----------------|
-| `OrderSubmitPacer(min_interval_sec=0.2)` | `oms/submit_pacer.py` | **Yes** — constructed in `lifespan`, passed into `IBKRExecutionAdapter` | Minimum 0.2s between `placeOrder` calls. `asyncio.Lock` + sleep. Process-local. Shared by **all** accounts and by kill-switch flatten. |
-| `IBKRExecutionScheduler` token bucket | `broker/ibkr/scheduler.py` | **No** — tests only (`tests/test_mft_concurrency_recovery.py`) | Comments cite IB Error 100 = 50 msg/sec; app envelope 30/24/6 with P0 emergency reserve. Not production. |
-| `RatePacer` | `scripts/instrument_master/pacer.py` | **No** — discover CLI | Token bucket for `reqContractDetails` in the instrument-master script. `tests/test_pacer.py` tests this class, not `OrderSubmitPacer`. |
+| `GatewayRateLimiter` (~30/24/6 msg/sec) | `broker/ibkr/gateway_rate_limiter.py` | **Yes** — one instance in `lifespan`, shared by adapter + `LivePnlService` + `TWSClient` Error 100 path | Token bucket: P0 flatten reserve, P1 `placeOrder`/`cancelOrder`, P2 `reqContractDetails`, P3 `reqMktData`. Wait+timeout (`IBKR_GATEWAY_MAX_WAIT_SEC`). Error 100 cooldown. Process-local. |
+| `RatePacer` | `scripts/instrument_master/pacer.py` | **No** — discover CLI | Token bucket for `reqContractDetails` in the instrument-master script. `tests/test_pacer.py` tests this class, not `GatewayRateLimiter`. |
 
-`OrderSubmitPacer.acquire` **waits**; it never rejects. Backpressure is “the submit coroutine blocks.” There is no per-account fairness: N fan-out tasks serialize on one lock. There is no budget for `reqMktData`, `reqContractDetails`, `cancelOrder`, or kill-switch vs normal (kill-switch uses the same 0.2s interval — see [`backend-kill-switch.md`](backend-kill-switch.md)).
+`GatewayRateLimiter.acquire` waits up to `max_wait_sec`, then raises `GatewayPacingTimeout` (adapter sets order ERROR, no IB send). There is no per-account fairness: N fan-out tasks share one bucket. Recovery chatter (`reqOpenOrders`, `reqExecutions`, `reqPositions`) is **not** paced yet.
 
-IB identical-order pacing and market-data line caps are **not** implemented as application limiters.
+IB identical-order pacing and market-data **line** caps are **not** implemented as application limiters (separate from gateway msg/sec budget).
+
+Removed: `OrderSubmitPacer` (`oms/submit_pacer.py`), `IBKRExecutionScheduler` (`broker/ibkr/scheduler.py`).
 
 ### Order lifecycle, dedup, persistence — implemented (single socket)
 
@@ -76,11 +77,11 @@ See [`backend-concurrency.md`](backend-concurrency.md) and [`backend-execution.m
 
 | Concern | Code | As-is |
 |---------|------|-------|
-| Logs | `core/logger.py` | Daily `storage/logs/trading-YYYY-MM-DD.log`. `trace` ContextVars: `req=` / `signal=` / `trade=` / `acct=`. |
-| TWS errors | `TWSClient.error` | Codes 2000–2999 logged as status; others `warning`. Forwarded to listeners (`on_error`). No Error 100 / pacing-specific handler. |
+| Logs | `core/logger.py` | Daily `storage/logs/{YYYY-MM-DD}/trading.log`. `trace` ContextVars: `req=` / `signal=` / `trade=` / `acct=`. |
+| TWS errors | `TWSClient.error` | Codes 2000–2999 logged as status; others `warning`. Error 100 triggers `GatewayRateLimiter.notify_error_100()`. Forwarded to listeners (`on_error`). |
 | Connection drop | `TWSClient.connectionClosed` | Clears handshake event; notifies listeners. Adapter then ERROR-cancels in-memory orders (see above). |
 | HTTP | `webhooks.py` | 202 `accepted` is enqueue, not fill. RMS/OMS failures become `signal_jobs.status`. |
-| Metrics | `IBKRExecutionScheduler.metrics` | Exists only on the unwired scheduler. Production pacer logs `IBKR submit paced: delay=...` only. |
+| Metrics | `GatewayRateLimiter.metrics` | In-process counters (`total_acquired`, `delayed_count`, `timeout_count`, `error100_cooldowns`, …). Logs: `IBKR submit paced`, `Gateway pacing timeout`, `IBKR Error 100 cooldown`. |
 
 ---
 
@@ -135,13 +136,13 @@ Health / reconnect (target):
 
 Justification:
 
-- Today all submits already funnel through one process (`app.main` + 10 asyncio workers). An in-process bucket is correct for that topology and matches `OrderSubmitPacer`.
+- Today all submits already funnel through one process (`app.main` + 10 asyncio workers). An in-process bucket is correct for that topology and matches `GatewayRateLimiter`.
 - Redis is **not** on the trading path (`demo_streaming` only). Putting the hot-path limiter in Redis adds a new failure domain for every `placeOrder`.
 - If a **second OS process** ever calls `placeOrder` on the same Gateway (second uvicorn, a sidecar OMS, a discover script with the same clientId — which IBKR will disconnect), in-process state is wrong. Then either:
   - **funnel** all Gateway submits through one owner process (preferred; keep the current shape), or
   - share the bucket in Redis with a Lua INCR/PEXPIRE or similar.
 
-Do not run two owners against one Gateway “and hope.”
+`scripts/oms/flatten_gateway_positions.py` is the allowed sidecar: **client id 99**, local `--pace 0.2`, dry-run unless `--apply`. Runbook: [`backend-kill-switch.md`](backend-kill-switch.md). Do not use `IBKR_CLIENT_ID`.
 
 #### Budget: sum of clientIds vs shared ceiling
 
@@ -166,7 +167,7 @@ The per-gateway limiter covers **outbound API messages on sockets attached to th
 
 #### Fairness (N accounts, one gateway budget)
 
-Without fairness, fan-out + kill-switch + PnL subscribe will let one account’s burst hold `OrderSubmitPacer`’s lock (today’s failure mode).
+Without fairness, fan-out + kill-switch + PnL subscribe will let one account’s burst consume the shared `GatewayRateLimiter` budget (today’s failure mode).
 
 Target: **deficit round-robin / weighted fair queue keyed by `account_id`** on each gateway limiter.
 
@@ -180,10 +181,10 @@ Distinguish **our limiter** vs **IB Error 100**:
 
 | Event | Target behavior |
 |-------|-----------------|
-| Limiter has no token | **Wait** up to `max_wait_sec` (job lease must stay heartbeated). If wait exceeded: **do not** `placeOrder`; fail the account fan-out outcome; job status `FAILED` or stay `PROCESSING` with retry per policy. Do not HTTP-500 the already-accepted webhook. |
+| Limiter has no token | **Wait** up to `max_wait_sec` (job lease must stay heartbeated). If wait exceeded: **do not** `placeOrder`; order ERROR / account fan-out fails. Implemented via `GatewayPacingTimeout`. |
 | IB Error 100 / pacing | Immediate backoff on **that gateway** (multiply remaining tokens down / cool-down window). Surface on the order (`error_message`) and logs. Retry only if **zero** evidence of accept (`orders` row not emitted). If unknown, `RECOVERY_REQUIRED` — never blind retry. |
 
-Today `OrderSubmitPacer` only implements the wait path, with no timeout and no Error 100 handling.
+Single-socket limiter lacks per-account fairness and does not pace recovery snapshot calls yet.
 
 ### Backpressure when limits are hit
 
@@ -256,7 +257,7 @@ flowchart LR
     WP1 --> OM1[OrderManager fanout]
     OM1 --> RMS1[RMS per account]
     RMS1 --> ADA1[one IBKRExecutionAdapter]
-    ADA1 --> PAC1[OrderSubmitPacer 0.2s]
+    ADA1 --> PAC1[GatewayRateLimiter 30 per sec]
     PAC1 --> TWS1[one TWSClient]
     TWS1 --> GW1[one IB Gateway]
     GW1 --> ACCA[ib_order.account A]
@@ -328,8 +329,8 @@ sequenceDiagram
 | No `gateways` / `account_gateway_bindings` tables | Nowhere to store mapping; Settings page cannot assign | M | Alembic, config API, UI |
 | `ib_order.account` assumes one authorized login | Independent logins silently fail or trade the wrong account | S (docs/validation) / L (true multi-login) | Pool + mapping |
 | Fan-out is one job for N accounts | One Gateway down fails/blocks the whole signal; `account_scope` unused | M | Job schema / worker claim by account optional |
-| `OrderSubmitPacer` is global 0.2s, wait-only, `placeOrder` only | Not 50 msg/sec, not per gateway, not fair, ignores md/cancel | M | Per-gateway limiter |
-| `IBKRExecutionScheduler` unwired | Priority/emergency reserve exists in tests only | S–M | Wire **per gateway**, do not share one global scheduler |
+| Single-socket limiter not per-gateway / not fair | One bucket for all accounts; fan-out bursts share budget | M | Per-gateway limiter + DRR (Phase 2–3) |
+| Recovery API calls unpaced | `reqOpenOrders` / `reqExecutions` / `reqPositions` skip limiter | S | Extend limiter coverage |
 | Log line claims auto-reconnect; adapter does not reconnect | Operators trust a lie; drops black-hole submits | S | Reconnect loop |
 | `on_connection_closed` marks working orders ERROR | May desync from live IB orders; duplicate risk on retry | M | Reconcile-before-ERROR |
 | No Error 100 handling | IB throttle is invisible except logs | S | Limiter cooldown |
@@ -349,8 +350,8 @@ sequenceDiagram
 Deployable: still **one** Gateway, same paper host.
 
 1. Document and **remove the false auto-reconnect log** (or implement reconnect for the existing client). Prefer implement: `TWSClient` reconnect with same clientId; stop marking in-flight orders ERROR on drop; adopt recovery snapshot first.
-2. Replace `OrderSubmitPacer` with a **named limiter owned by the adapter** that: token-bucket ~30 msg/sec (configurable), wait+timeout, logs, Error 100 cooldown. Still one limiter because there is still one Gateway.
-3. Apply the limiter to `placeOrder` **and** `cancelOrder` (kill-switch included). Leave `reqMktData` counted but lower priority if the scheduler is wired; if not yet, at least count toward the ceiling.
+2. ~~Replace `OrderSubmitPacer` with token-bucket limiter~~ **Done** — `GatewayRateLimiter` in `broker/ibkr/gateway_rate_limiter.py`.
+3. ~~Apply limiter to placeOrder and cancelOrder~~ **Done**; `reqMktData` P3 try_acquire **Done**; extend to recovery calls if needed.
 4. Add `gateways` + `gateway_clients` + `account_gateway_bindings` tables; seed one row from `IBKR_HOST`/`PORT`/`CLIENT_ID` so config API has a real object. Routing function returns that only gateway. Behavior unchanged for operators.
 
 ### Phase 2 — N Gateways, static mapping, per-gateway limiter
@@ -394,7 +395,7 @@ Do not replace these; this file adds the missing connectivity/target layer.
 
 - Multi-account **routing and RMS** — [`backend-rms-oms.md`](backend-rms-oms.md)
 - Job/claim/recovery — [`backend-concurrency.md`](backend-concurrency.md)
-- `OrderSubmitPacer` is live, scheduler is not — [`backend-rms-oms.md`](backend-rms-oms.md), [`safety.md`](safety.md)
+- `GatewayRateLimiter` is live on the single socket — [`backend-rms-oms.md`](backend-rms-oms.md), [`safety.md`](safety.md)
 - Single FastAPI process, no per-account OMS process — [`backend-execution.md`](backend-execution.md)
 - Config CRUD has no gateway fields — [`backend-api.md`](backend-api.md)
 - Redis not on trading path — [`backend-persistence.md`](backend-persistence.md)

@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     ibkr_client_id: Annotated[int, Ge(0)] = 1
     ibkr_connection_timeout: Annotated[int, Gt(0)] = 10
 
+    # IBKR Gateway rate limiter (single-socket production pacing)
+    ibkr_gateway_max_msg_per_sec: Annotated[float, Gt(0)] = 30.0
+    ibkr_gateway_normal_msg_per_sec: Annotated[float, Gt(0)] = 24.0
+    ibkr_gateway_emergency_reserve_per_sec: Annotated[float, Ge(0)] = 6.0
+    ibkr_gateway_max_wait_sec: Annotated[float, Gt(0)] = 8.0
+    ibkr_gateway_error100_cooldown_sec: Annotated[float, Ge(0)] = 2.0
+
     # IBKR Market Data connection settings
     ibkr_market_data_type: Annotated[int, Ge(1), Le(4)] = 3
     ibkr_market_data_symbol: str = "AAPL"

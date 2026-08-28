@@ -5,10 +5,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.broker.ibkr.gateway_rate_limiter import GatewayRateLimiter
 from app.oms.basket import BasketState
 from app.oms.coordinator import BasketCoordinator
 from app.oms.retry_policy import ExecutionRetryPolicy
-from app.oms.submit_pacer import OrderSubmitPacer
 from app.rms.checks.base import BaseRMSCheck
 from app.rms.engine import RMSEngine
 from app.rms.models import (
@@ -193,19 +193,26 @@ async def test_duplicate_retry_key_not_resubmitted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_pacer_serializes_place_order() -> None:
+async def test_gateway_rate_limiter_serializes_place_order() -> None:
     import time
 
     from app.broker.ibkr.tws_client import TWSClient
     from app.oms.ibkr_adapter import IBKRExecutionAdapter
     from app.oms.oms_service import OMSService
 
-    pacer = OrderSubmitPacer(min_interval_sec=0.12)
+    limiter = GatewayRateLimiter(
+        max_msg_per_sec=5.0,
+        normal_msg_per_sec=5.0,
+        emergency_reserve_per_sec=0.0,
+        max_wait_sec=5.0,
+        error100_cooldown_sec=0.0,
+        max_burst=1.0,
+    )
     tws = MagicMock(spec=TWSClient)
     tws.is_connected.return_value = True
     tws.next_order_id = 700
     tws.get_request_type.return_value = "order"
-    adapter = IBKRExecutionAdapter(client=tws, submit_pacer=pacer)
+    adapter = IBKRExecutionAdapter(client=tws, rate_limiter=limiter)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
     script = PlaceScript(["fill", "fill", "fill"])
     script.bind(adapter, tws)
@@ -215,7 +222,7 @@ async def test_submit_pacer_serializes_place_order() -> None:
     result = await _coord(oms).execute(intent, _pass(intent), order_type="MARKET")
     elapsed = time.monotonic() - started
     assert result.state == BasketState.OPEN
-    assert elapsed >= 0.20
+    assert elapsed >= 0.30
     assert script.place_count == 3
 
 

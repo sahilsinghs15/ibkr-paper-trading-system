@@ -18,6 +18,11 @@ Use `get_settings()`; do not construct `Settings()` ad hoc in new code.
 | `ibkr_port` | `IBKR_PORT` | `7497` | Paper TWS default; **not** validated against live ports |
 | `ibkr_client_id` | `IBKR_CLIENT_ID` | `1` | The **only** API client id. Duplicate client ids on the same Gateway disconnect the older session. |
 | `ibkr_connection_timeout` | `IBKR_CONNECTION_TIMEOUT` | `10` | Seconds |
+| `ibkr_gateway_max_msg_per_sec` | `IBKR_GATEWAY_MAX_MSG_PER_SEC` | `30` | Global token-bucket ceiling (headroom under IB ~50 msg/sec) |
+| `ibkr_gateway_normal_msg_per_sec` | `IBKR_GATEWAY_NORMAL_MSG_PER_SEC` | `24` | Normal workload budget (P1–P4) |
+| `ibkr_gateway_emergency_reserve_per_sec` | `IBKR_GATEWAY_EMERGENCY_RESERVE_PER_SEC` | `6` | P0 flatten reserve (within global ceiling) |
+| `ibkr_gateway_max_wait_sec` | `IBKR_GATEWAY_MAX_WAIT_SEC` | `8` | Max wait before pacing timeout (no IB send) |
+| `ibkr_gateway_error100_cooldown_sec` | `IBKR_GATEWAY_ERROR100_COOLDOWN_SEC` | `2` | Backoff after IB Error 100 |
 | `ibkr_market_data_type` | `IBKR_MARKET_DATA_TYPE` | `3` | IBKR market data type (1–4) |
 | `ibkr_market_data_symbol` | `IBKR_MARKET_DATA_SYMBOL` | `"AAPL"` | |
 | `ibkr_market_data_sec_type` | `IBKR_MARKET_DATA_SEC_TYPE` | `"STK"` | |
@@ -53,5 +58,4 @@ Property: `candle_timeframe_minutes` — parses `candle_timeframe` (defaults to 
 - `BROKER_MODE` — not a field; no MockBroker switch in code.
 - `ALLOCATIONS_CONFIG_PATH` — not a field; routing uses Postgres accounts / strategies / allocations.
 - Worker pool size (`10`), job lease durations, reclaim intervals — hardcoded in `main.py` / `worker_pool.py`. See [`backend-map.md`](backend-map.md).
-- Submit pacer interval (`0.2s`) — hardcoded in `main.py` when constructing `IBKRExecutionAdapter`.
 - Gateway pool / per-account `IBKR_HOST` — **not fields**. `accounts.ibkr_account` is the IB account string tagged on `placeOrder`, not a socket. Target schema: [`backend-multi-gateway.md`](backend-multi-gateway.md).

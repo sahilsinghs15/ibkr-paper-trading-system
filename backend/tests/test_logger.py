@@ -50,8 +50,8 @@ class TestLogging:
         setup_logging(level="INFO")
         path = current_log_file("trading")
         today = datetime.now().astimezone().strftime("%Y-%m-%d")
-        assert path.name == f"trading-{today}.log"
-        assert path.parent == LOG_DIR
+        assert path.name == "trading.log"
+        assert path.parent == LOG_DIR / today
 
     def test_file_handler_opens_dated_file(self) -> None:
         setup_logging(level="INFO")
@@ -62,22 +62,25 @@ class TestLogging:
         assert len(file_handlers) == 1
         handler = file_handlers[0]
         today = datetime.now().astimezone().strftime("%Y-%m-%d")
-        assert Path(handler.baseFilename).name == f"trading-{today}.log"
+        assert Path(handler.baseFilename).name == "trading.log"
+        assert Path(handler.baseFilename).parent == LOG_DIR / today
 
     def test_rollover_opens_new_dated_file_without_rename(self, tmp_path, monkeypatch) -> None:
         import app.core.logger as logger_mod
 
         monkeypatch.setattr(logger_mod, "LOG_DIR", tmp_path)
         handler = DatedTimedRotatingFileHandler(prefix="trading", encoding="utf-8")
-        today_name = Path(handler.baseFilename).name
-        assert today_name.startswith("trading-")
-        assert today_name.endswith(".log")
-        # Simulate midnight: doRollover should open today's path again (no rename of prior)
         prior_path = Path(handler.baseFilename)
+        assert prior_path.name == "trading.log"
+        assert prior_path.parent.parent == tmp_path
+        # Simulate midnight: doRollover should open today's path again (no rename of prior)
         prior_path.write_text("yesterday\n", encoding="utf-8")
         handler.doRollover()
         assert prior_path.exists()  # old file not renamed away
-        assert Path(handler.baseFilename).name.startswith("trading-")
+        assert Path(handler.baseFilename).name == "trading.log"
+        assert Path(handler.baseFilename).parent.name == datetime.now().astimezone().strftime(
+            "%Y-%m-%d"
+        )
         handler.close()
 
     def test_trace_context_on_records(self) -> None:

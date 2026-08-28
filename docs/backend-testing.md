@@ -57,11 +57,13 @@ Dev extras: `httpx`, `mypy`, `pytest`, `pytest-asyncio`, `ruff` (`[project.optio
 | `test_market_data_pipeline.py` | Live PnL / market data |
 | `test_instrument_master_discover.py` | Discover script (mocked) |
 | `test_seed_fetcher.py` | NASDAQ seed fetcher fixtures |
-| `test_pacer.py` | `scripts.instrument_master.pacer.RatePacer` (discover CLI) — **not** `OrderSubmitPacer` |
+| `test_pacer.py` | `scripts.instrument_master.pacer.RatePacer` (discover CLI) — **not** `GatewayRateLimiter` |
+| `test_gateway_rate_limiter.py` | `GatewayRateLimiter` token bucket, P0 reserve, timeout, Error 100 cooldown |
+| `test_ibkr_adapter_pacing.py` | Adapter + limiter: pacing timeout, cancel acquire, Error 100 non-terminal |
 | `test_kill_switch.py` | Kill switch service + EMERGENCY_FLATTEN RMS bypass |
 | `test_kill_switch_reconciliation_fix.py` | Kill switch position reconciliation |
 | `test_repair_historical_killswitch_positions.py` | Historical kill-switch repair script |
-| `test_mft_concurrency_recovery.py` | Worker pool + IBKRExecutionScheduler (scheduler tests-only) |
+| `test_mft_concurrency_recovery.py` | Worker pool idempotency / SKIP LOCKED claims |
 | `test_burst_stress_150_300.py` | Burst stress (150/300 webhooks) |
 | `test_burst_stress_500_and_kill_switch.py` | Burst stress + kill switch under load |
 | `rms/test_rms_engine.py` | RMSEngine orchestration |

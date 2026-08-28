@@ -18,6 +18,7 @@ class BasketState(str, Enum):
     UNWINDING = "UNWINDING"
     COMPENSATED = "COMPENSATED"
     CRITICAL = "CRITICAL"
+    RECOVERED = "RECOVERED"
 
 
 @dataclass
@@ -35,6 +36,9 @@ class Basket:
     orders: list[OMSOrder] = field(default_factory=list)
     compensation_orders: list[OMSOrder] = field(default_factory=list)
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    recovery_status: str | None = None
+    recovery_detail: str | None = None
+    recovered_at: datetime | None = None
 
 
 @dataclass

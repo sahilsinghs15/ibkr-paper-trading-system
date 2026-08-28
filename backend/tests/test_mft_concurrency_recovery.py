@@ -1,16 +1,12 @@
 """Comprehensive unit tests for Production MFT concurrency, idempotency, and recovery."""
 
-import asyncio
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.broker.ibkr.scheduler import IBKRExecutionScheduler
-from app.db.models.signal import (
-    JOB_STATUS_QUEUED,
-)
+from app.db.models.signal import JOB_STATUS_QUEUED
 from app.db.repositories.signal_repository import SignalJobRepository
 from app.db.session import create_engine_from_settings
 from app.services.worker_pool import compute_idempotency_key
@@ -111,19 +107,3 @@ async def test_signal_job_repository_claim_skip_locked(session_factory: async_se
         claimed_again_ids = [j.job_id for j in claimed_again]
         assert target_job_id not in claimed_again_ids
 
-
-@pytest.mark.asyncio
-async def test_ibkr_execution_scheduler_pacing():
-    scheduler = IBKRExecutionScheduler(max_rate_per_sec=100.0, max_concurrent=5)
-    counter = 0
-
-    def mock_broker_call():
-        nonlocal counter
-        counter += 1
-        return counter
-
-    tasks = [scheduler.execute_paced(mock_broker_call) for _ in range(10)]
-    results = await asyncio.gather(*tasks)
-
-    assert len(results) == 10
-    assert counter == 10

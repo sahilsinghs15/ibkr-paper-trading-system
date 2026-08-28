@@ -34,6 +34,11 @@ class BasketModel(Base):
     action: Mapped[str] = mapped_column(String, nullable=False)
     state: Mapped[str] = mapped_column(String, nullable=False)
     intended_leg_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    recovery_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    recovery_detail: Mapped[str | None] = mapped_column(String, nullable=True)
+    recovered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

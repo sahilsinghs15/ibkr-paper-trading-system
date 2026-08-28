@@ -1,22 +1,44 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
+import { fetchCriticalBaskets } from '../api/criticalBasketsApi'
 import { ClosedPositionsTable } from '../components/ClosedPositionsTable'
+import { CriticalIncidentsBanner } from '../components/CriticalIncidentsBanner'
 import { Kpis } from '../components/Kpis'
 import { OpenPositionsTable } from '../components/OpenPositionsTable'
 import { SignalTrayTable } from '../components/SignalTrayTable'
 import { SignalWidget } from '../components/SignalWidget'
 import { useSignalStore } from '../store/signalStore'
+import type { CriticalBasketRow } from '../types/criticalBaskets'
 import { normalizeIbkrAccount } from '../utils/activeAccount'
 
 export function PositionsPage() {
   const { ibkrAccount } = useParams<{ ibkrAccount: string }>()
   const cleanAccount = normalizeIbkrAccount(ibkrAccount)
   const [activeTab, setActiveTab] = useState<'signals' | 'open' | 'closed'>('open')
+  const [criticalIncidents, setCriticalIncidents] = useState<CriticalBasketRow[]>([])
   const fetchSignals = useSignalStore((s) => s.fetchSignals)
+
+  const loadCritical = useCallback(async () => {
+    if (!cleanAccount) return
+    try {
+      const res = await fetchCriticalBaskets(cleanAccount)
+      setCriticalIncidents(res.incidents)
+    } catch {
+      setCriticalIncidents([])
+    }
+  }, [cleanAccount])
 
   useEffect(() => {
     void fetchSignals({ account: cleanAccount })
   }, [cleanAccount, fetchSignals])
+
+  useEffect(() => {
+    void loadCritical()
+    const timer = setInterval(() => {
+      void loadCritical()
+    }, 5000)
+    return () => clearInterval(timer)
+  }, [loadCritical])
 
   return (
     <main className="page dashboard-layout">
@@ -29,6 +51,11 @@ export function PositionsPage() {
       {/* Main Dashboard Column */}
       <section className="dashboard-main-column">
         <Kpis accountFilter={cleanAccount} />
+
+        <CriticalIncidentsBanner
+          ibkrAccount={cleanAccount ?? ''}
+          incidents={criticalIncidents}
+        />
 
         {/* Workspace Navigation Tabs */}
         <div className="dashboard-tabs-header">

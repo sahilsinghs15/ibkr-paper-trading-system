@@ -1,6 +1,6 @@
 # Kill switch — emergency flatten and OPEN block
 
-**Verified from:** `backend/app/services/kill_switch.py`, `backend/app/db/models/kill_switch.py`, `backend/app/api/routes/config.py`, `backend/app/services/order_manager.py`, `backend/app/rms/checks/strategy.py`, `backend/app/rms/checks/money_per_stock.py`, `backend/app/rms/models.py`, `backend/app/oms/coordinator.py`.
+**Verified from:** `backend/app/services/kill_switch.py`, `backend/app/db/models/kill_switch.py`, `backend/app/api/routes/config.py`, `backend/app/services/order_manager.py`, `backend/app/rms/checks/strategy.py`, `backend/app/rms/checks/money_per_stock.py`, `backend/app/rms/models.py`, `backend/app/oms/coordinator.py`, `backend/scripts/oms/flatten_gateway_positions.py`.
 
 Operator emergency subsystem: flatten all open positions for an account, block new OPEN signals until explicitly cleared. Distinct from `accounts.enabled` / allocation flags (those affect routing only).
 
@@ -110,9 +110,41 @@ Normal CLOSE signals from TradingView still go through full RMS evaluation.
 
 ## Submit pacing note
 
-Kill-switch flatten orders go through the same `OrderSubmitPacer(0.2s)` on the **one** `IBKRExecutionAdapter` as ordinary orders. There is no emergency token reserve in production. `IBKRExecutionScheduler` priority 0 exists in `broker/ibkr/scheduler.py` but is **not wired**. Flatten also uses the same TWS socket; if that Gateway is down, flatten cannot fail over to another instance.
+Kill-switch flatten orders go through the same `GatewayRateLimiter` on the **one** `IBKRExecutionAdapter` as ordinary orders. P0 (`EMERGENCY_FLATTEN`) uses the emergency reserve slice of the token bucket. Flatten also uses the same TWS socket; if that Gateway is down, flatten cannot fail over to another instance.
 
 Target: per-gateway limiter with a reserved emergency slice — [`backend-multi-gateway.md`](backend-multi-gateway.md) (not built).
+
+## IBKR leftover flatten (operator script)
+
+App kill-switch flatten closes **Postgres OPEN** rows through OMS + `GatewayRateLimiter` on **client id 1**. Residual IBKR lines that are not in the ledger (orphans, outside-app fills) need a sidecar:
+
+[`backend/scripts/oms/flatten_gateway_positions.py`](../backend/scripts/oms/flatten_gateway_positions.py)
+
+- Opens a **second** `TWSClient` (default **client id 99**) so it does not disconnect `app.main`.
+- Local `--pace 0.2` between `placeOrder`s (~5/sec). Does **not** share the in-process limiter.
+- Default is **dry-run**. Nothing is submitted without `--apply`.
+- Paper ports `{7497, 4002}` only unless `--allow-live`.
+- Refuses `--client-id` equal to `IBKR_CLIENT_ID`.
+- Logs: `storage/logs/{YYYY-MM-DD}/flatten-gateway.log`.
+
+Arm kill-switch first so TradingView OPENs stay blocked. Prefer `POST .../square-off` for ledger positions. Use this script only for IBKR leftovers.
+
+**Basket CRITICAL** is separate from kill-switch: when compensation fails, `BasketCoordinator` latches OPEN for `(account_id, strategy_id)` and `CriticalRecoveryService` auto-flattens leftover broker lines then calls `clear_critical` when a fresh snapshot is flat. Reconcile square-off (`POST /api/v1/reconcile/positions/flatten`) flattens IBKR only — it does **not** clear the CRITICAL latch. Monitor incidents on the Positions dashboard banner (`GET /api/v1/baskets/critical?ibkr_account=`).
+
+Dry run, then apply (Gateway paper port **4002**; use **7497** for paper TWS):
+
+```bash
+cd /home/tradingapp/app/backend
+.venv/bin/python scripts/oms/flatten_gateway_positions.py \
+  --host 127.0.0.1 --port 4002 --client-id 99 \
+  --account DUR919062 --sec-type CFD --pace 0.2
+
+.venv/bin/python scripts/oms/flatten_gateway_positions.py \
+  --host 127.0.0.1 --port 4002 --client-id 99 \
+  --account DUR919062 --sec-type CFD --pace 0.2 --apply
+```
+
+Safe to run while `app.main` is up **if** client id stays 99 and `--pace` stays 0.2 (or slower). Do not point it at client id 1. Do not speed `--pace` toward 30 msg/sec.
 
 ## Events
 
@@ -151,3 +183,4 @@ Flatten emits via `BasketCoordinator._event`:
 - RMS / basket: [`backend-rms-oms.md`](backend-rms-oms.md)
 - Operator safety: [`safety.md`](safety.md)
 - Repair script: `backend/scripts/repair_historical_killswitch_positions.py`
+- IBKR leftover flatten: `backend/scripts/oms/flatten_gateway_positions.py` (this file, section above)

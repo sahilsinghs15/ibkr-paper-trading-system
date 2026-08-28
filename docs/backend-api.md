@@ -8,7 +8,7 @@ Mounted in `create_app()`:
 
 - `health_router` — no prefix
 - `webhooks_router` — prefix `/api`
-- `api_router` — prefix `/api/v1` (orders + config + system-monitor + reconcile routers)
+- `api_router` — prefix `/api/v1` (orders + baskets + config + system-monitor + reconcile routers)
 
 **No** `CORSMiddleware`, **no** WebSocket routes, **no** `StaticFiles` / HTML mount on this app.
 
@@ -40,6 +40,7 @@ Mounted in `create_app()`:
 | `GET` | `/api/v1/system-monitor` | `get_system_monitor` | — | `SystemMonitorResponse` | Read-only EC2/service observability |
 | `GET` | `/api/v1/reconcile/positions` | `get_reconcile_positions` | query `ibkr_account` (optional) | `ReconcilePositionsResponse` | Latest `broker_positions` snapshot, OPEN ledger rows, fresh diffs (no live `reqPositions`) |
 | `POST` | `/api/v1/reconcile/positions/flatten` | `flatten_broker_position_line` | `FlattenBrokerPositionRequest` | `FlattenBrokerPositionResponse` | MARKET flatten one broker snapshot line (qty from DB); no kill switch, no ledger close |
+| `GET` | `/api/v1/baskets/critical` | `list_critical_baskets` | query `ibkr_account` (required) | `CriticalBasketsResponse` | CRITICAL baskets with recovery status and leg fill summary; empty list = OPEN latch cleared |
 
 `OrderSchema` fields: `order_id`, `symbol`, `side`, `quantity`, `order_type`, `status`, `timestamp`, `price`, `filled_quantity`, `average_fill_price`.
 

@@ -10,13 +10,14 @@ from fastapi.responses import JSONResponse
 from app.api.router import api_router
 from app.api.routes.health import router as health_router
 from app.api.routes.webhooks import router as webhooks_router
+from app.broker.ibkr.gateway_rate_limiter import GatewayRateLimiter
 from app.broker.ibkr.tws_client import TWSClient
 from app.core.config import get_settings
 from app.core.logger import setup_logging
 from app.db.session import AsyncSessionLocal
 from app.oms.ibkr_adapter import IBKRExecutionAdapter
 from app.oms.oms_service import OMSService
-from app.oms.submit_pacer import OrderSubmitPacer
+from app.services.critical_recovery import CriticalRecoveryService
 from app.services.model_blue.db_allocation import DatabaseCommittedCapitalProvider
 from app.services.model_blue.db_trade_book import DatabaseModelBlueTradeBook
 from app.services.model_blue.persistence import ModelBlueExecutionPersistence
@@ -39,13 +40,21 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     logger.info("Initializing paper-trading execution components (IBKR Paper TWS target)...")
 
     client = TWSClient()
+    rate_limiter = GatewayRateLimiter(
+        max_msg_per_sec=settings.ibkr_gateway_max_msg_per_sec,
+        normal_msg_per_sec=settings.ibkr_gateway_normal_msg_per_sec,
+        emergency_reserve_per_sec=settings.ibkr_gateway_emergency_reserve_per_sec,
+        max_wait_sec=settings.ibkr_gateway_max_wait_sec,
+        error100_cooldown_sec=settings.ibkr_gateway_error100_cooldown_sec,
+    )
+    client.register_rate_limiter(rate_limiter)
     ibkr_adapter = IBKRExecutionAdapter(
         client=client,
         host=settings.ibkr_host,
         port=settings.ibkr_port,
         client_id=settings.ibkr_client_id,
         timeout=float(settings.ibkr_connection_timeout),
-        submit_pacer=OrderSubmitPacer(min_interval_sec=0.2),
+        rate_limiter=rate_limiter,
     )
     oms = OMSService(adapter=ibkr_adapter)
 
@@ -60,11 +69,23 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         session_factory=AsyncSessionLocal,
         persistence=persistence,
     )
-    order_manager._live_pnl = LivePnlService(AsyncSessionLocal, client)
+    order_manager._live_pnl = LivePnlService(
+        AsyncSessionLocal, client, rate_limiter=rate_limiter
+    )
     try:
         await order_manager.hydrate_runtime_from_db()
     except Exception:
         logger.exception("Failed to hydrate Model Blue/RMS runtime state from PostgreSQL.")
+
+    critical_recovery = CriticalRecoveryService(
+        session_factory=AsyncSessionLocal,
+        client=client,
+        order_manager=order_manager,
+    )
+    if order_manager._baskets is not None:
+        order_manager._baskets.set_recovery_service(critical_recovery)
+        critical_recovery.set_coordinator(order_manager._baskets)
+    fastapi_app.state.critical_recovery = critical_recovery
 
     # Establish TWS connection session
     success = client.connect_and_start(
@@ -110,6 +131,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     position_reconciler = PositionReconciler(AsyncSessionLocal, client)
     await position_reconciler.start()
     fastapi_app.state.position_reconciler = position_reconciler
+
+    await critical_recovery.enqueue_all_critical()
 
     critical_count = 0
     baskets = getattr(order_manager, "_baskets", None)

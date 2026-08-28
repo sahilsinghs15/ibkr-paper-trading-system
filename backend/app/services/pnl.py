@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.broker.ibkr.gateway_rate_limiter import PRIORITY_MARKET_DATA
 from app.db.repositories.position_repository import PositionRepository
 from app.rms.models import OrderAction, OrderIntent, OrderLeg, OrderSide
 
@@ -78,9 +79,16 @@ class LivePnlService:
     Requires TWSClient.reqMktData. Does not use entry price as a mark.
     """
 
-    def __init__(self, session_factory: SessionFactory, client: object | None) -> None:
+    def __init__(
+        self,
+        session_factory: SessionFactory,
+        client: object | None,
+        *,
+        rate_limiter: object | None = None,
+    ) -> None:
         self._session_factory = session_factory
         self._client = client
+        self._rate_limiter = rate_limiter
         self._next_req = 50000
         self._by_req: dict[int, tuple[int, str, str]] = {}
         self._listeners_by_req: dict[int, set[tuple[int, str, str]]] = {}
@@ -101,6 +109,33 @@ class LivePnlService:
         self._persist_delayed: set[tuple[int, str]] = set()
         if client is not None and hasattr(client, "register_market_data_listener"):
             client.register_market_data_listener(self)
+
+    def _schedule_paced_retry(self, callback) -> None:
+        loop = getattr(self, "_loop", None)
+        if loop is None or not loop.is_running():
+            logger.debug("LivePnl paced retry skipped: no running event loop")
+            return
+        loop.call_later(0.05, callback)
+
+    def _try_paced_call(self, request_type: str, callback, *, retry_callback) -> bool:
+        if self._rate_limiter is None:
+            callback()
+            return True
+        acquired = self._rate_limiter.try_acquire(PRIORITY_MARKET_DATA, request_type)
+        if acquired is not None:
+            callback()
+            return True
+        self._schedule_paced_retry(retry_callback)
+        return False
+
+    def _cancel_mkt_data_paced(self, req_id: int, cancel) -> None:
+        def _send() -> None:
+            cancel(req_id)
+
+        def _retry() -> None:
+            self._cancel_mkt_data_paced(req_id, cancel)
+
+        self._try_paced_call("cancelMktData", _send, retry_callback=_retry)
 
     def watch_open(self, intent: OrderIntent) -> None:
         if intent.account_id is None or self._client is None:
@@ -191,7 +226,7 @@ class LivePnlService:
                     self._contract_reqs.pop(c_key, None)
                 if callable(cancel):
                     try:
-                        cancel(req_id)
+                        self._cancel_mkt_data_paced(req_id, cancel)
                     except Exception:
                         logger.exception("LivePnl cancelMktData failed for req_id=%s", req_id)
 
@@ -264,9 +299,9 @@ class LivePnlService:
             return
         for c_key, req_id in list(self._contract_reqs.items()):
             try:
-                # Issue reqMktData via centralized scheduler / client
                 sec_type, symbol, exchange, ccy, con_id = c_key
                 import ibapi.contract  # type: ignore
+
                 contract = ibapi.contract.Contract()
                 contract.symbol = symbol
                 contract.secType = sec_type
@@ -274,10 +309,43 @@ class LivePnlService:
                 contract.currency = ccy
                 if con_id:
                     contract.conId = con_id
-                self._client.reqMktData(req_id, contract, "", False, False, [])
-                logger.info("LivePnl re-subscribed market data for symbol=%s reqId=%d", symbol, req_id)
+
+                def _send(req=req_id, c=contract, sym=symbol) -> None:
+                    req_mkt = getattr(self._client, "reqMktData", None)
+                    if callable(req_mkt):
+                        req_mkt(req, c, "", False, False, [])
+                        logger.info(
+                            "LivePnl re-subscribed market data for symbol=%s reqId=%d",
+                            sym,
+                            req,
+                        )
+
+                def _retry(req=req_id, c=contract, sym=symbol) -> None:
+                    self._resubscribe_one(req, c, sym)
+
+                self._try_paced_call("reqMktData", _send, retry_callback=_retry)
             except Exception:
-                logger.exception("Failed to re-subscribe market data for symbol=%s reqId=%d", c_key[1], req_id)
+                logger.exception(
+                    "Failed to re-subscribe market data for symbol=%s reqId=%d",
+                    c_key[1],
+                    req_id,
+                )
+
+    def _resubscribe_one(self, req_id: int, contract, symbol: str) -> None:
+        def _send() -> None:
+            req_mkt = getattr(self._client, "reqMktData", None)
+            if callable(req_mkt):
+                req_mkt(req_id, contract, "", False, False, [])
+                logger.info(
+                    "LivePnl re-subscribed market data for symbol=%s reqId=%d",
+                    symbol,
+                    req_id,
+                )
+
+        def _retry() -> None:
+            self._resubscribe_one(req_id, contract, symbol)
+
+        self._try_paced_call("reqMktData", _send, retry_callback=_retry)
 
     def on_tick_price(self, reqId: int, tickType: int, price: float) -> None:
         if price is None or price <= 0:
@@ -376,7 +444,26 @@ class LivePnlService:
 
             req_mkt = getattr(self._client, "reqMktData", None)
             if callable(req_mkt):
-                req_mkt(new_req_id, underlying, "221", False, False, [])
+                def _send() -> None:
+                    req_mkt(new_req_id, underlying, "221", False, False, [])
+
+                def _retry() -> None:
+                    self._issue_reroute_mkt_data(new_req_id, underlying)
+
+                self._try_paced_call("reqMktData", _send, retry_callback=_retry)
+
+    def _issue_reroute_mkt_data(self, req_id: int, contract) -> None:
+        req_mkt = getattr(self._client, "reqMktData", None)
+        if not callable(req_mkt):
+            return
+
+        def _send() -> None:
+            req_mkt(req_id, contract, "221", False, False, [])
+
+        def _retry() -> None:
+            self._issue_reroute_mkt_data(req_id, contract)
+
+        self._try_paced_call("reqMktData", _send, retry_callback=_retry)
 
     def on_connection_closed(self) -> None:
         return
@@ -555,33 +642,88 @@ class LivePnlService:
         self._req_to_contract[req_id] = c_key
         self._listeners_by_req.setdefault(req_id, set()).add((account_id, trade_id, leg.symbol))
 
-        try:
-            req_type = getattr(self._client, "reqMarketDataType", None)
-            if callable(req_type):
-                req_type(1)  # REALTIME live market data mode
-            req_mkt(req_id, contract, "221", False, False, [])
-        except Exception:
-            self._by_req.pop(req_id, None)
-            self._contract_reqs.pop(c_key, None)
-            self._req_to_contract.pop(req_id, None)
-            self._listeners_by_req.pop(req_id, None)
-            logger.exception(
-                "LivePnl reqMktData failed: account_id=%s trade_id=%s symbol=%s",
+        def _send() -> None:
+            try:
+                req_type = getattr(self._client, "reqMarketDataType", None)
+                if callable(req_type):
+                    req_type(1)  # REALTIME live market data mode
+                req_mkt(req_id, contract, "221", False, False, [])
+            except Exception:
+                self._by_req.pop(req_id, None)
+                self._contract_reqs.pop(c_key, None)
+                self._req_to_contract.pop(req_id, None)
+                self._listeners_by_req.pop(req_id, None)
+                logger.exception(
+                    "LivePnl reqMktData failed: account_id=%s trade_id=%s symbol=%s",
+                    account_id,
+                    trade_id,
+                    leg.symbol,
+                )
+                return
+            logger.info(
+                "LivePnl reqMktData REALTIME: req_id=%s account_id=%s trade_id=%s symbol=%s "
+                "secType=%s conId=%s",
+                req_id,
+                account_id,
+                trade_id,
+                getattr(contract, "symbol", None),
+                getattr(contract, "secType", None),
+                getattr(contract, "conId", None) or None,
+            )
+
+        def _retry() -> None:
+            self._issue_request_ticks(account_id, trade_id, leg, req_id, contract, c_key, req_mkt)
+
+        if not self._try_paced_call("reqMktData", _send, retry_callback=_retry):
+            logger.debug(
+                "LivePnl reqMktData deferred: account_id=%s trade_id=%s symbol=%s",
                 account_id,
                 trade_id,
                 leg.symbol,
             )
-            return
-        logger.info(
-            "LivePnl reqMktData REALTIME: req_id=%s account_id=%s trade_id=%s symbol=%s "
-            "secType=%s conId=%s",
-            req_id,
-            account_id,
-            trade_id,
-            getattr(contract, "symbol", None),
-            getattr(contract, "secType", None),
-            getattr(contract, "conId", None) or None,
-        )
+
+    def _issue_request_ticks(
+        self,
+        account_id: int,
+        trade_id: str,
+        leg,
+        req_id: int,
+        contract,
+        c_key: tuple,
+        req_mkt,
+    ) -> None:
+        def _send() -> None:
+            try:
+                req_type = getattr(self._client, "reqMarketDataType", None)
+                if callable(req_type):
+                    req_type(1)
+                req_mkt(req_id, contract, "221", False, False, [])
+            except Exception:
+                self._by_req.pop(req_id, None)
+                self._contract_reqs.pop(c_key, None)
+                self._req_to_contract.pop(req_id, None)
+                self._listeners_by_req.pop(req_id, None)
+                logger.exception(
+                    "LivePnl reqMktData failed: account_id=%s trade_id=%s symbol=%s",
+                    account_id,
+                    trade_id,
+                    leg.symbol,
+                )
+                return
+            logger.info(
+                "LivePnl reqMktData REALTIME: req_id=%s account_id=%s trade_id=%s symbol=%s",
+                req_id,
+                account_id,
+                trade_id,
+                getattr(contract, "symbol", None),
+            )
+
+        def _retry() -> None:
+            self._issue_request_ticks(
+                account_id, trade_id, leg, req_id, contract, c_key, req_mkt
+            )
+
+        self._try_paced_call("reqMktData", _send, retry_callback=_retry)
 
     def _recompute(self, account_id: int, trade_id: str) -> None:
         legs = self._legs.get((account_id, trade_id))

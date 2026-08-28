@@ -1,6 +1,6 @@
 # RMS, OMS, and IBKR adapter
 
-**Verified from:** `backend/app/rms/engine.py`, `backend/app/rms/checks/*`, `backend/app/oms/basket.py`, `backend/app/oms/coordinator.py`, `backend/app/oms/oms_service.py`, `backend/app/oms/ibkr_adapter.py`, `backend/app/oms/submit_pacer.py`, `backend/app/oms/retry_policy.py`, `backend/app/broker/ibkr/tws_client.py`, `backend/app/broker/ibkr/scheduler.py`, `backend/app/accounts/router.py`, `backend/app/accounts/config_service.py`, `backend/app/services/kill_switch.py`, `backend/app/services/order_manager.py`.
+**Verified from:** `backend/app/rms/engine.py`, `backend/app/rms/checks/*`, `backend/app/oms/basket.py`, `backend/app/oms/coordinator.py`, `backend/app/oms/oms_service.py`, `backend/app/oms/ibkr_adapter.py`, `backend/app/broker/ibkr/gateway_rate_limiter.py`, `backend/app/oms/retry_policy.py`, `backend/app/broker/ibkr/tws_client.py`, `backend/app/accounts/router.py`, `backend/app/accounts/config_service.py`, `backend/app/services/kill_switch.py`, `backend/app/services/order_manager.py`.
 
 ## RMS — implemented checks only
 
@@ -71,14 +71,19 @@ See [`backend-kill-switch.md`](backend-kill-switch.md) for flatten API and armed
 
 `BasketState` enum (`oms/basket.py`):
 
-`PENDING` → `EXECUTING` → `OPEN` / `CLOSED` / `UNWINDING` / `COMPENSATED` / `CRITICAL`
+`PENDING` → `EXECUTING` → `OPEN` / `CLOSED` / `UNWINDING` / `COMPENSATED` / `CRITICAL` / `RECOVERED`
 
 `BasketCoordinator` (`oms/coordinator.py`):
 
 1. Submit N legs via `OMSService.submit_one_leg`
 2. Wait for fills (`square_off_after_sec` timeout)
 3. If incomplete → retry (paper ports only) or UNWINDING → compensate → CRITICAL on failure
-4. CRITICAL blocks new OPENs for that `(account_id, strategy_id)`
+4. CRITICAL blocks new OPENs for that `(account_id, strategy_id)` until auto-recovery clears the latch
+5. `CriticalRecoveryService` (`services/critical_recovery.py`) runs in background after `_fail_critical` and on startup for any remaining CRITICAL rows: `reqPositions` snapshot → `BrokerFlattenService` EMERGENCY_FLATTEN for filled non-compensation `conId`s → fresh snapshot → `clear_critical` only when those lines are ~0 qty
+6. `clear_critical` marks the basket `RECOVERED` (`recovery_status=CLEARED`), drops the in-memory latch when no other CRITICAL baskets remain for the pair, emits `BASKET_CRITICAL_CLEARED`
+7. Failed recovery sets `recovery_status=FAILED`, emits `BASKET_CRITICAL_RECOVERY_FAILED`, retries once (~30s)
+
+Basket recovery columns on `baskets`: `recovery_status` (`RECOVERING` | `FAILED` | `CLEARED`), `recovery_detail`, `recovered_at`.
 
 ### Paper retries
 
@@ -96,7 +101,7 @@ Knobs in singleton `execution_settings` row; API at `GET/PATCH /api/v1/config/ex
 | `OMSService` | In-memory order lifecycle; `_orders` map; `_submitted_signals` dedup |
 | `IBKRExecutionAdapter` | Maps OMS orders ↔ IBKR contracts / `placeOrder` / cancels; sets `ib_order.account` from intent |
 | `TWSClient` | Sole broker transport under `app/broker/` (IBKR EClient/EWrapper) |
-| `OrderSubmitPacer` | **Production** pacing — min 0.2s between `placeOrder` calls (wired in `main.py`). Process-local `asyncio.Lock`. Shared by **all** accounts and kill-switch flatten. Does **not** pace `reqMktData` / `reqContractDetails` / `cancelOrder`. Waits forever (no timeout, no reject). |
+| `GatewayRateLimiter` | **Production** pacing — token bucket ~30 msg/sec (Settings `IBKR_GATEWAY_*`), P0 flatten reserve, wait+timeout, Error 100 cooldown. Wired in `main.py`. Shared by all accounts and kill-switch flatten. Paces `placeOrder`, `cancelOrder`, `reqMktData` (P3), `reqContractDetails` (P2). |
 
 There is **no** MockBroker class and **no** `BROKER_MODE` switch in `Settings`. **No** per-gateway limiter. **No** connection pool.
 
@@ -106,11 +111,9 @@ There is **no** MockBroker class and **no** `BROKER_MODE` switch in `Settings`. 
 - Never CFD→STK fallback
 - Paper STK→CFD override lives in `instruments/execution_override.py`, not in adapter/TWS/RMS
 
-### IBKRExecutionScheduler (tests-only — ASPIRATIONAL shape)
+### GatewayRateLimiter (production — single socket)
 
-`broker/ibkr/scheduler.py` defines token-bucket priority scheduling (`PRIORITY_EMERGENCY_FLATTEN = 0`, etc.), comments Error 100 = 50 msg/sec, and splits 30/24/6 with emergency reserve. It is **not wired** in `main.py` or the adapter. Only exercised in `tests/test_mft_concurrency_recovery.py`. Do not document it as live submit pacing.
-
-Target: wire **one scheduler/limiter per Gateway instance**, not one global scheduler for N Gateways. See [`backend-multi-gateway.md`](backend-multi-gateway.md).
+`broker/ibkr/gateway_rate_limiter.py` — token bucket with global/normal/emergency budgets, priority levels (P0 flatten, P1 orders, P2 contract details, P3 market data), `max_wait_sec` timeout, Error 100 cooldown. One instance per process today (maps to one Gateway). Per-gateway copies when N-Gateway pool ships — see [`backend-multi-gateway.md`](backend-multi-gateway.md).
 
 ## Execution settings
 
@@ -143,7 +146,7 @@ Target: wire **one scheduler/limiter per Gateway instance**, not one global sche
 3. CRITICAL and kill-switch block OPEN only — not CLOSE safety.
 4. Claim after RMS, before broker — see [`backend-concurrency.md`](backend-concurrency.md).
 5. Paper retries only on ports `{7497, 4002}`.
-6. Compensation / unwind failure → CRITICAL; reconcile before new OPENs.
+6. Compensation / unwind failure → CRITICAL; `CriticalRecoveryService` auto-flattens and unlocks when broker flat — do not SQL-edit or restart to resume OPENs.
 7. Single TWS socket today — do not add unpaced burst submitters. A second `TWSClient` with the same `client_id` will disconnect the first. N-Gateway pool is target-only.
 8. Prefer N-leg `OrderIntent.legs` model throughout OMS/RMS.
 

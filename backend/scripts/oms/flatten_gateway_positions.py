@@ -2,9 +2,10 @@
 """Operator script: flatten live IB Gateway/TWS positions with paced MARKET closes.
 
 Reads open positions via reqPositions, then submits the opposite MARKET order
-for each line (BUY to cover shorts, SELL to close longs). Pacing matches
-production OrderSubmitPacer (0.2s). Uses API client id 99 by default so it
-does not disconnect the trading app (client id 1).
+for each line (BUY to cover shorts, SELL to close longs). Local --pace 0.2
+(~5 placeOrder/sec); does not share the in-process GatewayRateLimiter.
+Uses API client id 99 by default so it does not disconnect the trading app
+(client id 1). Runbook: app/docs/backend-kill-switch.md.
 
 This talks to IBKR directly. It does NOT use the app kill-switch flatten path
 (that only closes Postgres OPEN rows). Arm the kill switch first if you need

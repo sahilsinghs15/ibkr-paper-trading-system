@@ -8,7 +8,7 @@ Use this file when a signal is missing, rejected, or incompletely filled. For qu
 
 One FastAPI process (`app.main:app`). Lifespan wires:
 
-`TWSClient` → `IBKRExecutionAdapter` (+ `OrderSubmitPacer`) → `OMSService` → `OrderManager` → `RecoveryManager` → `ExecutionWorkerPool(10)` on `app.state`.
+`TWSClient` → `IBKRExecutionAdapter` (+ `GatewayRateLimiter`) → `OMSService` → `OrderManager` → `RecoveryManager` → `ExecutionWorkerPool(10)` on `app.state`.
 
 There is **no** separate Listener / Strategy / per-account OMS / Risk process in this codebase.
 
@@ -80,7 +80,7 @@ Malformed JSON → HTTP 400.
 
 From `main.py` lifespan:
 
-1. `setup_logging(level=settings.log_level)` → daily file `storage/logs/trading-YYYY-MM-DD.log` + stderr.
+1. `setup_logging(level=settings.log_level)` → daily file `storage/logs/{YYYY-MM-DD}/trading.log` + stderr.
 2. Build adapter / OMS / OrderManager (+ DB capital, trade book, persistence, LivePnl).
 3. `order_manager.hydrate_runtime_from_db()` — RMS context, open positions, kill-switch cache, critical baskets, execution policy.
 4. `client.connect_and_start(...)` to `ibkr_host:ibkr_port` (the **only** IB session).
@@ -95,7 +95,7 @@ Orders listed by `GET /api/v1/orders` come from the **in-memory** OMS map, not a
 
 ## Log file and useful greps
 
-Logger: `backend/app/core/logger.py` → `/home/tradingapp/storage/logs/trading-YYYY-MM-DD.log` (midnight rollover).
+Logger: `backend/app/core/logger.py` → `/home/tradingapp/storage/logs/{YYYY-MM-DD}/trading.log` (midnight rollover).
 
 Format: `%(asctime)s | %(levelname)-8s | %(name)s | %(trace)s | %(message)s` where `trace` carries `req=` / `signal=` / `trade=` / `acct=` from ContextVars.
 
@@ -122,7 +122,9 @@ Format: `%(asctime)s | %(levelname)-8s | %(name)s | %(trace)s | %(message)s` whe
 | `POSITION_OPEN persisted` / `POSITION_CLOSE persisted` | Model Blue persistence |
 | `CFD discover upserted` / `CFD discover:` | Auto CFD conId discovery |
 | `LivePnl reqMktData` | PnL market-data subscribe |
-| `IBKR submit paced` | OrderSubmitPacer delay |
+| `IBKR submit paced` | GatewayRateLimiter delay |
+| `Gateway pacing timeout` | Limiter max_wait exceeded — no placeOrder |
+| `IBKR Error 100 cooldown` | IB throttle backoff on limiter |
 | `TWS placeOrder failed` | Adapter place failure |
 | `EMERGENCY KILL SWITCH ACTIVATED` | Kill switch started |
 
@@ -138,7 +140,7 @@ One webhook → one `signal_jobs` row (`account_scope` left `NULL`) → worker �
 
 - No automatic target / stop / time_limit exit loop (columns may exist on allocations; no exit-trigger process).
 - Demo SSE UI (`demo_streaming`) is a **separate** process; it does not place orders.
-- `IBKRExecutionScheduler` is not wired — production pacing is `OrderSubmitPacer(0.2s)` on the **single** adapter (all accounts, including kill-switch).
+- Production pacing is `GatewayRateLimiter` (~30 msg/sec global, 24 normal, 6 emergency reserve for P0 flatten) on the **single** adapter (all accounts, including kill-switch). Covers `placeOrder`, `cancelOrder`, and `reqMktData` (P3 try_acquire).
 - No N-Gateway pool, no per-gateway limiter, no reconnect/failover — [`backend-multi-gateway.md`](backend-multi-gateway.md) (target, not as-is).
 
 ## Related docs

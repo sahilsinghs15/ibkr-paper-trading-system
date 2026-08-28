@@ -43,7 +43,7 @@ cd /home/tradingapp/app/backend
 ## Operator controls
 
 - **Settings page** (`:8010/settings`): edit `accounts.total_margin`, `accounts.enabled`, `allocations.alloc_pct` / `enabled` / `max_open_positions`, and `per_symbol_limits` via proxied `/api/v1/config/*`.
-- **Kill switch API** (trading app `:8000`): `POST /api/v1/config/accounts/{id}/square-off` (202), `GET .../kill-switch`, `POST .../kill-switch/clear`. See [`backend-kill-switch.md`](backend-kill-switch.md).
+- **Kill switch API** (trading app `:8000`): `POST /api/v1/config/accounts/{id}/square-off` (202), `GET .../kill-switch`, `POST .../kill-switch/clear`. IBKR leftover flatten (sidecar, client id 99): [`backend-kill-switch.md`](backend-kill-switch.md).
 - Kill switch **stays armed** after flatten completes until explicit clear — completing flatten is not the same as disarming.
 - No strategy-level pause API separate from DB `strategies.enabled` (not on Settings UI yet)
 
@@ -56,7 +56,7 @@ The PnL + Settings UI on `:8010` has **no auth**. If you set `DEMO_STREAM_HOST=0
 ## Logging / secrets
 
 - Do not commit `.env`, credentials, or webhook capture dumps.
-- Application logger writes daily files to `storage/logs/trading-YYYY-MM-DD.log` (workspace root).
+- Application logger writes daily files to `storage/logs/{YYYY-MM-DD}/trading.log` (workspace root).
 
 ## Disk retention
 
@@ -71,6 +71,6 @@ Suggested retention is 14 days; run it from cron on long-lived hosts. `backend/d
 
 ## Submit pacing
 
-Production uses `OrderSubmitPacer(min_interval_sec=0.2)` on the IBKR adapter — all `placeOrder` calls including kill-switch flatten share this **process-global** minimum interval. It is not 50 msg/sec, not per account, not per Gateway (there is only one socket), and it does not cover `reqMktData`. `IBKRExecutionScheduler` priority queues are **not** wired in production.
+Production uses `GatewayRateLimiter` on the IBKR adapter — token bucket ~30 msg/sec (configurable via Settings), P0 emergency reserve for flatten, wait+timeout, Error 100 cooldown. Shared by **all** accounts on the **one** socket. Also paces `cancelOrder` and counts `reqMktData`. Do not run `uvicorn --workers N` against the same Gateway (each worker gets its own limiter).
 
 `main.py` may log that the adapter will auto-reconnect if the startup handshake fails. **That reconnect is not implemented** (`IBKRExecutionAdapter.submit_order` raises `ConnectionError`; `on_connection_closed` marks in-memory working orders `ERROR` without querying IB). Treat a dropped socket as operator action + restart until reconnect is built. See [`backend-multi-gateway.md`](backend-multi-gateway.md).

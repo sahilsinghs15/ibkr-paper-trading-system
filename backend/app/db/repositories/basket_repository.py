@@ -1,8 +1,11 @@
 """Basket row access. No sizing or IBKR calls."""
 
-from sqlalchemy import select
+from datetime import datetime
+
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.account import AccountModel
 from app.db.models.basket import BasketModel
 from app.oms.basket import BasketState
 
@@ -31,6 +34,12 @@ class BasketRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_by_id(self, basket_id: int) -> BasketModel | None:
+        result = await self._session.execute(
+            select(BasketModel).where(BasketModel.id == basket_id)
+        )
+        return result.scalar_one_or_none()
+
     async def list_incomplete(self) -> list[BasketModel]:
         result = await self._session.execute(
             select(BasketModel).where(BasketModel.state.in_(INCOMPLETE_STATES))
@@ -40,6 +49,21 @@ class BasketRepository:
     async def list_critical(self) -> list[BasketModel]:
         result = await self._session.execute(
             select(BasketModel).where(BasketModel.state == BasketState.CRITICAL.value)
+        )
+        return list(result.scalars().all())
+
+    async def list_critical_for_ibkr_account(
+        self, ibkr_account: str
+    ) -> list[BasketModel]:
+        clean = ibkr_account.strip().upper()
+        result = await self._session.execute(
+            select(BasketModel)
+            .join(AccountModel, BasketModel.account_id == AccountModel.id)
+            .where(
+                BasketModel.state == BasketState.CRITICAL.value,
+                func.upper(AccountModel.ibkr_account) == clean,
+            )
+            .order_by(BasketModel.updated_at.desc())
         )
         return list(result.scalars().all())
 
@@ -62,6 +86,9 @@ class BasketRepository:
         action: str,
         state: str,
         intended_leg_count: int,
+        recovery_status: str | None = None,
+        recovery_detail: str | None = None,
+        recovered_at: datetime | None = None,
     ) -> BasketModel:
         row = await self.get(account_id=account_id, trade_id=trade_id, action=action)
         if row is None:
@@ -72,11 +99,45 @@ class BasketRepository:
                 action=action,
                 state=state,
                 intended_leg_count=intended_leg_count,
+                recovery_status=recovery_status,
+                recovery_detail=recovery_detail,
+                recovered_at=recovered_at,
             )
             self._session.add(row)
         else:
             row.state = state
             row.strategy_id = strategy_id
             row.intended_leg_count = intended_leg_count
+            if recovery_status is not None:
+                row.recovery_status = recovery_status
+            if recovery_detail is not None:
+                row.recovery_detail = recovery_detail
+            if recovered_at is not None:
+                row.recovered_at = recovered_at
+        await self._session.flush()
+        return row
+
+    async def update_recovery(
+        self,
+        *,
+        account_id: int,
+        trade_id: str,
+        action: str,
+        recovery_status: str | None = None,
+        recovery_detail: str | None = None,
+        recovered_at: datetime | None = None,
+        state: str | None = None,
+    ) -> BasketModel | None:
+        row = await self.get(account_id=account_id, trade_id=trade_id, action=action)
+        if row is None:
+            return None
+        if recovery_status is not None:
+            row.recovery_status = recovery_status
+        if recovery_detail is not None:
+            row.recovery_detail = recovery_detail
+        if recovered_at is not None:
+            row.recovered_at = recovered_at
+        if state is not None:
+            row.state = state
         await self._session.flush()
         return row
