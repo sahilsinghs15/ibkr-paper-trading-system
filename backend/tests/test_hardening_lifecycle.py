@@ -41,7 +41,7 @@ from app.services.model_blue.persistence import ModelBlueExecutionPersistence
 from app.services.model_blue.sizer import ModelBlueSizer
 from app.services.order_manager import OrderManager
 from app.services.pnl import LivePnlService, unrealized_leg, unrealized_pair
-from tests.ibkr_test_utils import fill_on_place_order
+from tests.ibkr_test_utils import fill_on_place_order, wire_test_managed_accounts
 
 _TS = datetime(2026, 8, 18, 16, 0, tzinfo=UTC)
 _XLE = Decimal("62.59")
@@ -94,13 +94,17 @@ def _ctx(
     )
 
 
-def _oms() -> OMSService:
+def _oms(*managed_accounts: str) -> OMSService:
     tws = MagicMock(spec=TWSClient)
     tws.is_connected.return_value = True
     tws.next_order_id = 400
     tws.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=tws)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
+    if managed_accounts:
+        adapter.set_managed_accounts(list(managed_accounts))
+    else:
+        wire_test_managed_accounts(adapter)
     fill_on_place_order(adapter, tws)
     return OMSService(adapter=adapter)
 
@@ -399,7 +403,7 @@ async def test_close_uses_open_fill_qty_and_realized_pnl() -> None:
 
         ctx = _ctx(account_id, ibkr, total=Decimal(100000), pct=Decimal("0.25"))
         manager = OrderManager(
-            oms=_oms(),
+            oms=_oms(ibkr),
             order_type="MARKET",
             strategy_id=MODEL_BLUE_STRATEGY_ID,
             rms_engine=RMSEngine(),
@@ -556,7 +560,7 @@ async def test_account_a_limit_reject_does_not_stop_account_b() -> None:
         open_positions={(81, MODEL_BLUE_STRATEGY_ID): 1},
     )
     manager = OrderManager(
-        oms=_oms(),
+        oms=_oms("DU-TEST-A", "DU-TEST-B"),
         order_type="MARKET",
         strategy_id=MODEL_BLUE_STRATEGY_ID,
         rms_engine=RMSEngine(),

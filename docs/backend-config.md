@@ -51,7 +51,7 @@ Property: `candle_timeframe_minutes` — parses `candle_timeframe` (defaults to 
 | `demo_pnl_emit_interval_ms` | `5000` |
 | `demo_stream_maxlen` | `10000` |
 | `demo_stream_name` | `positions:stream` |
-| `trading_api_url` | `http://127.0.0.1:8000` | Config CRUD proxy target for `:8010` dashboard saves |
+| `trading_api_url` | `http://127.0.0.1:8001` | Config CRUD proxy target for `:8010` dashboard saves |
 
 ## Not in `Settings`
 

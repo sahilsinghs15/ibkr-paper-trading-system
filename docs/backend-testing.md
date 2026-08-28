@@ -18,13 +18,16 @@ Dev extras: `httpx`, `mypy`, `pytest`, `pytest-asyncio`, `ruff` (`[project.optio
 
 `conftest.py` defaults `PAPER_EXECUTE_STK_AS_CFD=false` for tests (overrides the production Settings default of `True`).
 
+**Test database isolation:** `conftest.py` sets `TRADINGAPP_TESTING=1` and rewrites `DATABASE_URL` to use database `ibkr_trading_test` (same host/user/port as production). `get_settings()` raises if pytest targets `ibkr_trading`. The session fixture creates `ibkr_trading_test` when missing and runs `alembic upgrade head`. Postgres must grant the test user `CREATE DATABASE`. Tests never read or write production `ibkr_trading`.
+
 ## Test files (48) → intent
 
 | File | Intent |
 |------|--------|
-| `test_api.py` | Health, webhooks, orders, lifespan |
+| `test_api.py` | Health, orders, lifespan (trading app) |
 | `test_app_wiring.py` | DI / component wiring |
-| `test_tradingview_webhook.py` | TradingView webhook API (202 enqueue) |
+| `test_webhook_ingest.py` | Ingest app health; trading app rejects webhooks |
+| `test_tradingview_webhook.py` | TradingView webhook API on ingest (202 enqueue) |
 | `test_tradingview_execution_integration.py` | Webhook → sizer → RMS → OMS → IBKR adapter |
 | `test_tradingview_signal_persistence.py` | Signal persistence |
 | `test_signal_payload_persistence.py` | Webhook JSON / pair / side audit |
@@ -60,6 +63,7 @@ Dev extras: `httpx`, `mypy`, `pytest`, `pytest-asyncio`, `ruff` (`[project.optio
 | `test_pacer.py` | `scripts.instrument_master.pacer.RatePacer` (discover CLI) — **not** `GatewayRateLimiter` |
 | `test_gateway_rate_limiter.py` | `GatewayRateLimiter` token bucket, P0 reserve, timeout, Error 100 cooldown |
 | `test_ibkr_adapter_pacing.py` | Adapter + limiter: pacing timeout, cancel acquire, Error 100 non-terminal |
+| `test_ibkr_adapter_managed_accounts.py` | Fail-closed ibkr_account validation before placeOrder |
 | `test_kill_switch.py` | Kill switch service + EMERGENCY_FLATTEN RMS bypass |
 | `test_kill_switch_reconciliation_fix.py` | Kill switch position reconciliation |
 | `test_repair_historical_killswitch_positions.py` | Historical kill-switch repair script |
@@ -87,7 +91,7 @@ Dev extras: `httpx`, `mypy`, `pytest`, `pytest-asyncio`, `ruff` (`[project.optio
 | Full integration (mocked IBKR) | `.venv/bin/pytest tests/test_tradingview_execution_integration.py tests/test_hardening_lifecycle.py` |
 | Stress (heavy) | `.venv/bin/pytest tests/test_burst_stress_150_300.py tests/test_burst_stress_500_and_kill_switch.py` |
 
-Many tests use mocked IBKR and do not require a live TWS connection. Tests touching Postgres need `DATABASE_URL` (default in Settings). Burst stress tests are slow.
+Many tests use mocked IBKR and do not require a live TWS connection. Tests touching Postgres need `DATABASE_URL` pointed at a host where the user can create `ibkr_trading_test` (see test database isolation above). Burst stress tests are slow.
 
 This list is an inventory of test modules, not a claim about line coverage.
 
@@ -95,7 +99,7 @@ This list is an inventory of test modules, not a claim about line coverage.
 
 | Script | Role |
 |--------|------|
-| `scripts/load_test_mft_burst.py` | Burst N webhooks at a live app; reports ack rate, latency percentiles, and with `--audit` the resulting `signal_jobs` statuses |
+| `scripts/load_test_mft_burst.py` | Burst N webhooks at ingest `:8000`; reports ack rate, latency percentiles, and with `--audit` the resulting `signal_jobs` statuses |
 | `scripts/prune_webhook_captures.py` | Delete raw captures under `data/tradingview_webhooks/` past a retention window; dry run unless `--apply` |
 | `scripts/repair_historical_killswitch_positions.py` | One-time repair of stale kill-switch positions |
 

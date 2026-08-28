@@ -39,6 +39,7 @@ from app.services.model_blue.parser import (
 from app.services.model_blue.persistence import ModelBlueExecutionPersistence
 from app.services.model_blue.sizer import ModelBlueSizer
 from app.services.order_manager import OrderManager
+from tests.ibkr_test_utils import wire_test_managed_accounts
 
 _TS = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
 _STRAT = "synthetic_n_leg"
@@ -159,13 +160,16 @@ class PlaceScript:
         client.reqExecutions = MagicMock()
 
 
-def _wired(script: PlaceScript) -> tuple[OMSService, IBKRExecutionAdapter, PlaceScript]:
+def _wired(
+    script: PlaceScript, *, managed_accounts: list[str] | None = None
+) -> tuple[OMSService, IBKRExecutionAdapter, PlaceScript]:
     tws = MagicMock(spec=TWSClient)
     tws.is_connected.return_value = True
     tws.next_order_id = 500
     tws.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=tws)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
+    wire_test_managed_accounts(adapter, managed_accounts)
     script.bind(adapter, tws)
     return OMSService(adapter=adapter), adapter, script
 
@@ -266,8 +270,8 @@ async def test_compensation_failure_is_critical_and_blocks_open() -> None:
 
 @pytest.mark.asyncio
 async def test_same_signal_two_accounts_independent_baskets() -> None:
-    oms_a, _, _ = _wired(PlaceScript(["fill", "fill"]))
-    oms_b, _, _ = _wired(PlaceScript(["fill", "reject"]))
+    oms_a, _, _ = _wired(PlaceScript(["fill", "fill"]), managed_accounts=["DUA"])
+    oms_b, _, _ = _wired(PlaceScript(["fill", "reject"]), managed_accounts=["DUB"])
     intent_a = _intent(["XLE", "XOP"], trade_id="T-SHARED", account_id=10, ibkr_account="DUA")
     intent_b = _intent(["XLE", "XOP"], trade_id="T-SHARED", account_id=20, ibkr_account="DUB")
     res_a = await _coord(oms_a).execute(intent_a, _pass(intent_a), order_type="MARKET")
@@ -386,7 +390,7 @@ async def test_restart_incomplete_basket_requires_reconciliation() -> None:
         oms = OMSService(adapter=adapter)
         coord = BasketCoordinator(oms, session_factory=factory, fill_timeout=0.2)
         await coord.recover_incomplete_baskets()
-        assert coord.is_open_blocked(account_id, _STRAT) is True
+        assert coord.is_open_blocked(account_id, _STRAT) is False
         async with factory() as session:
             row = (
                 await session.execute(
@@ -396,7 +400,7 @@ async def test_restart_incomplete_basket_requires_reconciliation() -> None:
                     )
                 )
             ).scalar_one()
-            assert row.state == BasketState.CRITICAL.value
+            assert row.state == BasketState.EXECUTING.value
     finally:
         await engine.dispose()
 
@@ -419,7 +423,10 @@ async def test_persisted_fills_and_no_open_position_on_incomplete() -> None:
             account_id = account.id
             ibkr = account.ibkr_account
 
-        oms, _, _ = _wired(PlaceScript(["fill", "reject"]))
+        oms, _, _ = _wired(
+            PlaceScript(["fill", "reject"]),
+            managed_accounts=[ibkr],
+        )
         intent = _intent(["XLE", "XOP"], trade_id=trade_id, account_id=account_id, ibkr_account=ibkr)
         coord = BasketCoordinator(
             oms, session_factory=factory, fill_timeout=0.2, cancel_timeout=0.2
@@ -576,7 +583,7 @@ async def test_restart_unwinding_basket_is_critical() -> None:
         adapter.is_connected = lambda: False  # type: ignore[method-assign]
         coord = BasketCoordinator(OMSService(adapter=adapter), session_factory=factory)
         await coord.recover_incomplete_baskets()
-        assert coord.is_open_blocked(account_id, _STRAT) is True
+        assert coord.is_open_blocked(account_id, _STRAT) is False
         async with factory() as session:
             row = (
                 await session.execute(
@@ -586,6 +593,6 @@ async def test_restart_unwinding_basket_is_critical() -> None:
                     )
                 )
             ).scalar_one()
-            assert row.state == BasketState.CRITICAL.value
+            assert row.state == BasketState.UNWINDING.value
     finally:
         await engine.dispose()

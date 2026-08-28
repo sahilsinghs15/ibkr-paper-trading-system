@@ -12,13 +12,7 @@ from app.broker.ibkr.tws_client import TWSClient
 from app.instruments.models import ResolvedInstrument
 from app.oms.ibkr_adapter import IBKRExecutionAdapter
 from app.oms.models import OMSOrder, OMSOrderStatus
-from app.rms.models import (
-    ExecutionIntentMode,
-    OrderAction,
-    OrderIntent,
-    OrderLeg,
-    OrderSide,
-)
+from tests.ibkr_test_utils import DEFAULT_TEST_IBKR_ACCOUNT, wire_test_managed_accounts
 
 
 def _pending_order(*, emergency: bool = False) -> OMSOrder:
@@ -26,6 +20,7 @@ def _pending_order(*, emergency: bool = False) -> OMSOrder:
         signal_id="T-1",
         strategy_id="model_blue",
         action=OrderAction.OPEN,
+        ibkr_account=DEFAULT_TEST_IBKR_ACCOUNT,
         legs=[
             OrderLeg(
                 symbol="XLE",
@@ -75,6 +70,7 @@ async def test_pacing_timeout_skips_place_order() -> None:
     tws.next_order_id = 900
     adapter = IBKRExecutionAdapter(client=tws, rate_limiter=limiter)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
+    wire_test_managed_accounts(adapter)
 
     first = _pending_order()
     first.internal_order_id = "ord-first"
@@ -104,6 +100,7 @@ async def test_cancel_order_acquires_limiter() -> None:
     tws.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=tws, rate_limiter=limiter)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
+    wire_test_managed_accounts(adapter)
 
     order = _pending_order()
     order.internal_order_id = "ord-cancel"

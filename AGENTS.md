@@ -1,8 +1,8 @@
 # Agent map — IBKR paper trading app
 
-**Verified from:** `backend/app/main.py`, `backend/app/api/routes/*`, `backend/app/core/config.py`, `backend/demo_streaming/*`, `frontend/src/*`.
+**Verified from:** `backend/app/main.py`, `backend/app/webhook_ingest.py`, `backend/app/api/routes/*`, `backend/app/core/config.py`, `backend/demo_streaming/*`, `frontend/src/*`.
 
-One FastAPI process ingests TradingView webhooks into a durable Postgres queue (`signal_jobs`), executes them via a 10-worker pool through Model Blue → RMS (checks 2/3/4/7/8) → basket OMS → IBKR TWS, with execution claims, crash recovery, and kill-switch support. Multi-account routing tags `ib_order.account` on **one** TWS/Gateway socket (`GatewayRateLimiter` ~30 msg/sec, P0 flatten reserve). N IB Gateways and per-gateway rate limits are **not** built — [`docs/backend-multi-gateway.md`](docs/backend-multi-gateway.md). The Vite React app under `frontend/` is a live PnL dashboard plus a **Settings** page for RMS limits and capital allocation. It is served by a separate demo SSE process on port **8010** (not by `app.main`).
+Two FastAPI processes: **webhook ingest** (`app.webhook_ingest:app` on `:8000`, Postgres-only) receives TradingView alerts into `signal_jobs`; **trading/execution** (`app.main:app` on `:8001`) runs a 10-worker pool through Model Blue → RMS (checks 2/3/4/7/8) → basket OMS → IBKR TWS, with execution claims, crash recovery, and kill-switch support. Ingest stays up when Gateway bounces or the trading app restarts. Multi-account routing tags `ib_order.account` on **one** TWS/Gateway socket (`GatewayRateLimiter` ~30 msg/sec, P0 flatten reserve). N IB Gateways and per-gateway rate limits are **not** built — [`docs/backend-multi-gateway.md`](docs/backend-multi-gateway.md). The Vite React app under `frontend/` is a live PnL dashboard plus a **Settings** page for RMS limits and capital allocation. It is served by a separate demo SSE process on port **8010** (not by `app.main`).
 
 Do **not** treat [`../Execution_System_Architecture.md`](../Execution_System_Architecture.md) as current code. Do **not** use [`backend/POSTMAN_API_TESTING_GUIDE.md`](backend/POSTMAN_API_TESTING_GUIDE.md) as an API inventory (it documents endpoints that do not exist).
 
@@ -29,10 +29,13 @@ Do **not** treat [`../Execution_System_Architecture.md`](../Execution_System_Arc
 ## Run / test
 
 ```bash
-# Main trading API (default docs use 127.0.0.1:8000)
+# Webhook ingest (TradingView / ngrok — Postgres only, no IBKR)
 cd /home/tradingapp/app/backend
 uv sync --extra dev   # or use existing .venv
-.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+.venv/bin/uvicorn app.webhook_ingest:app --host 127.0.0.1 --port 8000
+
+# Trading / execution API (local only)
+.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8001
 
 # Tests / lint
 .venv/bin/pytest
@@ -47,25 +50,32 @@ uv sync --extra dev   # or use existing .venv
 cd /home/tradingapp/app/frontend
 npm install && npm run build   # optional: serve dist from :8010
 npm run dev                    # http://127.0.0.1:5173/
+
+# Process supervisor (weekdays 09:30–16:00 ET; omit args for all groups)
+cd /home/tradingapp/app/scripts
+python process_manager.py                         # webhook + gateway + fastapi
+python process_manager.py webhook                 # ingest only
+python process_manager.py fastapi                 # gateway pair + trading (:8001)
+python process_manager.py webhook fastapi         # ingest + trading
 ```
 
-Runtime logs for the main app: `/home/tradingapp/storage/logs/{YYYY-MM-DD}/trading.log` (daily midnight rollover via `app/core/logger.py`). Demo stream: `storage/logs/{YYYY-MM-DD}/demo.log`. Process supervisor and children: `storage/logs/{YYYY-MM-DD}/supervisor.log`, `xvfb.log`, `ib_gateway.log`, `fastapi.log`. Do not write `/home/tradingapp/logs`.
+Runtime logs: trading app `storage/logs/{YYYY-MM-DD}/trading.log`; webhook ingest `webhook.log`; demo stream `demo.log`. Process supervisor and children: `supervisor.log`, `xvfb.log`, `ib_gateway.log`, `fastapi.log`. Do not write `/home/tradingapp/logs`.
 
 ## Hard invariants
 
-- `POST /api/webhooks/tradingview` returns **HTTP 202** with status **`accepted`** and enqueues `signal_jobs`; workers run `process_signal_execution` asynchronously. Also writes disk capture.
-- Lifespan: TWS → OMS → OrderManager → hydrate → **CriticalRecoveryService** (wired to `BasketCoordinator`) → connect → **RecoveryManager** → **ExecutionWorkerPool(10)** on `app.state.worker_pool`.
+- `POST /api/webhooks/tradingview` on **ingest** (`:8000`) returns **HTTP 202** with status **`accepted`** and enqueues `signal_jobs`; workers on **trading** (`:8001`) run `process_signal_execution` asynchronously. Also writes disk capture.
+- Trading app lifespan: TWS → OMS → OrderManager → hydrate → **CriticalRecoveryService** (wired to `BasketCoordinator`) → connect → **RecoveryManager** → **ExecutionWorkerPool(10)** on `app.state.worker_pool`.
 - **Execution claims** are acquired after RMS + instrument resolve, before broker submit — the durable dedupe barrier across crashes/workers.
 - Kill switch **stays armed** after flatten completes until operator `POST .../kill-switch/clear`.
 - Paper basket retries only on IBKR ports `{7497, 4002}`. Live ports are **not** rejected for ordinary trading.
 - **BASKET_CRITICAL** auto-recovery: background flatten via `CriticalRecoveryService`, unlock OPENs when broker snapshot flat (`BasketState.RECOVERED`); dashboard banner via `GET /api/v1/baskets/critical`.
 - Production submit pacing is `GatewayRateLimiter` (~30/24/6 msg/sec, wait+timeout, Error 100 cooldown) on the single adapter — one limiter, one socket, all accounts.
 - Multi-Gateway pool / per-gateway limiter / reconnect-on-drop: **not implemented**. Do not describe `ibkr_account` as a Gateway mapping.
-- Main app HTTP surface: health, webhook, orders, and **config CRUD** under `/api/v1/config/*`. No CORS, WebSocket, or static files on `app.main`.
+- Trading app HTTP surface (`:8001`): health, orders, and **config CRUD** under `/api/v1/config/*`. Webhooks live on ingest (`:8000`) only. No CORS, WebSocket, or static files on either app.
 - Default IBKR port is `7497` (paper TWS).
 - There is **no** `BROKER_MODE` / MockBroker in `Settings`. Extra env keys are ignored (`extra="ignore"`).
 - Redis is used only by `demo_streaming`, not by the main trading app.
-- Do not bind `app.main` / ngrok to expose the dashboard; use `:8010` (optionally `DEMO_STREAM_HOST=0.0.0.0`).
+- Do not bind the trading app to `0.0.0.0`. Keep ngrok on ingest `:8000` only; use `:8010` for the dashboard (optionally `DEMO_STREAM_HOST=0.0.0.0`).
 
 ## Ignore / do not treat as source of truth
 
@@ -78,7 +88,7 @@ Runtime logs for the main app: `/home/tradingapp/storage/logs/{YYYY-MM-DD}/tradi
 
 ## Source of truth (code)
 
-- Entrypoint: `backend/app/main.py`
+- Entrypoints: `backend/app/webhook_ingest.py` (ingest), `backend/app/main.py` (trading)
 - Config: `backend/app/core/config.py`
 - Routes: `backend/app/api/routes/{health,webhooks,orders,config}.py`
 - Queue/workers: `backend/app/services/worker_pool.py`

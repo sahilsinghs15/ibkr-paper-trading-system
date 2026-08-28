@@ -27,6 +27,7 @@ from tests.test_basket_coordinator import (
     _pass,
     _wired,
 )
+from tests.ibkr_test_utils import wire_test_managed_accounts
 
 
 def _ctx() -> RMSContext:
@@ -214,6 +215,7 @@ async def test_gateway_rate_limiter_serializes_place_order() -> None:
     tws.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=tws, rate_limiter=limiter)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
+    wire_test_managed_accounts(adapter)
     script = PlaceScript(["fill", "fill", "fill"])
     script.bind(adapter, tws)
     oms = OMSService(adapter=adapter)

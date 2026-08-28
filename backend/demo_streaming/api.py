@@ -47,7 +47,7 @@ def create_demo_app(
     session_factory: async_sessionmaker[AsyncSession],
     redis: Redis,
     stream_name: str,
-    trading_api_url: str = "http://127.0.0.1:8000",
+    trading_api_url: str = "http://127.0.0.1:8001",
     shutdown: asyncio.Event | None = None,
 ) -> FastAPI:
     stream = PositionStream(redis, stream_name)

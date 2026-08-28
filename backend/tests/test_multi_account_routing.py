@@ -91,13 +91,19 @@ def _ctx(
     )
 
 
-def _oms() -> OMSService:
+def _oms(*managed_accounts: str) -> OMSService:
     tws = MagicMock(spec=TWSClient)
     tws.is_connected.return_value = True
     tws.next_order_id = 300
     tws.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=tws)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
+    if managed_accounts:
+        adapter.set_managed_accounts(list(managed_accounts))
+    else:
+        from tests.ibkr_test_utils import wire_test_managed_accounts
+
+        wire_test_managed_accounts(adapter)
     from tests.ibkr_test_utils import fill_on_place_order
 
     fill_on_place_order(adapter, tws)
@@ -105,8 +111,9 @@ def _oms() -> OMSService:
 
 
 def _manager(contexts: list[AccountExecutionContext], *, rms: RMSContext | None = None) -> OrderManager:
+    managed = [ctx.ibkr_account for ctx in contexts]
     return OrderManager(
-        oms=_oms(),
+        oms=_oms(*managed),
         order_type="MARKET",
         strategy_id=MODEL_BLUE_STRATEGY_ID,
         rms_engine=RMSEngine(),
@@ -576,7 +583,7 @@ async def test_11_positions_isolated_by_account_id(
         _ctx(a_id, ibkr_a, total=margin_a, pct=Decimal("0.25")),
         _ctx(b_id, ibkr_b, total=margin_b, pct=Decimal("0.40")),
     ]
-    oms = _oms()
+    oms = _oms(ibkr_a, ibkr_b)
     manager = OrderManager(
         oms=oms,
         order_type="MARKET",

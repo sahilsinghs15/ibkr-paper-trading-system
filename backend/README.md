@@ -21,7 +21,12 @@ Do **not** use [`docs/DEVELOPER_EXECUTION_GUIDE.md`](docs/DEVELOPER_EXECUTION_GU
 ```bash
 cd /home/tradingapp/app/backend
 uv sync --extra dev   # or use existing .venv
-.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+# Webhook ingest (TradingView / ngrok)
+.venv/bin/uvicorn app.webhook_ingest:app --host 127.0.0.1 --port 8000
+
+# Trading / execution (local only)
+.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8001
 ```
 
 ## Test / lint
@@ -41,7 +46,7 @@ uv sync --extra dev   # or use existing .venv
 DEMO_STREAM_HOST=0.0.0.0 .venv/bin/python -m demo_streaming
 ```
 
-Serves React `frontend/dist` when built (`npm run build` in `app/frontend`, Node ≥ 20); otherwise HTML fallback. Does not place orders. Keep ngrok on `:8000` only.
+Serves React `frontend/dist` when built (`npm run build` in `app/frontend`, Node ≥ 20); otherwise HTML fallback. Does not place orders. Keep ngrok on webhook ingest `:8000` only.
 
 ## Note
 

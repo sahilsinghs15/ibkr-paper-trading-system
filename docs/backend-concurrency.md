@@ -1,15 +1,15 @@
 # Backend concurrency — jobs, workers, claims, recovery
 
-**Verified from:** `backend/app/services/worker_pool.py`, `backend/app/services/recovery.py`, `backend/app/services/order_manager.py`, `backend/app/db/models/signal.py`, `backend/app/db/models/execution_claim.py`, `backend/app/db/repositories/signal_repository.py`, `backend/app/db/repositories/execution_claim_repository.py`, `backend/app/core/identifiers.py`, `backend/app/main.py`.
+**Verified from:** `backend/app/services/worker_pool.py`, `backend/app/services/recovery.py`, `backend/app/services/order_manager.py`, `backend/app/db/models/signal.py`, `backend/app/db/models/execution_claim.py`, `backend/app/db/repositories/signal_repository.py`, `backend/app/db/repositories/execution_claim_repository.py`, `backend/app/core/identifiers.py`, `backend/app/webhook_ingest.py`, `backend/app/main.py`.
 
 Use this when debugging duplicate execution, stuck jobs, lease loss, or crash recovery. For the full pipeline see [`backend-execution.md`](backend-execution.md).
 
 ## Architecture overview
 
 ```
-POST /api/webhooks/tradingview  →  signal_jobs (QUEUED)
+POST /api/webhooks/tradingview  (ingest :8000)  →  signal_jobs (QUEUED)
                                         ↓
-ExecutionWorkerPool (10 workers)  →  lease + domain lock + heartbeat
+ExecutionWorkerPool on trading :8001 (10 workers)  →  lease + domain lock + heartbeat
                                         ↓
 OrderManager.process_signal_execution  →  RMS → resolve → claim → basket → IBKR
                                         ↓
@@ -57,7 +57,7 @@ RECEIVED / QUEUED
 | `COMPLETED` | Pipeline finished successfully |
 | `REJECTED` | Parse failure or RMS/OMS policy rejection |
 | `FAILED` | Execution incomplete or unhandled exception |
-| `RECOVERY_REQUIRED` | Quarantined — orders may exist; needs reconciliation |
+| `RECOVERY_REQUIRED` | Quarantined — orders may exist; needs reconciliation (lease expiry **or** post-submit exception) |
 | `DEAD_LETTER` | Exceeded `max_attempts` (default 3) |
 
 **Invariant:** `ACTIVE_LEASE_STATUSES = (CLAIMED, PROCESSING)` must be used consistently in claim, heartbeat, reclaim, and fenced status writes. Omitting `PROCESSING` from any predicate silently breaks lease maintenance.
@@ -208,8 +208,16 @@ Workers drive execution; `SignalRepository` records inbound audit regardless.
 | `Sealed stale execution claim` | Reconciliation promoted claim |
 | `Released stale execution claim` | Reconciliation released claim |
 | `Recovery requeued job_id` | Startup safe retry |
-| `Recovery quarantined job_id` | Startup — orders already emitted |
-| `Startup recovery scan found` | Recovery scanner summary |
+| `Worker .* completed job_id` | Successful terminal write |
+| `Worker .* had unexpected fan-out error` | Multi-account exception → `RECOVERY_REQUIRED` |
+| `order(s) already emitted; reconciliation required` | Post-submit exception → `RECOVERY_REQUIRED` |
+
+### In-process worker failures
+
+When `_execute_job` catches an exception after `process_signal_execution`, it counts
+`orders` rows for `(strategy_id, signal_id)`. Any emitted order → `RECOVERY_REQUIRED`, not
+`FAILED` (avoids blind retry that would double-submit). When fan-out returns
+`had_unexpected_error=True` without raising, the worker quarantines the job the same way.
 
 ## Do not break (agent invariants)
 

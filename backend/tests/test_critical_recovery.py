@@ -352,3 +352,135 @@ async def test_recovery_failed_leaves_critical_latched(
         ).scalar_one()
         assert row.state == BasketState.CRITICAL.value
         assert row.recovery_status == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_recovery_retries_inside_same_in_flight_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    svc = CriticalRecoveryService(
+        session_factory=MagicMock(),
+        client=MagicMock(),
+    )
+    attempts: list[int] = []
+
+    async def fake_recover_once(**kwargs: object) -> str:
+        attempts.append(int(kwargs["attempt"]))
+        return "retry" if len(attempts) == 1 else "done"
+
+    monkeypatch.setattr(svc, "_recover_once", fake_recover_once)
+    monkeypatch.setattr(
+        "app.services.critical_recovery.RECOVERY_RETRY_DELAY_SEC",
+        0.0,
+    )
+    monkeypatch.setattr(
+        "app.services.critical_recovery.MAX_RECOVERY_ATTEMPTS",
+        2,
+    )
+
+    svc.schedule_recovery(
+        account_id=1,
+        trade_id="T-RETRY",
+        action="OPEN",
+        strategy_id="synthetic_n_leg",
+    )
+    key = (1, "T-RETRY", "OPEN")
+    await svc._in_flight[key]
+
+    assert attempts == [1, 2]
+    assert key not in svc._in_flight
+
+
+@pytest.mark.asyncio
+async def test_connected_partial_fill_recovery_marks_critical(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from app.broker.ibkr.tws_client import TWSClient
+    from app.db.models.signal import SignalModel
+    from app.oms.ibkr_adapter import IBKRExecutionAdapter
+    from app.oms.oms_service import OMSService
+    from unittest.mock import MagicMock
+
+    test_id = uuid4().hex[:8]
+    trade_id = f"T-PARTIAL-{test_id}"
+    async with session_factory() as session, session.begin():
+        account = AccountModel(
+            name=f"partial-{test_id}",
+            ibkr_account=f"DU-P-{test_id}",
+            total_margin=Decimal("100000"),
+            enabled=True,
+        )
+        session.add(account)
+        await session.flush()
+        account_id = account.id
+        basket = BasketModel(
+            account_id=account_id,
+            trade_id=trade_id,
+            strategy_id="synthetic_n_leg",
+            action="OPEN",
+            state=BasketState.EXECUTING.value,
+            intended_leg_count=2,
+        )
+        session.add(basket)
+        await session.flush()
+        basket_id = basket.id
+        sig = SignalModel(
+            signal_id=trade_id,
+            strategy_id="synthetic_n_leg",
+            trade_id=trade_id,
+            action="OPEN",
+            pair="XLE/XOP",
+            side="BUY",
+            ref_price_a=Decimal("100"),
+            raw_payload={"test": True},
+            status="FAILED",
+        )
+        session.add(sig)
+        await session.flush()
+        session.add(
+            OrderModel(
+                signal_id=sig.id,
+                trade_id=trade_id,
+                internal_order_id=f"int-p-{test_id}",
+                basket_id=basket_id,
+                is_compensation=False,
+                account_id=account_id,
+                strategy_id="synthetic_n_leg",
+                leg="L0",
+                symbol="XLE",
+                ibkr_contract="XLE-STK-SMART-USD:111",
+                buy_sell="BUY",
+                quantity=Decimal("100"),
+                limit_price=Decimal("0"),
+                status="PARTIALLY_FILLED",
+                fill_qty=Decimal("40"),
+            )
+        )
+
+    tws = MagicMock(spec=TWSClient)
+    tws.is_connected.return_value = True
+    adapter = IBKRExecutionAdapter(client=tws)
+    adapter.is_connected = lambda: True  # type: ignore[method-assign]
+    oms = OMSService(adapter=adapter)
+    coord = BasketCoordinator(oms, session_factory=session_factory)
+    recovery = MagicMock()
+    recovery.schedule_recovery = MagicMock()
+    coord.set_recovery_service(recovery)
+
+    await coord.recover_incomplete_baskets()
+
+    assert coord.is_open_blocked(account_id, "synthetic_n_leg") is True
+    recovery.schedule_recovery.assert_called_once_with(
+        account_id=account_id,
+        trade_id=trade_id,
+        action="OPEN",
+        strategy_id="synthetic_n_leg",
+    )
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(BasketModel).where(BasketModel.id == basket_id)
+            )
+        ).scalar_one()
+        assert row.state == BasketState.CRITICAL.value
+

@@ -3,6 +3,24 @@
 import math
 from typing import Any
 
+DEFAULT_TEST_IBKR_ACCOUNT = "DUTEST"
+DEFAULT_TEST_MANAGED_ACCOUNTS = (
+    DEFAULT_TEST_IBKR_ACCOUNT,
+    "DU-TEST",
+    "DU-TEST-A",
+    "DU-TEST-B",
+    "DU-TEST-N",
+    "DU-A",
+    "DU-B",
+)
+
+
+def wire_test_managed_accounts(
+    adapter: Any, accounts: list[str] | None = None
+) -> None:
+    """Seed gateway managedAccounts for offline adapter tests."""
+    adapter.set_managed_accounts(accounts or list(DEFAULT_TEST_MANAGED_ACCOUNTS))
+
 
 def _fill_px(order: Any) -> float:
     raw = float(getattr(order, "lmtPrice", 0) or 0)

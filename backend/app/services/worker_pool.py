@@ -15,6 +15,7 @@ from app.db.models.signal import (
     JOB_STATUS_COMPLETED,
     JOB_STATUS_FAILED,
     JOB_STATUS_PROCESSING,
+    JOB_STATUS_RECOVERY_REQUIRED,
     JOB_STATUS_REJECTED,
     SignalJobModel,
 )
@@ -324,6 +325,21 @@ class ExecutionWorkerPool:
                 )
                 return
 
+            if execution is not None and getattr(execution, "had_unexpected_error", False):
+                logger.error(
+                    "Worker %s: signal %s had unexpected fan-out error; quarantining for reconciliation",
+                    worker_id,
+                    job.signal_id,
+                )
+                await self._write_status(
+                    job.job_id,
+                    JOB_STATUS_RECOVERY_REQUIRED,
+                    worker_id,
+                    lease_lost,
+                    error="Unexpected error during multi-account fan-out; reconciliation required.",
+                )
+                return
+
             if execution is not None and getattr(execution, "all_rejected", False):
                 logger.warning(
                     "Worker %s: signal %s rejected by RMS/OMS policy", worker_id, job.signal_id
@@ -361,6 +377,24 @@ class ExecutionWorkerPool:
             )
         except Exception as exc:
             logger.exception("Worker %s failed executing job %s", worker_id, job.job_id)
+            terminal_status = JOB_STATUS_FAILED
+            error_msg = str(exc)
+            try:
+                async with self._session_factory() as session:
+                    emitted = await SignalJobRepository(session).count_orders_emitted(
+                        job.strategy_id, job.signal_id
+                    )
+                if emitted > 0:
+                    terminal_status = JOB_STATUS_RECOVERY_REQUIRED
+                    error_msg = (
+                        f"{exc} — {emitted} order(s) already emitted; reconciliation required."
+                    )
+            except Exception:
+                logger.exception(
+                    "Worker %s could not count emitted orders for job %s",
+                    worker_id,
+                    job.job_id,
+                )
             await self._write_status(
-                job.job_id, JOB_STATUS_FAILED, worker_id, lease_lost, error=str(exc)
+                job.job_id, terminal_status, worker_id, lease_lost, error=error_msg
             )

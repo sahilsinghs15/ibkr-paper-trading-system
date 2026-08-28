@@ -28,10 +28,11 @@ There are **two machines** and they must stay separate:
 The backend **does not log into IBKR**. IBC + Gateway authenticate. The backend only opens a TWS API socket to an already-logged-in Gateway.
 
 ```
-TradingView  --HTTPS-->  ngrok  -->  FastAPI :8000  -->  TWS API  -->  127.0.0.1:4002  -->  IB Gateway PAPER  -->  IBKR paper account
+TradingView  --HTTPS-->  ngrok  -->  Webhook ingest :8000  -->  Postgres (signal_jobs)
+                                                              -->  Trading app :8001  -->  TWS API  -->  127.0.0.1:4002  -->  IB Gateway PAPER
 ```
 
-**Do not** expose Gateway port 4002 on the public internet. Only `:8000` is tunneled (ngrok). SSH is `:22`.
+**Do not** expose Gateway port 4002 on the public internet. Only webhook ingest `:8000` is tunneled (ngrok). SSH is `:22`.
 
 ---
 
@@ -157,7 +158,8 @@ Observed after TWS handshake:
 | Port | Binding | Meaning |
 |---|---|---|
 | **22** | public | SSH |
-| **8000** | `127.0.0.1` only | FastAPI. Reachable from internet **only via ngrok** |
+| **8000** | `127.0.0.1` only | Webhook ingest (`app.webhook_ingest:app`). Reachable from internet **only via ngrok** |
+| **8001** | `127.0.0.1` only | Trading / execution (`app.main:app`). Local only |
 | **4002** | Gateway API (paper) | Backend must use this. **Do not publish in security group.** |
 | **4001** | Gateway **live** | **NEVER** point the backend here |
 | **7497** | TWS paper | Local TWS paper; **not** the EC2 Gateway paper port |
@@ -174,7 +176,7 @@ Two tmux sessions, created as `tradingapp`:
 
 | Session | Pane | What runs | Typical path |
 |---|---|---|---|
-| `tradingapp` | **0.0** | `uv run uvicorn … :8000` | `/home/tradingapp/app/backend` |
+| `tradingapp` | **0.0** | `uv run uvicorn app.webhook_ingest:app … :8000` + trading on `:8001` (or `process_manager`) | `/home/tradingapp/app/backend` |
 | `tradingapp` | **0.1** | `./ngrok http 8000` | `/home/tradingapp` |
 | `ibgateway` | **0.0** | IBC + Gateway (or a shell after Gateway exits) | `/home/tradingapp` or `Jts` |
 
@@ -208,9 +210,11 @@ Check: `ps -ef | grep Xvfb | grep -v grep`
 Do not invent a different Gateway launcher. Contents:
 
 ```bash
-cd /home/tradingapp/app/backend && uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+cd /home/tradingapp/app/backend && uv run uvicorn app.webhook_ingest:app --host 127.0.0.1 --port 8000
 
 ./ngrok http 8000
+
+cd /home/tradingapp/app/backend && uv run uvicorn app.main:app --host 127.0.0.1 --port 8001
 
 Xvfb :99 -screen 0 1024x768x24 >/tmp/xvfb.log 2>&1 &
 export DISPLAY=:99
@@ -257,13 +261,13 @@ Paper sessions can auto-exit (“Exit Session Setting (Simulated Trading)”). T
 
 ## 7. Backend start / restart
 
-Only after Gateway is on **4002**:
+Webhook ingest (`:8000`) can run without Gateway. Trading app (`:8001`) needs Gateway on **4002**:
 
 ```bash
 tmux send-keys -t tradingapp:0.0 C-c
-# wait until :8000 is gone
+# wait until :8001 is gone
 tmux send-keys -t tradingapp:0.0 \
-  'cd /home/tradingapp/app/backend && uv run uvicorn app.main:app --host 127.0.0.1 --port 8000' \
+  'cd /home/tradingapp/app/backend && uv run uvicorn app.main:app --host 127.0.0.1 --port 8001' \
   Enter
 tmux capture-pane -t tradingapp:0.0 -p -S -80
 ```
@@ -274,12 +278,13 @@ Ready means **all** of:
 - `TWS nextValidId received` / `Handshake complete`
 - `Active execution pipeline: … TWS 127.0.0.1:4002`
 - `Paper-trading execution application is ready`
-- `curl -s http://127.0.0.1:8000/health` → `{"status":"ok"}`
+- `curl -s http://127.0.0.1:8001/health` → `{"status":"ok"}`
 
 Uvicorn “Started server process” alone is **not** ready.
 
-OpenAPI (on the box): `http://127.0.0.1:8000/docs`  
-Webhook: `POST /api/webhooks/tradingview`
+Webhook ingest health: `curl -s http://127.0.0.1:8000/health` → `{"status":"ok"}`  
+OpenAPI (trading, on the box): `http://127.0.0.1:8001/docs`  
+Webhook: `POST http://127.0.0.1:8000/api/webhooks/tradingview`
 
 ---
 
@@ -382,7 +387,7 @@ Local `backend/.env` `BROKER_MODE=mock` is ignored by current Settings (`extra=i
 2. `ssh -i … ubuntu@98.81.69.227` then `sudo su tradingapp`.
 3. `cat ~/start.txt` and `cat ~/app/AGENTS.md`.
 4. `tmux list-sessions` and capture both panes.
-5. `ss -lntp | grep -E '8000|4002|4001'`.
+5. `ss -lntp | grep -E '8000|8001|4002|4001'`.
 6. Confirm paper + handshake in backend pane.
 7. Read `~/app/docs/backend-execution.md` and `~/app/docs/safety.md` **before** any webhook.
 8. Compare `git -C ~/app log -1` with the laptop repo before assuming Stage-N behaviour.

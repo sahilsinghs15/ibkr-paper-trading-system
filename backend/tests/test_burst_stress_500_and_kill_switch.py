@@ -3,6 +3,7 @@
 import asyncio
 import time
 from decimal import Decimal
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -10,7 +11,8 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.main import app
+from app.main import app as trading_app
+from app.webhook_ingest import app as ingest_app
 
 
 @pytest.fixture
@@ -60,12 +62,12 @@ def make_payload(idx: int, prefix: str = "BURST") -> dict:
 @pytest.mark.asyncio
 async def test_500_signal_burst_webhook_ingestion(session_factory: async_sessionmaker[AsyncSession]):
     """Verify 500 concurrent webhook signals ingest without connection error or rate limit crash."""
-    app.state.session_factory = session_factory
+    ingest_app.state.session_factory = session_factory
     count = 500
     payloads = [make_payload(i, "BURST500") for i in range(count)]
     trade_ids = [p["trade_id"] for p in payloads]
 
-    transport = ASGITransport(app=app)
+    transport = ASGITransport(app=ingest_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         start_time = time.monotonic()
         responses = await asyncio.gather(
@@ -93,7 +95,8 @@ async def test_500_signal_burst_webhook_ingestion(session_factory: async_session
 @pytest.mark.asyncio
 async def test_simultaneous_300_signals_and_kill_switch(session_factory: async_sessionmaker[AsyncSession]):
     """Verify 300 signals and a concurrent Kill Switch trigger coexist without blocking."""
-    app.state.session_factory = session_factory
+    ingest_app.state.session_factory = session_factory
+    trading_app.state.session_factory = session_factory
     count = 300
     payloads = [make_payload(i, "BURST300KS") for i in range(count)]
 
@@ -106,16 +109,50 @@ async def test_simultaneous_300_signals_and_kill_switch(session_factory: async_s
         await session.flush()
         acc_id = acc.id
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        start_time = time.monotonic()
+    ingest_transport = ASGITransport(app=ingest_app)
+    trading_transport = ASGITransport(app=trading_app)
 
-        # Fire 300 webhooks AND 1 Kill Switch operation simultaneously
-        tasks = [client.post("/api/webhooks/tradingview", json=p) for p in payloads]
-        tasks.append(client.post(f"/api/v1/config/accounts/{acc_id}/square-off"))
+    with (
+        patch("app.broker.ibkr.tws_client.TWSClient.connect_and_start", return_value=True),
+        patch("app.broker.ibkr.tws_client.TWSClient.disconnect_clean"),
+        patch("app.services.worker_pool.ExecutionWorkerPool.start", new_callable=AsyncMock),
+        patch("app.services.worker_pool.ExecutionWorkerPool.stop", new_callable=AsyncMock),
+        patch(
+            "app.services.position_reconciler.PositionReconciler.start",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.position_reconciler.PositionReconciler.stop",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.recovery.RecoveryManager.run_startup_recovery",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.order_manager.OrderManager.hydrate_live_pnl",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.order_manager.OrderManager.hydrate_runtime_from_db",
+            new_callable=AsyncMock,
+        ),
+    ):
+        async with (
+            AsyncClient(transport=ingest_transport, base_url="http://test") as ingest_client,
+            AsyncClient(transport=trading_transport, base_url="http://test") as trading_client,
+        ):
+            start_time = time.monotonic()
 
-        responses = await asyncio.gather(*tasks)
-        total_duration = time.monotonic() - start_time
+            # Fire 300 webhooks on ingest AND 1 Kill Switch on trading app simultaneously
+            webhook_tasks = [
+                ingest_client.post("/api/webhooks/tradingview", json=p) for p in payloads
+            ]
+            kill_switch_task = trading_client.post(
+                f"/api/v1/config/accounts/{acc_id}/square-off"
+            )
+            responses = await asyncio.gather(*webhook_tasks, kill_switch_task)
+            total_duration = time.monotonic() - start_time
 
     webhook_responses = responses[:count]
     kill_switch_response = responses[-1]

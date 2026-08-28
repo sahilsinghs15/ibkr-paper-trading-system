@@ -126,7 +126,7 @@ async def collect_system_monitor_data(
     backend_status = ServiceStatus(
         name="FastAPI Backend",
         status="RUNNING",
-        port=8000,
+        port=8001,
         health_detail="Trading engine API responsive",
         latency_ms=0.5,
     )
@@ -158,7 +158,7 @@ async def collect_system_monitor_data(
         "hostname": hostname,
         "private_ip": private_ip,
         "binding_loopback": "127.0.0.1",
-        "open_ports": [8000, 8010, 5432, 6379, gw_port],
+        "open_ports": [8000, 8001, 8010, 5432, 6379, gw_port],
     }
 
     # 7. Top Processes (Top 5 by CPU/Memory)

@@ -28,6 +28,7 @@ from app.services.model_blue.allocation import TemporarySettingsCommittedCapital
 from app.services.model_blue.parser import parse_model_blue_payload
 from app.services.model_blue.sizer import ModelBlueSizer
 from app.services.order_manager import OrderManager
+from tests.ibkr_test_utils import DEFAULT_TEST_IBKR_ACCOUNT, fill_on_place_order, wire_test_managed_accounts
 from app.services.strategies.inbound import parse_tradingview_payload
 
 _TS = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
@@ -75,6 +76,7 @@ def _intent(symbols: list[str], *, signal_id: str) -> OrderIntent:
         signal_id=signal_id,
         strategy_id=_SYNTH,
         action=OrderAction.OPEN,
+        ibkr_account=DEFAULT_TEST_IBKR_ACCOUNT,
         legs=[_leg(sym, i) for i, sym in enumerate(symbols)],
         timestamp=_TS,
     )
@@ -98,8 +100,7 @@ def _mock_adapter() -> IBKRExecutionAdapter:
     client.next_order_id = 200
     client.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=client)
-    from tests.ibkr_test_utils import fill_on_place_order
-
+    wire_test_managed_accounts(adapter)
     fill_on_place_order(adapter, client)
     return adapter
 
@@ -216,6 +217,16 @@ async def test_4_strategy_isolation_skips_model_blue_sizer() -> None:
         rms_context=_rms_context(),
         rms_engine=RMSEngine(),
     )
+    from dataclasses import replace
+
+    original_eval = order_manager._evaluate_and_submit
+
+    async def eval_with_test_account(intent, *args, **kwargs):
+        if not intent.ibkr_account:
+            intent = replace(intent, ibkr_account=DEFAULT_TEST_IBKR_ACCOUNT)
+        return await original_eval(intent, *args, **kwargs)
+
+    order_manager._evaluate_and_submit = eval_with_test_account  # type: ignore[method-assign]
     signal = Signal(
         signal_type=SignalType.BUY,
         timestamp=_TS,

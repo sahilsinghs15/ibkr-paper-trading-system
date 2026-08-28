@@ -1,10 +1,12 @@
 """Application configuration loaded from environment variables."""
 
+import os
 from decimal import Decimal
 from typing import Annotated
 
 from annotated_types import Ge, Gt, Le
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 class Settings(BaseSettings):
@@ -94,10 +96,21 @@ class Settings(BaseSettings):
         return 5
 
 
+_PRODUCTION_DATABASE_NAME = "ibkr_trading"
+
+
 def get_settings() -> Settings:
     """Create and return a Settings instance.
 
     Use this function instead of constructing Settings directly so
     that the creation point is easy to find and override in tests.
     """
-    return Settings()
+    settings = Settings()
+    if os.environ.get("TRADINGAPP_TESTING") == "1":
+        db_name = make_url(settings.database_url).database
+        if db_name == _PRODUCTION_DATABASE_NAME:
+            raise RuntimeError(
+                "Refusing production database 'ibkr_trading' while TRADINGAPP_TESTING=1. "
+                "Use ibkr_trading_test (conftest rewrites DATABASE_URL automatically)."
+            )
+    return settings

@@ -51,7 +51,10 @@ async def test_webhook_unauthenticated_request_rejected(
     """Verify that requests missing secret return HTTP 401 when auth secret is configured."""
     monkeypatch.setattr(
         "app.api.routes.webhooks.get_settings",
-        lambda: Settings(webhook_auth_secret="super-secret-token-123"),
+        lambda: Settings(
+            webhook_auth_secret="super-secret-token-123",
+            webhook_auth_enabled=True,
+        ),
     )
 
     async with AsyncClient(
@@ -72,7 +75,10 @@ async def test_webhook_invalid_secret_rejected(
     """Verify that requests with invalid secret return HTTP 401."""
     monkeypatch.setattr(
         "app.api.routes.webhooks.get_settings",
-        lambda: Settings(webhook_auth_secret="super-secret-token-123"),
+        lambda: Settings(
+            webhook_auth_secret="super-secret-token-123",
+            webhook_auth_enabled=True,
+        ),
     )
 
     async with AsyncClient(
@@ -95,7 +101,10 @@ async def test_webhook_valid_header_secret_accepted(
     """Verify that requests with valid header secret return HTTP 202 and create signal_jobs row."""
     monkeypatch.setattr(
         "app.api.routes.webhooks.get_settings",
-        lambda: Settings(webhook_auth_secret="super-secret-token-123"),
+        lambda: Settings(
+            webhook_auth_secret="super-secret-token-123",
+            webhook_auth_enabled=True,
+        ),
     )
 
     session_factory: async_sessionmaker[AsyncSession] = test_app.state.session_factory
@@ -130,7 +139,10 @@ async def test_webhook_query_param_secret_rejected_security(
     """Verify secret passed via URL query parameter is rejected (HTTP 401) to prevent log leakage."""
     monkeypatch.setattr(
         "app.api.routes.webhooks.get_settings",
-        lambda: Settings(webhook_auth_secret="super-secret-token-123"),
+        lambda: Settings(
+            webhook_auth_secret="super-secret-token-123",
+            webhook_auth_enabled=True,
+        ),
     )
 
     async with AsyncClient(
@@ -198,7 +210,7 @@ async def test_webhook_unauthorized_request_zero_db_writes(
     """Verify unauthorized requests make zero database writes to signal_jobs."""
     monkeypatch.setattr(
         "app.api.routes.webhooks.get_settings",
-        lambda: Settings(webhook_auth_secret="secret123"),
+        lambda: Settings(webhook_auth_secret="secret123", webhook_auth_enabled=True),
     )
     session_factory: async_sessionmaker[AsyncSession] = test_app.state.session_factory
 
@@ -325,7 +337,7 @@ async def test_webhook_concurrent_burst_stress_benchmark(
             "strategy": "model_blue",
             "trade_id": f"T-BURST-{burst_size}-{idx}",
             "action": "OPEN",
-            "direction": "LONG",
+            "direction": 1 if idx % 2 == 0 else -1,
             "market": "US",
         }
         resp = await client.post("/api/webhooks/tradingview", json=payload)

@@ -37,6 +37,7 @@ from app.services.model_blue.parser import (
 from app.services.model_blue.persistence import ModelBlueExecutionPersistence
 from app.services.model_blue.sizer import ModelBlueSizer
 from app.services.order_manager import OrderManager
+from tests.ibkr_test_utils import DEFAULT_TEST_IBKR_ACCOUNT, fill_on_place_order, wire_test_managed_accounts
 
 _COMMITTED = Decimal(25000)
 _TS = datetime(2026, 8, 17, 19, 55, tzinfo=UTC)
@@ -125,8 +126,7 @@ def _oms() -> OMSService:
     tws.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=tws)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
-    from tests.ibkr_test_utils import fill_on_place_order
-
+    wire_test_managed_accounts(adapter)
     fill_on_place_order(adapter, tws)
     return OMSService(adapter=adapter)
 

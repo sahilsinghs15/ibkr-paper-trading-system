@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -28,6 +28,7 @@ POSITIONS_REQUEST_TIMEOUT_SEC = 15.0
 RECOVERY_RETRY_DELAY_SEC = 30.0
 MAX_RECOVERY_ATTEMPTS = 2
 _FILL_EPS = 1e-8
+RecoveryOutcome = Literal["done", "retry"]
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,15 @@ class CriticalRecoveryService:
     def set_coordinator(self, coordinator: Any) -> None:
         self._coordinator = coordinator
 
+    async def stop(self) -> None:
+        """Cancel in-flight recovery tasks during application shutdown."""
+        tasks = list(self._in_flight.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._in_flight.clear()
+
     def schedule_recovery(
         self,
         *,
@@ -128,8 +138,19 @@ class CriticalRecoveryService:
         task.add_done_callback(_done)
 
     async def enqueue_all_critical(self) -> None:
-        async with self._session_factory() as session:
-            rows = await BasketRepository(session).list_critical()
+        async with self._session_factory() as session, session.begin():
+            repo = BasketRepository(session)
+            rows = await repo.list_critical()
+            for row in rows:
+                if row.recovery_status == "RECOVERING":
+                    await repo.update_recovery(
+                        account_id=row.account_id,
+                        trade_id=row.trade_id,
+                        action=row.action,
+                        recovery_detail=(
+                            "Stale RECOVERING from prior process; re-enqueueing recovery."
+                        ),
+                    )
         for row in rows:
             self.schedule_recovery(
                 account_id=row.account_id,
@@ -147,33 +168,32 @@ class CriticalRecoveryService:
         strategy_id: str,
     ) -> None:
         key = (account_id, trade_id, action)
-        attempt = self._attempts.get(key, 0) + 1
-        self._attempts[key] = attempt
         try:
-            await self._recover_once(
-                account_id=account_id,
-                trade_id=trade_id,
-                action=action,
-                strategy_id=strategy_id,
-                attempt=attempt,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception(
-                "Critical recovery attempt failed account_id=%s trade_id=%s attempt=%d",
-                account_id,
-                trade_id,
-                attempt,
-            )
-            if attempt < MAX_RECOVERY_ATTEMPTS:
+            for attempt in range(1, MAX_RECOVERY_ATTEMPTS + 1):
+                self._attempts[key] = attempt
+                try:
+                    outcome = await self._recover_once(
+                        account_id=account_id,
+                        trade_id=trade_id,
+                        action=action,
+                        strategy_id=strategy_id,
+                        attempt=attempt,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "Critical recovery attempt failed account_id=%s trade_id=%s attempt=%d",
+                        account_id,
+                        trade_id,
+                        attempt,
+                    )
+                    outcome = "retry"
+                if outcome == "done" or attempt >= MAX_RECOVERY_ATTEMPTS:
+                    break
                 await asyncio.sleep(RECOVERY_RETRY_DELAY_SEC)
-                self.schedule_recovery(
-                    account_id=account_id,
-                    trade_id=trade_id,
-                    action=action,
-                    strategy_id=strategy_id,
-                )
+        finally:
+            self._attempts.pop(key, None)
 
     async def _recover_once(
         self,
@@ -183,21 +203,21 @@ class CriticalRecoveryService:
         action: str,
         strategy_id: str,
         attempt: int,
-    ) -> None:
+    ) -> RecoveryOutcome:
         async with self._session_factory() as session, session.begin():
             basket_repo = BasketRepository(session)
             row = await basket_repo.get(
                 account_id=account_id, trade_id=trade_id, action=action
             )
             if row is None or row.state != BasketState.CRITICAL.value:
-                return
+                return "done"
             account = (
                 await session.execute(
                     select(AccountModel).where(AccountModel.id == account_id)
                 )
             ).scalar_one_or_none()
             if account is None:
-                return
+                return "done"
             ibkr_account = account.ibkr_account
             await basket_repo.update_recovery(
                 account_id=account_id,
@@ -218,7 +238,7 @@ class CriticalRecoveryService:
                 action=action,
                 recovery_detail=detail,
             )
-            return
+            return "done"
 
         if not await self._fetch_and_persist_snapshot():
             await self._mark_failed(
@@ -229,15 +249,7 @@ class CriticalRecoveryService:
                 recovery_detail="Pre-flatten broker snapshot failed.",
                 attempt=attempt,
             )
-            if attempt < MAX_RECOVERY_ATTEMPTS:
-                await asyncio.sleep(RECOVERY_RETRY_DELAY_SEC)
-                self.schedule_recovery(
-                    account_id=account_id,
-                    trade_id=trade_id,
-                    action=action,
-                    strategy_id=strategy_id,
-                )
-            return
+            return "retry" if attempt < MAX_RECOVERY_ATTEMPTS else "done"
 
         flatten_messages = await self._flatten_leftovers(
             ibkr_account=ibkr_account,
@@ -252,15 +264,7 @@ class CriticalRecoveryService:
                 recovery_detail="Post-flatten broker snapshot failed.",
                 attempt=attempt,
             )
-            if attempt < MAX_RECOVERY_ATTEMPTS:
-                await asyncio.sleep(RECOVERY_RETRY_DELAY_SEC)
-                self.schedule_recovery(
-                    account_id=account_id,
-                    trade_id=trade_id,
-                    action=action,
-                    strategy_id=strategy_id,
-                )
-            return
+            return "retry" if attempt < MAX_RECOVERY_ATTEMPTS else "done"
 
         if await self._broker_flat_for_conids(ibkr_account, leftovers):
             detail = "; ".join(flatten_messages) if flatten_messages else "Broker flat."
@@ -271,8 +275,7 @@ class CriticalRecoveryService:
                 action=action,
                 recovery_detail=detail,
             )
-            self._attempts.pop((account_id, trade_id, action), None)
-            return
+            return "done"
 
         detail = "; ".join(flatten_messages) if flatten_messages else "Broker still has qty."
         await self._mark_failed(
@@ -283,14 +286,7 @@ class CriticalRecoveryService:
             recovery_detail=detail,
             attempt=attempt,
         )
-        if attempt < MAX_RECOVERY_ATTEMPTS:
-            await asyncio.sleep(RECOVERY_RETRY_DELAY_SEC)
-            self.schedule_recovery(
-                account_id=account_id,
-                trade_id=trade_id,
-                action=action,
-                strategy_id=strategy_id,
-            )
+        return "retry" if attempt < MAX_RECOVERY_ATTEMPTS else "done"
 
     async def _collect_leftover_legs(self, basket_id: int) -> list[LeftoverLeg]:
         async with self._session_factory() as session:

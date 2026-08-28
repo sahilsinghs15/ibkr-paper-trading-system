@@ -28,6 +28,7 @@ from app.oms.basket import BasketState
 from app.oms.coordinator import BasketCoordinator
 from app.oms.ibkr_adapter import IBKRExecutionAdapter
 from app.oms.models import OMSOrderStatus
+from tests.ibkr_test_utils import wire_test_managed_accounts
 from app.oms.oms_service import OMSService
 from app.rms import RMSContext, RMSEngine
 from app.rms.models import (
@@ -51,13 +52,14 @@ from tests.test_hardening_lifecycle import _ctx, _open_payload
 _TS = datetime(2026, 8, 18, 16, 0, tzinfo=UTC)
 
 
-def _adapter() -> tuple[IBKRExecutionAdapter, MagicMock]:
+def _adapter(managed_accounts: list[str] | None = None) -> tuple[IBKRExecutionAdapter, MagicMock]:
     tws = MagicMock(spec=TWSClient)
     tws.is_connected.return_value = True
     tws.next_order_id = 700
     tws.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=tws)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
+    wire_test_managed_accounts(adapter, managed_accounts or ["DU-TEST"])
     return adapter, tws
 
 
@@ -301,7 +303,7 @@ async def test_event_lifecycle_links_and_idempotent_callbacks() -> None:
     engine = create_engine_from_settings()
     factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
     trade_id = f"T-AUDIT-{uuid4().hex[:8]}"
-    adapter, tws = _adapter()
+    adapter, tws = _adapter(["DU-AUD"])
 
     def place(order_id: int, contract, order) -> None:
         qty = float(order.totalQuantity)
@@ -551,7 +553,7 @@ async def test_existing_open_basket_semantics_unchanged() -> None:
 
     engine = create_engine_from_settings()
     factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
-    adapter, tws = _adapter()
+    adapter, tws = _adapter(["DU-SEM"])
     fill_on_place_order(adapter, tws)
     oms = OMSService(adapter=adapter)
     trade_id = f"T-SEM-{uuid4().hex[:8]}"

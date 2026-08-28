@@ -9,7 +9,6 @@ from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
 from app.api.routes.health import router as health_router
-from app.api.routes.webhooks import router as webhooks_router
 from app.broker.ibkr.gateway_rate_limiter import GatewayRateLimiter
 from app.broker.ibkr.tws_client import TWSClient
 from app.core.config import get_settings
@@ -161,6 +160,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         await fastapi_app.state.position_reconciler.stop()
     if hasattr(fastapi_app.state, "worker_pool"):
         await fastapi_app.state.worker_pool.stop()
+    if hasattr(fastapi_app.state, "critical_recovery"):
+        await fastapi_app.state.critical_recovery.stop()
     client.disconnect_clean()
     logger.info("TWS Client disconnected cleanly. Shutdown complete.")
 
@@ -187,9 +188,8 @@ def create_app() -> FastAPI:
             content={"detail": "Internal server error. Please try again later."},
         )
 
-    # Register Routers
+    # Register Routers (webhooks live on app.webhook_ingest:app, port 8000)
     fastapi_app.include_router(health_router)
-    fastapi_app.include_router(webhooks_router, prefix="/api")
     fastapi_app.include_router(api_router, prefix="/api/v1")
 
     return fastapi_app

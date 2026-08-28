@@ -210,6 +210,7 @@ class FanoutExecutionResult:
     """
 
     outcomes: list[AccountExecutionOutcome] = field(default_factory=list)
+    had_unexpected_error: bool = False
 
     @property
     def order(self) -> OMSOrder | None:

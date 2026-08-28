@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.main import app
+from app.webhook_ingest import app as ingest_app
 
 
 @pytest.fixture
@@ -59,12 +59,12 @@ def make_payload(idx: int, prefix: str = "BURST") -> dict:
 @pytest.mark.asyncio
 async def test_150_signal_burst_webhook_ingestion(session_factory: async_sessionmaker[AsyncSession]):
     """Verify 150 concurrent webhook signals ingest in < 5.0s with 100% 202 ACKs."""
-    app.state.session_factory = session_factory
+    ingest_app.state.session_factory = session_factory
     count = 150
     payloads = [make_payload(i, "BURST150") for i in range(count)]
     trade_ids = [p["trade_id"] for p in payloads]
 
-    transport = ASGITransport(app=app)
+    transport = ASGITransport(app=ingest_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         start_time = time.monotonic()
         responses = await asyncio.gather(
@@ -93,12 +93,12 @@ async def test_150_signal_burst_webhook_ingestion(session_factory: async_session
 @pytest.mark.asyncio
 async def test_300_signal_burst_webhook_ingestion(session_factory: async_sessionmaker[AsyncSession]):
     """Verify 300 concurrent webhook signals ingest without blocking or error."""
-    app.state.session_factory = session_factory
+    ingest_app.state.session_factory = session_factory
     count = 300
     payloads = [make_payload(i, "BURST300") for i in range(count)]
     trade_ids = [p["trade_id"] for p in payloads]
 
-    transport = ASGITransport(app=app)
+    transport = ASGITransport(app=ingest_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         start_time = time.monotonic()
         responses = await asyncio.gather(

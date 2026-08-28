@@ -72,6 +72,7 @@ class IBKRExecutionAdapter:
         self._rate_limiter = rate_limiter
 
         self._lock = threading.Lock()
+        self._managed_accounts_override: frozenset[str] | None = None
 
         # Map internal_order_id <-> tws_order_id (int)
         self._orders_by_tws_id: dict[int, OMSOrder] = {}
@@ -104,6 +105,44 @@ class IBKRExecutionAdapter:
                 listener(order, kind)
             except Exception:
                 logger.exception("Order state listener failed kind=%s", kind)
+
+    def set_managed_accounts(self, accounts: list[str] | frozenset[str]) -> None:
+        """Test helper: seed gateway managedAccounts without a live IBKR session."""
+        self._managed_accounts_override = frozenset(
+            code.strip().upper() for code in accounts if code and str(code).strip()
+        )
+
+    def _managed_accounts_set(self) -> frozenset[str]:
+        if self._managed_accounts_override is not None:
+            return self._managed_accounts_override
+        managed = getattr(self._client, "managed_accounts", None)
+        if managed:
+            return frozenset(str(code).strip().upper() for code in managed if code)
+        return frozenset()
+
+    def _validate_ibkr_account(self, order: OMSOrder) -> bool:
+        account = order.intent.ibkr_account
+        if not account or not str(account).strip():
+            order.status = OMSOrderStatus.ERROR
+            order.error_message = (
+                "MISSING_IBKR_ACCOUNT: ibkr_account is required before placeOrder"
+            )
+            return False
+        managed = self._managed_accounts_set()
+        if not managed:
+            order.status = OMSOrderStatus.ERROR
+            order.error_message = (
+                "UNMANAGED_ACCOUNT: managedAccounts not yet received from gateway"
+            )
+            return False
+        normalized = str(account).strip().upper()
+        if normalized not in managed:
+            order.status = OMSOrderStatus.ERROR
+            order.error_message = (
+                f"UNMANAGED_ACCOUNT: '{account}' is not in gateway managedAccounts"
+            )
+            return False
+        return True
 
     def is_connected(self) -> bool:
         """Return True if connected to TWS and initial handshake completed."""
@@ -211,6 +250,9 @@ class IBKRExecutionAdapter:
             raise ConnectionError("Cannot submit order: TWS is not connected.")
 
         if not await self._acquire_for_order(order, "placeOrder"):
+            return order
+
+        if not self._validate_ibkr_account(order):
             return order
 
         with self._lock:

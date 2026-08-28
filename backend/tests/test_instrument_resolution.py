@@ -29,7 +29,7 @@ from app.rms.models import (
 from app.services.model_blue.allocation import TemporarySettingsCommittedCapitalProvider
 from app.services.model_blue.parser import parse_model_blue_payload
 from app.services.model_blue.sizer import ModelBlueSizer
-from tests.ibkr_test_utils import fill_on_place_order
+from tests.ibkr_test_utils import DEFAULT_TEST_IBKR_ACCOUNT, fill_on_place_order, wire_test_managed_accounts
 
 _TS = datetime(2026, 8, 18, 17, 0, tzinfo=UTC)
 
@@ -185,12 +185,14 @@ async def test_stk_reaches_ibkr_as_stk_and_adapter_does_not_floor() -> None:
     tws.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=tws)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
+    wire_test_managed_accounts(adapter)
     fill_on_place_order(adapter, tws)
     oms = OMSService(adapter=adapter)
     intent = OrderIntent(
         signal_id="T-STK",
         strategy_id="model_blue",
         action=OrderAction.OPEN,
+        ibkr_account=DEFAULT_TEST_IBKR_ACCOUNT,
         legs=[
             OrderLeg(
                 symbol="SIL",
@@ -224,6 +226,7 @@ async def test_cfd_reaches_ibkr_as_cfd() -> None:
     tws.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=tws)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
+    wire_test_managed_accounts(adapter)
     fill_on_place_order(adapter, tws)
     oms = OMSService(adapter=adapter)
     catalog = InMemoryInstrumentCatalog([_cfd_record("SIL", 777)])
@@ -232,6 +235,7 @@ async def test_cfd_reaches_ibkr_as_cfd() -> None:
             signal_id="T-CFD",
             strategy_id="model_blue",
             action=OrderAction.OPEN,
+            ibkr_account=DEFAULT_TEST_IBKR_ACCOUNT,
             legs=[
                 OrderLeg(
                     symbol="SIL",
@@ -267,6 +271,7 @@ async def test_n_leg_independent_and_unresolved_leg_blocks_basket() -> None:
     tws.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=tws)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
+    wire_test_managed_accounts(adapter)
     fill_on_place_order(adapter, tws)
     oms = OMSService(adapter=adapter)
     coord = BasketCoordinator(oms, fill_timeout=0.2)

@@ -1,6 +1,6 @@
 # Conventions for agents
 
-**Verified from:** `backend/app/main.py`, `backend/app/api/router.py`, `backend/app/api/deps.py`, `backend/app/core/config.py`, `backend/app/core/identifiers.py`, `backend/app/services/worker_pool.py`, `frontend/package.json`, `frontend/vite.config.ts`.
+**Verified from:** `backend/app/main.py`, `backend/app/webhook_ingest.py`, `backend/app/api/router.py`, `backend/app/api/deps.py`, `backend/app/core/config.py`, `backend/app/core/identifiers.py`, `backend/app/services/worker_pool.py`, `frontend/package.json`, `frontend/vite.config.ts`.
 
 ## Backend
 
@@ -27,7 +27,7 @@
 ### Adding an HTTP route
 
 1. Add a router module under `app/api/routes/`.
-2. Include it from `app/api/router.py` (for `/api/v1/...`) or from `main.create_app()` with an explicit prefix (as webhooks do under `/api`).
+2. Include it from `app/api/router.py` (for `/api/v1/...`) or from `webhook_ingest.create_ingest_app()` / `main.create_app()` with an explicit prefix (webhooks under `/api` on ingest only).
 3. Prefer Pydantic schemas for request/response; keep domain models as dataclasses where the codebase already does.
 4. Do not claim an endpoint exists until a router decorator is present (see [`backend-api.md`](backend-api.md)).
 
@@ -35,7 +35,7 @@
 
 - `logging.getLogger(__name__)`.
 - Prefer `%s` formatting (existing style).
-- Call `setup_logging` once at startup; daily files under workspace `storage/logs/{YYYY-MM-DD}/{prefix}.log` (e.g. `trading.log`, `demo.log`).
+- Call `setup_logging` once at startup; daily files under workspace `storage/logs/{YYYY-MM-DD}/{prefix}.log` (e.g. `trading.log`, `webhook.log`, `demo.log`).
 - Correlation via `bind_log_context` / `clear_log_context` (`request_id`, `signal_id`, `trade_id`, `account_id`) → `%(trace)s` on every line.
 
 ### Persistence
@@ -46,7 +46,7 @@
 
 ### Concurrency / execution
 
-- Webhook enqueues `signal_jobs`; workers execute. Do not make synchronous execution the default when the pool is running.
+- Webhook ingest enqueues `signal_jobs` on `:8000`; trading workers execute on `:8001`. Do not make synchronous execution the default when the pool is running.
 - Job status writes must be lease-fenced (`worker_id` + live lease).
 - Execution claims: acquire after RMS + resolve, before `placeOrder`; seal on settled basket; release only if zero orders emitted.
 - Never requeue a job that already has order rows — use `RECOVERY_REQUIRED`.

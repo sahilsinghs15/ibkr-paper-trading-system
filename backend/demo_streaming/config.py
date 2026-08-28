@@ -20,7 +20,7 @@ class DemoStreamSettings(BaseSettings):
     demo_pnl_emit_interval_ms: int = 5000
     demo_stream_maxlen: int = 10000
     demo_stream_name: str = "positions:stream"
-    trading_api_url: str = "http://127.0.0.1:8000"
+    trading_api_url: str = "http://127.0.0.1:8001"
 
 
 def get_demo_settings() -> DemoStreamSettings:

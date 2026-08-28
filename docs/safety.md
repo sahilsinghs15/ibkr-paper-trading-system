@@ -43,7 +43,7 @@ cd /home/tradingapp/app/backend
 ## Operator controls
 
 - **Settings page** (`:8010/settings`): edit `accounts.total_margin`, `accounts.enabled`, `allocations.alloc_pct` / `enabled` / `max_open_positions`, and `per_symbol_limits` via proxied `/api/v1/config/*`.
-- **Kill switch API** (trading app `:8000`): `POST /api/v1/config/accounts/{id}/square-off` (202), `GET .../kill-switch`, `POST .../kill-switch/clear`. IBKR leftover flatten (sidecar, client id 99): [`backend-kill-switch.md`](backend-kill-switch.md).
+- **Kill switch API** (trading app `:8001`): `POST /api/v1/config/accounts/{id}/square-off` (202), `GET .../kill-switch`, `POST .../kill-switch/clear`. IBKR leftover flatten (sidecar, client id 99): [`backend-kill-switch.md`](backend-kill-switch.md).
 - Kill switch **stays armed** after flatten completes until explicit clear — completing flatten is not the same as disarming.
 - No strategy-level pause API separate from DB `strategies.enabled` (not on Settings UI yet)
 
@@ -51,7 +51,7 @@ DB `enabled` flags on accounts / strategies / allocations affect routing when up
 
 ## Dashboard exposure
 
-The PnL + Settings UI on `:8010` has **no auth**. If you set `DEMO_STREAM_HOST=0.0.0.0`, restrict the AWS security group (TCP 8010) to your IP. Do not publish the trading app (`:8000`) on `0.0.0.0` for dashboard access. Config writes require the trading app running on `:8000` (local bind).
+The PnL + Settings UI on `:8010` has **no auth**. If you set `DEMO_STREAM_HOST=0.0.0.0`, restrict the AWS security group (TCP 8010) to your IP. Do not publish the trading app (`:8001`) on `0.0.0.0`. Keep ngrok on webhook ingest `:8000` only. Config writes require the trading app running on `:8001` (local bind).
 
 ## Logging / secrets
 

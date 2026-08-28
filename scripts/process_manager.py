@@ -2,32 +2,48 @@
 """
 process_manager.py
 
-Supervises three processes for the One Alpha trading stack:
-  1. Xvfb          - virtual framebuffer required by IB Gateway's GUI
-  2. IB Gateway     - started via IBC (ibcstart.sh), depends on Xvfb/DISPLAY
-  3. FastAPI server - uvicorn serving app.main:app
+Supervises the One Alpha trading stack as three selectable CLI groups:
+
+  webhook  - uvicorn ``app.webhook_ingest:app`` on :8000 (Postgres only)
+  gateway  - Xvfb + IB Gateway (IBC); Gateway needs a live DISPLAY
+  fastapi  - uvicorn ``app.main:app`` on :8001 (implies gateway)
+
+Examples::
+
+    python process_manager.py                    # all three groups
+    python process_manager.py webhook            # ingest only
+    python process_manager.py fastapi            # gateway pair + trading
+    python process_manager.py webhook fastapi    # ingest + trading
+
+Selected children run only on **weekdays 09:30–16:00 America/New_York**.
+The supervisor process itself stays up 24/7 so the next session starts
+automatically. Outside the window, enabled children are stopped and not
+restarted until the next open.
 
 Design notes:
   - Xvfb and IB Gateway are treated as a dependent pair: if Xvfb dies,
     Gateway is restarted too (it needs a live DISPLAY).
-  - FastAPI starts only after IBC logs "Login has completed" *and* the
+  - Trading FastAPI starts only after IBC logs "Login has completed" *and* the
     Gateway API port accepts TCP. Port-up during authentication is not
     enough (TWS 502 / handshake timeout). The adapter does not reconnect,
-    so a Gateway bounce also restarts FastAPI after the new login.
+    so a Gateway bounce also restarts the trading app after the new login.
   - Each child is launched in its own process group (start_new_session=True)
     so we can cleanly signal the whole subtree (e.g. ibcstart.sh spawns
     Xvfb-using java processes underneath it).
   - Restarts are rate-limited (max N within a rolling window) to avoid
     crash-loops silently hammering IBKR's servers.
-  - SIGTERM/SIGINT trigger an ordered graceful shutdown: FastAPI -> Gateway -> Xvfb.
+  - SIGTERM/SIGINT trigger an ordered graceful shutdown of enabled groups:
+    Trading FastAPI -> Gateway -> Xvfb -> Webhook ingest.
 
 Run this as the foreground process under systemd (Type=simple) or a
 long-lived screen/tmux session -- it IS the supervisor, not a one-shot script.
 
 Logs: ``/home/tradingapp/storage/logs/{YYYY-MM-DD}/`` only
-(supervisor.log, xvfb.log, ib_gateway.log, fastapi.log). Not ``/home/tradingapp/logs``.
+(supervisor.log, webhook.log, xvfb.log, ib_gateway.log, fastapi.log).
+Not ``/home/tradingapp/logs``.
 """
 
+import argparse
 import os
 import signal
 import socket
@@ -55,7 +71,8 @@ STORAGE_LOG_ROOT = Path(f"{HOME}/storage/logs")
 BACKEND_DIR = f"{HOME}/app/backend"
 VENV_PYTHON = f"{BACKEND_DIR}/.venv/bin/python"
 FASTAPI_HOST = "127.0.0.1"
-FASTAPI_PORT = 8000
+INGEST_PORT = 8000
+TRADING_PORT = 8001
 # If the app exposes a real health endpoint (checks DB + IB session, not just
 # "process is up"), use it. Falls back to a raw port check if unreachable.
 FASTAPI_HEALTH_PATH = "/health"
@@ -70,6 +87,14 @@ FASTAPI_HEALTH_TIMEOUT_SEC = 2.0
 GATEWAY_EXPECTED_RESTART_TZ = ZoneInfo("America/New_York")
 GATEWAY_EXPECTED_RESTART_TIME = dtime(3, 52)   # must match IBC's AutoRestart time
 GATEWAY_EXPECTED_RESTART_WINDOW_MIN = 12       # tolerance either side, in minutes
+
+# --- Trading session window (weekdays only) ----------------------------------
+SESSION_TZ = ZoneInfo("America/New_York")
+SESSION_START = dtime(9, 30)
+SESSION_END = dtime(16, 0)
+
+VALID_GROUPS = frozenset({"webhook", "gateway", "fastapi"})
+ALL_GROUPS = VALID_GROUPS
 
 DISPLAY_NUM = "99"
 DISPLAY = f":{DISPLAY_NUM}"
@@ -303,11 +328,19 @@ def ib_gateway_cmd():
     ]
 
 
+def webhook_ingest_cmd():
+    return [
+        VENV_PYTHON, "-m", "uvicorn", "app.webhook_ingest:app",
+        "--host", FASTAPI_HOST,
+        "--port", str(INGEST_PORT),
+    ]
+
+
 def fastapi_cmd():
     return [
         VENV_PYTHON, "-m", "uvicorn", "app.main:app",
         "--host", FASTAPI_HOST,
-        "--port", str(FASTAPI_PORT),
+        "--port", str(TRADING_PORT),
     ]
 
 
@@ -408,26 +441,72 @@ def port_open(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-def fastapi_healthy() -> bool:
-    """
-    Prefer a real HTTP health check (should verify DB connectivity and IB
-    session state inside the app) over a raw socket check. Falls back to
-    the socket check if the health endpoint itself isn't reachable, so a
-    missing/misconfigured endpoint doesn't make this always report unhealthy.
-    """
-    url = f"http://{FASTAPI_HOST}:{FASTAPI_PORT}{FASTAPI_HEALTH_PATH}"
+def _http_healthy(host: str, port: int) -> bool:
+    """HTTP GET /health with port fallback."""
+    url = f"http://{host}:{port}{FASTAPI_HEALTH_PATH}"
     try:
         with urllib.request.urlopen(url, timeout=FASTAPI_HEALTH_TIMEOUT_SEC) as resp:
             return 200 <= resp.status < 300
     except urllib.error.HTTPError as e:
-        # Endpoint exists but returned an error status -- treat as unhealthy.
         log.debug(f"Health endpoint returned HTTP {e.code}")
         return False
     except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
-        # Endpoint unreachable (not implemented, still starting, etc.) --
-        # fall back to a basic port check so we don't false-negative on
-        # deployments without a /health route.
-        return port_open(FASTAPI_HOST, FASTAPI_PORT)
+        return port_open(host, port)
+
+
+def ingest_healthy() -> bool:
+    """Health check for webhook ingest on :8000."""
+    return _http_healthy(FASTAPI_HOST, INGEST_PORT)
+
+
+def fastapi_healthy() -> bool:
+    """Health check for trading FastAPI on :8001."""
+    return _http_healthy(FASTAPI_HOST, TRADING_PORT)
+
+
+def is_trading_session(now: Optional[datetime] = None) -> bool:
+    """True on weekdays between 09:30 and 16:00 US Eastern (inclusive start)."""
+    now_et = (now or datetime.now(SESSION_TZ)).astimezone(SESSION_TZ)
+    if now_et.weekday() >= 5:
+        return False
+    return SESSION_START <= now_et.time() < SESSION_END
+
+
+def resolve_enabled_groups(names: list[str]) -> frozenset[str]:
+    """Normalize CLI group names; default all; fastapi implies gateway."""
+    if not names:
+        return ALL_GROUPS
+    unknown = set(names) - VALID_GROUPS
+    if unknown:
+        raise ValueError(
+            f"unknown group(s): {', '.join(sorted(unknown))}; "
+            f"valid: {', '.join(sorted(VALID_GROUPS))}"
+        )
+    enabled = set(names)
+    if "fastapi" in enabled and "gateway" not in names:
+        log.info("fastapi requires gateway -- enabling gateway group")
+    if "fastapi" in enabled:
+        enabled.add("gateway")
+    return frozenset(enabled)
+
+
+def parse_cli_groups(argv: Optional[list[str]] = None) -> frozenset[str]:
+    """Parse positional CLI args into the enabled group set."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Supervise webhook ingest, IB Gateway, and/or trading FastAPI. "
+            "Selected groups run weekdays 09:30-16:00 ET only; omit args for all."
+        ),
+    )
+    parser.add_argument(
+        "groups",
+        nargs="*",
+        choices=sorted(VALID_GROUPS),
+        metavar="GROUP",
+        help="webhook, gateway, and/or fastapi (default: all)",
+    )
+    args = parser.parse_args(argv)
+    return resolve_enabled_groups(args.groups)
 
 
 def is_within_expected_gateway_restart_window(now: Optional[datetime] = None) -> bool:
@@ -454,8 +533,10 @@ def is_within_expected_gateway_restart_window(now: Optional[datetime] = None) ->
 # ---------------------------------------------------------------------------
 
 class Supervisor:
-    def __init__(self):
+    def __init__(self, enabled: frozenset[str] = ALL_GROUPS):
+        self.enabled = enabled
         self.stopping = False
+        self._session_active = False
 
         self.xvfb = ManagedProcess(name="xvfb", build_cmd=xvfb_cmd)
 
@@ -463,6 +544,12 @@ class Supervisor:
             name="ib_gateway",
             build_cmd=ib_gateway_cmd,
             env_overrides={"DISPLAY": DISPLAY},
+        )
+
+        self.webhook = ManagedProcess(
+            name="webhook",
+            build_cmd=webhook_ingest_cmd,
+            cwd=BACKEND_DIR,
         )
 
         self.fastapi = ManagedProcess(
@@ -479,6 +566,32 @@ class Supervisor:
 
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
+
+    @property
+    def _webhook_enabled(self) -> bool:
+        return "webhook" in self.enabled
+
+    @property
+    def _gateway_enabled(self) -> bool:
+        return "gateway" in self.enabled
+
+    @property
+    def _fastapi_enabled(self) -> bool:
+        return "fastapi" in self.enabled
+
+    def _should_abort_gateway_wait(self) -> bool:
+        return self.stopping or not is_trading_session()
+
+    def _any_enabled_child_alive(self) -> bool:
+        if self._webhook_enabled and self.webhook.is_alive():
+            return True
+        if self._gateway_enabled and (
+            self.xvfb.is_alive() or self.gateway.is_alive()
+        ):
+            return True
+        if self._fastapi_enabled and self.fastapi.is_alive():
+            return True
+        return False
 
     def _start_gateway(self):
         """Start Gateway and remember the log offset for this session."""
@@ -509,11 +622,13 @@ class Supervisor:
             log_offset=self._gateway_log_offset,
             is_alive=self.gateway.is_alive,
             port_check=lambda: port_open(GATEWAY_API_HOST, GATEWAY_API_PORT),
-            should_abort=lambda: self.stopping,
+            should_abort=self._should_abort_gateway_wait,
         )
 
     def _ensure_fastapi(self):
         """Start or reconnect FastAPI only after this Gateway session is ready."""
+        if not self._fastapi_enabled:
+            return
         if not self._gateway_is_ready():
             return
         if self.fastapi.is_alive() and self._fastapi_epoch == self._gateway_epoch:
@@ -534,38 +649,71 @@ class Supervisor:
 
     # -- lifecycle ----------------------------------------------------------
 
-    def start_all(self):
-        log.info("=== Starting trading stack ===")
+    def _ensure_webhook(self):
+        """Start webhook ingest if not running (independent of Gateway)."""
+        if not self._webhook_enabled:
+            return
+        if self.webhook.is_alive():
+            return
+        if not Path(VENV_PYTHON).is_file():
+            log.error(
+                f"venv python not found at {VENV_PYTHON} -- cannot start webhook ingest"
+            )
+            return
+        self.webhook.start()
 
+    def _start_gateway_stack(self) -> bool:
+        """Start Xvfb + IB Gateway and wait for login. Returns False on failure."""
         kill_orphaned_xvfb()
         clear_stale_xvfb_lock()
-        self.xvfb.start()
-        time.sleep(XVFB_SETTLE_SEC)
         if not self.xvfb.is_alive():
-            log.error("Xvfb failed to start; aborting startup")
-            sys.exit(1)
+            self.xvfb.start()
+            time.sleep(XVFB_SETTLE_SEC)
+        if not self.xvfb.is_alive():
+            log.error("Xvfb failed to start; aborting gateway startup")
+            return False
 
-        self._start_gateway()
-        if self._wait_for_gateway_ready():
-            self._ensure_fastapi()
-        else:
+        if not self.gateway.is_alive():
+            self._start_gateway()
+        if not self._wait_for_gateway_ready():
             log.error(
                 "Gateway did not become ready in time; FastAPI will start "
                 "once IBC login completes and the API port is up"
             )
+            return False
+        return True
 
-        log.info("=== Startup sequence complete, entering supervision loop ===")
+    def start_all(self):
+        groups = ", ".join(sorted(self.enabled))
+        log.info(f"=== Starting selected groups: {groups} ===")
+
+        self._ensure_webhook()
+
+        if self._gateway_enabled:
+            self._start_gateway_stack()
+            if self._fastapi_enabled:
+                self._ensure_fastapi()
 
     def _handle_signal(self, signum, _frame):
         log.info(f"Received signal {signum}, initiating graceful shutdown")
         self.stopping = True
 
+    def stop_children(self):
+        """Stop enabled children without exiting the supervisor."""
+        if not self._any_enabled_child_alive():
+            return
+        log.info("=== Stopping selected groups ===")
+        if self._fastapi_enabled:
+            self.fastapi.terminate()
+        if self._gateway_enabled:
+            self.gateway.terminate()
+            self.xvfb.terminate()
+        if self._webhook_enabled:
+            self.webhook.terminate()
+
     def shutdown_all(self):
         log.info("=== Shutting down trading stack ===")
-        # Stop the order-facing service first, then Gateway, then Xvfb.
-        self.fastapi.terminate()
-        self.gateway.terminate()
-        self.xvfb.terminate()
+        self.stop_children()
         log.info("=== Shutdown complete ===")
 
     # -- supervision loop -----------------------------------------------------
@@ -606,55 +754,86 @@ class Supervisor:
 
         return True
 
+    def _supervise_session(self):
+        """Restart enabled children that die during an open trading session."""
+        if self._gateway_enabled:
+            # Xvfb + Gateway are a dependent pair.
+            if not self.xvfb.is_alive():
+                log.warning("Xvfb is down -- restarting Xvfb and IB Gateway together")
+                ok = self._restart(self.xvfb, also_restart=self.gateway)
+                if not ok:
+                    return
+                self._wait_for_gateway_ready()
+
+            elif not self.gateway.is_alive():
+                # Gateway can exit on its own (e.g. IBC-driven daily
+                # auto-restart, forced logoff, auth failure). Xvfb is
+                # fine, so just bring Gateway back up.
+                if is_within_expected_gateway_restart_window():
+                    log.info(
+                        "IB Gateway is down within the expected daily "
+                        "AutoRestart window -- treating as scheduled, "
+                        "restarting without counting against crash budget"
+                    )
+                    self._restart(self.gateway, count_against_budget=False)
+                else:
+                    log.warning(
+                        "IB Gateway is down outside the expected restart "
+                        "window -- treating as unexpected, restarting"
+                    )
+                    self._restart(self.gateway)
+                self._wait_for_gateway_ready()
+
+        if self._webhook_enabled:
+            if not self.webhook.is_alive():
+                log.warning("Webhook ingest is down -- restarting")
+                self._restart(self.webhook)
+            elif not ingest_healthy():
+                log.debug(
+                    "Webhook ingest process alive but port not yet accepting connections"
+                )
+
+        if self._fastapi_enabled:
+            if self._gateway_is_ready():
+                self._ensure_fastapi()
+            elif not self.fastapi.is_alive():
+                log.debug(
+                    "Trading FastAPI is down; waiting for Gateway login before starting it"
+                )
+            elif not fastapi_healthy():
+                log.debug(
+                    "Trading FastAPI process alive but port not yet accepting connections"
+                )
+
     def run(self):
-        self.start_all()
+        log.info(
+            f"Supervisor enabled groups: {sorted(self.enabled)}; "
+            f"session window weekdays {SESSION_START.strftime('%H:%M')}-"
+            f"{SESSION_END.strftime('%H:%M')} {SESSION_TZ.key}"
+        )
 
         try:
             while not self.stopping:
-                time.sleep(POLL_INTERVAL_SEC)
+                in_session = is_trading_session()
 
-                if self.stopping:
-                    break
-
-                # Xvfb + Gateway are a dependent pair.
-                if not self.xvfb.is_alive():
-                    log.warning("Xvfb is down -- restarting Xvfb and IB Gateway together")
-                    ok = self._restart(self.xvfb, also_restart=self.gateway)
-                    if not ok:
-                        continue
-                    self._wait_for_gateway_ready()
-
-                elif not self.gateway.is_alive():
-                    # Gateway can exit on its own (e.g. IBC-driven daily
-                    # auto-restart, forced logoff, auth failure). Xvfb is
-                    # fine, so just bring Gateway back up.
-                    if is_within_expected_gateway_restart_window():
+                if in_session:
+                    if not self._session_active:
+                        self._session_active = True
                         log.info(
-                            "IB Gateway is down within the expected daily "
-                            "AutoRestart window -- treating as scheduled, "
-                            "restarting without counting against crash budget"
+                            f"=== Trading session open === groups="
+                            f"{sorted(self.enabled)}"
                         )
-                        self._restart(self.gateway, count_against_budget=False)
+                        self.start_all()
                     else:
-                        log.warning(
-                            "IB Gateway is down outside the expected restart "
-                            "window -- treating as unexpected, restarting"
-                        )
-                        self._restart(self.gateway)
-                    self._wait_for_gateway_ready()
+                        self._supervise_session()
+                else:
+                    if self._session_active:
+                        self._session_active = False
+                        log.info("=== Trading session closed ===")
+                    if self._any_enabled_child_alive():
+                        self.stop_children()
 
-                if self._gateway_is_ready():
-                    self._ensure_fastapi()
-                elif not self.fastapi.is_alive():
-                    log.debug(
-                        "FastAPI is down; waiting for Gateway login before starting it"
-                    )
-                elif not fastapi_healthy():
-                    # Process exists but isn't answering on its port yet/anymore.
-                    # Give it a little time before treating as unhealthy (e.g.
-                    # during its own startup) -- log only, don't restart every
-                    # single poll interval.
-                    log.debug("FastAPI process alive but port not yet accepting connections")
+                time.sleep(POLL_INTERVAL_SEC)
 
         finally:
             self.shutdown_all()
@@ -662,11 +841,15 @@ class Supervisor:
 
 # ---------------------------------------------------------------------------
 
-def main():
-    log.info(f"process_manager starting, PID={os.getpid()}")
-    Supervisor().run()
+def main(argv: Optional[list[str]] = None):
+    enabled = parse_cli_groups(argv)
+    log.info(
+        f"process_manager starting, PID={os.getpid()}, "
+        f"groups={sorted(enabled)}"
+    )
+    Supervisor(enabled).run()
     log.info("process_manager exiting")
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

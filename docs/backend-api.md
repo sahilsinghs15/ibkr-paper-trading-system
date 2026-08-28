@@ -1,13 +1,30 @@
 # Backend HTTP API
 
-**Verified from:** `backend/app/main.py`, `backend/app/api/router.py`, `backend/app/api/routes/health.py`, `backend/app/api/routes/webhooks.py`, `backend/app/api/routes/orders.py`, `backend/app/api/routes/config.py`, `backend/app/schemas/api_schemas.py`, `backend/app/schemas/config_schemas.py`, `backend/app/schemas/webhook.py`, `backend/demo_streaming/api.py`.
+**Verified from:** `backend/app/main.py`, `backend/app/webhook_ingest.py`, `backend/app/api/router.py`, `backend/app/api/routes/health.py`, `backend/app/api/routes/webhooks.py`, `backend/app/api/routes/orders.py`, `backend/app/api/routes/config.py`, `backend/app/schemas/api_schemas.py`, `backend/app/schemas/config_schemas.py`, `backend/app/schemas/webhook.py`, `backend/demo_streaming/api.py`.
 
-## Main app (`app.main:app`)
+## Webhook ingest app (`app.webhook_ingest:app`, port 8000)
+
+Public-facing via ngrok. Postgres-only — no IBKR, no workers.
+
+Mounted in `create_ingest_app()`:
+
+- `health_router` — no prefix
+- `webhooks_router` — prefix `/api`
+
+| Method | Path | Handler | Request | Response | Side effects |
+|--------|------|---------|---------|----------|--------------|
+| `GET` | `/health` | `get_health` | — | `{"status":"ok"}` | None |
+| `POST` | `/api/webhooks/tradingview` | `receive_tradingview_webhook` | Raw JSON object body | `TradingViewWebhookResponse`: `status`, `source`, `signal_id`, `job_id`, `request_id` | Disk capture; parse; enqueue `signal_jobs` |
+
+Webhook HTTP **202 Accepted**. Invalid JSON → HTTP 400.
+
+## Trading app (`app.main:app`, port 8001)
+
+Local bind only. Execution engine + config/kill-switch API.
 
 Mounted in `create_app()`:
 
 - `health_router` — no prefix
-- `webhooks_router` — prefix `/api`
 - `api_router` — prefix `/api/v1` (orders + baskets + config + system-monitor + reconcile routers)
 
 **No** `CORSMiddleware`, **no** WebSocket routes, **no** `StaticFiles` / HTML mount on this app.
@@ -17,7 +34,6 @@ Mounted in `create_app()`:
 | Method | Path | Handler | Request | Response | Side effects |
 |--------|------|---------|---------|----------|--------------|
 | `GET` | `/health` | `get_health` | — | `{"status":"ok"}` | None |
-| `POST` | `/api/webhooks/tradingview` | `receive_tradingview_webhook` | Raw JSON object body | `TradingViewWebhookResponse`: `status`, `source`, `signal_id`, `job_id`, `request_id` | Disk capture; parse; enqueue `signal_jobs` when `session_factory` present |
 | `GET` | `/api/v1/orders` | `get_orders` | — | `list[OrderSchema]` | Reads in-memory OMS orders |
 | `GET` | `/api/v1/orders/{order_id}` | `get_order_by_id` | path id | `OrderSchema` or 404 | In-memory OMS lookup |
 | `DELETE` | `/api/v1/orders/{order_id}` | `cancel_order` | path id | `OrderSchema` or 404/400 | `OMSService.cancel_order` → broker cancel |
@@ -48,8 +64,6 @@ Config validation errors → HTTP 400 with `AllocationConfigError` message in `d
 
 Account create/patch fields: `name`, `ibkr_account`, `total_margin`, `enabled` (`schemas/config_schemas.py`). **No** gateway host, port, clientId, or binding. `ibkr_account` is the IB account string copied onto `IBOrder.account`, not a socket selector.
 
-Webhook HTTP **202 Accepted**. `status` values: `accepted`, `rejected` (invalid payload). Legacy inline path may return `rejected_by_rms`. Invalid JSON → HTTP 400.
-
 Global unhandled `Exception` → HTTP 500 `{"detail":"Internal server error. Please try again later."}`.
 
 ### Schemas
@@ -68,14 +82,14 @@ Default bind: `127.0.0.1:8010` (`demo_streaming/config.py`). Does **not** connec
 | `GET` | `/demo/signals` | Signal/job history with pagination and filters |
 | `GET` | `/demo/market-data-health` | Live PnL subscription health (if service attached) |
 | `GET` | `/demo/stream` | SSE from Redis stream |
-| `GET/POST/PATCH/PUT/DELETE` | `/api/v1/config/*` | Proxy to trading app (`TRADING_API_URL`, default `http://127.0.0.1:8000`) |
+| `GET/POST/PATCH/PUT/DELETE` | `/api/v1/config/*` | Proxy to trading app (`TRADING_API_URL`, default `http://127.0.0.1:8001`) |
 | `GET` | `/` | React build `frontend/dist/index.html` if present; else static fallback |
 | `GET` | `/settings` | SPA fallback (same as `/`) |
 | `GET` | `/accounts` | SPA fallback |
 | `GET` | `/account/{path}` | SPA fallback |
 | `GET` | `/assets/*` | Mounted when `frontend/dist/assets` exists (Vite build) |
 
-Set `DEMO_STREAM_HOST=0.0.0.0` to listen on all interfaces. Do not confuse with ngrok on `:8000`.
+Set `DEMO_STREAM_HOST=0.0.0.0` to listen on all interfaces. Do not confuse with ngrok on ingest `:8000`.
 
 ## Historical Postman guide
 

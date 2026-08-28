@@ -8,7 +8,7 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -475,44 +475,53 @@ class BasketCoordinator:
         )
 
     async def recover_incomplete_baskets(self) -> None:
-        """Restart: incomplete baskets become CRITICAL unless broker state is known."""
+        """Restart: defer when TWS is down; escalate partial fills when connected."""
         if self._session_factory is None:
             return
         adapter = self._oms._adapter
+        connected = adapter.is_connected()
         async with self._session_factory() as session:
             rows = await BasketRepository(session).list_incomplete()
         if not rows:
             return
-        snapshot_ok = adapter.fetch_broker_order_snapshot()
+
+        if not connected:
+            for row in rows:
+                logger.info(
+                    "BASKET_RECOVER_DEFER: account_id=%s trade_id=%s state=%s (TWS disconnected)",
+                    row.account_id,
+                    row.trade_id,
+                    row.state,
+                )
+            return
+
         for row in rows:
-            if not snapshot_ok:
-                basket = Basket(
-                    id=row.id,
-                    account_id=row.account_id,
-                    trade_id=row.trade_id,
-                    strategy_id=row.strategy_id,
-                    action=row.action,
-                    intended_leg_count=row.intended_leg_count,
-                    state=BasketState.CRITICAL,
+            async with self._session_factory() as session:
+                orders = await OrderRepository(session).list_by_basket_id(row.id)
+
+            has_partial_fill = any(
+                not order.is_compensation
+                and float(order.fill_qty or 0) > _FILL_EPS
+                for order in orders
+            )
+            if not has_partial_fill:
+                logger.info(
+                    "BASKET_RECOVER_INCOMPLETE: account_id=%s trade_id=%s no fills; "
+                    "leaving state=%s",
+                    row.account_id,
+                    row.trade_id,
+                    row.state,
                 )
-                await self._persist_basket(basket)
-                self.mark_critical(row.account_id, row.strategy_id)
-                await self._event(
-                    "BASKET_RECOVER_CRITICAL",
-                    {
-                        "account_id": row.account_id,
-                        "trade_id": row.trade_id,
-                        "reason": "broker_snapshot_unavailable",
-                    },
-                )
-                logger.warning(
-                    "BASKET_RECOVER_CRITICAL: account_id=%s trade_id=%s reason=broker_snapshot_unavailable",
+                continue
+
+            if self._basket_complete_from_db_orders(row.intended_leg_count, orders):
+                logger.info(
+                    "BASKET_RECOVER_COMPLETE: account_id=%s trade_id=%s ledger shows full fill",
                     row.account_id,
                     row.trade_id,
                 )
                 continue
-            # Broker snapshot requested; without deterministic fill application
-            # still escalate incomplete rows to CRITICAL.
+
             basket = Basket(
                 id=row.id,
                 account_id=row.account_id,
@@ -524,6 +533,48 @@ class BasketCoordinator:
             )
             await self._persist_basket(basket)
             self.mark_critical(row.account_id, row.strategy_id)
+            await self._event(
+                "BASKET_RECOVER_CRITICAL",
+                {
+                    "account_id": row.account_id,
+                    "trade_id": row.trade_id,
+                    "reason": "partial_fill_on_restart",
+                },
+            )
+            logger.warning(
+                "BASKET_RECOVER_CRITICAL: account_id=%s trade_id=%s reason=partial_fill_on_restart",
+                row.account_id,
+                row.trade_id,
+            )
+            if self._recovery_service is not None:
+                self._recovery_service.schedule_recovery(
+                    account_id=row.account_id,
+                    trade_id=row.trade_id,
+                    action=row.action,
+                    strategy_id=row.strategy_id,
+                )
+
+    def _basket_complete_from_db_orders(
+        self, intended_leg_count: int, orders: list[Any]
+    ) -> bool:
+        leg_fills: dict[str, float] = {}
+        leg_targets: dict[str, float] = {}
+        for order in orders:
+            if order.is_compensation:
+                continue
+            leg_key = order.leg or "L0"
+            leg_fills[leg_key] = leg_fills.get(leg_key, 0.0) + float(
+                order.fill_qty or 0
+            )
+            leg_targets[leg_key] = max(
+                leg_targets.get(leg_key, 0.0), float(order.quantity or 0)
+            )
+        if len(leg_targets) < intended_leg_count:
+            return False
+        for leg_key, target in leg_targets.items():
+            if leg_fills.get(leg_key, 0.0) + _FILL_EPS < target:
+                return False
+        return True
 
     def _filled_qty_for_leg(self, index: int, orders: list[OMSOrder]) -> float:
         return sum(
@@ -993,7 +1044,7 @@ class BasketCoordinator:
             )
             order_row = await OrderRepository(session).get_by_internal_id(order.internal_order_id)
             exec_repo = ExecutionRepository(session)
-            for execution in order.executions.values():
+            for execution in list(order.executions.values()):
                 await exec_repo.upsert(
                     execution,
                     order_id=order_row.id if order_row is not None else None,

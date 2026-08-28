@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.accounts.context import AccountExecutionContext
+from app.accounts.router import StaticStrategyAccountRouter
 from app.broker.ibkr.tws_client import TWSClient
 from app.main import app
 from app.oms.ibkr_adapter import IBKRExecutionAdapter
@@ -18,6 +20,7 @@ from app.rms import RMSContext, RMSEngine
 from app.rms.models import OrderSide, StrategyConfig
 from app.services.model_blue.allocation import TemporarySettingsCommittedCapitalProvider
 from app.services.order_manager import OrderManager
+from tests.ibkr_test_utils import DEFAULT_TEST_IBKR_ACCOUNT, fill_on_place_order, wire_test_managed_accounts
 
 _COMMITTED = Decimal(25000)
 _MODEL_BLUE = "model_blue"
@@ -103,8 +106,7 @@ def client_with_execution() -> Generator[TestClient, None, None]:
     tws.get_request_type.return_value = "order"
 
     adapter = IBKRExecutionAdapter(client=tws)
-    from tests.ibkr_test_utils import fill_on_place_order
-
+    wire_test_managed_accounts(adapter)
     fill_on_place_order(adapter, tws)
     oms = OMSService(adapter=adapter)
     rms_context = RMSContext(
@@ -126,6 +128,22 @@ def client_with_execution() -> Generator[TestClient, None, None]:
         rms_engine=RMSEngine(),
         rms_context=rms_context,
         committed_capital_provider=TemporarySettingsCommittedCapitalProvider(_COMMITTED),
+        account_router=StaticStrategyAccountRouter(
+            [
+                AccountExecutionContext(
+                    account_id=1,
+                    ibkr_account=DEFAULT_TEST_IBKR_ACCOUNT,
+                    strategy_id=_MODEL_BLUE,
+                    total_margin=Decimal(100000),
+                    alloc_pct=Decimal("1"),
+                    committed_notional=_COMMITTED,
+                    target=Decimal(500),
+                    stop=Decimal(250),
+                    time_limit=3600,
+                    max_open_positions=10,
+                )
+            ]
+        ),
     )
 
     with (
@@ -315,6 +333,7 @@ async def test_rms_rejection_blocks_model_blue_execution() -> None:
     tws.is_connected.return_value = True
     tws.next_order_id = 100
     adapter = IBKRExecutionAdapter(client=tws)
+    wire_test_managed_accounts(adapter)
     oms = OMSService(adapter=adapter)
     rms_context = RMSContext(
         strategy_configs={

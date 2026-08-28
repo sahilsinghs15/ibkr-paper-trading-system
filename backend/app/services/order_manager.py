@@ -505,8 +505,34 @@ class OrderManager:
             )
             for ctx in contexts
         ]
-        outcomes = list(await asyncio.gather(*tasks))
-        return FanoutExecutionResult(outcomes=outcomes)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        outcomes: list[AccountExecutionOutcome] = []
+        had_unexpected_error = False
+        for ctx, result in zip(contexts, results, strict=True):
+            if isinstance(result, BaseException):
+                if isinstance(result, ValueError) and raise_if_single:
+                    raise result
+                had_unexpected_error = True
+                logger.error(
+                    "Fanout account %s (%s) failed unexpectedly for signal %s",
+                    ctx.account_id,
+                    ctx.ibkr_account,
+                    signal.signal_id,
+                    exc_info=result,
+                )
+                outcomes.append(
+                    AccountExecutionOutcome(
+                        account_id=ctx.account_id,
+                        ibkr_account=ctx.ibkr_account,
+                        result=None,
+                        error=str(result),
+                    )
+                )
+            else:
+                outcomes.append(result)
+        return FanoutExecutionResult(
+            outcomes=outcomes, had_unexpected_error=had_unexpected_error
+        )
 
     async def _process_legacy_single_name(
         self, signal: Signal, inbound_pk: int | None = None

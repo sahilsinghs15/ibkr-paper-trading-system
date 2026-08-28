@@ -38,7 +38,7 @@ from app.services.model_blue.parser import (
     parse_model_blue_payload,
 )
 from app.services.order_manager import OrderManager
-from tests.ibkr_test_utils import fill_on_place_order
+from tests.ibkr_test_utils import fill_on_place_order, wire_test_managed_accounts
 
 _TS = datetime(2026, 8, 18, 17, 40, tzinfo=UTC)
 
@@ -87,13 +87,17 @@ def _ctx(account_id: int, ibkr: str) -> AccountExecutionContext:
     )
 
 
-def _oms() -> tuple[OMSService, MagicMock]:
+def _oms(*managed_accounts: str) -> tuple[OMSService, MagicMock]:
     tws = MagicMock(spec=TWSClient)
     tws.is_connected.return_value = True
     tws.next_order_id = 800
     tws.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=tws)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
+    if managed_accounts:
+        adapter.set_managed_accounts(list(managed_accounts))
+    else:
+        wire_test_managed_accounts(adapter)
     fill_on_place_order(adapter, tws)
     return OMSService(adapter=adapter), tws
 
@@ -154,7 +158,7 @@ async def test_cfd_signal_rejects_before_placeorder_without_master() -> None:
 
 @pytest.mark.asyncio
 async def test_etf_signal_reaches_ibkr_as_stk() -> None:
-    oms, tws = _oms()
+    oms, tws = _oms("DU-ETF")
     manager = OrderManager(
         oms=oms,
         order_type="MARKET",
@@ -187,7 +191,7 @@ async def test_etf_signal_reaches_ibkr_as_stk() -> None:
 
 @pytest.mark.asyncio
 async def test_stk_paper_quantities_are_integers_on_adapter() -> None:
-    oms, tws = _oms()
+    oms, tws = _oms("DU-STK")
     manager = OrderManager(
         oms=oms,
         order_type="MARKET",
@@ -383,7 +387,7 @@ async def test_same_trade_id_two_accounts_two_positions() -> None:
         from app.services.model_blue.db_trade_book import DatabaseModelBlueTradeBook
         from app.services.model_blue.persistence import ModelBlueExecutionPersistence
 
-        oms, _tws = _oms()
+        oms, _tws = _oms(a_ibkr, b_ibkr)
         manager = OrderManager(
             oms=oms,
             order_type="MARKET",

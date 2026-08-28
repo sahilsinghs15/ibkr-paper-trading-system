@@ -8,7 +8,7 @@ This file lists things agents must **not** claim are implemented. Items appear h
 
 | Architecture item | Code reality |
 |-------------------|--------------|
-| Separate Listener / Strategy / per-account OMS / Risk processes | Single FastAPI process |
+| Separate Listener / Strategy / per-account OMS / Risk processes | **Partial** — webhook ingest is a separate process (`app.webhook_ingest:app` on `:8000`); strategy/OMS/risk still in-process on trading app `:8001` |
 | Nine RMS checks | Only checks 2, 3, 4, 7, 8 as classes |
 | RMS check 1 (margin), 5, 6, 9 | No check modules |
 | N IB Gateway instances / account→gateway routing | **Not built.** Multi-account today = `ib_order.account` on **one** socket. Target: [`backend-multi-gateway.md`](backend-multi-gateway.md) |

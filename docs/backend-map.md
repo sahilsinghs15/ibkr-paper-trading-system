@@ -1,6 +1,6 @@
 # Backend package map
 
-**Verified from:** `backend/app/main.py`, `backend/app/**`, `backend/alembic/versions/*`, `backend/pyproject.toml`.
+**Verified from:** `backend/app/main.py`, `backend/app/webhook_ingest.py`, `backend/app/**`, `backend/alembic/versions/*`, `backend/pyproject.toml`.
 
 Agent navigation map for `backend/app/`. For execution flow see [`backend-execution.md`](backend-execution.md); for queue/leases see [`backend-concurrency.md`](backend-concurrency.md).
 
@@ -8,7 +8,8 @@ Agent navigation map for `backend/app/`. For execution flow see [`backend-execut
 
 ```
 app/
-├── main.py                    # FastAPI factory + lifespan (TWS→OMS→OrderManager→recovery→workers)
+├── main.py                    # Trading FastAPI factory + lifespan (TWS→OMS→OrderManager→recovery→workers), :8001
+├── webhook_ingest.py          # Webhook ingest FastAPI (Postgres-only), :8000
 ├── accounts/                  # Account × strategy routing / config validation
 │   ├── config_service.py      # Dashboard/API validation for accounts & allocations
 │   ├── context.py             # AccountExecutionContext dataclass
@@ -18,7 +19,7 @@ app/
 │   ├── router.py              # mounts orders + config under /api/v1
 │   └── routes/
 │       ├── health.py          # GET /health
-│       ├── webhooks.py        # POST /api/webhooks/tradingview (enqueue signal_jobs)
+│       ├── webhooks.py        # POST /api/webhooks/tradingview (mounted on webhook_ingest only)
 │       ├── orders.py          # OMS order list/get/cancel
 │       └── config.py          # Account/allocation/limits/execution/kill-switch CRUD
 ├── broker/ibkr/
@@ -71,7 +72,14 @@ app/
 
 Every package above contains runtime code. The former empty placeholders (`app/market_data/`, `app/strategy/`, `app/core/lifecycle.py`) were deleted — do not recreate them as import targets.
 
-## Lifespan order (`main.py`)
+## Lifespan order
+
+### `webhook_ingest.py` (ingest, :8000)
+
+1. `setup_logging(..., filename_prefix="webhook")`
+2. Set `app.state.session_factory = AsyncSessionLocal`
+
+### `main.py` (trading, :8001)
 
 Startup:
 

@@ -2,12 +2,11 @@
 
 from collections.abc import Generator
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.webhook_ingest import app
 
 
 @pytest.fixture
@@ -20,28 +19,8 @@ def capture_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:
-    """TestClient fixture with mocked TWS connection."""
-    with (
-        patch("app.broker.ibkr.tws_client.TWSClient.connect_and_start", return_value=True),
-        patch("app.broker.ibkr.tws_client.TWSClient.disconnect_clean"),
-        patch("app.oms.ibkr_adapter.IBKRExecutionAdapter.is_connected", return_value=True),
-        patch("app.oms.ibkr_adapter.IBKRExecutionAdapter.submit_order", side_effect=lambda o: o),
-        patch("app.services.worker_pool.ExecutionWorkerPool.start", new_callable=AsyncMock),
-        patch("app.services.worker_pool.ExecutionWorkerPool.stop", new_callable=AsyncMock),
-        patch(
-            "app.services.position_reconciler.PositionReconciler.start",
-            new_callable=AsyncMock,
-        ),
-        patch(
-            "app.services.position_reconciler.PositionReconciler.stop",
-            new_callable=AsyncMock,
-        ),
-        patch(
-            "app.services.order_manager.OrderManager.hydrate_live_pnl",
-            new_callable=AsyncMock,
-        ),
-        TestClient(app) as c,
-    ):
+    """TestClient for webhook ingest app (Postgres-only, no IBKR)."""
+    with TestClient(app) as c:
         yield c
 
 

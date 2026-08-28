@@ -5,12 +5,21 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import pytest
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import process_manager as pm
+
+ET = ZoneInfo("America/New_York")
+
+
+def _et(year: int, month: int, day: int, hour: int, minute: int) -> datetime:
+    return datetime(year, month, day, hour, minute, tzinfo=ET)
 
 
 class TestDatedLogDir:
@@ -137,3 +146,74 @@ class TestWaitForGatewayReady:
             settle_sec=0,
         )
         assert ok is False
+
+
+class TestProcessCommands:
+    def test_webhook_ingest_cmd_uses_port_8000(self) -> None:
+        cmd = pm.webhook_ingest_cmd()
+        assert "app.webhook_ingest:app" in cmd
+        assert str(pm.INGEST_PORT) in cmd
+
+    def test_fastapi_cmd_uses_port_8001(self) -> None:
+        cmd = pm.fastapi_cmd()
+        assert "app.main:app" in cmd
+        assert str(pm.TRADING_PORT) in cmd
+
+    def test_ingest_and_trading_ports_differ(self) -> None:
+        assert pm.INGEST_PORT == 8000
+        assert pm.TRADING_PORT == 8001
+        assert pm.INGEST_PORT != pm.TRADING_PORT
+
+
+class TestIsTradingSession:
+    def test_monday_open_at_930(self) -> None:
+        assert pm.is_trading_session(_et(2026, 8, 24, 9, 30)) is True
+
+    def test_monday_closed_at_929(self) -> None:
+        assert pm.is_trading_session(_et(2026, 8, 24, 9, 29)) is False
+
+    def test_friday_open_at_1559(self) -> None:
+        assert pm.is_trading_session(_et(2026, 8, 28, 15, 59)) is True
+
+    def test_friday_closed_at_1600(self) -> None:
+        assert pm.is_trading_session(_et(2026, 8, 28, 16, 0)) is False
+
+    def test_saturday_noon_closed(self) -> None:
+        assert pm.is_trading_session(_et(2026, 8, 29, 12, 0)) is False
+
+    def test_sunday_noon_closed(self) -> None:
+        assert pm.is_trading_session(_et(2026, 8, 30, 12, 0)) is False
+
+
+class TestResolveEnabledGroups:
+    def test_default_all(self) -> None:
+        assert pm.resolve_enabled_groups([]) == pm.ALL_GROUPS
+
+    def test_webhook_only(self) -> None:
+        assert pm.resolve_enabled_groups(["webhook"]) == frozenset({"webhook"})
+
+    def test_fastapi_implies_gateway(self) -> None:
+        assert pm.resolve_enabled_groups(["fastapi"]) == frozenset(
+            {"gateway", "fastapi"}
+        )
+
+    def test_gateway_only(self) -> None:
+        assert pm.resolve_enabled_groups(["gateway"]) == frozenset({"gateway"})
+
+    def test_webhook_and_fastapi(self) -> None:
+        assert pm.resolve_enabled_groups(["webhook", "fastapi"]) == frozenset(
+            {"webhook", "gateway", "fastapi"}
+        )
+
+    def test_unknown_group_raises(self) -> None:
+        with pytest.raises(ValueError, match="nope"):
+            pm.resolve_enabled_groups(["nope"])
+
+
+class TestParseCliGroups:
+    def test_empty_argv_is_all(self) -> None:
+        assert pm.parse_cli_groups([]) == pm.ALL_GROUPS
+
+    def test_unknown_group_exits(self) -> None:
+        with pytest.raises(SystemExit):
+            pm.parse_cli_groups(["nope"])

@@ -1,33 +1,37 @@
 # Backend execution path (debug orders)
 
-**Verified from:** `backend/app/api/routes/webhooks.py`, `backend/app/services/worker_pool.py`, `backend/app/services/order_manager.py`, `backend/app/services/recovery.py`, `backend/app/services/strategies/inbound.py`, `backend/app/accounts/router.py`, `backend/app/services/model_blue/`, `backend/app/rms/engine.py`, `backend/app/oms/coordinator.py`, `backend/app/oms/ibkr_adapter.py`, `backend/app/main.py`, `backend/app/core/logger.py`.
+**Verified from:** `backend/app/api/routes/webhooks.py`, `backend/app/webhook_ingest.py`, `backend/app/services/worker_pool.py`, `backend/app/services/order_manager.py`, `backend/app/services/recovery.py`, `backend/app/services/strategies/inbound.py`, `backend/app/accounts/router.py`, `backend/app/services/model_blue/`, `backend/app/rms/engine.py`, `backend/app/oms/coordinator.py`, `backend/app/oms/ibkr_adapter.py`, `backend/app/main.py`, `backend/app/core/logger.py`.
 
 Use this file when a signal is missing, rejected, or incompletely filled. For queue/lease details see [`backend-concurrency.md`](backend-concurrency.md). Root [`AGENTS.md`](../AGENTS.md) points here.
 
 ## Process shape
 
-One FastAPI process (`app.main:app`). Lifespan wires:
+Two FastAPI processes:
+
+| Process | Module | Port | Role |
+|---------|--------|------|------|
+| Webhook ingest | `app.webhook_ingest:app` | 8000 | Auth, validate, enqueue `signal_jobs` (Postgres only) |
+| Trading / execution | `app.main:app` | 8001 | TWS → OMS → OrderManager → workers |
+
+Trading lifespan wires:
 
 `TWSClient` → `IBKRExecutionAdapter` (+ `GatewayRateLimiter`) → `OMSService` → `OrderManager` → `RecoveryManager` → `ExecutionWorkerPool(10)` on `app.state`.
 
-There is **no** separate Listener / Strategy / per-account OMS / Risk process in this codebase.
+There is **no** separate Strategy / per-account OMS / Risk process. Ingest is split from execution; strategy/OMS/risk still run in-process on the trading app.
 
 **IB connectivity as-is (PARTIAL):** exactly **one** `TWSClient` socket (`Settings.ibkr_host` / `ibkr_port` / `ibkr_client_id`). Multi-account does **not** mean multi-Gateway. See [`backend-multi-gateway.md`](backend-multi-gateway.md).
 
 ## Live path (ingest → queue → worker → execute)
 
 ```
-POST /api/webhooks/tradingview  (HTTP 202)
+POST /api/webhooks/tradingview  (ingest :8000, HTTP 202)
   → receive_tradingview_webhook
   → write capture JSON under backend/data/tradingview_webhooks/
   → compute_idempotency_key (normalize strategy/trade; CLOSE → signal_id:trade_id:CLOSE)
-  → OrderManager.parse_inbound_payload
-       → strategies/inbound.parse_tradingview_payload
-       → ModelBlueStrategy when strategy_id == "model_blue" (else legacy parse)
   → SignalJobRepository.create_job_if_not_exists → signal_jobs (QUEUED)
   → return status=accepted, job_id
 
-ExecutionWorkerPool (background)
+ExecutionWorkerPool on trading app :8001 (background)
   → claim_next_jobs (lease + same-trade_id serialization)
   → domain lock (account_scope, strategy_id)
   → OrderManager.process_signal_execution

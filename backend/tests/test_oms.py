@@ -25,6 +25,7 @@ from app.rms.models import (
     RMSOutcome,
     RMSResult,
 )
+from tests.ibkr_test_utils import DEFAULT_TEST_IBKR_ACCOUNT, wire_test_managed_accounts
 
 
 @pytest.fixture
@@ -45,6 +46,7 @@ def sample_intent() -> OrderIntent:
             )
         ],
         timestamp=datetime.now(UTC),
+        ibkr_account=DEFAULT_TEST_IBKR_ACCOUNT,
     )
 
 
@@ -102,6 +104,7 @@ def mock_adapter() -> IBKRExecutionAdapter:
     client.get_request_type.return_value = "order"
 
     adapter = IBKRExecutionAdapter(client=client)
+    wire_test_managed_accounts(adapter)
 
     # Replace placeOrder with side effect simulating instant submission response
     def fake_place_order(order_id: int, contract: Any, order: Any) -> None:
@@ -172,6 +175,7 @@ async def test_oms_submits_every_intent_leg(
             ),
         ],
         timestamp=datetime.now(UTC),
+        ibkr_account=DEFAULT_TEST_IBKR_ACCOUNT,
     )
     rms_result = RMSResult(
         outcome=RMSOutcome.PASS,
@@ -347,6 +351,7 @@ async def test_partial_fill_handling(
             )
         ],
         timestamp=datetime.now(UTC),
+        ibkr_account=DEFAULT_TEST_IBKR_ACCOUNT,
     )
     pass_rms = RMSResult(
         outcome=RMSOutcome.PASS,
@@ -615,6 +620,7 @@ async def test_broker_status_cancelled_and_rejected(
         action=OrderAction.OPEN,
         legs=sample_intent.legs,
         timestamp=datetime.now(UTC),
+        ibkr_account=DEFAULT_TEST_IBKR_ACCOUNT,
     )
     rms2 = RMSResult(
         outcome=RMSOutcome.PASS,
@@ -683,6 +689,7 @@ async def test_callback_during_place_order_finds_registered_order(
     client.next_order_id = 500
     client.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=client)
+    wire_test_managed_accounts(adapter)
 
     def immediate_broker_ack(order_id: int, contract: Any, ib_order: Any) -> None:
         assert order_id in adapter._orders_by_tws_id
@@ -791,6 +798,7 @@ async def test_201_is_rejected_and_202_is_cancelled(
         action=OrderAction.OPEN,
         legs=sample_intent.legs,
         timestamp=datetime.now(UTC),
+        ibkr_account=DEFAULT_TEST_IBKR_ACCOUNT,
     )
     rms2 = RMSResult(
         outcome=RMSOutcome.PASS,

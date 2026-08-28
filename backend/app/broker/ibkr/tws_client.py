@@ -49,6 +49,9 @@ class TWSClient(EWrapper, EClient):
         self._position_collector = PositionSnapshotCollector()
         self._rate_limiter: GatewayRateLimiter | None = None
 
+        self.managed_accounts: frozenset[str] = frozenset()
+        self._managed_accounts_event = threading.Event()
+
     def register_rate_limiter(self, limiter: GatewayRateLimiter) -> None:
         """Attach the shared gateway rate limiter for outbound API pacing."""
         self._rate_limiter = limiter
@@ -81,6 +84,20 @@ class TWSClient(EWrapper, EClient):
         logger.info(
             "TWS nextValidId received: next_order_id=%d. Handshake complete.",
             orderId,
+        )
+
+    def managedAccounts(self, accountsList: str) -> None:
+        """Callback listing IBKR account codes this session may trade."""
+        codes = frozenset(
+            code.strip().upper()
+            for code in accountsList.split(",")
+            if code and code.strip()
+        )
+        self.managed_accounts = codes
+        self._managed_accounts_event.set()
+        logger.info(
+            "TWS managedAccounts received: %s",
+            ", ".join(sorted(codes)) if codes else "(empty)",
         )
 
     def error(
@@ -136,6 +153,8 @@ class TWSClient(EWrapper, EClient):
         logger.warning("TWS connection has been closed.")
         self._connected_event.clear()
         self.next_order_id = None
+        self.managed_accounts = frozenset()
+        self._managed_accounts_event.clear()
         for listener in list(self._market_data_listeners):
             try:
                 listener.on_connection_closed()
@@ -513,6 +532,8 @@ class TWSClient(EWrapper, EClient):
 
         self._connected_event.clear()
         self.next_order_id = None
+        self.managed_accounts = frozenset()
+        self._managed_accounts_event.clear()
 
         logger.info(
             "Attempting TWS connection to %s:%d (clientID=%d)...",
@@ -536,6 +557,12 @@ class TWSClient(EWrapper, EClient):
         # Wait for nextValidId handshake
         handshake_completed = self._connected_event.wait(timeout=timeout)
         if handshake_completed:
+            accounts_wait = min(2.0, timeout)
+            if not self._managed_accounts_event.wait(timeout=accounts_wait):
+                logger.warning(
+                    "TWS connected but managedAccounts not received within %.1fs",
+                    accounts_wait,
+                )
             logger.info("TWS connection established and handshake completed.")
             return True
         else:
@@ -557,6 +584,8 @@ class TWSClient(EWrapper, EClient):
 
         self._connected_event.clear()
         self.next_order_id = None
+        self.managed_accounts = frozenset()
+        self._managed_accounts_event.clear()
         with self._registry_lock:
             self._request_types.clear()
         with self._contract_details_lock:
