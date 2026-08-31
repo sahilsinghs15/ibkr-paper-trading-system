@@ -138,7 +138,10 @@ def dated_log_dir() -> Path:
     """Return ``storage/logs/{YYYY-MM-DD}``, creating it if needed."""
     date_str = datetime.now().astimezone().strftime("%Y-%m-%d")
     path = STORAGE_LOG_ROOT / date_str
-    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     return path
 
 
@@ -148,27 +151,43 @@ class DatedFileHandler(logging.FileHandler):
     def __init__(self, basename: str) -> None:
         self._basename = basename
         self._date = datetime.now().astimezone().strftime("%Y-%m-%d")
-        super().__init__(dated_log_dir() / basename, mode="a", encoding="utf-8")
+        try:
+            target_path = dated_log_dir() / basename
+            super().__init__(target_path, mode="a", encoding="utf-8")
+        except OSError:
+            # Fallback to devnull if log dir is unwritable
+            super().__init__(os.devnull, mode="a", encoding="utf-8")
 
     def emit(self, record: logging.LogRecord) -> None:
         today = datetime.now().astimezone().strftime("%Y-%m-%d")
         if today != self._date:
             self.close()
-            self.baseFilename = str(dated_log_dir() / self._basename)
+            try:
+                self.baseFilename = str(dated_log_dir() / self._basename)
+            except OSError:
+                self.baseFilename = os.devnull
             self._date = today
-            self.stream = self._open()
+            try:
+                self.stream = self._open()
+            except OSError:
+                pass
         super().emit(record)
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        DatedFileHandler("supervisor.log"),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
 log = logging.getLogger("process_manager")
+
+
+def setup_logging() -> None:
+    """Configure supervisor logging handlers if not already configured."""
+    if not log.handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            handlers=[
+                DatedFileHandler("supervisor.log"),
+                logging.StreamHandler(sys.stdout),
+            ],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -879,6 +898,7 @@ class Supervisor:
 # ---------------------------------------------------------------------------
 
 def main(argv: Optional[list[str]] = None):
+    setup_logging()
     enabled = parse_cli_groups(argv)
     log.info(
         f"process_manager starting, PID={os.getpid()}, "
