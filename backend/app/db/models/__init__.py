@@ -13,6 +13,7 @@ from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
 from app.db.models.signal import SignalModel
 from app.db.models.strategy import AllocationModel, StrategyModel
+from app.db.models.user import UserModel
 
 __all__ = [
     "AccountModel",
@@ -31,4 +32,5 @@ __all__ = [
     "PositionReconcileRunModel",
     "SignalModel",
     "StrategyModel",
+    "UserModel",
 ]

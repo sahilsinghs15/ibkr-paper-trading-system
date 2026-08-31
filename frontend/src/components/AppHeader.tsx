@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { usePnlStore } from '../store/pnlStore'
+import { useAuthStore } from '../store/authStore'
 import { useActiveIbkrAccount } from '../hooks/useActiveIbkrAccount'
 import { TZ_IN, TZ_NY, type DisplayTimezone } from '../types/position'
 import {
@@ -12,6 +14,9 @@ import { AppNav } from './AppNav'
 
 export function AppHeader() {
   const currentAccount = useActiveIbkrAccount()
+  const user = useAuthStore((s) => s.user)
+  const logout = useAuthStore((s) => s.logout)
+  const navigate = useNavigate()
 
   const streamState = usePnlStore((s) => s.streamState)
   const lastTs = usePnlStore((s) => s.lastTs)
@@ -40,6 +45,11 @@ export function AppHeader() {
     saveTimezone(tz)
   }
 
+  function handleLogout() {
+    logout()
+    navigate('/login', { replace: true })
+  }
+
   return (
     <header className="app-header">
       <div className="brand">
@@ -62,6 +72,28 @@ export function AppHeader() {
         <AppNav />
       </div>
       <div className="header-status">
+        {user && (
+          <div className="user-badge" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginRight: '0.5rem' }}>
+            <span className="mono" style={{ fontSize: '0.8rem', color: 'var(--text-bright)' }}>
+              {user.email} <span style={{ opacity: 0.6 }}>({user.role})</span>
+            </span>
+            <button
+              type="button"
+              onClick={handleLogout}
+              style={{
+                padding: '0.2rem 0.5rem',
+                fontSize: '0.75rem',
+                background: 'rgba(239, 68, 68, 0.2)',
+                color: '#fca5a5',
+                border: '1px solid rgba(239, 68, 68, 0.4)',
+                borderRadius: '4px',
+                cursor: 'pointer',
+              }}
+            >
+              Logout
+            </button>
+          </div>
+        )}
         <span className={`dot ${streamClass}`} title="Position stream">
           <i />
           {streamText}

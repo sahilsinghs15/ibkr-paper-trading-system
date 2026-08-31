@@ -34,6 +34,13 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://root:root123@localhost:5433/ibkr_trading"
     )
 
+    # JWT & Authentication
+    jwt_secret_key: str = (
+        "PRODUCTION_JWT_SECRET_KEY_CHANGE_IN_ENV_MUST_BE_SECURE_32_BYTES"
+    )
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 480
+
     # IBKR connection
     ibkr_host: str = "127.0.0.1"
     ibkr_port: Annotated[int, Gt(0)] = 7497

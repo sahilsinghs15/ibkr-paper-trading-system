@@ -5,6 +5,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import require_admin
+from app.db.models.user import UserModel
 from app.db.session import get_db_session
 from app.schemas.system_monitor import SystemMonitorResponse
 from app.services.system_monitor_service import collect_system_monitor_data
@@ -21,6 +23,7 @@ router = APIRouter(prefix="/system-monitor", tags=["system-monitor"])
 async def get_system_monitor(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    _admin: Annotated[UserModel, Depends(require_admin)],
 ) -> SystemMonitorResponse:
     """Retrieve structured system resource and service health observability data."""
     tws_client = getattr(request.app.state, "tws_client", None)

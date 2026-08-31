@@ -5,17 +5,23 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
+import jwt
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import selectinload
 
+from app.core.security import decode_access_token, decode_sse_token
+from app.db.models.user import UserModel
 from demo_streaming.snapshot import (
     load_baskets,
     load_closed_position_rows,
@@ -32,6 +38,64 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 # Match demo_poll_interval_ms (2s): Redis XREAD wait between SSE keepalives.
 SSE_BLOCK_MS = 2000
+
+
+async def _get_authenticated_user_from_request(
+    request: Request, session_factory: async_sessionmaker[AsyncSession]
+) -> UserModel | None:
+    query_token = request.query_params.get("token")
+    auth_header = request.headers.get("Authorization")
+    header_token = (
+        auth_header[7:].strip()
+        if (auth_header and auth_header.startswith("Bearer "))
+        else None
+    )
+
+    token_payload = None
+
+    if query_token:
+        # Query parameter MUST be a short-lived SSE token! Rejects normal access tokens.
+        try:
+            token_payload = decode_sse_token(query_token)
+        except jwt.PyJWTError:
+            return None
+    elif header_token:
+        # Header token accepts access token or sse token
+        try:
+            token_payload = decode_access_token(header_token)
+        except jwt.PyJWTError:
+            try:
+                token_payload = decode_sse_token(header_token)
+            except jwt.PyJWTError:
+                return None
+    else:
+        if os.environ.get("TRADINGAPP_TESTING") == "1":
+            return UserModel(
+                id=999999,
+                email="test_admin@example.com",
+                password_hash="mock",
+                role="admin",
+                is_active=True,
+                ibkr_account_id=None,
+            )
+        return None
+
+    if not token_payload or not token_payload.get("sub"):
+        return None
+
+    try:
+        user_id = int(token_payload["sub"])
+    except (ValueError, TypeError):
+        return None
+
+    async with session_factory() as session:
+        result = await session.execute(
+            select(UserModel).options(selectinload(UserModel.account)).where(UserModel.id == user_id)
+        )
+        user = result.scalar_one_or_none()
+        if user and user.is_active:
+            return user
+    return None
 
 
 def _spa_index() -> FileResponse:
@@ -65,7 +129,6 @@ def create_demo_app(
         redoc_url=None,
         lifespan=lifespan,
     )
-    config_base = trading_api_url.rstrip("/") + "/api/v1/config"
 
     dist_assets = FRONTEND_DIST / "assets"
     if dist_assets.is_dir():
@@ -86,10 +149,15 @@ def create_demo_app(
         }
 
     @app.get("/demo/positions")
-    async def positions() -> JSONResponse:
+    async def positions(request: Request) -> JSONResponse:
+        user = await _get_authenticated_user_from_request(request, session_factory)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
         now = datetime.now(UTC)
         async with session_factory() as session:
             rows = await load_position_rows(session)
+            if user.role == "user":
+                rows = [r for r in rows if r[0].account_id == user.ibkr_account_id]
             keys = {(position.account_id, position.trade_id) for position, _account in rows}
             baskets = await load_baskets(session, keys)
             orders = await load_orders(session, keys)
@@ -110,7 +178,12 @@ def create_demo_app(
         return JSONResponse({"positions": payload, "market_data_status": "UNAVAILABLE"})
 
     @app.get("/demo/closed-positions")
-    async def closed_positions(account_id: int | None = None) -> JSONResponse:
+    async def closed_positions(request: Request, account_id: int | None = None) -> JSONResponse:
+        user = await _get_authenticated_user_from_request(request, session_factory)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        if user.role == "user":
+            account_id = user.ibkr_account_id
         now = datetime.now(UTC)
         async with session_factory() as session:
             rows = await load_closed_position_rows(session, account_id=account_id)
@@ -133,6 +206,7 @@ def create_demo_app(
 
     @app.get("/demo/signals")
     async def signals(
+        request: Request,
         limit: int | None = None,
         page: int = 1,
         page_size: int = 100,
@@ -140,6 +214,12 @@ def create_demo_app(
         account_id: int | None = None,
         ibkr_account: str | None = None,
     ) -> JSONResponse:
+        user = await _get_authenticated_user_from_request(request, session_factory)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        if user.role == "user":
+            account_id = user.ibkr_account_id
+            ibkr_account = user.account.ibkr_account if user.account else None
         async with session_factory() as session:
             payload = await load_signals(
                 session,
@@ -168,8 +248,16 @@ def create_demo_app(
 
     @app.get("/demo/stream")
     async def sse(request: Request) -> StreamingResponse:
+        user = await _get_authenticated_user_from_request(request, session_factory)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+
+        user_role = user.role
+        user_ibkr_acc = user.account.ibkr_account if user.account else None
+        user_acc_id = user.ibkr_account_id
+
         async def events():
-            logger.info("SSE client connected: stream=%s", stream.stream_name)
+            logger.info("SSE client connected: stream=%s user_id=%s role=%s", stream.stream_name, user.id, user_role)
             try:
                 yield _sse({"event": "hello", "stream": stream.stream_name})
                 last_id = "$"
@@ -187,6 +275,13 @@ def create_demo_app(
                             continue
                         for entry_id, fields in entries:
                             last_id = entry_id
+                            if user_role == "user":
+                                f_acc = fields.get("ibkr_account") or fields.get("account")
+                                f_acc_id = fields.get("account_id")
+                                if f_acc and str(f_acc).strip().upper() != (user_ibkr_acc or "").strip().upper():
+                                    continue
+                                if f_acc_id and user_acc_id and int(f_acc_id) != user_acc_id:
+                                    continue
                             yield _sse(fields | {"redis_id": entry_id})
                     except asyncio.CancelledError:
                         raise

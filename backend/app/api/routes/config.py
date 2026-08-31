@@ -10,7 +10,8 @@ from app.accounts.config_service import (
     AccountStrategyConfigService,
     AllocationConfigError,
 )
-from app.api.deps import get_order_manager
+from app.api.deps import get_order_manager, require_authenticated_user, require_admin
+from app.db.models.user import UserModel
 from app.core.config import get_settings
 from app.db.models.account import AccountModel, PerSymbolLimitModel
 from app.db.models.strategy import AllocationModel
@@ -47,6 +48,21 @@ def _config_error(exc: AllocationConfigError) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
+def _check_account_authorization(
+    current_user: UserModel, account_id: int | None = None, ibkr_account: str | None = None
+) -> None:
+    if current_user.role == "admin":
+        return
+    if current_user.ibkr_account_id is None:
+        raise HTTPException(status_code=403, detail="Forbidden: User has no mapped IBKR account")
+    if account_id is not None and account_id != current_user.ibkr_account_id:
+        raise HTTPException(status_code=403, detail="Forbidden: Cannot access another account")
+    if ibkr_account is not None:
+        user_acc_str = current_user.account.ibkr_account if current_user.account else None
+        if ibkr_account.strip().upper() != (user_acc_str or "").strip().upper():
+            raise HTTPException(status_code=403, detail="Forbidden: Cannot access another account")
+
+
 @router.get(
     "/accounts",
     response_model=AccountsConfigResponse,
@@ -54,9 +70,19 @@ def _config_error(exc: AllocationConfigError) -> HTTPException:
 )
 async def list_accounts_config(
     session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
 ) -> AccountsConfigResponse:
     """Return nested config for the settings dashboard."""
-    accounts = (await session.execute(select(AccountModel).order_by(AccountModel.id))).scalars().all()
+    if current_user.role == "user":
+        if current_user.ibkr_account_id is None:
+            return AccountsConfigResponse(accounts=[])
+        accounts = (
+            await session.execute(
+                select(AccountModel).where(AccountModel.id == current_user.ibkr_account_id)
+            )
+        ).scalars().all()
+    else:
+        accounts = (await session.execute(select(AccountModel).order_by(AccountModel.id))).scalars().all()
     allocations = (
         await session.execute(select(AllocationModel).order_by(AllocationModel.account_id))
     ).scalars().all()
@@ -110,7 +136,9 @@ async def list_accounts_config(
 async def get_account_by_identifier(
     ibkr_account: str,
     session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
 ) -> AccountConfigSchema:
+    _check_account_authorization(current_user, ibkr_account=ibkr_account)
     clean_ibkr = ibkr_account.strip().upper()
     account = (
         await session.execute(
@@ -158,7 +186,9 @@ async def square_off_account_positions(
     account_id: int,
     request: Request,
     session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
 ) -> SquareOffResponse:
+    _check_account_authorization(current_user, account_id=account_id)
     svc = AccountStrategyConfigService(session)
     account = await svc.get_account(account_id)
     if account is None:
@@ -200,6 +230,7 @@ async def clear_account_kill_switch_endpoint(
     account_id: int,
     request: Request,
     session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
 ) -> KillSwitchClearResponse:
     """Disarm an account blocked by the emergency kill switch.
 
@@ -207,6 +238,7 @@ async def clear_account_kill_switch_endpoint(
     to resume opening positions on the account. Completing a flatten does not
     disarm on its own -- clearing is always a deliberate operator action.
     """
+    _check_account_authorization(current_user, account_id=account_id)
     svc = AccountStrategyConfigService(session)
     account = await svc.get_account(account_id)
     if account is None:
@@ -242,7 +274,9 @@ async def clear_account_kill_switch_endpoint(
 async def get_account_kill_switch_status(
     account_id: int,
     session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
 ) -> KillSwitchStatusResponse:
+    _check_account_authorization(current_user, account_id=account_id)
     svc = AccountStrategyConfigService(session)
     account = await svc.get_account(account_id)
     if account is None:
@@ -266,8 +300,10 @@ async def close_selected_pair_endpoint(
     trade_id: str,
     request: Request,
     session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
 ) -> ClosePairResponse:
     """Close only the selected open pair without affecting other positions or activating the global Kill Switch."""
+    _check_account_authorization(current_user, account_id=account_id)
     order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
     session_factory = getattr(request.app.state, "session_factory", None)
     if session_factory is None:
@@ -293,6 +329,7 @@ async def close_selected_pair_endpoint(
 async def create_account(
     body: CreateAccountRequest,
     session: AsyncSession = Depends(get_db_session),
+    _admin: UserModel = Depends(require_admin),
 ) -> AccountConfigSchema:
     svc = AccountStrategyConfigService(session)
     try:
@@ -338,7 +375,9 @@ async def patch_account(
     body: PatchAccountRequest,
     session: AsyncSession = Depends(get_db_session),
     request: Request = None,
+    current_user: UserModel = Depends(require_authenticated_user),
 ) -> AccountConfigSchema:
+    _check_account_authorization(current_user, account_id=account_id)
     svc = AccountStrategyConfigService(session)
     account = await svc.get_account(account_id)
     if account is None:
@@ -412,6 +451,7 @@ async def create_account_allocation(
     account_id: int,
     body: CreateAllocationRequest,
     session: AsyncSession = Depends(get_db_session),
+    _admin: UserModel = Depends(require_admin),
 ) -> AllocationConfigSchema:
     svc = AccountStrategyConfigService(session)
     account = await svc.get_account(account_id)
@@ -450,7 +490,9 @@ async def create_account_allocation(
 async def check_account_deletable_api(
     account_id: int,
     session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
 ) -> AccountDeleteCheckResponse:
+    _check_account_authorization(current_user, account_id=account_id)
     svc = AccountStrategyConfigService(session)
     account = await svc.get_account(account_id)
     if account is None:
@@ -473,6 +515,7 @@ async def delete_account_api(
     account_id: int,
     request: Request,
     session: AsyncSession = Depends(get_db_session),
+    _admin: UserModel = Depends(require_admin),
 ) -> None:
     svc = AccountStrategyConfigService(session)
     account = await svc.get_account(account_id)
@@ -505,11 +548,13 @@ async def patch_allocation(
     allocation_id: int,
     body: PatchAllocationRequest,
     session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
 ) -> AllocationConfigSchema:
     svc = AccountStrategyConfigService(session)
     allocation = await svc.get_allocation(allocation_id)
     if allocation is None:
         raise HTTPException(status_code=404, detail=f"Allocation {allocation_id} not found.")
+    _check_account_authorization(current_user, account_id=allocation.account_id)
     if (
         body.alloc_pct is None
         and body.enabled is None
@@ -548,7 +593,9 @@ async def put_symbol_limit(
     body: PutSymbolLimitRequest,
     session: AsyncSession = Depends(get_db_session),
     order_manager: OrderManager = Depends(get_order_manager),
+    current_user: UserModel = Depends(require_authenticated_user),
 ) -> SymbolLimitSchema:
+    _check_account_authorization(current_user, account_id=account_id)
     svc = AccountStrategyConfigService(session)
     try:
         row = await svc.upsert_symbol_limit(
@@ -580,7 +627,9 @@ async def put_default_symbol_limit(
     body: PutDefaultSymbolLimitRequest,
     session: AsyncSession = Depends(get_db_session),
     order_manager: OrderManager = Depends(get_order_manager),
+    current_user: UserModel = Depends(require_authenticated_user),
 ) -> AccountConfigSchema:
+    _check_account_authorization(current_user, account_id=account_id)
     svc = AccountStrategyConfigService(session)
     account = await svc.get_account(account_id)
     if account is None:
@@ -633,7 +682,9 @@ async def delete_symbol_limit(
     symbol: str,
     session: AsyncSession = Depends(get_db_session),
     order_manager: OrderManager = Depends(get_order_manager),
+    current_user: UserModel = Depends(require_authenticated_user),
 ) -> None:
+    _check_account_authorization(current_user, account_id=account_id)
     svc = AccountStrategyConfigService(session)
     deleted = await svc.delete_symbol_limit(account_id=account_id, symbol=symbol)
     if not deleted:
@@ -664,6 +715,7 @@ def _execution_schema(row, *, paper_active: bool) -> ExecutionSettingsSchema:
 )
 async def get_execution_settings(
     session: AsyncSession = Depends(get_db_session),
+    _user: UserModel = Depends(require_authenticated_user),
 ) -> ExecutionSettingsSchema:
     svc = AccountStrategyConfigService(session)
     row = await svc.get_or_create_execution_settings()
@@ -681,6 +733,7 @@ async def patch_execution_settings(
     body: PatchExecutionSettingsRequest,
     session: AsyncSession = Depends(get_db_session),
     order_manager: OrderManager = Depends(get_order_manager),
+    _admin: UserModel = Depends(require_admin),
 ) -> ExecutionSettingsSchema:
     if (
         body.enabled is None

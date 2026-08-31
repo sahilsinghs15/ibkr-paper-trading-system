@@ -15,6 +15,18 @@ from app.services.broker_flatten_service import BrokerFlattenService
 from app.services.order_manager import OrderManager
 from app.services.reconcile_service import collect_reconcile_positions
 
+from app.api.deps import require_authenticated_user
+from app.db.models.user import UserModel
+from app.db.session import get_db_session
+from app.schemas.reconcile_schemas import (
+    FlattenBrokerPositionRequest,
+    FlattenBrokerPositionResponse,
+    ReconcilePositionsResponse,
+)
+from app.services.broker_flatten_service import BrokerFlattenService
+from app.services.order_manager import OrderManager
+from app.services.reconcile_service import collect_reconcile_positions
+
 router = APIRouter(prefix="/reconcile", tags=["reconcile"])
 
 
@@ -30,12 +42,19 @@ router = APIRouter(prefix="/reconcile", tags=["reconcile"])
 )
 async def get_reconcile_positions(
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    current_user: Annotated[UserModel, Depends(require_authenticated_user)],
     ibkr_account: Annotated[
         str | None,
         Query(description="Optional IBKR account filter (e.g. DUR919062)"),
     ] = None,
 ) -> ReconcilePositionsResponse:
     """Return reconcile dashboard payload for one account or all accounts."""
+    if current_user.role == "user":
+        user_account = current_user.account.ibkr_account if current_user.account else None
+        if ibkr_account and ibkr_account.strip() != user_account:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Forbidden: Cannot access another account")
+        ibkr_account = user_account
     return await collect_reconcile_positions(db, ibkr_account=ibkr_account)
 
 
@@ -52,8 +71,15 @@ async def get_reconcile_positions(
 async def flatten_broker_position_line(
     body: FlattenBrokerPositionRequest,
     request: Request,
+    current_user: Annotated[UserModel, Depends(require_authenticated_user)],
 ) -> FlattenBrokerPositionResponse:
     """Flatten one broker snapshot net line."""
+    if current_user.role == "user":
+        user_account = current_user.account.ibkr_account if current_user.account else None
+        if body.ibkr_account.strip() != user_account:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Forbidden: Cannot access another account")
+
     order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
     session_factory = getattr(request.app.state, "session_factory", None)
     if session_factory is None:

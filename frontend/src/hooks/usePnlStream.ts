@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import axios from 'axios'
 import type { PositionLeg, PositionsSnapshot } from '../types/position'
+import { fetchSseToken } from '../store/authStore'
 import { usePnlStore } from '../store/pnlStore'
 import { useSignalStore } from '../store/signalStore'
 
@@ -47,14 +48,17 @@ export function usePnlStream(): void {
   useEffect(() => {
     stopped.current = false
 
-    function connect() {
+    async function connect() {
       if (stopped.current) return
       if (sourceRef.current) {
         sourceRef.current.close()
         sourceRef.current = null
       }
       setStreamState('CONNECTING')
-      const source = new EventSource('/demo/stream')
+      const sseToken = await fetchSseToken()
+      if (stopped.current) return
+      const streamUrl = sseToken ? `/demo/stream?token=${encodeURIComponent(sseToken)}` : '/demo/stream'
+      const source = new EventSource(streamUrl)
       sourceRef.current = source
 
       source.onopen = () => {
