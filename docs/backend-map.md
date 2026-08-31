@@ -74,6 +74,15 @@ Every package above contains runtime code. The former empty placeholders (`app/m
 
 ## Lifespan order
 
+```mermaid
+flowchart LR
+    A[webhook_ingest :8000<br/>setup_logging + session_factory] --> B[Trading :8001<br/>TWS → RateLimiter → Adapter → OMS → OrderManager]
+    B --> C[hydrate_runtime_from_db]
+    C --> D[connect_and_start :7497]
+    D --> E[RecoveryManager<br/>stale jobs/claims]
+    E --> F[WorkerPool 10<br/>+ Reconciler 30s<br/>+ CriticalRecovery]
+```
+
 ### `webhook_ingest.py` (ingest, :8000)
 
 1. `setup_logging(..., filename_prefix="webhook")`
@@ -93,11 +102,14 @@ Startup:
 8. `ExecutionWorkerPool(worker_count=10).start()` → `app.state.worker_pool`
 9. `PositionReconciler(interval=30s).start()` → `app.state.position_reconciler`
 
+Startup also wires `CriticalRecoveryService` ↔ `BasketCoordinator` and enqueues existing `CRITICAL` baskets; shutdown also stops it.
+
 Shutdown:
 
 1. `position_reconciler.stop()`
 2. `worker_pool.stop()`
-3. `client.disconnect_clean()`
+3. `critical_recovery.stop()`
+4. `client.disconnect_clean()`
 
 ## `app.state` attributes
 
@@ -144,6 +156,7 @@ Lifespan constructs **one** `TWSClient`, **one** `GatewayRateLimiter`, and **one
 | Account routing (DB fan-out, not multi-Gateway) | `accounts/router.py` |
 | Multi-gateway target (not built) | [`backend-multi-gateway.md`](backend-multi-gateway.md) |
 | Instrument STK→CFD | `instruments/execution_override.py`, `resolver.py`, `cfd_discover.py` |
+| Managed accounts gate | `broker/ibkr/tws_client.py:managedAccounts`, `oms/ibkr_adapter.py:_validate_ibkr_account` |
 | Config CRUD | `accounts/config_service.py`, `api/routes/config.py` |
 | Live PnL marks | `services/pnl.py` |
 | IBKR position reconcile | `services/position_reconciler.py`, `broker/ibkr/positions.py`, `services/reconcile_service.py`, `services/broker_flatten_service.py`, `api/routes/reconcile.py` |
@@ -151,7 +164,7 @@ Lifespan constructs **one** `TWSClient`, **one** `GatewayRateLimiter`, and **one
 
 ## Alembic HEAD
 
-Chain ends at revision **`f4a8c2d1e903`** (`broker_positions_reconcile.py`). Full chain in [`backend-persistence.md`](backend-persistence.md).
+Chain ends at revision **`a1b2c3d4e567`** (`basket_critical_recovery.py`, revises `f4a8c2d1e903`). Full chain in [`backend-persistence.md`](backend-persistence.md).
 
 ## Ignore / do not treat as source of truth
 

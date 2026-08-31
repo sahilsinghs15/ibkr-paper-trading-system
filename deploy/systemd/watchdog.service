@@ -1,0 +1,26 @@
+[Unit]
+Description=IBKR Trading Watchdog (health + Telegram + escalation)
+After=network.target
+# No Wants/Requires on trading services — watchdog must survive their failure
+Requires=network.target
+
+[Service]
+Type=simple
+User=tradingapp
+WorkingDirectory=/home/tradingapp/app/backend
+EnvironmentFile=/home/tradingapp/app/backend/.env
+ExecStart=/home/tradingapp/app/backend/.venv/bin/python /home/tradingapp/app/scripts/watchdog_main.py
+Restart=always
+RestartSec=10
+KillMode=process
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=watchdog
+
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

@@ -8,7 +8,7 @@ Agent entrypoint: [`../AGENTS.md`](../AGENTS.md).
 
 | Document | Role |
 |----------|------|
-| [`../../Execution_System_Architecture.md`](../../Execution_System_Architecture.md) | **Target** architecture (multi-process OMS, nine RMS checks, etc.). Not a description of this FastAPI app. File lives **outside this repo** (parent of `app/`). |
+| `Execution_System_Architecture.md` (parent of repo, not in git tree) | **Target** architecture (multi-process OMS, nine RMS checks, etc.). Not a description of this FastAPI app. |
 | [`../backend/POSTMAN_API_TESTING_GUIDE.md`](../backend/POSTMAN_API_TESTING_GUIDE.md) | Historical Postman notes; documents MockBroker / place-order / positions / margin routes that **do not** exist in code. |
 | [`../backend/docs/DEVELOPER_EXECUTION_GUIDE.md`](../backend/docs/DEVELOPER_EXECUTION_GUIDE.md) | Older human guide; stale. Prefer this `app/docs/` tree. |
 
@@ -31,6 +31,7 @@ Agent entrypoint: [`../AGENTS.md`](../AGENTS.md).
 | Paper ports, STK→CFD override | [`safety.md`](safety.md) |
 | Explicit not-implemented list | [`gaps.md`](gaps.md) |
 | EC2 paper host snapshot (ops) | [`EC2_OPERATIONS_GUIDE.md`](EC2_OPERATIONS_GUIDE.md) |
+| Watchdog (monitoring, Telegram, recovery) | [`watchdog.md`](watchdog.md) |
 | Doc inventory (accuracy) | this file, next section |
 
 ## Doc inventory (accuracy vs code)
@@ -61,13 +62,27 @@ Produced by reading the files in this tree plus `AGENTS.md` / READMEs, then trac
 | [`gaps.md`](gaps.md) | Not-implemented list | ACCURATE; multi-gateway / limiter gaps added (intent moved, not deleted) |
 | [`EC2_OPERATIONS_GUIDE.md`](EC2_OPERATIONS_GUIDE.md) | One paper EC2 host | **Mixed.** Ops paths are a dated host snapshot. `BROKER_MODE`, “no DATABASE_URL”, YAML capital are **STALE vs current Settings** (see that file’s banner). |
 | [`../AGENTS.md`](../AGENTS.md) | Agent map / invariants | ACCURATE |
-| [`../Readme.md`](../Readme.md) | Human repo README | ACCURATE |
+| [`../README.md`](../README.md) | Human repo README | ACCURATE |
 | [`../backend/AGENTS.md`](../backend/AGENTS.md) | Pointer | ACCURATE |
 | [`../backend/README.md`](../backend/README.md) | Backend runbook | ACCURATE |
 | [`../frontend/README.md`](../frontend/README.md) | Frontend runbook | ACCURATE after unused-deps correction |
 | [`../backend/POSTMAN_API_TESTING_GUIDE.md`](../backend/POSTMAN_API_TESTING_GUIDE.md) | Historical API | **STALE** (already labeled) |
 | [`../backend/docs/DEVELOPER_EXECUTION_GUIDE.md`](../backend/docs/DEVELOPER_EXECUTION_GUIDE.md) | Historical map | **STALE** (already labeled). “Account DB not implemented” is false. |
 | `Execution_System_Architecture.md` (parent dir) | Nine-check / multi-process OMS | **ASPIRATIONAL** — not in this git tree |
+
+## Changelog (2026-08-28 — decoupled ingest + process manager)
+
+| File | What changed | Why |
+|------|--------------|-----|
+| `README.md` (root) | **Rebuilt** as central portal with mermaid overview, 13-section nav | Replaces 30-line stub; now mirrors task §4 structure |
+| `docs/README.md` | Fixed `Readme.md` → `README.md`, removed broken `../../Execution...` link, added this changelog row | Case bug + dead link |
+| `backend-config.md` | Added `webhook_auth_*`, `emergency_killswitch_*`, `TRADINGAPP_TESTING` guard | Undocumented from `acdd451` |
+| `backend-rms-oms.md` | Added managedAccounts gate (`UNMANAGED_ACCOUNT`) | Live in `tws_client.py:managedAccounts` + `ibkr_adapter.py:_validate` |
+| `backend-execution.md` | Annotated `_validate_ibkr_account`, startup `recover_incomplete_baskets` defer, shutdown `critical_recovery.stop` | Recent PR |
+| `backend-map.md` | Added `critical_recovery.stop`, managedAccounts row, Alembic head `a1b2c3d4e567` | Recent PR |
+| `AGENTS.md` | Added `CriticalRecoveryService` in lifespan, run commands for `process_manager.py` | `acdd451` |
+| `docs/archive/` | **Created** — moved `COMPLETE_*`, `DOCUMENTATION_AUDIT.md`, `production_mft_*.md` (7) | Bloat cleanup |
+| Deleted (untracked) | `architecture/`, `backend/`, `components/`, `database/`, `diagrams/`, `ibkr/`, `integrations/`, `operations/`, `overview/`, `reference/`, `safety/`, `testing/`, `trading/`, `api/`, `.obsidian/` | 74-file auto-generated subtree; orphan, duplicative |
 
 ## Changelog (2026-08-24)
 
@@ -89,5 +104,5 @@ Produced by reading the files in this tree plus `AGENTS.md` / READMEs, then trac
 | [`frontend.md`](frontend.md) | No gateway UI | Settings scope |
 | [`backend-testing.md`](backend-testing.md) | Which pacer tests which class | Avoid false “token bucket is live” |
 | [`EC2_OPERATIONS_GUIDE.md`](EC2_OPERATIONS_GUIDE.md) | Stale-env banner | Host snapshot vs current code |
-| [`../AGENTS.md`](../AGENTS.md), [`../Readme.md`](../Readme.md), [`../backend/AGENTS.md`](../backend/AGENTS.md) | Pointers | Discovery |
+| [`../AGENTS.md`](../AGENTS.md), [`../README.md`](../README.md), [`../backend/AGENTS.md`](../backend/AGENTS.md) | Pointers | Discovery |
 | [`../frontend/README.md`](../frontend/README.md) | react-router / react-query **are** used | STALE unused-deps list |

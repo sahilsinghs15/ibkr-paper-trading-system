@@ -41,12 +41,12 @@ ExecutionWorkerPool on trading app :8001 (background)
             → kill-switch gate on OPEN
             → ModelBlueStrategy.build_intent (sizer uses ctx.committed_notional)
             → exposure_guard → RMSEngine.evaluate (checks 2, 3, 4, 7, 8)
-            → instrument resolve (catalog / paper STK→CFD; auto CFD conId discovery)
-            → execution_claims.acquire (durable dedupe barrier, account-scoped key)
-            → BasketCoordinator.execute
-                 → OMSService.submit_one_leg → IBKRExecutionAdapter.submit_order
-                    (ib_order.account = intent.ibkr_account; same socket for every account)
-                 → TWSClient → the single IB Gateway / TWS
+             → instrument resolve (catalog / paper STK→CFD; auto CFD conId discovery)
+             → execution_claims.acquire (durable dedupe barrier, account-scoped key)
+             → BasketCoordinator.execute
+                  → OMSService.submit_one_leg → IBKRExecutionAdapter.submit_order
+                     (_validate_ibkr_account vs managedAccounts → pacing → ib_order.account = intent.ibkr_account; same socket for every account)
+                  → TWSClient → the single IB Gateway / TWS
             → seal claim EXECUTED on settled basket
             → ModelBlueExecutionPersistence + position / trade-book updates
             → LivePnlService.watch_open / unwatch
@@ -93,7 +93,9 @@ From `main.py` lifespan:
 7. `RecoveryManager.run_startup_recovery()` — reconcile stale jobs/claims.
 8. `ExecutionWorkerPool(worker_count=10).start()` → `app.state.worker_pool`.
 
-Shutdown: stop worker pool, disconnect TWS.
+Startup also: `CriticalRecoveryService` ↔ `BasketCoordinator` wiring, `enqueue_all_critical()` for stale `RECOVERING` rows, `BasketCoordinator.recover_incomplete_baskets()` (defers when `not is_connected()`, only escalates partial fills to `CRITICAL`).
+
+Shutdown: stop `position_reconciler` → `worker_pool` → `critical_recovery` → disconnect TWS.
 
 Orders listed by `GET /api/v1/orders` come from the **in-memory** OMS map, not a SQL query.
 
@@ -130,6 +132,8 @@ Format: `%(asctime)s | %(levelname)-8s | %(name)s | %(trace)s | %(message)s` whe
 | `Gateway pacing timeout` | Limiter max_wait exceeded — no placeOrder |
 | `IBKR Error 100 cooldown` | IB throttle backoff on limiter |
 | `TWS placeOrder failed` | Adapter place failure |
+| `UNMANAGED_ACCOUNT` / `MISSING_IBKR_ACCOUNT` | managedAccounts gate rejected before pacing |
+| `BASKET_RECOVER_DEFER` / `BASKET_RECOVER_CRITICAL` | Startup basket recovery (defer when TWS down, escalate partial fills) |
 | `EMERGENCY KILL SWITCH ACTIVATED` | Kill switch started |
 
 ## Account resolution per order (as-is)

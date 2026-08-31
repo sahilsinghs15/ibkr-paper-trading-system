@@ -110,6 +110,7 @@ There is **no** MockBroker class and **no** `BROKER_MODE` switch in `Settings`. 
 - Requires `ResolvedInstrument` on each leg — **no** silent STK/SMART/USD guessing
 - Never CFD→STK fallback
 - Paper STK→CFD override lives in `instruments/execution_override.py`, not in adapter/TWS/RMS
+- `ibkr_account` must be in Gateway `managedAccounts` before `placeOrder` — `TWSClient.managedAccounts` callback populates `managed_accounts` set (waits ≤2s after `nextValidId`); `IBKRExecutionAdapter._validate_ibkr_account` rejects `MISSING_IBKR_ACCOUNT` / `UNMANAGED_ACCOUNT` / not-in-set before pacing
 
 ### GatewayRateLimiter (production — single socket)
 

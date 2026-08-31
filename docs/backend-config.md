@@ -35,8 +35,14 @@ Use `get_settings()`; do not construct `Settings()` ad hoc in new code.
 | `order_quantity` | `ORDER_QUANTITY` | `1` | Default quantity arg on `OrderManager` |
 | `model_blue_committed_notional` | `MODEL_BLUE_COMMITTED_NOTIONAL` | `None` | Temporary paper fallback; OPEN can reject if unset and DB capital missing |
 | `paper_execute_stk_as_cfd` | `PAPER_EXECUTE_STK_AS_CFD` | `True` | Requested STK may execute as IBKR CFD on paper; raw signal type stays STK |
+| `webhook_auth_secret` | `WEBHOOK_AUTH_SECRET` | `None` | HMAC secret for TradingView webhook (`X-Webhook-Secret`); `None` = auth disabled when `webhook_auth_enabled=false` |
+| `webhook_auth_enabled` | `WEBHOOK_AUTH_ENABLED` | `True` | Toggle webhook HMAC auth |
+| `emergency_killswitch_auth_secret` | `EMERGENCY_KILLSWITCH_AUTH_SECRET` | `None` | Bearer secret for `POST /api/v1/emergency-kill-switch` |
+| `emergency_killswitch_auth_enabled` | `EMERGENCY_KILLSWITCH_AUTH_ENABLED` | `True` | Toggle emergency kill-switch auth |
 
 Property: `candle_timeframe_minutes` — parses `candle_timeframe` (defaults to 5).
+
+Runtime guard: when `TRADINGAPP_TESTING=1`, `get_settings()` refuses production database `ibkr_trading` (raises `RuntimeError` — tests must use `ibkr_trading_test` via `conftest.py` rewrite).
 
 ## Demo stream settings (`demo_streaming.config.DemoStreamSettings`)
 

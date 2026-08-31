@@ -24,6 +24,7 @@ Do **not** treat [`../Execution_System_Architecture.md`](../Execution_System_Arc
 | How to add a route / DI rules | [`docs/conventions.md`](docs/conventions.md) |
 | Paper vs live ports, STK→CFD | [`docs/safety.md`](docs/safety.md) |
 | What is **not** implemented | [`docs/gaps.md`](docs/gaps.md) |
+| Watchdog (monitoring, Telegram, recovery) | [`docs/watchdog.md`](docs/watchdog.md) |
 | Doc index | [`docs/README.md`](docs/README.md) |
 
 ## Run / test

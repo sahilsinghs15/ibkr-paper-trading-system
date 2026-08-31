@@ -1,0 +1,25 @@
+[Unit]
+Description=IBKR Trading Process Manager (Gateway + Backend + Webhook)
+After=network.target postgresql.service redis-server.service
+Wants=postgresql.service
+Requires=network.target
+
+[Service]
+Type=simple
+User=tradingapp
+WorkingDirectory=/home/tradingapp/app
+EnvironmentFile=/home/tradingapp/app/backend/.env
+ExecStart=/home/tradingapp/app/backend/.venv/bin/python /home/tradingapp/app/scripts/process_manager.py
+Restart=always
+RestartSec=10
+KillMode=process
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=process-manager
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,27 @@
+[Unit]
+Description=IBKR Demo Streaming Dashboard (read-only SSE)
+After=network.target postgresql.service redis-server.service
+Wants=postgresql.service redis-server.service
+# Demo is independent of process-manager — no After=process-manager
+Requires=network.target
+
+[Service]
+Type=simple
+User=tradingapp
+WorkingDirectory=/home/tradingapp/app/backend
+EnvironmentFile=/home/tradingapp/app/backend/.env
+ExecStart=/home/tradingapp/app/backend/.venv/bin/python -m demo_streaming
+Restart=always
+RestartSec=10
+KillMode=process
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=demo-streaming
+
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
