@@ -14,10 +14,12 @@ def test_format_contains_fields():
     assert "Trading Backend" in text or "BACKEND" in text or "backend" in text
     assert "8001" in text
     assert "2/5" in text
-    # spec structure
+    # spec structure — new visual hierarchy
     assert "WATCHDOG" in text
-    assert "WHAT HAPPENED" in text
-    assert "ERROR / FAILURE DETAIL" in text
+    assert "SERVICE" in text
+    assert "STATUS" in text
+    assert "DETAILS" in text or "WHAT HAPPENED" in text
+    assert "ERROR" in text
     assert "IMPACT" in text
     assert "RECOVERY" in text
 

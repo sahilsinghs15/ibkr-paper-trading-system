@@ -88,6 +88,22 @@ def _impact_for(service: ServiceName, event: NotificationEvent, hr: HealthResult
     return imp, trad
 
 
+def _event_header(event: NotificationEvent) -> tuple[str, str]:
+    """Return (emoji, header_text) for visual hierarchy."""
+    mapping: dict[NotificationEvent, tuple[str, str]] = {
+        NotificationEvent.START: ("🟢", "WATCHDOG — START"),
+        NotificationEvent.STOP: ("⚪", "WATCHDOG — STOPPED"),
+        NotificationEvent.FAILURE: ("🔴", "WATCHDOG — SERVICE FAILED"),
+        NotificationEvent.UNHEALTHY: ("🟡", "WATCHDOG — DEGRADED"),
+        NotificationEvent.RECOVERY_STARTED: ("🟡", "WATCHDOG — RECOVERING"),
+        NotificationEvent.RECOVERED: ("🟢", "WATCHDOG — RECOVERED"),
+        NotificationEvent.RECOVERY_FAILED: ("🔴", "WATCHDOG — RECOVERY FAILED"),
+        NotificationEvent.MANUAL_INTERVENTION_REQUIRED: ("🟠", "WATCHDOG — MANUAL INTERVENTION REQUIRED"),
+        NotificationEvent.TRADING_BLOCKED: ("🚨", "WATCHDOG — TRADING BLOCKED"),
+    }
+    return mapping.get(event, ("🛡️", f"WATCHDOG — {event.value}"))
+
+
 def format_telegram_message(
     service: ServiceName,
     event: NotificationEvent,
@@ -100,8 +116,14 @@ def format_telegram_message(
     recovery_duration: float | None = None,
 ) -> str:
     health = health or snapshot.last_health
-    severity_emoji, severity_label = _severity(event)
     now = datetime.now(UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    # Use ET for operator display if possible (America/New_York)
+    try:
+        from zoneinfo import ZoneInfo
+
+        now_et = datetime.now(ZoneInfo("America/New_York")).strftime("%H:%M:%S ET")
+    except Exception:
+        now_et = now
     what = None
     impact = None
     trading_impact = None
@@ -164,67 +186,72 @@ def format_telegram_message(
         recovery = _recovery_owner(service) if event in (NotificationEvent.FAILURE, NotificationEvent.UNHEALTHY) else "None — automatic recovery in progress." if attempt else "None."
     if event == NotificationEvent.STOP:
         recovery = "Intentional stop — no automatic recovery."
+    emoji, header = _event_header(event)
+    # HTML formatting — bold header, <code> for values, separators
     lines: list[str] = []
-    lines.append("🛡️ WATCHDOG")
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"EVENT: <code>{event.value}</code>  {severity_emoji} {severity_label}")
-    lines.append(f"SERVICE: <code>{_display(service)}</code>")
-    lines.append(f"STATUS: <code>{snapshot.state.value}</code>")
+    lines.append(f"<b>{emoji} {header}</b>")
+    lines.append("━━━━━━━━━━━━━━━━━━━")
+    lines.append("<b>SERVICE</b>")
+    lines.append(f"<code>{_sanitize_for_telegram(_display(service))}</code>")
     lines.append("")
-    lines.append("WHAT HAPPENED")
+    lines.append("<b>STATUS</b>")
+    lines.append(f"<code>{_sanitize_for_telegram(snapshot.state.value)}</code>")
+    lines.append("")
+    lines.append("<b>EVENT</b>")
+    lines.append(f"<code>{_sanitize_for_telegram(event.value)}</code>")
+    lines.append("")
+    lines.append("<b>DETAILS</b>")
     lines.append(_sanitize_for_telegram(what or "Unknown"))
     lines.append("")
-    lines.append("ERROR / FAILURE DETAIL")
+    lines.append("<b>ERROR</b>")
     err_detail = underlying or reason or snapshot.failure_reason or (health.detail if health else "") or "No additional diagnostic information was available."
     if endpoint_url and endpoint_url not in err_detail:
         err_detail = f"{err_detail}\nEndpoint: {endpoint_url}"
-    lines.append(f"<code>{_sanitize_for_telegram(err_detail[:800])}</code>")
+    lines.append(f"<code>{_sanitize_for_telegram(err_detail[:500])}</code>")
     if log_marker:
-        lines.append(f"Expected log marker: <code>{_sanitize_for_telegram(log_marker)}</code>")
+        lines.append(f"<b>EXPECTED</b> <code>{_sanitize_for_telegram(log_marker)}</code>")
     if log_excerpt:
-        lines.append("LAST LOG DETAIL")
+        lines.append("<b>LOG</b>")
         lines.append(f"<code>{_sanitize_for_telegram(log_excerpt[:400])}</code>")
     lines.append("")
-    lines.append("WHERE")
-    lines.append(f"Host: <code>{_sanitize_for_telegram(host)}</code>")
-    if port is not None:
-        lines.append(f"Port: <code>{port}</code>")
+    lines.append("<b>WHERE</b>")
+    lines.append(f"<code>{_sanitize_for_telegram(host)}</code>" + (f":<code>{port}</code>" if port is not None else ""))
     if pid is not None:
-        lines.append(f"PID: <code>{pid}</code>")
+        lines[-1] += f"  PID <code>{pid}</code>"
     if health and health.exit_code is not None:
-        lines.append(f"Exit code: <code>{health.exit_code}</code>")
+        lines.append(f"Exit <code>{health.exit_code}</code>")
     if health and health.signal:
-        lines.append(f"Signal: <code>{health.signal}</code>")
+        lines.append(f"Signal <code>{health.signal}</code>")
     lines.append("")
-    lines.append("IMPACT")
+    lines.append("<b>IMPACT</b>")
     lines.append(_sanitize_for_telegram(impact or "Unknown"))
     if trading_impact:
         lines.append("")
-        lines.append("TRADING IMPACT")
+        lines.append("<b>TRADING</b>")
         lines.append(_sanitize_for_telegram(trading_impact))
     lines.append("")
-    lines.append("RECOVERY")
+    lines.append("<b>RECOVERY</b>")
     lines.append(_sanitize_for_telegram(recovery))
     if attempt:
         lines.append("")
-        lines.append("ATTEMPT")
+        lines.append("<b>ATTEMPT</b>")
         lines.append(f"<code>{_sanitize_for_telegram(attempt)}</code>")
     if recovery_duration is not None:
         lines.append("")
-        lines.append("RECOVERY DURATION")
-        lines.append(f"<code>{recovery_duration:.1f} seconds</code>")
+        lines.append("<b>DURATION</b>")
+        lines.append(f"<code>{recovery_duration:.1f}s</code>")
     if event == NotificationEvent.RECOVERY_STARTED:
         lines.append("")
-        lines.append("EXPECTED VERIFICATION")
-        lines.append("• Process alive\n• /health/ready = healthy\n• Dependencies reachable")
+        lines.append("<b>VERIFY</b>")
+        lines.append("• <code>/health/ready</code> healthy\n• Dependencies reachable")
     lines.append("")
-    lines.append("ACTION REQUIRED")
+    lines.append("<b>ACTION</b>")
     act = operator_action or _default_action(event, service)
     lines.append(_sanitize_for_telegram(act))
     lines.append("")
-    lines.append("TIME")
-    lines.append(f"<code>{now}</code>")
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("<b>TIME</b>")
+    lines.append(f"<code>{_sanitize_for_telegram(now_et)}</code>")
+    lines.append("━━━━━━━━━━━━━━━━━━━")
     return "\n".join(lines)
 
 

@@ -24,13 +24,13 @@ def _snap(svc: ServiceName, state: ServiceState = ServiceState.FAILED) -> Servic
 def test_format_ordering():
     snap = _snap(ServiceName.BACKEND)
     text = format_telegram_message(ServiceName.BACKEND, NotificationEvent.FAILURE, snap, host="h", port=8001)
-    # order: WATCHDOG, EVENT, SERVICE, STATUS, WHAT HAPPENED, ERROR, WHERE, IMPACT, RECOVERY, ATTEMPT/TIME
-    assert text.index("WATCHDOG") < text.index("EVENT:")
-    assert text.index("EVENT:") < text.index("SERVICE:")
-    assert text.index("SERVICE:") < text.index("STATUS:")
-    assert text.index("STATUS:") < text.index("WHAT HAPPENED")
-    assert text.index("WHAT HAPPENED") < text.index("ERROR / FAILURE DETAIL")
-    assert text.index("ERROR / FAILURE DETAIL") < text.index("WHERE")
+    # order: WATCHDOG, SERVICE, STATUS, EVENT, DETAILS, ERROR, WHERE, IMPACT, RECOVERY, TIME (new visual hierarchy)
+    assert text.index("WATCHDOG") < text.index("SERVICE")
+    assert text.index("SERVICE") < text.index("STATUS")
+    assert text.index("STATUS") < text.index("EVENT")
+    assert text.index("EVENT") < text.index("DETAILS")
+    assert text.index("DETAILS") < text.index("ERROR")
+    assert text.index("ERROR") < text.index("WHERE")
     assert text.index("WHERE") < text.index("IMPACT")
     assert text.index("IMPACT") < text.index("RECOVERY")
     assert text.index("RECOVERY") < text.index("TIME")
@@ -39,14 +39,15 @@ def test_format_ordering():
 def test_severity_critical():
     snap = _snap(ServiceName.GATEWAY)
     text = format_telegram_message(ServiceName.GATEWAY, NotificationEvent.FAILURE, snap, host="h")
-    assert "CRITICAL" in text
-    assert "🚨" in text
+    # visual: emoji indicator for critical (🔴 or 🚨)
+    assert "🔴" in text or "🚨" in text
 
 
 def test_severity_warning():
     snap = _snap(ServiceName.BACKEND, ServiceState.DEGRADED)
     text = format_telegram_message(ServiceName.BACKEND, NotificationEvent.UNHEALTHY, snap, host="h")
-    assert "WARNING" in text
+    # visual: warning emoji
+    assert "⚠️" in text or "🟡" in text
 
 
 def test_severity_info():
@@ -173,7 +174,7 @@ def test_recovery_messages():
     text = format_telegram_message(ServiceName.BACKEND, NotificationEvent.RECOVERY_STARTED, snap, host="h", attempt="2/5", health=snap.last_health)
     assert "RECOVERY_STARTED" in text or "RECOVERING" in text
     assert "2/5" in text
-    assert "EXPECTED VERIFICATION" in text
+    assert "VERIFY" in text
 
     snap2 = ServiceSnapshot(service=ServiceName.BACKEND, state=ServiceState.RECOVERED)
     snap2.last_health = HealthResult(service=ServiceName.BACKEND, status=HealthStatus.HEALTHY, reason="healthy")

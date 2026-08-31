@@ -114,6 +114,7 @@ def event_for_transition(prev: ServiceState, nxt: ServiceState) -> NotificationE
         (ServiceState.FAILED, ServiceState.MANUAL_INTERVENTION_REQUIRED): NotificationEvent.MANUAL_INTERVENTION_REQUIRED,
         (ServiceState.RECOVERING, ServiceState.MANUAL_INTERVENTION_REQUIRED): NotificationEvent.MANUAL_INTERVENTION_REQUIRED,
         (ServiceState.VERIFYING, ServiceState.MANUAL_INTERVENTION_REQUIRED): NotificationEvent.MANUAL_INTERVENTION_REQUIRED,
+        (ServiceState.MANUAL_INTERVENTION_REQUIRED, ServiceState.HEALTHY): NotificationEvent.RECOVERED,
     }
     # Generic fallback for TRADING_BLOCKED
     if nxt == ServiceState.TRADING_BLOCKED:

@@ -67,3 +67,29 @@ def test_event_mapping():
     assert event_for_transition(ServiceState.VERIFYING, ServiceState.RECOVERED) == NotificationEvent.RECOVERED
     assert event_for_transition(ServiceState.HEALTHY, ServiceState.HEALTHY) is None
     assert event_for_transition(ServiceState.UNKNOWN, ServiceState.HEALTHY) == NotificationEvent.START
+
+
+# Regression for Phase 2C: MANUAL → HEALTHY must notify RECOVERED (demo was stuck without notification)
+def test_manual_to_healthy_returns_recovered():
+    assert event_for_transition(ServiceState.MANUAL_INTERVENTION_REQUIRED, ServiceState.HEALTHY) == NotificationEvent.RECOVERED
+
+
+def test_manual_to_recovered_is_not_a_state_transition():
+    # RECOVERED is both a ServiceState and NotificationEvent, but MANUAL never transitions directly to RECOVERED state
+    # (it goes to HEALTHY). MANUAL->RECOVERED as state should not generate an event — the valid path is MANUAL->HEALTHY.
+    # This test documents that we intentionally do NOT invent MANUAL->RECOVERED.
+    assert event_for_transition(ServiceState.MANUAL_INTERVENTION_REQUIRED, ServiceState.RECOVERED) is None
+
+
+def test_recovering_to_verifying_unchanged():
+    s = _snap(ServiceState.RECOVERING)
+    assert next_state(s, False, False) == ServiceState.VERIFYING
+    assert event_for_transition(ServiceState.RECOVERING, ServiceState.VERIFYING) is None
+
+
+def test_failed_to_recovered_unchanged():
+    assert event_for_transition(ServiceState.FAILED, ServiceState.RECOVERED) == NotificationEvent.RECOVERED
+
+
+def test_starting_to_healthy_start_unchanged():
+    assert event_for_transition(ServiceState.STARTING, ServiceState.HEALTHY) == NotificationEvent.START
