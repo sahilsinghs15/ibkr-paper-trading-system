@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import axios from 'axios'
 import { playSignalNotificationSound } from '../utils/audioNotification'
 import { isTrueFlag } from '../utils/format'
 
@@ -221,24 +222,27 @@ async function fetchSignalPage(args: {
     ? `&ibkr_account=${encodeURIComponent(args.account)}`
     : ''
   const url = `/demo/signals?page=${args.page}&page_size=${args.pageSize}&status=${encodeURIComponent(args.status)}${accountParam}`
-  const res = await fetch(url)
-  if (!res.ok) return null
-  const data = await res.json()
-  if (!Array.isArray(data.signals)) return null
-  rememberSignalKeys(data.signals)
-  const serverTotal =
-    typeof data.filtered_total === 'number'
-      ? data.filtered_total
-      : typeof data.total === 'number'
-        ? data.total
-        : data.signals.length
-  return {
-    signals: sortSignalsByReceived(data.signals as SignalItem[]),
-    page: data.page || args.page,
-    pageSize: data.page_size || args.pageSize,
-    total: serverTotal,
-    totalPages: data.total_pages || 1,
-    counts: data.counts || EMPTY_COUNTS,
+  try {
+    const res = await axios.get(url)
+    const data = res.data
+    if (!data || !Array.isArray(data.signals)) return null
+    rememberSignalKeys(data.signals)
+    const serverTotal =
+      typeof data.filtered_total === 'number'
+        ? data.filtered_total
+        : typeof data.total === 'number'
+          ? data.total
+          : data.signals.length
+    return {
+      signals: sortSignalsByReceived(data.signals as SignalItem[]),
+      page: data.page || args.page,
+      pageSize: data.page_size || args.pageSize,
+      total: serverTotal,
+      totalPages: data.total_pages || 1,
+      counts: data.counts || EMPTY_COUNTS,
+    }
+  } catch {
+    return null
   }
 }
 

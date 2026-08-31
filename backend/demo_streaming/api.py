@@ -60,14 +60,11 @@ async def _get_authenticated_user_from_request(
         except jwt.PyJWTError:
             return None
     elif header_token:
-        # Header token accepts access token or sse token
+        # Header token accepts ONLY normal access JWT tokens for REST endpoints
         try:
             token_payload = decode_access_token(header_token)
         except jwt.PyJWTError:
-            try:
-                token_payload = decode_sse_token(header_token)
-            except jwt.PyJWTError:
-                return None
+            return None
     else:
         if os.environ.get("TRADINGAPP_TESTING") == "1":
             return UserModel(
@@ -217,6 +214,7 @@ def create_demo_app(
         user = await _get_authenticated_user_from_request(request, session_factory)
         if user is None:
             raise HTTPException(status_code=401, detail="Not authenticated")
+        logger.info("/demo/signals authenticated user_id=%s role=%s", user.id, user.role)
         if user.role == "user":
             account_id = user.ibkr_account_id
             ibkr_account = user.account.ibkr_account if user.account else None

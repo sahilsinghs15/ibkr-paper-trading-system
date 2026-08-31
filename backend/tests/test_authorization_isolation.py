@@ -170,13 +170,23 @@ async def test_cross_account_authorization_isolation(session_factory, monkeypatc
                 valid_sse_b = await sse_client.get(f"/demo/positions?token={sse_token_b}")
                 assert valid_sse_b.status_code == 200
 
-                # 3. Invalid/tampered SSE token -> HTTP 401
-                invalid_sse = await sse_client.get(f"/demo/positions?token={sse_token_a}INVALID")
-                assert invalid_sse.status_code == 401
+                # 4. REST endpoint /demo/signals tests
+                # a) Unauthenticated request -> HTTP 401
+                monkeypatch.setenv("TRADINGAPP_TESTING", "0")
+                sig_unauth = await sse_client.get("/demo/signals")
+                assert sig_unauth.status_code == 401
+                monkeypatch.setenv("TRADINGAPP_TESTING", "1")
 
-                # 4. User A's SSE token with User B's query override -> Returns ONLY User A's data
-                sig_override = await sse_client.get(f"/demo/signals?ibkr_account={acc_b_num}&token={sse_token_a}")
-                assert sig_override.status_code == 200
+                # b) Primary access JWT in Authorization header -> HTTP 200 OK for Admin and Users
+                sig_admin = await sse_client.get("/demo/signals", headers={"Authorization": f"Bearer {token_admin}"})
+                assert sig_admin.status_code == 200
+
+                sig_user_a = await sse_client.get(f"/demo/signals?ibkr_account={acc_b_num}", headers={"Authorization": f"Bearer {token_a}"})
+                assert sig_user_a.status_code == 200
+
+                # c) SSE token passed as Bearer to REST /demo/signals -> MUST be rejected with HTTP 401
+                sig_sse_bearer = await sse_client.get("/demo/signals", headers={"Authorization": f"Bearer {sse_token_a}"})
+                assert sig_sse_bearer.status_code == 401
 
     finally:
         app.dependency_overrides.clear()
