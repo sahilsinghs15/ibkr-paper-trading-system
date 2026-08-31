@@ -15,12 +15,24 @@ from pathlib import Path
 
 import httpx
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.services.watchdog.config import WatchdogSettings
 from app.services.watchdog.models import HealthResult, HealthStatus, ServiceName
 
 logger = logging.getLogger(__name__)
+
+
+def _postgres_host_port(settings: WatchdogSettings) -> tuple[str, int]:
+    """Derive PostgreSQL host/port from authoritative DATABASE_URL, fallback to explicit settings."""
+    try:
+        url = make_url(settings.database_url)
+        host = url.host or settings.postgres_host
+        port = url.port or settings.postgres_port
+        return host, int(port)
+    except Exception:
+        return settings.postgres_host, settings.postgres_port
 
 
 class ServiceHealthChecker:
@@ -566,8 +578,7 @@ class PostgresHealthChecker(ServiceHealthChecker):
         self.settings = settings
 
     async def check(self) -> HealthResult:
-        host = self.settings.postgres_host
-        port = self.settings.postgres_port
+        host, port = _postgres_host_port(self.settings)
         if not await _tcp_open_async(host, port, timeout=1.0):
             return HealthResult(
                 service=ServiceName.POSTGRES,

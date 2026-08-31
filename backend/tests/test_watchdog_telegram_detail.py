@@ -145,7 +145,7 @@ def test_demo_redis_degraded():
 
 
 def test_postgres_tcp_vs_sql():
-    s = WatchdogSettings(postgres_port=19999)
+    s = WatchdogSettings(postgres_port=19999, database_url="postgresql+asyncpg://root:root123@localhost:19999/ibkr_trading")
     checker = PostgresHealthChecker(s)
 
     async def _run():
