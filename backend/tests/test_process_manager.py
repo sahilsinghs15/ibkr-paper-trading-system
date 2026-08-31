@@ -9,11 +9,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-import os
-import tempfile
-_tmp_log_dir = tempfile.mkdtemp()
-os.environ["STORAGE_LOG_ROOT"] = _tmp_log_dir
-
 _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
