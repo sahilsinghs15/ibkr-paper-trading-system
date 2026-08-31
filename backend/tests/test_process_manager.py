@@ -9,6 +9,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import os
+import tempfile
+_tmp_log_dir = tempfile.mkdtemp()
+os.environ["STORAGE_LOG_ROOT"] = _tmp_log_dir
+
 _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
@@ -217,3 +222,105 @@ class TestParseCliGroups:
     def test_unknown_group_exits(self) -> None:
         with pytest.raises(SystemExit):
             pm.parse_cli_groups(["nope"])
+
+
+class TestEnsureDemoStreamingReconnected:
+    def test_fastapi_disabled_does_nothing(self, monkeypatch) -> None:
+        sup = pm.Supervisor(enabled=frozenset({"webhook"}))
+        called = False
+
+        def mock_run(*args, **kwargs):
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(pm.subprocess, "run", mock_run)
+        sup._ensure_demo_streaming_reconnected()
+        assert called is False
+
+    def test_fastapi_dead_does_nothing(self, monkeypatch) -> None:
+        sup = pm.Supervisor(enabled=frozenset({"fastapi"}))
+        monkeypatch.setattr(sup.fastapi, "is_alive", lambda: False)
+        called = False
+
+        def mock_run(*args, **kwargs):
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(pm.subprocess, "run", mock_run)
+        sup._ensure_demo_streaming_reconnected()
+        assert called is False
+
+    def test_fastapi_unhealthy_does_nothing(self, monkeypatch) -> None:
+        sup = pm.Supervisor(enabled=frozenset({"fastapi"}))
+        monkeypatch.setattr(sup.fastapi, "is_alive", lambda: True)
+        monkeypatch.setattr(pm, "fastapi_healthy", lambda: False)
+        called = False
+
+        def mock_run(*args, **kwargs):
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(pm.subprocess, "run", mock_run)
+        sup._ensure_demo_streaming_reconnected()
+        assert called is False
+
+    def test_restarts_on_new_healthy_epoch(self, monkeypatch) -> None:
+        sup = pm.Supervisor(enabled=frozenset({"fastapi"}))
+        sup._fastapi_epoch = 1
+        sup._demo_restarted_epoch = 0
+        monkeypatch.setattr(sup.fastapi, "is_alive", lambda: True)
+        monkeypatch.setattr(pm, "fastapi_healthy", lambda: True)
+
+        cmd_run = []
+
+        class MockCompletedProcess:
+            returncode = 0
+            stderr = ""
+
+        def mock_run(cmd, **kwargs):
+            cmd_run.append(cmd)
+            return MockCompletedProcess()
+
+        monkeypatch.setattr(pm.subprocess, "run", mock_run)
+        sup._ensure_demo_streaming_reconnected()
+
+        assert cmd_run == [["sudo", "/usr/bin/systemctl", "restart", "demo-streaming.service"]]
+        assert sup._demo_restarted_epoch == 1
+
+        # Second invocation in same epoch does nothing
+        cmd_run.clear()
+        sup._ensure_demo_streaming_reconnected()
+        assert cmd_run == []
+        assert sup._demo_restarted_epoch == 1
+
+    def test_failed_restart_does_not_update_epoch(self, monkeypatch) -> None:
+        sup = pm.Supervisor(enabled=frozenset({"fastapi"}))
+        sup._fastapi_epoch = 1
+        sup._demo_restarted_epoch = 0
+        monkeypatch.setattr(sup.fastapi, "is_alive", lambda: True)
+        monkeypatch.setattr(pm, "fastapi_healthy", lambda: True)
+
+        class MockFailedProcess:
+            returncode = 1
+            stderr = "Permission denied"
+
+        monkeypatch.setattr(pm.subprocess, "run", lambda cmd, **kwargs: MockFailedProcess())
+        sup._ensure_demo_streaming_reconnected()
+
+        assert sup._demo_restarted_epoch == 0
+
+    def test_exception_does_not_crash(self, monkeypatch) -> None:
+        sup = pm.Supervisor(enabled=frozenset({"fastapi"}))
+        sup._fastapi_epoch = 1
+        sup._demo_restarted_epoch = 0
+        monkeypatch.setattr(sup.fastapi, "is_alive", lambda: True)
+        monkeypatch.setattr(pm, "fastapi_healthy", lambda: True)
+
+        def mock_raise(*args, **kwargs):
+            raise TimeoutError("Command timed out")
+
+        monkeypatch.setattr(pm.subprocess, "run", mock_raise)
+        # Must not raise exception
+        sup._ensure_demo_streaming_reconnected()
+        assert sup._demo_restarted_epoch == 0
+

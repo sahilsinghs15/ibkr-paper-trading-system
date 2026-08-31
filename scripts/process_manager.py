@@ -64,9 +64,9 @@ from zoneinfo import ZoneInfo
 # Configuration -- adjust paths/ports here
 # ---------------------------------------------------------------------------
 
-HOME = "/home/tradingapp"
+HOME = os.environ.get("HOME_DIR", "/home/tradingapp")
 # Same tree as app.core.logger: storage/logs/{YYYY-MM-DD}/{name}.log
-STORAGE_LOG_ROOT = Path(f"{HOME}/storage/logs")
+STORAGE_LOG_ROOT = Path(os.environ.get("STORAGE_LOG_ROOT", f"{HOME}/storage/logs"))
 
 BACKEND_DIR = f"{HOME}/app/backend"
 VENV_PYTHON = f"{BACKEND_DIR}/.venv/bin/python"
@@ -563,6 +563,7 @@ class Supervisor:
         self._gateway_log_path = dated_log_dir() / "ib_gateway.log"
         self._gateway_epoch = 0
         self._fastapi_epoch = 0
+        self._demo_restarted_epoch = 0
 
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
@@ -646,6 +647,39 @@ class Supervisor:
             self.fastapi.terminate(grace_sec=5)
         self.fastapi.start()
         self._fastapi_epoch = self._gateway_epoch
+
+    def _ensure_demo_streaming_reconnected(self):
+        """Restart demo-streaming.service once when FastAPI is healthy for the current epoch."""
+        if not self._fastapi_enabled or not self.fastapi.is_alive():
+            return
+        if self._demo_restarted_epoch == self._fastapi_epoch:
+            return
+        if fastapi_healthy():
+            log.info(
+                "FastAPI is healthy — restarting demo-streaming.service for epoch %d",
+                self._fastapi_epoch,
+            )
+            try:
+                res = subprocess.run(
+                    ["sudo", "/usr/bin/systemctl", "restart", "demo-streaming.service"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if res.returncode == 0:
+                    log.info(
+                        "Successfully restarted demo-streaming.service for FastAPI epoch %d",
+                        self._fastapi_epoch,
+                    )
+                    self._demo_restarted_epoch = self._fastapi_epoch
+                else:
+                    log.error(
+                        "Failed to restart demo-streaming.service (code %d): %s",
+                        res.returncode,
+                        res.stderr.strip() if res.stderr else "no stderr",
+                    )
+            except Exception as exc:
+                log.error("Exception invoking systemctl restart demo-streaming.service: %s", exc)
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -804,6 +838,9 @@ class Supervisor:
                 log.debug(
                     "Trading FastAPI process alive but port not yet accepting connections"
                 )
+
+            if self.fastapi.is_alive() and fastapi_healthy():
+                self._ensure_demo_streaming_reconnected()
 
     def run(self):
         log.info(
