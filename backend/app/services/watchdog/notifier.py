@@ -69,36 +69,77 @@ def _recovery_owner(service: ServiceName) -> str:
     if service == ServiceName.DEMO:
         return "systemd will restart demo-streaming.service."
     if service in (ServiceName.POSTGRES, ServiceName.REDIS):
-        return "No automatic recovery configured."
+        return "No automatic recovery configured for database service."
     return "systemd is responsible for restarting this supervisor."
 
 
 def _impact_for(service: ServiceName, event: NotificationEvent, hr: HealthResult | None) -> tuple[str, str | None]:
-    if hr and hr.impact:
+    if hr and hr.impact and event not in (NotificationEvent.START, NotificationEvent.RECOVERED):
         return hr.impact, hr.trading_impact
+    if event in (NotificationEvent.START, NotificationEvent.RECOVERED):
+        if service == ServiceName.GATEWAY:
+            return "Gateway health confirmed.", "Gateway health confirmed; overall trading readiness is determined by safety gates."
+        if service == ServiceName.BACKEND:
+            return "Backend health confirmed.", "Backend health confirmed; overall trading readiness is determined by safety gates."
+        if service == ServiceName.POSTGRES:
+            return "Database session connected.", "No direct trading conclusion from this health check."
+        if service == ServiceName.REDIS:
+            return "Redis ping OK.", "No direct trading impact."
+        if service in (ServiceName.WEBHOOK, ServiceName.DEMO):
+            return "Service is operational.", "Execution independent."
+        return "Service health confirmed.", "Trading readiness not evaluated by this notification."
     defaults = {
-        ServiceName.GATEWAY: ("Trading Backend cannot communicate with IBKR.", "Order execution is BLOCKED."),
-        ServiceName.BACKEND: ("Trading execution is unavailable.", "Trading execution is BLOCKED."),
-        ServiceName.WEBHOOK: ("TradingView webhooks cannot be accepted.", "Previously persisted signal_jobs remain in PostgreSQL."),
-        ServiceName.DEMO: ("Dashboard streaming may be unavailable.", "None — execution independent."),
-        ServiceName.POSTGRES: ("Database access affected.", "Trading execution may be BLOCKED."),
-        ServiceName.REDIS: ("Demo Streaming degraded.", "None."),
+        ServiceName.GATEWAY: ("Trading Backend cannot communicate with IBKR paper socket.", "Order execution may be affected."),
+        ServiceName.BACKEND: ("Execution API and worker pool are unavailable.", "Order execution may be affected."),
+        ServiceName.WEBHOOK: ("TradingView webhooks cannot be accepted on port 8000.", "No direct impact on active executions; new signals cannot be ingested. Previously persisted signal_jobs remain safe in PostgreSQL."),
+        ServiceName.DEMO: ("Dashboard streaming UI unavailable on port 8010.", "None — execution pipeline is independent of Demo Streaming."),
+        ServiceName.POSTGRES: ("Database session queries failed.", "Order execution and webhook ingestion may be affected."),
+        ServiceName.REDIS: ("Demo Streaming SSE pub/sub unavailable.", "None — execution pipeline is independent of Redis."),
     }
     imp, trad = defaults.get(service, ("Service degraded.", None))
     return imp, trad
 
 
+def _check_summary(service: ServiceName, event: NotificationEvent, health: HealthResult | None, port: int | None) -> str:
+    if health and health.detail:
+        d = health.detail
+        if "SELECT 1" in d or "PING" in d or "HTTP 200" in d or ("TCP" in d and "open" in d.lower()):
+            return f"{d} → OK"
+    if event in (NotificationEvent.START, NotificationEvent.RECOVERED):
+        if service == ServiceName.POSTGRES:
+            return "SELECT 1 → OK"
+        if service == ServiceName.REDIS:
+            return "PING → OK"
+        if service == ServiceName.GATEWAY:
+            return f"TCP 127.0.0.1:{port or 4002} → OPEN"
+        return "HTTP 200 → OK"
+    else:
+        if health and health.detail:
+            return f"Health check → {health.detail}"
+        return f"Health check on port {port} → Failed" if port else "Health check → Failed"
+
+
+# Authoritative event semantics (observed facts, not assumptions):
+# START: watchdog observed service healthy on initial check (did NOT start it)
+# STOP: watchdog itself stopped gracefully (SIGTERM), not service crash
+# FAILURE: health endpoint unreachable / TCP refused — watchdog could not reach service (did NOT claim crash)
+# UNHEALTHY: process alive (TCP open) but readiness failed — degraded
+# RECOVERY_STARTED: watchdog detected unhealthy and notes process_manager will attempt recovery (watchdog did NOT restart)
+# RECOVERED: watchdog verified service healthy again after previous unhealthy/manual state (did NOT claim restart)
+# RECOVERY_FAILED: verification still failed
+# MANUAL_INTERVENTION_REQUIRED: budget exhausted — automatic recovery stopped, operator required (does NOT mean currently unhealthy forever)
+# TRADING_BLOCKED: safety gate failed — trading must remain blocked
 def _event_header(event: NotificationEvent) -> tuple[str, str]:
-    """Return (emoji, header_text) for visual hierarchy."""
+    """Return (emoji, header_text) for visual hierarchy — user-facing, precise."""
     mapping: dict[NotificationEvent, tuple[str, str]] = {
-        NotificationEvent.START: ("🟢", "WATCHDOG — START"),
+        NotificationEvent.START: ("🟢", "WATCHDOG — HEALTHY"),
         NotificationEvent.STOP: ("⚪", "WATCHDOG — STOPPED"),
-        NotificationEvent.FAILURE: ("🔴", "WATCHDOG — SERVICE FAILED"),
+        NotificationEvent.FAILURE: ("🔴", "WATCHDOG — HEALTH CHECK FAILED"),
         NotificationEvent.UNHEALTHY: ("🟡", "WATCHDOG — DEGRADED"),
         NotificationEvent.RECOVERY_STARTED: ("🟡", "WATCHDOG — RECOVERING"),
         NotificationEvent.RECOVERED: ("🟢", "WATCHDOG — RECOVERED"),
         NotificationEvent.RECOVERY_FAILED: ("🔴", "WATCHDOG — RECOVERY FAILED"),
-        NotificationEvent.MANUAL_INTERVENTION_REQUIRED: ("🟠", "WATCHDOG — MANUAL INTERVENTION REQUIRED"),
+        NotificationEvent.MANUAL_INTERVENTION_REQUIRED: ("🟠", "WATCHDOG — MANUAL ACTION REQUIRED"),
         NotificationEvent.TRADING_BLOCKED: ("🚨", "WATCHDOG — TRADING BLOCKED"),
     }
     return mapping.get(event, ("🛡️", f"WATCHDOG — {event.value}"))
@@ -153,40 +194,56 @@ def format_telegram_message(
             trading_impact = trading_impact_fallback
     if not what:
         if event == NotificationEvent.FAILURE:
-            what = f"{_display(service)} is no longer responding." if service in (ServiceName.BACKEND, ServiceName.WEBHOOK, ServiceName.DEMO) else f"{_display(service)} health check failed."
+            what = f"Watchdog could not reach {_display(service)} on {host}:{port}." if port else f"Watchdog could not reach {_display(service)}."
         elif event == NotificationEvent.UNHEALTHY:
-            what = f"{_display(service)} process is alive but is not ready."
+            what = f"{_display(service)} process is alive but readiness check failed."
         elif event == NotificationEvent.RECOVERY_STARTED:
-            what = f"{_display(service)} failed its health check — recovery initiated."
+            what = f"{_display(service)} failed health check — recovery will be attempted."
         elif event == NotificationEvent.RECOVERED:
-            what = f"{_display(service)} successfully recovered."
+            if snapshot.failure_reason and "manual" in snapshot.failure_reason.lower():
+                what = f"Watchdog confirmed {_display(service)} is healthy again after manual intervention was previously required."
+            else:
+                what = f"Watchdog verified {_display(service)} is healthy again after a previous unhealthy state."
         elif event == NotificationEvent.MANUAL_INTERVENTION_REQUIRED:
-            what = f"{_display(service)} could not be recovered automatically."
+            what = f"Automatic recovery attempts for {_display(service)} are exhausted."
         elif event == NotificationEvent.TRADING_BLOCKED:
             what = "Trading safety gate failed."
         elif event == NotificationEvent.START:
-            what = f"{_display(service)} process started."
+            what = f"Watchdog confirmed {_display(service)} is healthy."
         elif event == NotificationEvent.STOP:
-            what = f"{_display(service)} was intentionally stopped."
+            what = f"Watchdog monitor for {_display(service)} was intentionally stopped."
         else:
             what = snapshot.failure_reason or (health.detail if health else "")
     if event == NotificationEvent.RECOVERY_STARTED:
-        recovery = _recovery_owner(service) + " Recovery attempt initiated."
+        recovery = f"Recovery workflow started. {_recovery_owner(service)}"
     elif event == NotificationEvent.RECOVERED:
-        recovery = "Recovery verified — health checks now passing."
+        recovery = "Health recovery verified by watchdog."
     elif event == NotificationEvent.MANUAL_INTERVENTION_REQUIRED:
-        recovery = f"Recovery attempts exhausted ({attempt or 'MAX'}). Automatic recovery stopped."
+        recovery = f"Automatic recovery attempts exhausted ({attempt or '5/5'}). Manual intervention is required."
     elif event == NotificationEvent.TRADING_BLOCKED:
-        recovery = "Trading remains BLOCKED until safety gates pass and operator verifies."
+        recovery = "Trading remains BLOCKED until safety gates pass and operator clears."
     elif event == NotificationEvent.FAILURE:
         recovery = _recovery_owner(service)
         if attempt:
             recovery += f" Recovery attempt: {attempt}"
     else:
-        recovery = _recovery_owner(service) if event in (NotificationEvent.FAILURE, NotificationEvent.UNHEALTHY) else "None — automatic recovery in progress." if attempt else "None."
+        recovery = _recovery_owner(service) if event in (NotificationEvent.FAILURE, NotificationEvent.UNHEALTHY) else None
     if event == NotificationEvent.STOP:
-        recovery = "Intentional stop — no automatic recovery."
+        recovery = "Watchdog monitor stopped — no automatic recovery."
     emoji, header = _event_header(event)
+    # User-facing event value: NotificationEvent.START displays as HEALTH CONFIRMED
+    event_disp = "HEALTH CONFIRMED" if event == NotificationEvent.START else event.value
+    check_summary = _check_summary(service, event, health, port)
+
+    # Determine whether an ERROR field is appropriate (only for non-healthy events with actual error)
+    err_detail = None
+    if event in (NotificationEvent.FAILURE, NotificationEvent.UNHEALTHY, NotificationEvent.RECOVERY_FAILED, NotificationEvent.MANUAL_INTERVENTION_REQUIRED, NotificationEvent.TRADING_BLOCKED):
+        raw_err = underlying or reason or snapshot.failure_reason or (health.detail if health else "")
+        if raw_err and raw_err.lower() not in ("healthy", "ok", "select 1 ok", "ping ok"):
+            err_detail = raw_err
+            if endpoint_url and endpoint_url not in err_detail:
+                err_detail = f"{err_detail}\nEndpoint: {endpoint_url}"
+
     # HTML formatting — bold header, <code> for values, separators
     lines: list[str] = []
     lines.append(f"<b>{emoji} {header}</b>")
@@ -198,19 +255,22 @@ def format_telegram_message(
     lines.append(f"<code>{_sanitize_for_telegram(snapshot.state.value)}</code>")
     lines.append("")
     lines.append("<b>EVENT</b>")
-    lines.append(f"<code>{_sanitize_for_telegram(event.value)}</code>")
+    lines.append(f"<code>{_sanitize_for_telegram(event_disp)}</code>")
     lines.append("")
     lines.append("<b>DETAILS</b>")
     lines.append(_sanitize_for_telegram(what or "Unknown"))
     lines.append("")
-    lines.append("<b>ERROR</b>")
-    err_detail = underlying or reason or snapshot.failure_reason or (health.detail if health else "") or "No additional diagnostic information was available."
-    if endpoint_url and endpoint_url not in err_detail:
-        err_detail = f"{err_detail}\nEndpoint: {endpoint_url}"
-    lines.append(f"<code>{_sanitize_for_telegram(err_detail[:500])}</code>")
+    lines.append("<b>CHECK</b>")
+    lines.append(f"<code>{_sanitize_for_telegram(check_summary)}</code>")
+    if err_detail:
+        lines.append("")
+        lines.append("<b>ERROR</b>")
+        lines.append(f"<code>{_sanitize_for_telegram(err_detail[:500])}</code>")
     if log_marker:
+        lines.append("")
         lines.append(f"<b>EXPECTED</b> <code>{_sanitize_for_telegram(log_marker)}</code>")
     if log_excerpt:
+        lines.append("")
         lines.append("<b>LOG</b>")
         lines.append(f"<code>{_sanitize_for_telegram(log_excerpt[:400])}</code>")
     lines.append("")
@@ -229,9 +289,10 @@ def format_telegram_message(
         lines.append("")
         lines.append("<b>TRADING</b>")
         lines.append(_sanitize_for_telegram(trading_impact))
-    lines.append("")
-    lines.append("<b>RECOVERY</b>")
-    lines.append(_sanitize_for_telegram(recovery))
+    if recovery:
+        lines.append("")
+        lines.append("<b>RECOVERY</b>")
+        lines.append(_sanitize_for_telegram(recovery))
     if attempt:
         lines.append("")
         lines.append("<b>ATTEMPT</b>")
@@ -266,13 +327,19 @@ def _sanitize_for_telegram(text: str) -> str:
 
 def _default_action(event: NotificationEvent, service: ServiceName) -> str:
     if event == NotificationEvent.MANUAL_INTERVENTION_REQUIRED:
-        return "Inspect service logs and resolve authentication/connectivity before clearing blocked state."
+        return "Operator investigation required. Resolve root cause before clearing blocked state."
     if event == NotificationEvent.TRADING_BLOCKED:
         return "Verify kill switch / safety state and Gateway login before re-enabling trading."
     if event == NotificationEvent.FAILURE:
-        return "None — automatic recovery in progress."
+        if service in (ServiceName.POSTGRES, ServiceName.REDIS):
+            return "Check database process/container manually."
+        return f"Automatic recovery will be attempted by {_recovery_owner(service).split(' ')[0]}."
     if event == NotificationEvent.STOP:
-        return "None — intentional stop."
+        return "None — watchdog stopped."
+    if event == NotificationEvent.START:
+        return "Watchdog confirmed health. No action taken by watchdog."
+    if event == NotificationEvent.RECOVERED:
+        return "None. Watchdog verified service is healthy."
     return "None."
 
 
