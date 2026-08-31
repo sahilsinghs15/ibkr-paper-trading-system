@@ -225,102 +225,71 @@ class TestParseCliGroups:
 
 
 class TestEnsureDemoStreamingReconnected:
-    def test_fastapi_disabled_does_nothing(self, monkeypatch) -> None:
+    def test_fastapi_disabled_does_nothing(self, tmp_path, monkeypatch) -> None:
+        trigger_path = tmp_path / "restart_demo.trigger"
+        monkeypatch.setattr(pm, "DEMO_RESTART_TRIGGER_FILE", trigger_path)
         sup = pm.Supervisor(enabled=frozenset({"webhook"}))
-        called = False
-
-        def mock_run(*args, **kwargs):
-            nonlocal called
-            called = True
-
-        monkeypatch.setattr(pm.subprocess, "run", mock_run)
         sup._ensure_demo_streaming_reconnected()
-        assert called is False
+        assert trigger_path.exists() is False
 
-    def test_fastapi_dead_does_nothing(self, monkeypatch) -> None:
+    def test_fastapi_dead_does_nothing(self, tmp_path, monkeypatch) -> None:
+        trigger_path = tmp_path / "restart_demo.trigger"
+        monkeypatch.setattr(pm, "DEMO_RESTART_TRIGGER_FILE", trigger_path)
         sup = pm.Supervisor(enabled=frozenset({"fastapi"}))
         monkeypatch.setattr(sup.fastapi, "is_alive", lambda: False)
-        called = False
-
-        def mock_run(*args, **kwargs):
-            nonlocal called
-            called = True
-
-        monkeypatch.setattr(pm.subprocess, "run", mock_run)
         sup._ensure_demo_streaming_reconnected()
-        assert called is False
+        assert trigger_path.exists() is False
 
-    def test_fastapi_unhealthy_does_nothing(self, monkeypatch) -> None:
+    def test_fastapi_unhealthy_does_nothing(self, tmp_path, monkeypatch) -> None:
+        trigger_path = tmp_path / "restart_demo.trigger"
+        monkeypatch.setattr(pm, "DEMO_RESTART_TRIGGER_FILE", trigger_path)
         sup = pm.Supervisor(enabled=frozenset({"fastapi"}))
         monkeypatch.setattr(sup.fastapi, "is_alive", lambda: True)
         monkeypatch.setattr(pm, "fastapi_healthy", lambda: False)
-        called = False
-
-        def mock_run(*args, **kwargs):
-            nonlocal called
-            called = True
-
-        monkeypatch.setattr(pm.subprocess, "run", mock_run)
         sup._ensure_demo_streaming_reconnected()
-        assert called is False
+        assert trigger_path.exists() is False
 
-    def test_restarts_on_new_healthy_epoch(self, monkeypatch) -> None:
+    def test_touches_trigger_on_new_healthy_epoch(self, tmp_path, monkeypatch) -> None:
+        trigger_path = tmp_path / "restart_demo.trigger"
+        monkeypatch.setattr(pm, "DEMO_RESTART_TRIGGER_FILE", trigger_path)
         sup = pm.Supervisor(enabled=frozenset({"fastapi"}))
         sup._fastapi_epoch = 1
         sup._demo_restarted_epoch = 0
         monkeypatch.setattr(sup.fastapi, "is_alive", lambda: True)
         monkeypatch.setattr(pm, "fastapi_healthy", lambda: True)
 
-        cmd_run = []
-
-        class MockCompletedProcess:
-            returncode = 0
-            stderr = ""
-
-        def mock_run(cmd, **kwargs):
-            cmd_run.append(cmd)
-            return MockCompletedProcess()
-
-        monkeypatch.setattr(pm.subprocess, "run", mock_run)
         sup._ensure_demo_streaming_reconnected()
 
-        assert cmd_run == [["sudo", "/usr/bin/systemctl", "restart", "demo-streaming.service"]]
+        assert trigger_path.exists() is True
         assert sup._demo_restarted_epoch == 1
 
-        # Second invocation in same epoch does nothing
-        cmd_run.clear()
+        # Second invocation in same epoch does not touch file again
+        mtime_before = trigger_path.stat().st_mtime
         sup._ensure_demo_streaming_reconnected()
-        assert cmd_run == []
         assert sup._demo_restarted_epoch == 1
+        assert trigger_path.stat().st_mtime == mtime_before
 
-    def test_failed_restart_does_not_update_epoch(self, monkeypatch) -> None:
+    def test_trigger_file_error_does_not_update_epoch(self, tmp_path, monkeypatch) -> None:
+        trigger_path = tmp_path / "non_existent_dir" / "restart_demo.trigger"
+        monkeypatch.setattr(pm, "DEMO_RESTART_TRIGGER_FILE", trigger_path)
         sup = pm.Supervisor(enabled=frozenset({"fastapi"}))
         sup._fastapi_epoch = 1
         sup._demo_restarted_epoch = 0
         monkeypatch.setattr(sup.fastapi, "is_alive", lambda: True)
         monkeypatch.setattr(pm, "fastapi_healthy", lambda: True)
 
-        class MockFailedProcess:
-            returncode = 1
-            stderr = "Permission denied"
+        def mock_mkdir_raise(*args, **kwargs):
+            raise OSError("Read-only filesystem")
 
-        monkeypatch.setattr(pm.subprocess, "run", lambda cmd, **kwargs: MockFailedProcess())
+        monkeypatch.setattr(Path, "mkdir", mock_mkdir_raise)
         sup._ensure_demo_streaming_reconnected()
 
         assert sup._demo_restarted_epoch == 0
 
-    def test_exception_does_not_crash(self, monkeypatch) -> None:
-        sup = pm.Supervisor(enabled=frozenset({"fastapi"}))
-        sup._fastapi_epoch = 1
-        sup._demo_restarted_epoch = 0
-        monkeypatch.setattr(sup.fastapi, "is_alive", lambda: True)
-        monkeypatch.setattr(pm, "fastapi_healthy", lambda: True)
+    def test_no_sudo_used_in_demo_restart(self) -> None:
+        import inspect
+        code = inspect.getsource(pm.Supervisor._ensure_demo_streaming_reconnected)
+        assert "sudo" not in code
+        assert "systemctl" not in code
 
-        def mock_raise(*args, **kwargs):
-            raise TimeoutError("Command timed out")
-
-        monkeypatch.setattr(pm.subprocess, "run", mock_raise)
-        # Must not raise exception
-        sup._ensure_demo_streaming_reconnected()
-        assert sup._demo_restarted_epoch == 0
 

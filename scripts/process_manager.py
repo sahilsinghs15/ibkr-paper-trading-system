@@ -67,6 +67,7 @@ from zoneinfo import ZoneInfo
 HOME = os.environ.get("HOME_DIR", "/home/tradingapp")
 # Same tree as app.core.logger: storage/logs/{YYYY-MM-DD}/{name}.log
 STORAGE_LOG_ROOT = Path(os.environ.get("STORAGE_LOG_ROOT", f"{HOME}/storage/logs"))
+DEMO_RESTART_TRIGGER_FILE = Path(os.environ.get("DEMO_RESTART_TRIGGER_FILE", f"{HOME}/storage/state/restart_demo.trigger"))
 
 BACKEND_DIR = f"{HOME}/app/backend"
 VENV_PYTHON = f"{BACKEND_DIR}/.venv/bin/python"
@@ -668,37 +669,27 @@ class Supervisor:
         self._fastapi_epoch = self._gateway_epoch
 
     def _ensure_demo_streaming_reconnected(self):
-        """Restart demo-streaming.service once when FastAPI is healthy for the current epoch."""
+        """Trigger demo-streaming.service restart once when FastAPI is healthy for current epoch."""
         if not self._fastapi_enabled or not self.fastapi.is_alive():
             return
         if self._demo_restarted_epoch == self._fastapi_epoch:
             return
         if fastapi_healthy():
             log.info(
-                "FastAPI is healthy — restarting demo-streaming.service for epoch %d",
+                "FastAPI is healthy — triggering demo-streaming.service restart via trigger file for epoch %d",
                 self._fastapi_epoch,
             )
             try:
-                res = subprocess.run(
-                    ["sudo", "/usr/bin/systemctl", "restart", "demo-streaming.service"],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
+                DEMO_RESTART_TRIGGER_FILE.parent.mkdir(parents=True, exist_ok=True)
+                DEMO_RESTART_TRIGGER_FILE.touch()
+                log.info(
+                    "Successfully touched demo streaming restart trigger file %s for FastAPI epoch %d",
+                    DEMO_RESTART_TRIGGER_FILE,
+                    self._fastapi_epoch,
                 )
-                if res.returncode == 0:
-                    log.info(
-                        "Successfully restarted demo-streaming.service for FastAPI epoch %d",
-                        self._fastapi_epoch,
-                    )
-                    self._demo_restarted_epoch = self._fastapi_epoch
-                else:
-                    log.error(
-                        "Failed to restart demo-streaming.service (code %d): %s",
-                        res.returncode,
-                        res.stderr.strip() if res.stderr else "no stderr",
-                    )
+                self._demo_restarted_epoch = self._fastapi_epoch
             except Exception as exc:
-                log.error("Exception invoking systemctl restart demo-streaming.service: %s", exc)
+                log.error("Exception touching demo streaming restart trigger file: %s", exc)
 
     # -- lifecycle ----------------------------------------------------------
 
