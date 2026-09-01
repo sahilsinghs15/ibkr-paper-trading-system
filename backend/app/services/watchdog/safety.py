@@ -51,11 +51,17 @@ class SafetyGateChecker:
                     overall = data.get("overall_status", "")
                     if overall == "CRITICAL":
                         alerts = data.get("alerts", [])
+                        crit_failures: list[str] = []
                         for a in alerts:
+                            lvl = a.get("level", "")
                             comp = a.get("component", "")
-                            if comp in ("IB Gateway", "PostgreSQL"):
-                                failures.append(f"system-monitor CRITICAL: {a.get('message','')}")
-                        gates["system_monitor"] = "UNSAFE" if failures else "UNKNOWN"
+                            msg = a.get("message", "")
+                            if lvl == "CRITICAL":
+                                crit_failures.append(f"system-monitor CRITICAL [{comp}]: {msg}")
+                        if not crit_failures:
+                            crit_failures.append("system-monitor reported CRITICAL status")
+                        failures.extend(crit_failures)
+                        gates["system_monitor"] = "UNSAFE"
                     else:
                         gates["system_monitor"] = "SAFE"
         except Exception as exc:  # noqa: BLE001

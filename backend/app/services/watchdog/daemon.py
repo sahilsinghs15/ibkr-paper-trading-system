@@ -116,6 +116,8 @@ class WatchdogDaemon:
         self._command_task: asyncio.Task | None = None
         self._telegram_offset: int | None = None
         self.resource_monitor = ResourceMonitor(self.settings)
+        self.safety_blocked: bool = False
+        self.last_safety_gate_result: SafetyGateResult | None = None
 
         # health checkers
         self.checkers = {
@@ -209,28 +211,14 @@ class WatchdogDaemon:
             # Override failure reason to honest expected-stop message (don't count as failure)
             snap.failure_reason = "outside trading window 09:30-16:00 ET (market closed) – service intentionally stopped"
 
-        # Safety gate: trading-critical services must have all gates SAFE to be READY
-        # Check whenever health is healthy, not only after failure, to avoid claiming READY when blocked
-        # Skip safety check when market is closed globally — no trading anyway, so don't mark postgres healthy as TRADING_BLOCKED
-        safety_blocked = False
-        if not global_market_closed and svc in TRADING_CRITICAL and not health_failed and not health_degraded:
-            # Always verify safety gates for trading-critical healthy checks
-            # To avoid excessive load, we still check every time (cheap HTTP), but could cache briefly
-            gate = await self.safety.check()
-            if not gate.passed:
-                safety_blocked = True
-                snap.failure_reason = "safety gate: " + "; ".join(gate.failures)
-            else:
-                # gates passed — clear any previous safety failure reason if it was stale
-                if snap.failure_reason.startswith("safety gate:"):
-                    snap.failure_reason = ""
-
-        # State transition — with safety_blocked and market_closed considered
-        nxt = next_state(snap, health_failed=health_failed, health_degraded=health_degraded, safety_trading_blocked=safety_blocked, is_market_closed=is_market_closed)
-        # If safety blocked but state machine returned HEALTHY (should not happen after our change),
-        # ensure we go to TRADING_BLOCKED
-        if safety_blocked and nxt == ServiceState.HEALTHY:
-            nxt = ServiceState.TRADING_BLOCKED
+        # State transition — honest service health (not mutated by safety gate)
+        nxt = next_state(
+            snap,
+            health_failed=health_failed,
+            health_degraded=health_degraded,
+            safety_trading_blocked=False,
+            is_market_closed=is_market_closed,
+        )
         # If market closed, never go to FAILED/RECOVERING — ensures no recovery attempts during expected downtime
         if is_market_closed and health_failed and nxt in (ServiceState.FAILED, ServiceState.RECOVERING, ServiceState.VERIFYING):
             nxt = ServiceState.MARKET_CLOSED
@@ -487,6 +475,61 @@ class WatchdogDaemon:
             except TimeoutError:
                 continue
 
+    async def _check_safety_gates(self) -> None:
+        """Evaluate system trading safety gates once per loop and notify on transitions."""
+        global_market_closed = (not _is_trading_session()) if self.settings.market_closed_enabled else False
+        if global_market_closed:
+            return
+
+        try:
+            gate = await self.safety.check()
+        except Exception:
+            logger.exception("Failed to check safety gates")
+            return
+
+        self.last_safety_gate_result = gate
+
+        if not gate.passed:
+            if not self.safety_blocked:
+                self.safety_blocked = True
+                reason_str = "; ".join(gate.failures) if gate.failures else gate.details
+                text = format_telegram_message(
+                    service=ServiceName.GATEWAY,
+                    event=NotificationEvent.TRADING_BLOCKED,
+                    snapshot=ServiceSnapshot(service=ServiceName.GATEWAY, state=ServiceState.TRADING_BLOCKED, failure_reason=reason_str),
+                    host=self.settings.watchdog_host,
+                    port=self.settings.gateway_port,
+                    reason=reason_str,
+                )
+                self.notifier.enqueue(ServiceName.GATEWAY, NotificationEvent.TRADING_BLOCKED, text, force=True)
+                logger.warning("WATCHDOG SAFETY GATE BLOCKED: %s", reason_str)
+        else:
+            if self.safety_blocked:
+                self.safety_blocked = False
+                reason_str = "All trading safety gates SAFE."
+                text = format_telegram_message(
+                    service=ServiceName.GATEWAY,
+                    event=NotificationEvent.RECOVERED,
+                    snapshot=ServiceSnapshot(service=ServiceName.GATEWAY, state=ServiceState.HEALTHY, failure_reason=""),
+                    host=self.settings.watchdog_host,
+                    port=self.settings.gateway_port,
+                    reason=reason_str,
+                )
+                self.notifier.enqueue(ServiceName.GATEWAY, NotificationEvent.RECOVERED, text, force=True)
+                logger.info("WATCHDOG SAFETY GATE CLEARED: %s", reason_str)
+
+    async def _check_services(self) -> None:
+        """Run health checks for all services and evaluate safety gates."""
+        for svc in MONITORED_SERVICES:
+            try:
+                await self._check_one(svc)
+            except Exception:
+                logger.exception("Watchdog check failed for %s", svc.value)
+        try:
+            await self._check_safety_gates()
+        except Exception:
+            logger.exception("Watchdog safety gate check failed")
+
     async def _loop(self) -> None:
         logger.info("Watchdog daemon started host=%s interval=%.1fs", self.settings.watchdog_host, self.settings.watchdog_interval_seconds)
         # initial START notifications
@@ -495,12 +538,10 @@ class WatchdogDaemon:
             if snap.state == ServiceState.UNKNOWN:
                 snap.state = ServiceState.STARTING
         while not self._stop.is_set():
-            for svc in MONITORED_SERVICES:
-                try:
-                    await self._check_one(svc)
-                except Exception:
-                    logger.exception("Watchdog check failed for %s", svc.value)
-                # Demo failure must not affect trading — already isolated via separate state
+            try:
+                await self._check_services()
+            except Exception:
+                logger.exception("Watchdog check services failed")
             # Host resources (CPU/RAM/disk/inodes) — hysteresis, only on transition
             try:
                 await self._check_resources()
