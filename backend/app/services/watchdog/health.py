@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from app.core.security import create_access_token
 from app.services.watchdog.config import WatchdogSettings
 from app.services.watchdog.models import HealthResult, HealthStatus, ServiceName
 
@@ -62,10 +63,10 @@ async def _tcp_open_async(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-async def _http_get(url: str, timeout: float = 2.0) -> tuple[bool, str, float | None]:
+async def _http_get(url: str, timeout: float = 3.5, headers: dict[str, str] | None = None) -> tuple[bool, str, float | None]:
     start = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
             resp = await client.get(url)
             elapsed = round((time.perf_counter() - start) * 1000, 1)
             if 200 <= resp.status_code < 300:
@@ -259,86 +260,102 @@ class BackendHealthChecker(ServiceHealthChecker):
     def __init__(self, settings: WatchdogSettings):
         self.settings = settings
 
+    def _get_auth_headers(self) -> dict[str, str]:
+        token = create_access_token({"sub": "1", "role": "admin", "email": "admin@zanrad.com"})
+        return {"Authorization": f"Bearer {token}"}
+
     async def check(self) -> HealthResult:
         host = self.settings.backend_host
         port = self.settings.backend_port
         url = f"http://{host}:{port}/health"
         ready_url = f"http://{host}:{port}/health/ready"
         pid = _find_pid("app.main") or _find_pid("uvicorn")  # best-effort
-        ok, detail, latency = await _http_get(url, timeout=2.0)
+        ok, detail, latency = await _http_get(url, timeout=3.5)
         if ok:
-            # readiness check via /health/ready (preferred) else system-monitor
-            rok, rdetail, rlat = await _http_get(ready_url, timeout=2.0)
-            if not rok:
-                # fallback to system-monitor
-                rok, rdetail, _ = await _http_get(f"http://{host}:{port}/api/v1/system-monitor", timeout=2.0)
-                if not rok:
-                    # alive but readiness unknown — treat as degraded with precise reason
-                    return HealthResult(
-                        service=ServiceName.BACKEND,
-                        status=HealthStatus.DEGRADED,
-                        liveness=HealthStatus.HEALTHY,
-                        readiness=HealthStatus.DEGRADED,
-                        latency_ms=latency,
-                        detail=f"{detail} | readiness {rdetail}",
-                        reason="readiness_failed",
-                        host=host,
-                        port=port,
-                        pid=pid,
-                        endpoint="/health/ready",
-                        endpoint_url=ready_url,
-                        underlying_error=_sanitize(rdetail),
-                        what_happened="Trading Backend process is alive but is not ready for trading.",
-                        impact="Execution API is up but readiness gate failed; trading must remain blocked.",
-                        trading_impact="Trading execution is BLOCKED until readiness passes.",
-                        operator_action="Check backend logs + Gateway/Postgres connectivity; waiting for Gateway recovery if applicable.",
-                    )
-                # system-monitor fallback detail
-            # need to inspect readiness body for degraded reason
-            # fetch ready body to extract reason
-            try:
-                async with httpx.AsyncClient(timeout=2.0) as client:
-                    resp = await client.get(ready_url)
-                    if resp.status_code == 200:
-                        body = resp.json()
-                        if body.get("status") == "degraded":
-                            return HealthResult(
-                                service=ServiceName.BACKEND,
-                                status=HealthStatus.DEGRADED,
-                                liveness=HealthStatus.HEALTHY,
-                                readiness=HealthStatus.DEGRADED,
-                                latency_ms=latency,
-                                detail=_sanitize(str(body)),
-                                reason="readiness_degraded",
-                                host=host,
-                                port=port,
-                                pid=pid,
-                                endpoint="/health/ready",
-                                endpoint_url=ready_url,
-                                underlying_error=_sanitize(str(body.get("reason", ""))),
-                                what_happened="Trading Backend process is alive but is not ready for trading.",
-                                impact="TWS/DB readiness check reported degraded.",
-                                trading_impact="Trading is BLOCKED.",
-                                operator_action="Inspect readiness reason; verify Gateway + PostgreSQL.",
-                            )
-            except Exception:
-                pass
+            # readiness check via /health/ready (preferred)
+            rok, rdetail, rlat = await _http_get(ready_url, timeout=3.5)
+            if rok:
+                # inspect readiness JSON body for degraded status
+                try:
+                    async with httpx.AsyncClient(timeout=3.5) as client:
+                        resp = await client.get(ready_url)
+                        if resp.status_code == 200:
+                            body = resp.json()
+                            if body.get("status") == "degraded":
+                                return HealthResult(
+                                    service=ServiceName.BACKEND,
+                                    status=HealthStatus.DEGRADED,
+                                    liveness=HealthStatus.HEALTHY,
+                                    readiness=HealthStatus.DEGRADED,
+                                    latency_ms=rlat or latency,
+                                    detail=_sanitize(str(body)),
+                                    reason="readiness_degraded",
+                                    host=host,
+                                    port=port,
+                                    pid=pid,
+                                    endpoint="/health/ready",
+                                    endpoint_url=ready_url,
+                                    underlying_error=_sanitize(str(body.get("reason", ""))),
+                                    what_happened="Trading Backend process is alive but reported readiness degraded.",
+                                    impact="TWS/DB readiness check reported degraded.",
+                                    trading_impact="Trading readiness DEGRADED.",
+                                    operator_action="Inspect readiness reason; verify Gateway + PostgreSQL.",
+                                )
+                except Exception:  # noqa: BLE001, S110
+                    pass
+                return HealthResult(
+                    service=ServiceName.BACKEND,
+                    status=HealthStatus.HEALTHY,
+                    liveness=HealthStatus.HEALTHY,
+                    readiness=HealthStatus.HEALTHY,
+                    latency_ms=rlat or latency,
+                    detail=f"HTTP 200 | /health/ready {rdetail}",
+                    reason="healthy",
+                    host=host,
+                    port=port,
+                    pid=pid,
+                    endpoint="/health/ready",
+                    endpoint_url=ready_url,
+                )
+
+            # /health/ready failed/timed out -> fallback to authenticated /api/v1/system-monitor
+            auth_headers = self._get_auth_headers()
+            sys_ok, sys_detail, _ = await _http_get(f"http://{host}:{port}/api/v1/system-monitor", timeout=3.5, headers=auth_headers)
+            if sys_ok:
+                return HealthResult(
+                    service=ServiceName.BACKEND,
+                    status=HealthStatus.HEALTHY,
+                    liveness=HealthStatus.HEALTHY,
+                    readiness=HealthStatus.HEALTHY,
+                    latency_ms=latency,
+                    detail=f"HTTP 200 | fallback system-monitor {sys_detail}",
+                    reason="healthy",
+                    host=host,
+                    port=port,
+                    pid=pid,
+                    endpoint="/health",
+                    endpoint_url=url,
+                )
+
+            # Both readiness and authenticated system-monitor failed -> readiness unconfirmed
             return HealthResult(
                 service=ServiceName.BACKEND,
-                status=HealthStatus.HEALTHY,
+                status=HealthStatus.DEGRADED,
                 liveness=HealthStatus.HEALTHY,
-                readiness=HealthStatus.HEALTHY,
+                readiness=HealthStatus.DEGRADED,
                 latency_ms=latency,
-                detail=detail,
-                reason="healthy",
+                detail=f"{detail} | readiness unconfirmed: {_sanitize(rdetail)}",
+                reason="readiness_unconfirmed",
                 host=host,
                 port=port,
                 pid=pid,
-                endpoint="/health",
-                endpoint_url=url,
-                what_happened="Trading Backend is healthy and ready.",
-                impact="Execution workers can process signal_jobs.",
-                trading_impact="Trading is READY (subject to safety gates).",
+                endpoint="/health/ready",
+                endpoint_url=ready_url,
+                underlying_error=_sanitize(rdetail),
+                what_happened="Trading Backend process is alive, but readiness check was unconfirmed.",
+                impact="Execution API is running. Readiness endpoint timed out or was unconfirmed.",
+                trading_impact="Execution API alive; monitoring readiness unconfirmed.",
+                operator_action="Check backend logs and Gateway/Postgres connectivity.",
             )
         # HTTP failed — distinguish TCP vs HTTP
         if await _tcp_open_async(host, port):

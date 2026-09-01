@@ -211,11 +211,17 @@ class WatchdogDaemon:
             # Override failure reason to honest expected-stop message (don't count as failure)
             snap.failure_reason = "outside trading window 09:30-16:00 ET (market closed) – service intentionally stopped"
 
+        # Transient readiness debounce: require 2 consecutive readiness failures if process liveness is HEALTHY
+        effective_health_degraded = health_degraded
+        if health_degraded and not health_failed and snap.state == ServiceState.HEALTHY:
+            if snap.consecutive_failures < 2:  # first transient readiness check failure
+                effective_health_degraded = False
+
         # State transition — honest service health (not mutated by safety gate)
         nxt = next_state(
             snap,
             health_failed=health_failed,
-            health_degraded=health_degraded,
+            health_degraded=effective_health_degraded,
             safety_trading_blocked=False,
             is_market_closed=is_market_closed,
         )

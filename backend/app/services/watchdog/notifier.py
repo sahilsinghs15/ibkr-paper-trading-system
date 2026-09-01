@@ -234,6 +234,8 @@ def _trading_status_for(service: ServiceName, event: NotificationEvent, health: 
         return "BLOCKED"
     if health:
         from app.services.watchdog.models import HealthStatus as _HS
+        if health.reason == "readiness_unconfirmed":
+            return "MONITORING UNCONFIRMED (execution active)"
         if health.status != _HS.HEALTHY:
             return "BLOCKED"
     if snapshot.state.value in ("TRADING_BLOCKED", "MARKET_CLOSED"):
