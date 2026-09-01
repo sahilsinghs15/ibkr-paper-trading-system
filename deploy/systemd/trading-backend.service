@@ -1,0 +1,27 @@
+[Unit]
+Description=IBKR Trading Backend (FastAPI :8001) — 24/7, triggers Demo on restart
+After=network.target postgresql.service redis-server.service
+Wants=postgresql.service
+Requires=network.target
+
+[Service]
+Type=simple
+User=tradingapp
+WorkingDirectory=/home/tradingapp/app/backend
+EnvironmentFile=/home/tradingapp/app/backend/.env
+ExecStart=/home/tradingapp/app/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
+ExecStartPost=/bin/bash /home/tradingapp/app/scripts/backend-ready-trigger.sh
+Restart=always
+RestartSec=10
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trading-backend
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

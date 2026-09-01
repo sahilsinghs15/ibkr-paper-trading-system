@@ -1,0 +1,27 @@
+[Unit]
+Description=IBKR IB Gateway (Xvfb + IBC) — trading-hours controlled, triggers Backend
+After=network.target
+Wants=network.target
+Before=trading-backend.service
+
+[Service]
+Type=simple
+User=tradingapp
+WorkingDirectory=/home/tradingapp/app
+EnvironmentFile=/home/tradingapp/app/backend/.env
+ExecStart=/bin/bash /home/tradingapp/app/scripts/ibgateway-wrapper.sh
+ExecStopPost=/bin/bash -c 'rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 || true'
+Restart=always
+RestartSec=10
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ibgateway
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

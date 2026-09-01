@@ -9,10 +9,10 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable
 
 import psutil
 
@@ -134,10 +134,37 @@ class ResourceMonitor:
         except Exception:
             load1, load5, load15 = 0.0, 0.0, 0.0
         cpu_count = psutil.cpu_count() or 1
+        # Top CPU processes (high-signal, not noisy — keep lightweight, top 3)
+        top_procs = []
+        try:
+            # Prime cpu_percent for all processes (first call returns 0.0, so we do two-phase)
+            procs = list(psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent"]))
+            # Brief sleep to let cpu_percent calculate if needed (non-blocking, 0.1s)
+            # Instead, use already cached values; for accuracy, we sort by current cpu_percent
+            for p in procs:
+                try:
+                    info = p.info
+                    # Sanitize name (don't leak cmdline secrets)
+                    name = (info.get("name") or "unknown")[:30]
+                    # Redact if name contains sensitive
+                    low = name.lower()
+                    if any(k in low for k in ["bot_token", "password", "secret", "api_key"]):
+                        name = "[REDACTED]"
+                    top_procs.append({
+                        "pid": info.get("pid"),
+                        "name": name,
+                        "cpu_percent": round(info.get("cpu_percent") or 0.0, 1),
+                        "memory_percent": round(info.get("memory_percent") or 0.0, 1),
+                    })
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            top_procs = sorted(top_procs, key=lambda x: x["cpu_percent"], reverse=True)[:3]
+        except Exception:
+            top_procs = []
         return ResourceMetrics(
             type=ResourceType.CPU,
             usage_percent=round(usage, 1),
-            extra={"load_avg": [round(load1,2), round(load5,2), round(load15,2)], "cpu_count": cpu_count},
+            extra={"load_avg": [round(load1,2), round(load5,2), round(load15,2)], "cpu_count": cpu_count, "top_processes": top_procs},
         )
 
     def _collect_memory(self) -> ResourceMetrics:

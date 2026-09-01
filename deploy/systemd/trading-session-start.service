@@ -1,0 +1,10 @@
+[Unit]
+Description=Trading session start — start IB Gateway and Webhook (09:30 ET)
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl start ibgateway.service
+ExecStart=/usr/bin/systemctl start webhook-ingest.service
+# Ensure trading-backend is running (24/7, but start if not)
+ExecStart=/usr/bin/systemctl start trading-backend.service

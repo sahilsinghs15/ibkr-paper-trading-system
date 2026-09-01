@@ -608,6 +608,16 @@ def format_resource_alert(
             lines.append("")
             lines.append("<b>CPU COUNT</b>")
             lines.append(f"<code>{extra['cpu_count']}</code>")
+        if extra.get("top_processes"):
+            lines.append("")
+            lines.append("<b>TOP CPU PROCESSES</b>")
+            lines.append("<code>Top CPU processes at detection</code>")
+            for idx, proc in enumerate(extra["top_processes"][:3], 1):
+                # Sanitize already, but double-check
+                name = _sanitize_for_telegram(str(proc.get("name", "unknown")))
+                pid = proc.get("pid", "?")
+                cpu = proc.get("cpu_percent", 0)
+                lines.append(f"{idx}. <code>{name}</code> — PID <code>{pid}</code> — <code>{cpu:.1f}%</code>")
     lines.append("")
     lines.append("<b>DETAILS</b>")
     if is_recovery:

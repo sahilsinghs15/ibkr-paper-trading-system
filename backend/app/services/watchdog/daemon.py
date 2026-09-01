@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime, time as dtime
+from datetime import UTC, datetime
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 from app.services.watchdog.config import WatchdogSettings, get_watchdog_settings
@@ -30,7 +31,11 @@ from app.services.watchdog.models import (
     ServiceSnapshot,
     ServiceState,
 )
-from app.services.watchdog.notifier import NotificationQueue, format_resource_alert, format_telegram_message
+from app.services.watchdog.notifier import (
+    NotificationQueue,
+    format_resource_alert,
+    format_telegram_message,
+)
 from app.services.watchdog.recovery_store import RecoveryBudgetStore
 from app.services.watchdog.resources import ResourceMonitor, ResourceState
 from app.services.watchdog.safety import SafetyGateChecker
@@ -54,11 +59,11 @@ MONITORED_SERVICES = [
 TRADING_CRITICAL = {ServiceName.GATEWAY, ServiceName.BACKEND, ServiceName.POSTGRES}
 
 # Trading session window — must match process_manager.py SESSION_* (weekdays 09:30-16:00 ET)
-# Reused here for market-closed semantics without importing process_manager (avoid circular dep)
+# New architecture: only IB Gateway and Webhook follow market hours; Backend is 24/7, Demo/Postgres/Redis independent
 _SESSION_TZ = ZoneInfo("America/New_York")
 _SESSION_START = dtime(9, 30)
 _SESSION_END = dtime(16, 0)
-_MARKET_CLOSED_SERVICES = {ServiceName.GATEWAY, ServiceName.BACKEND, ServiceName.WEBHOOK}
+_MARKET_CLOSED_SERVICES = {ServiceName.GATEWAY, ServiceName.WEBHOOK}
 
 
 def _is_trading_session(now: datetime | None = None) -> bool:

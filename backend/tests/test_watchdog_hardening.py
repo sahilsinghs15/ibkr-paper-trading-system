@@ -637,3 +637,62 @@ def test_telegram_resource_alert_format():
     text2 = format_resource_alert(resource_type="Memory", state="CRITICAL", usage_percent=95.0, threshold=90.0, total_bytes=8589934592, used_bytes=8000000000, available_bytes=500000000)
     assert "CRITICAL" in text2
     assert "95.0%" in text2
+
+def test_cpu_spike_diagnostics():
+    from app.services.watchdog.notifier import format_resource_alert
+    # Simulate CPU 99% with top processes
+    top = [
+        {"pid": 1234, "name": "python", "cpu_percent": 71.2},
+        {"pid": 5678, "name": "uvicorn", "cpu_percent": 18.4},
+        {"pid": 9012, "name": "Xvfb", "cpu_percent": 5.1},
+    ]
+    text = format_resource_alert(resource_type="CPU", state="CRITICAL", usage_percent=99.0, threshold=90.0, extra={"top_processes": top, "cpu_count": 2, "load_avg": [0.45, 0.15, 0.12]})
+    assert "99.0%" in text
+    assert "90.0%" in text
+    assert "TOP CPU PROCESSES" in text
+    assert "1234" in text and "71.2%" in text
+    assert "uvicorn" in text
+    assert "Top CPU processes at detection" in text
+    # Ensure secrets not leaked even in process name
+    top_secret = [{"pid": 999, "name": "TELEGRAM_BOT_TOKEN", "cpu_percent": 50.0}]
+    text_secret = format_resource_alert(resource_type="CPU", state="CRITICAL", usage_percent=95.0, threshold=90.0, extra={"top_processes": top_secret})
+    assert "TELEGRAM_BOT_TOKEN" not in text_secret or "[REDACTED]" in text_secret
+
+def test_backend_24_7_market_closed_stays_healthy():
+    # Backend is 24/7 — at market close, healthy backend should stay HEALTHY, not MARKET_CLOSED
+    import app.services.watchdog.daemon as dm
+    orig = dm._is_trading_session
+    dm._is_trading_session = lambda now=None: False  # market closed
+    try:
+        settings = WatchdogSettings(telegram_enabled=False, market_closed_enabled=True, recovery_state_path="/tmp/test_backend_24_7.json")
+        daemon = WatchdogDaemon(settings)
+        # Backend healthy
+        daemon.checkers[ServiceName.BACKEND].check = AsyncMock(return_value=HealthResult(service=ServiceName.BACKEND, status=HealthStatus.HEALTHY, detail="HTTP 200", reason="healthy"))
+        daemon.safety.check = AsyncMock(return_value=__import__("app.services.watchdog.models", fromlist=["SafetyGateResult"]).SafetyGateResult(passed=True, failures=[], gates={"system_monitor": "SAFE"}))
+        async def _run():
+            await daemon._check_one(ServiceName.BACKEND)
+            snap = daemon.snapshots[ServiceName.BACKEND]
+            assert snap.state == ServiceState.HEALTHY, f"Backend 24/7 should stay HEALTHY when market closed, got {snap.state}"
+            # Gateway should be MARKET_CLOSED when market closed and health failed
+            daemon.checkers[ServiceName.GATEWAY].check = AsyncMock(return_value=HealthResult(service=ServiceName.GATEWAY, status=HealthStatus.FAILED, detail="refused"))
+            await daemon._check_one(ServiceName.GATEWAY)
+            snap2 = daemon.snapshots[ServiceName.GATEWAY]
+            assert snap2.state == ServiceState.MARKET_CLOSED
+        asyncio.run(_run())
+    finally:
+        dm._is_trading_session = orig
+
+def test_service_control_allowlist():
+    from app.api.routes.service_control import ALLOWED_SERVICES, ALLOWED_ACTIONS
+    assert "ibgateway" in ALLOWED_SERVICES
+    assert ALLOWED_SERVICES["ibgateway"] == "ibgateway.service"
+    assert ALLOWED_SERVICES["backend"] == "trading-backend.service"
+    assert ALLOWED_SERVICES["webhook"] == "webhook-ingest.service"
+    assert ALLOWED_SERVICES["watchdog"] == "watchdog.service"
+    assert "demo" not in ALLOWED_SERVICES  # demo not controlled via this API to avoid loop
+    assert "start" in ALLOWED_ACTIONS
+    assert "stop" in ALLOWED_ACTIONS
+    assert "restart" in ALLOWED_ACTIONS
+    assert "enable" not in ALLOWED_ACTIONS
+    assert "disable" not in ALLOWED_ACTIONS
+    assert "daemon-reload" not in ALLOWED_ACTIONS

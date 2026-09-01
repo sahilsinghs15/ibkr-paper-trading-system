@@ -1,0 +1,26 @@
+[Unit]
+Description=IBKR Webhook Ingest (FastAPI :8000) — trading-hours controlled
+After=network.target postgresql.service
+Wants=postgresql.service
+Requires=network.target
+
+[Service]
+Type=simple
+User=tradingapp
+WorkingDirectory=/home/tradingapp/app/backend
+EnvironmentFile=/home/tradingapp/app/backend/.env
+ExecStart=/home/tradingapp/app/backend/.venv/bin/python -m uvicorn app.webhook_ingest:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=10
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=webhook-ingest
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

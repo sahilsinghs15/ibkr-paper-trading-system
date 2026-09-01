@@ -9,7 +9,8 @@ from __future__ import annotations
 import platform
 import socket
 import time
-from datetime import UTC, datetime, time as dtime
+from datetime import UTC, datetime
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import psutil
@@ -166,7 +167,7 @@ def build_status_message(
     lines.append("")
     lines.append("<b>MARKET</b>")
     lines.append(f"{market_emoji} <code>{market_text}</code>")
-    lines.append(f"Session: <code>09:30–16:00 ET</code> (Mon-Fri, America/New_York)")
+    lines.append("Session: <code>09:30–16:00 ET</code> (Mon-Fri, America/New_York)")
     if not is_open:
         lines.append(f"Next Open: <code>{_next_open(now_utc)}</code> / <code>19:00 IST</code>" if now_et.tzinfo else "Next Open: <code>09:30 ET</code>")
     lines.append("")
@@ -295,16 +296,19 @@ def build_status_message(
         lines.append("Execution: <code>ACTIVE</code> (within session)")
     else:
         lines.append("Execution: <code>NOT ACTIVE</code> (outside session)")
-    # Gateway/Backend expected
+    # Gateway/Webhook follow market hours, Backend is 24/7
     for svc in trading_services:
         snap = snapshots.get(svc)
         if snap:
-            exp = "RUNNING" if is_open else "EXPECTED STOPPED"
-            # If state is MARKET_CLOSED, expected
-            if snap.state == ServiceState.MARKET_CLOSED:
-                exp = "EXPECTED STOPPED"
-            elif snap.state == ServiceState.HEALTHY and is_open:
-                exp = "RUNNING"
+            if svc == ServiceName.BACKEND:
+                # Backend is 24/7 — not market-closed
+                exp = "RUNNING" if snap.state == ServiceState.HEALTHY else snap.state.value
+            else:
+                exp = "RUNNING" if is_open else "EXPECTED STOPPED"
+                if snap.state == ServiceState.MARKET_CLOSED:
+                    exp = "EXPECTED STOPPED"
+                elif snap.state == ServiceState.HEALTHY and is_open:
+                    exp = "RUNNING"
             disp = svc.value
             lines.append(f"{disp}: <code>{exp}</code>")
 

@@ -1,0 +1,10 @@
+[Unit]
+Description=Timer for trading session start (09:30 ET Mon-Fri)
+
+[Timer]
+OnCalendar=Mon..Fri 09:30:00
+Persistent=true
+Unit=trading-session-start.service
+
+[Install]
+WantedBy=timers.target

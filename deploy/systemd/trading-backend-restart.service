@@ -1,0 +1,7 @@
+[Unit]
+Description=Restart Trading Backend via trigger (one-way Gateway → Backend)
+After=trading-backend.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart trading-backend.service
