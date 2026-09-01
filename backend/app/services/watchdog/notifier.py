@@ -74,7 +74,24 @@ def _recovery_owner(service: ServiceName) -> str:
 
 
 def _impact_for(service: ServiceName, event: NotificationEvent, hr: HealthResult | None) -> tuple[str, str | None]:
+    # For TRADING_BLOCKED, always use blocked impact, never health's READY impact
+    if event == NotificationEvent.TRADING_BLOCKED:
+        defaults = {
+            ServiceName.GATEWAY: ("Trading Backend cannot communicate with IBKR paper socket.", "Order execution is BLOCKED."),
+            ServiceName.BACKEND: ("Execution API and worker pool are unavailable or safety gate blocked.", "Trading is BLOCKED."),
+            ServiceName.WEBHOOK: ("TradingView webhooks cannot be accepted on port 8000.", "No direct impact on active executions; new signals cannot be ingested. Previously persisted signal_jobs remain safe in PostgreSQL."),
+            ServiceName.DEMO: ("Dashboard streaming UI unavailable on port 8010.", "None — execution pipeline is independent of Demo Streaming."),
+            ServiceName.POSTGRES: ("Database session queries failed.", "Trading execution is BLOCKED."),
+            ServiceName.REDIS: ("Demo Streaming SSE pub/sub unavailable.", "None — execution pipeline is independent of Redis."),
+        }
+        imp, trad = defaults.get(service, ("Service degraded.", "Trading is BLOCKED."))
+        return imp, trad
     if hr and hr.impact and event not in (NotificationEvent.START, NotificationEvent.RECOVERED):
+        # Do not propagate a healthy READY trading_impact into a blocked/failed notification
+        trading = hr.trading_impact
+        if trading and "READY" in trading and event in (NotificationEvent.FAILURE, NotificationEvent.UNHEALTHY, NotificationEvent.TRADING_BLOCKED, NotificationEvent.RECOVERY_FAILED, NotificationEvent.MANUAL_INTERVENTION_REQUIRED):
+            # override with blocked-specific impact instead of misleading READY
+            return hr.impact, None  # will fallback to defaults below
         return hr.impact, hr.trading_impact
     if event in (NotificationEvent.START, NotificationEvent.RECOVERED):
         if service == ServiceName.GATEWAY:
@@ -100,11 +117,43 @@ def _impact_for(service: ServiceName, event: NotificationEvent, hr: HealthResult
     return imp, trad
 
 
+def _is_success_detail(text: str) -> bool:
+    """Return True if text represents a successful health check, never an error."""
+    t = text.strip().lower()
+    if t in ("healthy", "ok", "select 1 ok", "ping ok", "http 200", "http 200 → ok"):
+        return True
+    # Pure TCP open without failure qualifier
+    if t in ("tcp 127.0.0.1:4002 open", "tcp 127.0.0.1:4002 open → ok", "tcp 127.0.0.1:8001 open", "tcp 127.0.0.1:8000 open", "tcp 127.0.0.1:5432 open", "tcp 127.0.0.1:6379 open", "tcp 127.0.0.1:8010 open"):
+        return True
+    if t.startswith("tcp ") and "open" in t and "refused" not in t and "failed" not in t:
+        # If contains failure qualifier, not pure success
+        if "(" in t or "login" in t or "missing" in t or "not seen" in t or "degraded" in t:
+            return False
+        # e.g. "tcp 127.0.0.1:4002 open" -> success, but "tcp 127.0.0.1:4002 open (login marker not seen)" -> not success
+        return bool(t.count("open") == 1 and len(t) < 40)
+
+
 def _check_summary(service: ServiceName, event: NotificationEvent, health: HealthResult | None, port: int | None) -> str:
-    if health and health.detail:
-        d = health.detail
-        if "SELECT 1" in d or "PING" in d or "HTTP 200" in d or ("TCP" in d and "open" in d.lower()):
-            return f"{d} → OK"
+    # Structured: base on health.status, not string matching
+    if health:
+        from app.services.watchdog.models import HealthStatus as _HS
+        if health.status == _HS.HEALTHY:
+            # success case — never treat success as failure
+            if service == ServiceName.POSTGRES:
+                return "SELECT 1 → OK"
+            if service == ServiceName.REDIS:
+                return "PING → OK"
+            if service == ServiceName.GATEWAY:
+                return f"TCP 127.0.0.1:{port or health.port or 4002} → OPEN"
+            # backend/webhook/demo: HTTP 200
+            if health.detail and "HTTP" in health.detail:
+                return f"{health.detail} → OK" if "→" not in health.detail else health.detail
+            return "HTTP 200 → OK"
+        # degraded/failed — show actual detail
+        if health.detail:
+            if health.status == _HS.DEGRADED:
+                return f"Health check → {health.detail}"
+            return f"Health check → {health.detail}"
     if event in (NotificationEvent.START, NotificationEvent.RECOVERED):
         if service == ServiceName.POSTGRES:
             return "SELECT 1 → OK"
@@ -145,6 +194,32 @@ def _event_header(event: NotificationEvent) -> tuple[str, str]:
     return mapping.get(event, ("🛡️", f"WATCHDOG — {event.value}"))
 
 
+def _trading_status_for(service: ServiceName, event: NotificationEvent, health: HealthResult | None, snapshot: ServiceSnapshot) -> str:
+    """Derive trading readiness: READY / BLOCKED / NOT AFFECTED / UNKNOWN."""
+    # Non-trading services never affect execution
+    if service in (ServiceName.DEMO, ServiceName.REDIS):
+        return "NOT AFFECTED"
+    if service == ServiceName.WEBHOOK:
+        # webhook ingest failure does not block active execution, but blocks new signals
+        if event in (NotificationEvent.FAILURE, NotificationEvent.UNHEALTHY, NotificationEvent.TRADING_BLOCKED):
+            return "NEW SIGNALS BLOCKED (execution independent)"
+        return "NOT AFFECTED"
+    # Trading-critical: gateway, backend, postgres
+    if event == NotificationEvent.TRADING_BLOCKED:
+        return "BLOCKED"
+    if health:
+        from app.services.watchdog.models import HealthStatus as _HS
+        if health.status != _HS.HEALTHY:
+            return "BLOCKED"
+    if snapshot.state.value == "TRADING_BLOCKED":
+        return "BLOCKED"
+    if event in (NotificationEvent.FAILURE, NotificationEvent.UNHEALTHY, NotificationEvent.RECOVERY_FAILED, NotificationEvent.MANUAL_INTERVENTION_REQUIRED):
+        return "BLOCKED"
+    if event in (NotificationEvent.START, NotificationEvent.RECOVERED):
+        return "READY (subject to safety gates)"
+    return "UNKNOWN"
+
+
 def format_telegram_message(
     service: ServiceName,
     event: NotificationEvent,
@@ -155,14 +230,17 @@ def format_telegram_message(
     reason: str | None = None,
     health: HealthResult | None = None,
     recovery_duration: float | None = None,
+    event_timestamp: datetime | None = None,
 ) -> str:
     health = health or snapshot.last_health
-    now = datetime.now(UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    # Use provided event_timestamp for ordering, else now
+    ts = event_timestamp or datetime.now(UTC)
+    now = ts.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     # Use ET for operator display if possible (America/New_York)
     try:
         from zoneinfo import ZoneInfo
 
-        now_et = datetime.now(ZoneInfo("America/New_York")).strftime("%H:%M:%S ET")
+        now_et = ts.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M:%S ET")
     except Exception:
         now_et = now
     what = None
@@ -170,6 +248,7 @@ def format_telegram_message(
     trading_impact = None
     operator_action = None
     endpoint_url = None
+    underlying_error_only = None
     underlying = None
     pid = None
     log_excerpt = None
@@ -180,7 +259,13 @@ def format_telegram_message(
         trading_impact = health.trading_impact
         operator_action = health.operator_action
         endpoint_url = health.endpoint_url or health.endpoint
-        underlying = health.underlying_error or health.detail
+        underlying_error_only = health.underlying_error
+        # Do NOT use health.detail as error when status is HEALTHY — structured success
+        from app.services.watchdog.models import HealthStatus as _HS
+        if health.status != _HS.HEALTHY:
+            underlying = health.underlying_error or health.detail
+        else:
+            underlying = health.underlying_error  # None for healthy => no error
         pid = health.pid
         log_excerpt = health.log_excerpt
         log_marker = health.log_marker
@@ -188,10 +273,37 @@ def format_telegram_message(
             host = health.host
         if health.port:
             port = health.port
-    if not impact:
+    # Service status vs trading status distinction
+    from app.services.watchdog.models import HealthStatus as _HS
+    if health:
+        service_status = health.status.value
+    else:
+        service_status = snapshot.state.value
+    trading_status = _trading_status_for(service, event, health, snapshot)
+    # Override impact/trading_impact for contradictory cases
+    # For TRADING_BLOCKED with healthy service, health's READY impact is misleading — use blocked impact
+    if event == NotificationEvent.TRADING_BLOCKED:
+        # force blocked impact regardless of health.trading_impact
+        impact, trading_impact = _impact_for(service, event, None)
+        # preserve health impact detail for DETAILS explanation but not for IMPACT
+    elif not impact:
         impact, trading_impact_fallback = _impact_for(service, event, health)
         if trading_impact is None:
             trading_impact = trading_impact_fallback
+    # For TRADING_BLOCKED with healthy health but safety gate reason, clarify trading_impact
+    if event == NotificationEvent.TRADING_BLOCKED:
+        if not trading_impact or "READY" in (trading_impact or ""):
+            trading_impact = trading_status
+    # DETAILS: separate service health from trading readiness
+    # If not already set, derive accurate what_happened
+    if event == NotificationEvent.TRADING_BLOCKED:
+        if health and health.status == _HS.HEALTHY:
+            reason_text = snapshot.failure_reason or reason or "safety gate not cleared"
+            what = f"{_display(service)} health check is passing, but trading remains blocked because safety gate has not been cleared: {reason_text}."
+        else:
+            if not what or what == "Trading safety gate failed.":
+                reason_text = snapshot.failure_reason or reason or health.underlying_error if health else "unknown"
+                what = f"Trading safety gate failed: {reason_text}"
     if not what:
         if event == NotificationEvent.FAILURE:
             what = f"Watchdog could not reach {_display(service)} on {host}:{port}." if port else f"Watchdog could not reach {_display(service)}."
@@ -236,12 +348,29 @@ def format_telegram_message(
     check_summary = _check_summary(service, event, health, port)
 
     # Determine whether an ERROR field is appropriate (only for non-healthy events with actual error)
+    # Structured: never put successful check into ERROR
     err_detail = None
-    if event in (NotificationEvent.FAILURE, NotificationEvent.UNHEALTHY, NotificationEvent.RECOVERY_FAILED, NotificationEvent.MANUAL_INTERVENTION_REQUIRED, NotificationEvent.TRADING_BLOCKED):
-        raw_err = underlying or reason or snapshot.failure_reason or (health.detail if health else "")
-        if raw_err and raw_err.lower() not in ("healthy", "ok", "select 1 ok", "ping ok"):
+    if event in (NotificationEvent.FAILURE, NotificationEvent.UNHEALTHY, NotificationEvent.RECOVERY_STARTED, NotificationEvent.RECOVERY_FAILED, NotificationEvent.MANUAL_INTERVENTION_REQUIRED, NotificationEvent.TRADING_BLOCKED):
+        # For healthy TRADING_BLOCKED, error is safety gate reason, not health detail
+        from app.services.watchdog.models import HealthStatus as _HS2
+        is_healthy = health is not None and health.status == _HS2.HEALTHY
+        if is_healthy and event == NotificationEvent.TRADING_BLOCKED:
+            raw_err = snapshot.failure_reason or reason
+            # need to ensure raw_err is not a success string
+            if raw_err and _is_success_detail(raw_err):
+                raw_err = None
+        elif is_healthy:
+            # healthy should not have error for FAILURE/UNHEALTHY — but those events shouldn't happen with healthy
+            raw_err = None
+        else:
+            # unhealthy/failed: prefer underlying error, then failure_reason
+            raw_err = underlying_error_only or snapshot.failure_reason or reason
+            if not raw_err and health and health.detail and not _is_success_detail(health.detail):
+                raw_err = health.detail
+        if raw_err and not _is_success_detail(raw_err):
             err_detail = raw_err
-            if endpoint_url and endpoint_url not in err_detail:
+            # only attach endpoint for actual failures, not for healthy blocked
+            if endpoint_url and endpoint_url not in err_detail and not is_healthy:
                 err_detail = f"{err_detail}\nEndpoint: {endpoint_url}"
 
     # HTML formatting — bold header, <code> for values, separators
@@ -251,6 +380,14 @@ def format_telegram_message(
     lines.append("<b>SERVICE</b>")
     lines.append(f"<code>{_sanitize_for_telegram(_display(service))}</code>")
     lines.append("")
+    # Separate SERVICE health from TRADING readiness (prompt §3)
+    lines.append("<b>SERVICE STATUS</b>")
+    lines.append(f"<code>{_sanitize_for_telegram(service_status)}</code>")
+    lines.append("")
+    lines.append("<b>TRADING STATUS</b>")
+    lines.append(f"<code>{_sanitize_for_telegram(trading_status)}</code>")
+    lines.append("")
+    # Keep legacy STATUS for backward compat tests that search for "STATUS"
     lines.append("<b>STATUS</b>")
     lines.append(f"<code>{_sanitize_for_telegram(snapshot.state.value)}</code>")
     lines.append("")
@@ -304,7 +441,21 @@ def format_telegram_message(
     if event == NotificationEvent.RECOVERY_STARTED:
         lines.append("")
         lines.append("<b>VERIFY</b>")
-        lines.append("• <code>/health/ready</code> healthy\n• Dependencies reachable")
+        # Service-specific verification — avoid implying unrelated endpoint is evidence for failed service
+        if service == ServiceName.GATEWAY:
+            lines.append("• <code>TCP 127.0.0.1:4002</code> open\n• <code>Login has completed</code> in ib_gateway.log\n• Xvfb display :99 running")
+        elif service == ServiceName.BACKEND:
+            lines.append("• <code>Trading Backend /health/ready</code> healthy (DB + TWS)\n• Safety gates <code>SAFE</code>\n• Dependencies reachable")
+        elif service == ServiceName.WEBHOOK:
+            lines.append("• <code>Webhook /health/ready</code> healthy\n• PostgreSQL <code>SELECT 1</code> ok")
+        elif service == ServiceName.POSTGRES:
+            lines.append("• PostgreSQL <code>SELECT 1</code> ok")
+        elif service == ServiceName.REDIS:
+            lines.append("• Redis <code>PING</code> ok")
+        elif service == ServiceName.DEMO:
+            lines.append("• <code>Demo /health</code> healthy\n• Redis reachable")
+        else:
+            lines.append("• <code>/health/ready</code> healthy\n• Dependencies reachable")
     lines.append("")
     lines.append("<b>ACTION</b>")
     act = operator_action or _default_action(event, service)
@@ -320,7 +471,8 @@ def _sanitize_for_telegram(text: str) -> str:
     if not text:
         return "Not available"
     t = text[:1000]
-    if "TELEGRAM_BOT_TOKEN" in t or "DATABASE_URL" in t or "password" in t.lower():
+    low = t.lower()
+    if "telegram_bot_token" in low or "database_url" in low or "password" in low or "api_key" in low or "secret" in low or "bot_token" in low or "chat_id" in low:
         return "[REDACTED]"
     return t.replace("<", "&lt;").replace(">", "&gt;") if "<code>" not in t else t
 
@@ -347,6 +499,8 @@ class NotificationDeduplicator:
     def __init__(self, cooldown_seconds: float = 300.0):
         self.cooldown = cooldown_seconds
         self._last_sent: dict[tuple[str, str], float] = {}
+        # track last event per service to avoid over-dedup of distinct transitions
+        self._last_event_per_service: dict[str, NotificationEvent] = {}
 
     def should_send(self, service: ServiceName, event: NotificationEvent) -> bool:
         key = (service.value, event.value)
@@ -354,12 +508,24 @@ class NotificationDeduplicator:
         last = self._last_sent.get(key)
         if last is None:
             return True
+        # If last event for this service was different, allow even within cooldown
+        # — prevents collapsing legitimate sequences like FAILURE -> RECOVERING -> RECOVERED
+        # into one due to same-event cooldown.
+        last_ev = self._last_event_per_service.get(service.value)
+        if last_ev is not None and last_ev != event:
+            # Different event type — not a duplicate of same unchanged state
+            return True
         if now - last >= self.cooldown:
             return True
         return False
 
     def mark_sent(self, service: ServiceName, event: NotificationEvent) -> None:
         self._last_sent[(service.value, event.value)] = time.monotonic()
+        self._last_event_per_service[service.value] = event
+
+    def clear(self, service: ServiceName) -> None:
+        # Clear dedup state on recovery — allows new failure cycle to notify promptly
+        self._last_event_per_service.pop(service.value, None)
 
 
 class NotificationQueue:

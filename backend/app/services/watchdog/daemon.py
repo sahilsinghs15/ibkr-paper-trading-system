@@ -145,32 +145,68 @@ class WatchdogDaemon:
             if snap.consecutive_successes >= 1:
                 snap.consecutive_failures = 0
 
-        # Safety gate: if trading-critical and health shows recovered but gate fails, go TRADING_BLOCKED
+        # Safety gate: trading-critical services must have all gates SAFE to be READY
+        # Check whenever health is healthy, not only after failure, to avoid claiming READY when blocked
         safety_blocked = False
         if svc in TRADING_CRITICAL and not health_failed and not health_degraded:
-            # only check gates when service appears healthy after a failure
-            if prev_state in (ServiceState.FAILED, ServiceState.RECOVERING, ServiceState.VERIFYING):
-                gate = await self.safety.check()
-                if not gate.passed:
-                    safety_blocked = True
-                    snap.failure_reason = "safety gate: " + "; ".join(gate.failures)
+            # Always verify safety gates for trading-critical healthy checks
+            # To avoid excessive load, we still check every time (cheap HTTP), but could cache briefly
+            gate = await self.safety.check()
+            if not gate.passed:
+                safety_blocked = True
+                snap.failure_reason = "safety gate: " + "; ".join(gate.failures)
+            else:
+                # gates passed — clear any previous safety failure reason if it was stale
+                if snap.failure_reason.startswith("safety gate:"):
+                    snap.failure_reason = ""
 
-        # State transition
+        # State transition — with safety_blocked considered
+        # If safety blocked, force TRADING_BLOCKED regardless of health_degraded flag
         nxt = next_state(snap, health_failed=health_failed, health_degraded=health_degraded, safety_trading_blocked=safety_blocked)
+        # If safety blocked but state machine returned HEALTHY (should not happen after our change),
+        # ensure we go to TRADING_BLOCKED
+        if safety_blocked and nxt == ServiceState.HEALTHY:
+            nxt = ServiceState.TRADING_BLOCKED
 
         # Recovery budget handling: FAILED -> RECOVERING or MANUAL
+        # Record attempt BEFORE emitting RECOVERY_STARTED so counter is 1/5 not 0/5
         if prev_state == ServiceState.FAILED and nxt == ServiceState.FAILED:
-            # still failed — decide to enter RECOVERING or MANUAL
+            # still failed — decide to enter RECOVERING or MANUAL (second consecutive poll)
             if snap.state == ServiceState.FAILED:
                 # First detection of prolonged failure
                 if not self._is_recovery_budget_exhausted(snap):
                     nxt = ServiceState.RECOVERING
+                    # record attempt now for accurate counter
+                    now = datetime.now(UTC)
+                    snap.recovery_attempts.append(now)
+                    snap.last_recovery_at = now
+                    try:
+                        state = {k.value: v.recovery_attempts for k, v in self.snapshots.items()}
+                        self.recovery_store.save(state)
+                    except Exception:
+                        logger.exception("Failed to persist recovery budget")
                 else:
                     nxt = ServiceState.MANUAL_INTERVENTION_REQUIRED
-        elif nxt == ServiceState.FAILED and prev_state not in (ServiceState.FAILED, ServiceState.RECOVERING, ServiceState.VERIFYING):
-            # new failure — immediately mark recovering if budget allows
-            # but let state machine emit FAILURE first, then next loop will move to RECOVERING
+        elif nxt == ServiceState.FAILED and prev_state not in (ServiceState.FAILED, ServiceState.RECOVERING, ServiceState.VERIFYING, ServiceState.TRADING_BLOCKED):
+            # new failure — emit FAILURE first, recovery will be next loop
             pass
+        # Also handle direct FAILED->RECOVERING transition that wasn't captured by "still failed" above
+        # e.g., HEALTHY->FAILED on this poll, nxt is FAILED, but we want to immediately consider recovery?
+        # We emit FAILURE first, then next poll will promote to RECOVERING, so no immediate attempt.
+        # However if nxt == RECOVERING via safety_blocked path or budget, record attempt
+        if prev_state == ServiceState.FAILED and nxt == ServiceState.RECOVERING:  # noqa: SIM102
+            # Ensure attempt recorded if not already (e.g., initial promotion from FAILED)
+            if not snap.recovery_attempts or (datetime.now(UTC) - snap.recovery_attempts[-1]).total_seconds() > 1:  # noqa: SIM102
+                # avoid double count if just recorded above
+                if not (snap.last_recovery_at and (datetime.now(UTC) - snap.last_recovery_at).total_seconds() < 0.5):
+                    now = datetime.now(UTC)
+                    snap.recovery_attempts.append(now)
+                    snap.last_recovery_at = now
+                    try:
+                        state = {k.value: v.recovery_attempts for k, v in self.snapshots.items()}
+                        self.recovery_store.save(state)
+                    except Exception:
+                        logger.exception("Failed to persist recovery budget")
 
         # Handle RECOVERING -> VERIFYING -> outcome
         verifying_success: bool | None = None
@@ -185,15 +221,17 @@ class WatchdogDaemon:
 
             if snap.state == ServiceState.RECOVERING:
                 nxt = ServiceState.VERIFYING
-                # record attempt (persist atomically, fail-closed on error)
-                now = datetime.now(UTC)
-                snap.recovery_attempts.append(now)
-                snap.last_recovery_at = now
-                try:
-                    state = {k.value: v.recovery_attempts for k, v in self.snapshots.items()}
-                    self.recovery_store.save(state)
-                except Exception:
-                    logger.exception("Failed to persist recovery budget")
+                # If attempt not yet recorded for this recovery cycle (when came from FAILED->RECOVERING->VERIFYING without intermediate poll)
+                # Check if last attempt is stale (> interval)
+                if not snap.last_recovery_at or (datetime.now(UTC) - snap.last_recovery_at).total_seconds() > 2:
+                    now = datetime.now(UTC)
+                    snap.recovery_attempts.append(now)
+                    snap.last_recovery_at = now
+                    try:
+                        state = {k.value: v.recovery_attempts for k, v in self.snapshots.items()}
+                        self.recovery_store.save(state)
+                    except Exception:
+                        logger.exception("Failed to persist recovery budget")
             elif snap.state == ServiceState.VERIFYING:
                 # compute final
                 tmp = ServiceSnapshot(service=svc, state=ServiceState.VERIFYING)
@@ -203,12 +241,19 @@ class WatchdogDaemon:
                         nxt = ServiceState.MANUAL_INTERVENTION_REQUIRED
                     else:
                         nxt = ServiceState.RECOVERING
+                        # new recovery attempt will be recorded on next loop when entering VERIFYING again
                 else:
                     nxt = nxt2
 
+        # PID change tracking — diagnostic only, not a failure trigger
+        # Store pid for comparison; if pid changed but health healthy, just log, don't emit failure
+        if hr.pid is not None and snap.last_health and snap.last_health.pid is not None and hr.pid != snap.last_health.pid and not health_failed and not health_degraded:
+            logger.info("WATCHDOG: service=%s PID changed %s -> %s (healthy, not a failure)", svc.value, snap.last_health.pid, hr.pid)
+
         if nxt != prev_state:
+            transition_at = datetime.now(UTC)
             snap.state = nxt
-            snap.last_transition_at = datetime.now(UTC)
+            snap.last_transition_at = transition_at
             # notify
             event = event_for_transition(prev_state, nxt)
             # also handle FAILED->RECOVERING direct
@@ -218,16 +263,22 @@ class WatchdogDaemon:
                 event = NotificationEvent.MANUAL_INTERVENTION_REQUIRED
             elif nxt == ServiceState.TRADING_BLOCKED:
                 event = NotificationEvent.TRADING_BLOCKED
+            elif prev_state == ServiceState.TRADING_BLOCKED and nxt in (ServiceState.HEALTHY, ServiceState.RECOVERED):
+                # unblocked — treat as recovered for operator clarity
+                event = NotificationEvent.RECOVERED
             if event:
                 port = self._port_for(svc)
                 attempt_str = None
                 recovery_duration = None
-                if nxt in (ServiceState.RECOVERING, ServiceState.VERIFYING, ServiceState.MANUAL_INTERVENTION_REQUIRED, ServiceState.RECOVERED):
+                if nxt in (ServiceState.RECOVERING, ServiceState.VERIFYING, ServiceState.MANUAL_INTERVENTION_REQUIRED, ServiceState.RECOVERED, ServiceState.TRADING_BLOCKED):
                     cutoff = datetime.now(UTC).timestamp() - self.settings.recovery_window_seconds
                     recent = sum(1 for t in snap.recovery_attempts if t.timestamp() > cutoff)
+                    # For RECOVERING, ensure at least 1/5 if we just recorded
+                    if nxt == ServiceState.RECOVERING and recent == 0:
+                        recent = 1
                     attempt_str = f"{recent}/{self.settings.recovery_max_attempts}"
                     if nxt == ServiceState.RECOVERED and snap.last_recovery_at:
-                        recovery_duration = (datetime.now(UTC) - snap.last_recovery_at).total_seconds()
+                        recovery_duration = (transition_at - snap.last_recovery_at).total_seconds()
                 text = format_telegram_message(
                     service=svc,
                     event=event,
@@ -238,25 +289,35 @@ class WatchdogDaemon:
                     reason=snap.failure_reason or hr.detail,
                     health=hr,
                     recovery_duration=recovery_duration,
+                    event_timestamp=transition_at,
                 )
-                # Don't block on telegram failure
+                # Don't block on telegram failure; log delivery attempt with ordering info
                 try:
-                    self.notifier.enqueue(svc, event, text)
+                    enqueued = self.notifier.enqueue(svc, event, text)
+                    if not enqueued:
+                        logger.warning("WATCHDOG: notification dedup suppressed service=%s event=%s", svc.value, event.value)
+                    else:
+                        logger.info(
+                            "WATCHDOG: service=%s prev=%s next=%s event=%s reason=%s attempt=%s ts=%s",
+                            svc.value,
+                            prev_state.value,
+                            nxt.value,
+                            event.value if event else "none",
+                            snap.failure_reason[:200],
+                            attempt_str or "-",
+                            transition_at.isoformat(),
+                        )
                 except Exception:
-                    logger.exception("Failed to enqueue notification for %s", svc.value)
-                logger.info(
-                    "WATCHDOG: service=%s prev=%s next=%s event=%s reason=%s attempt=%s",
-                    svc.value,
-                    prev_state.value,
-                    nxt.value,
-                    event.value if event else "none",
-                    snap.failure_reason[:200],
-                    attempt_str or "-",
-                )
-            # Clear failure reason on recovery
+                    logger.exception("Failed to enqueue notification for %s event=%s ts=%s", svc.value, event.value if event else "none", transition_at.isoformat())
+            # Clear failure reason and dedup on recovery
             if nxt in (ServiceState.HEALTHY, ServiceState.RECOVERED):
                 snap.failure_reason = ""
                 snap.recovery_failed_count = 0
+                # Allow next failure to notify promptly even within previous cooldown
+                try:
+                    self.notifier.dedup.clear(svc)
+                except Exception:
+                    pass
 
     async def _loop(self) -> None:
         logger.info("Watchdog daemon started host=%s interval=%.1fs", self.settings.watchdog_host, self.settings.watchdog_interval_seconds)

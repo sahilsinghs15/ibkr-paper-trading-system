@@ -88,8 +88,10 @@ def next_state(
         return ServiceState.HEALTHY
 
     if cur in (ServiceState.MANUAL_INTERVENTION_REQUIRED, ServiceState.TRADING_BLOCKED):
-        # Sticky until operator clears or health recovers + manual reset externally
-        # For now, if health becomes healthy, move to HEALTHY (operator cleared)
+        # Sticky until operator clears or health recovers + safety passes
+        # If safety still blocked, remain blocked even if health healthy
+        if safety_trading_blocked:
+            return cur
         if not health_failed and not health_degraded:
             return ServiceState.HEALTHY
         return cur
@@ -119,6 +121,10 @@ def event_for_transition(prev: ServiceState, nxt: ServiceState) -> NotificationE
     # Generic fallback for TRADING_BLOCKED
     if nxt == ServiceState.TRADING_BLOCKED:
         return NotificationEvent.TRADING_BLOCKED
+    if prev == ServiceState.TRADING_BLOCKED and nxt == ServiceState.HEALTHY:
+        return NotificationEvent.RECOVERED
+    if prev == ServiceState.TRADING_BLOCKED and nxt == ServiceState.RECOVERED:
+        return NotificationEvent.RECOVERED
     if prev == ServiceState.FAILED and nxt == ServiceState.RECOVERED:
         return NotificationEvent.RECOVERED
     return mapping.get((prev, nxt))
