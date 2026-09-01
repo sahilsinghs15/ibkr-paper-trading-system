@@ -17,6 +17,9 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datetime import time as dtime
+from zoneinfo import ZoneInfo
+
 from app.core.config import get_settings
 from app.schemas.system_monitor import (
     AlertItem,
@@ -30,6 +33,14 @@ from app.schemas.system_monitor import (
     SystemInfoResponse,
     SystemMonitorResponse,
 )
+
+
+def _is_trading_session(now: datetime | None = None) -> bool:
+    tz = ZoneInfo("America/New_York")
+    now_et = (now or datetime.now(tz)).astimezone(tz)
+    if now_et.weekday() >= 5:
+        return False
+    return dtime(9, 30) <= now_et.time() < dtime(16, 0)
 
 logger = logging.getLogger(__name__)
 
@@ -122,17 +133,30 @@ async def collect_system_monitor_data(
     except Exception:
         logger.exception("Failed to query disk usage for /")
 
-    # 5. Service Health Checks
-    backend_status = ServiceStatus(
-        name="FastAPI Backend",
-        status="RUNNING",
-        port=8001,
-        health_detail="Trading engine API responsive",
-        latency_ms=0.5,
-    )
-
+    # 5. Service Health Checks (market-aware for trading-hours services)
+    is_open = _is_trading_session(now)
+    backend_status = await _check_backend_health()
     demo_stream_status = await _check_demo_stream_health()
     ib_gateway_status = await _check_ib_gateway_health(tws_client, gw_host=gw_host, gw_port=gw_port)
+    # Outside session, Gateway STOPPED is expected MARKET_CLOSED, not failure
+    if not is_open and ib_gateway_status.status == "STOPPED":
+        ib_gateway_status = ServiceStatus(
+            name=ib_gateway_status.name,
+            status="MARKET_CLOSED",
+            port=ib_gateway_status.port,
+            health_detail="Expected outside trading session (09:30-16:00 ET)",
+            latency_ms=None,
+        )
+    webhook_status = await _check_webhook_health()
+    if not is_open and webhook_status.status == "STOPPED":
+        webhook_status = ServiceStatus(
+            name=webhook_status.name,
+            status="MARKET_CLOSED",
+            port=webhook_status.port,
+            health_detail="Expected outside trading session (09:30-16:00 ET)",
+            latency_ms=None,
+        )
+    watchdog_status = await _check_watchdog_health()
     postgres_status = await _check_postgresql_health(session)
     redis_status = await _check_redis_health(redis_client)
 
@@ -140,6 +164,8 @@ async def collect_system_monitor_data(
         backend=backend_status,
         demo_stream=demo_stream_status,
         ib_gateway=ib_gateway_status,
+        webhook=webhook_status,
+        watchdog=watchdog_status,
         postgresql=postgres_status,
         redis=redis_status,
     )
@@ -225,15 +251,21 @@ async def collect_system_monitor_data(
             if overall_status != "CRITICAL":
                 overall_status = "DEGRADED"
 
-    # Service Alerts
+    # Service Alerts — market-aware: MARKET_CLOSED is expected, not a failure
     all_services = [
         ("Demo Streaming", demo_stream_status),
         ("IB Gateway", ib_gateway_status),
+        ("Webhook Ingest", webhook_status),
+        ("Watchdog", watchdog_status),
         ("PostgreSQL", postgres_status),
         ("Redis", redis_status),
+        ("Trading Backend", backend_status),
     ]
 
     for svc_name, svc in all_services:
+        if svc.status == "MARKET_CLOSED":
+            # Expected outside trading session (Gateway/Webhook) — not an alert
+            continue
         if svc.status in ("STOPPED", "UNKNOWN"):
             alerts.append(AlertItem(level="CRITICAL", component=svc_name, message=f"Service {svc_name} is unavailable ({svc.status})"))
             overall_status = "CRITICAL"
@@ -241,6 +273,11 @@ async def collect_system_monitor_data(
             alerts.append(AlertItem(level="WARNING", component=svc_name, message=f"Service {svc_name} is degraded ({svc.health_detail})"))
             if overall_status != "CRITICAL":
                 overall_status = "DEGRADED"
+
+    # Market-closed overall: if no real failure and market is closed, overall is MARKET_CLOSED (not HEALTHY)
+    if not is_open and overall_status == "HEALTHY":
+        if ib_gateway_status.status == "MARKET_CLOSED" or webhook_status.status == "MARKET_CLOSED":
+            overall_status = "MARKET_CLOSED"
 
     return SystemMonitorResponse(
         overall_status=overall_status, # type: ignore[arg-type]
@@ -442,5 +479,102 @@ async def _check_redis_health(redis_client: Redis | None = None) -> ServiceStatu
             status="STOPPED",
             port=6379,
             health_detail=f"Port unreachable: {exc}",
+            latency_ms=None,
+        )
+
+
+async def _check_backend_health() -> ServiceStatus:
+    start_t = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=1.5) as client:
+            res = await client.get("http://127.0.0.1:8001/health")
+            elapsed_ms = round((time.perf_counter() - start_t) * 1000, 1)
+            if res.status_code == 200:
+                return ServiceStatus(
+                    name="FastAPI Backend",
+                    status="RUNNING",
+                    port=8001,
+                    health_detail="Trading engine API responsive",
+                    latency_ms=elapsed_ms,
+                )
+            return ServiceStatus(
+                name="FastAPI Backend",
+                status="DEGRADED",
+                port=8001,
+                health_detail=f"HTTP {res.status_code}",
+                latency_ms=elapsed_ms,
+            )
+    except Exception as exc:
+        return ServiceStatus(
+            name="FastAPI Backend",
+            status="STOPPED",
+            port=8001,
+            health_detail=f"Unreachable: {exc}",
+            latency_ms=None,
+        )
+
+
+async def _check_webhook_health() -> ServiceStatus:
+    start_t = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=1.5) as client:
+            res = await client.get("http://127.0.0.1:8000/health")
+            elapsed_ms = round((time.perf_counter() - start_t) * 1000, 1)
+            if res.status_code == 200:
+                return ServiceStatus(
+                    name="Webhook Ingest",
+                    status="RUNNING",
+                    port=8000,
+                    health_detail="Webhook ingest responsive",
+                    latency_ms=elapsed_ms,
+                )
+            return ServiceStatus(
+                name="Webhook Ingest",
+                status="DEGRADED",
+                port=8000,
+                health_detail=f"HTTP {res.status_code}",
+                latency_ms=elapsed_ms,
+            )
+    except Exception as exc:
+        return ServiceStatus(
+            name="Webhook Ingest",
+            status="STOPPED",
+            port=8000,
+            health_detail=f"Unreachable: {exc}",
+            latency_ms=None,
+        )
+
+
+async def _check_watchdog_health() -> ServiceStatus:
+    start_t = time.perf_counter()
+    try:
+        # Check if watchdog process is running via psutil
+        for p in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                cmd = " ".join(p.info.get("cmdline") or [])
+                if "watchdog" in cmd and "watchdog_main" in cmd:
+                    elapsed_ms = round((time.perf_counter() - start_t) * 1000, 1)
+                    return ServiceStatus(
+                        name="Watchdog",
+                        status="RUNNING",
+                        port=0,
+                        health_detail=f"Watchdog observer running (PID {p.info['pid']})",
+                        latency_ms=elapsed_ms,
+                    )
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return ServiceStatus(
+            name="Watchdog",
+            status="STOPPED",
+            port=0,
+            health_detail="Watchdog process not found",
+            latency_ms=None,
+        )
+    except Exception as exc:
+        return ServiceStatus(
+            name="Watchdog",
+            status="UNKNOWN",
+            port=0,
+            health_detail=f"Check failed: {exc}",
             latency_ms=None,
         )

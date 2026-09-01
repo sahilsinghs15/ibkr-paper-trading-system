@@ -27,7 +27,7 @@ export interface StorageMetrics {
 
 export interface ServiceStatus {
   name: string
-  status: 'RUNNING' | 'DEGRADED' | 'STOPPED' | 'UNKNOWN'
+  status: 'RUNNING' | 'DEGRADED' | 'STOPPED' | 'UNKNOWN' | 'MARKET_CLOSED'
   port: number
   health_detail: string
   latency_ms: number | null
@@ -37,6 +37,8 @@ export interface ServicesHealth {
   backend: ServiceStatus
   demo_stream: ServiceStatus
   ib_gateway: ServiceStatus
+  webhook: ServiceStatus
+  watchdog: ServiceStatus
   postgresql: ServiceStatus
   redis: ServiceStatus
 }
@@ -70,7 +72,7 @@ export interface SystemInfoResponse {
 }
 
 export interface SystemMonitorResponse {
-  overall_status: 'HEALTHY' | 'DEGRADED' | 'CRITICAL'
+  overall_status: 'HEALTHY' | 'DEGRADED' | 'CRITICAL' | 'MARKET_CLOSED'
   timestamp: string
   system: SystemInfoResponse
   cpu: CpuMetrics
@@ -86,3 +88,17 @@ export interface SystemMonitorResponse {
   alerts: AlertItem[]
   top_processes: ProcessInfo[]
 }
+
+export type ServiceKey = 'ibgateway' | 'backend' | 'webhook' | 'watchdog'
+export type ActionKey = 'start' | 'stop' | 'restart' | 'status'
+
+export interface ServiceControlResponse {
+  service: ServiceKey
+  unit: string
+  action: ActionKey
+  result?: string
+  output?: string
+  active?: string
+  details?: string
+}
+

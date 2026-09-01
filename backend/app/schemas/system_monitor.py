@@ -39,7 +39,7 @@ class StorageMetrics(BaseModel):
 class ServiceStatus(BaseModel):
     """Health status of an individual system dependency or application service."""
     name: str = Field(..., description="Human-readable service name")
-    status: Literal["RUNNING", "DEGRADED", "STOPPED", "UNKNOWN"] = Field(..., description="Operational status")
+    status: Literal["RUNNING", "DEGRADED", "STOPPED", "UNKNOWN", "MARKET_CLOSED"] = Field(..., description="Operational status")
     port: int = Field(..., description="Binding port number")
     health_detail: str = Field(..., description="Descriptive status or version detail")
     latency_ms: float | None = Field(None, description="Response latency in milliseconds if applicable")
@@ -50,6 +50,8 @@ class ServicesHealth(BaseModel):
     backend: ServiceStatus
     demo_stream: ServiceStatus
     ib_gateway: ServiceStatus
+    webhook: ServiceStatus
+    watchdog: ServiceStatus
     postgresql: ServiceStatus
     redis: ServiceStatus
 
@@ -87,7 +89,7 @@ class SystemInfoResponse(BaseModel):
 
 class SystemMonitorResponse(BaseModel):
     """Root response model for GET /api/v1/system-monitor."""
-    overall_status: Literal["HEALTHY", "DEGRADED", "CRITICAL"]
+    overall_status: Literal["HEALTHY", "DEGRADED", "CRITICAL", "MARKET_CLOSED"]
     timestamp: datetime
     system: SystemInfoResponse
     cpu: CpuMetrics

@@ -1,6 +1,7 @@
 """Unit and integration tests for the System Monitor API."""
 
 from unittest.mock import AsyncMock, patch
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -10,7 +11,24 @@ from app.services.system_monitor_service import collect_system_monitor_data
 
 
 @pytest.fixture
-def client():
+def mock_admin():
+    from app.api.deps import require_admin
+    from app.db.models.user import UserModel
+
+    admin_user = UserModel(
+        id=1,
+        email="admin@example.com",
+        password_hash="hashed_pw",
+        role="admin",
+        is_active=True,
+    )
+    app.dependency_overrides[require_admin] = lambda: admin_user
+    yield admin_user
+    app.dependency_overrides.pop(require_admin, None)
+
+
+@pytest.fixture
+def client(mock_admin):
     with (
         patch(
             "app.broker.ibkr.tws_client.TWSClient.connect_and_start",
@@ -29,12 +47,17 @@ def client():
             new_callable=AsyncMock,
         ),
         patch(
+            "app.services.recovery.RecoveryManager.run_startup_recovery",
+            new_callable=AsyncMock,
+        ),
+        patch(
             "app.services.order_manager.OrderManager.hydrate_live_pnl",
             new_callable=AsyncMock,
         ),
         TestClient(app) as c,
     ):
         yield c
+
 
 
 def test_system_monitor_endpoint_structure(client: TestClient):
@@ -45,7 +68,7 @@ def test_system_monitor_endpoint_structure(client: TestClient):
 
     # Validate against Pydantic schema
     validated = SystemMonitorResponse.model_validate(data)
-    assert validated.overall_status in ("HEALTHY", "DEGRADED", "CRITICAL")
+    assert validated.overall_status in ("HEALTHY", "DEGRADED", "CRITICAL", "MARKET_CLOSED")
     assert validated.system.hostname != ""
     assert validated.cpu.count >= 1
     assert validated.memory.ram.total_bytes > 0
@@ -56,8 +79,11 @@ def test_system_monitor_endpoint_structure(client: TestClient):
     assert validated.services.backend.name == "FastAPI Backend"
     assert validated.services.demo_stream.name == "Demo Streaming"
     assert validated.services.ib_gateway.name == "IB Gateway"
+    assert validated.services.webhook.name == "Webhook Ingest"
+    assert validated.services.watchdog.name == "Watchdog"
     assert validated.services.postgresql.name == "PostgreSQL"
     assert validated.services.redis.name == "Redis"
+
 
 
 def test_system_monitor_secrets_not_exposed(client: TestClient):
@@ -87,7 +113,7 @@ async def test_partial_service_failure_does_not_crash():
 @pytest.mark.asyncio
 async def test_ib_gateway_dynamic_port_configuration():
     """Verify IB Gateway probe dynamically uses get_settings().ibkr_port and host."""
-    from app.core.config import Settings, get_settings
+    from app.core.config import Settings
 
     # Mock settings with port 4002 (MAIN EC2 posture)
     mock_settings_4002 = Settings(ibkr_host="127.0.0.1", ibkr_port=4002)

@@ -1,12 +1,84 @@
 import { useState, useEffect, useCallback } from 'react'
-import { fetchSystemMonitor } from '../api/systemMonitorApi'
-import type { SystemMonitorResponse, ServiceStatus } from '../types/systemMonitor'
+import { fetchSystemMonitor, controlService } from '../api/systemMonitorApi'
+import type {
+  SystemMonitorResponse,
+  ServiceStatus,
+  ServiceKey,
+  ActionKey,
+} from '../types/systemMonitor'
+
+interface ServiceControlConfig {
+  key: ServiceKey
+  servicesKey: keyof SystemMonitorResponse['services']
+  label: string
+  unit: string
+  sessionControlled: boolean
+  startImpact: string
+  stopImpact: string
+}
+
+const CONTROL_CONFIG: ServiceControlConfig[] = [
+  {
+    key: 'ibgateway',
+    servicesKey: 'ib_gateway',
+    label: 'IB Gateway',
+    unit: 'ibgateway.service',
+    sessionControlled: true,
+    startImpact: 'This will start ibgateway.service and initiate IB Gateway TWS socket connectivity.',
+    stopImpact: 'This will stop ibgateway.service and disconnect the IB Gateway session.',
+  },
+  {
+    key: 'backend',
+    servicesKey: 'backend',
+    label: 'Trading Backend',
+    unit: 'trading-backend.service',
+    sessionControlled: false,
+    startImpact: 'This will start trading-backend.service and resume API & worker pool processing.',
+    stopImpact:
+      'This will stop trading-backend.service. The trading execution API will become unavailable until started again.',
+  },
+  {
+    key: 'webhook',
+    servicesKey: 'webhook',
+    label: 'Webhook Ingest',
+    unit: 'webhook-ingest.service',
+    sessionControlled: true,
+    startImpact: 'This will start webhook-ingest.service and accept TradingView alerts on port 8000.',
+    stopImpact:
+      'This will stop webhook-ingest.service. Incoming TradingView alerts will not be enqueued while stopped.',
+  },
+  {
+    key: 'watchdog',
+    servicesKey: 'watchdog',
+    label: 'Watchdog',
+    unit: 'watchdog.service',
+    sessionControlled: false,
+    startImpact: 'This will start watchdog.service to resume background monitoring.',
+    stopImpact:
+      'This will stop watchdog.service. Automated monitoring and Telegram notifications will be paused until restarted.',
+  },
+]
 
 export function SystemMonitorPage() {
   const [data, setData] = useState<SystemMonitorResponse | null>(null)
   const [loading, setLoading] = useState<boolean>(true)
   const [error, setError] = useState<string | null>(null)
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null)
+
+  // Service control state
+  const [controlFeedback, setControlFeedback] = useState<{
+    type: 'success' | 'error'
+    message: string
+  } | null>(null)
+  const [pendingAction, setPendingAction] = useState<Record<string, 'STARTING' | 'STOPPING' | null>>({})
+  const [submitting, setSubmitting] = useState<boolean>(false)
+  const [modalState, setModalState] = useState<{
+    service: ServiceKey
+    action: ActionKey
+    label: string
+    unit: string
+    description: string
+  } | null>(null)
 
   const loadData = useCallback(async () => {
     try {
@@ -56,6 +128,9 @@ export function SystemMonitorPage() {
     } else if (svc.status === 'DEGRADED') {
       badgeClass += ' idle'
       textLabel = '● DEGRADED'
+    } else if (svc.status === 'MARKET_CLOSED') {
+      badgeClass += ' idle'
+      textLabel = '● MARKET CLOSED'
     } else {
       badgeClass += ' off'
       textLabel = '● STOPPED'
@@ -66,6 +141,55 @@ export function SystemMonitorPage() {
         {textLabel}
       </span>
     )
+  }
+
+  const handleOpenModal = (cfg: ServiceControlConfig, action: ActionKey) => {
+    setModalState({
+      service: cfg.key,
+      action,
+      label: cfg.label,
+      unit: cfg.unit,
+      description: action === 'start' ? cfg.startImpact : cfg.stopImpact,
+    })
+  }
+
+  const handleConfirmAction = async () => {
+    if (!modalState) return
+    const { service, action, label } = modalState
+    setSubmitting(true)
+    setControlFeedback(null)
+
+    // Mark as pending locally
+    const pendingLabel = action === 'start' ? 'STARTING' : 'STOPPING'
+    setPendingAction((prev) => ({ ...prev, [service]: pendingLabel }))
+
+    try {
+      const res = await controlService(service, action)
+      setControlFeedback({
+        type: 'success',
+        message: `✓ ${label} ${action} requested successfully (${res.unit})`,
+      })
+      setModalState(null)
+
+      // Refresh real state from server after short delay
+      setTimeout(() => {
+        setPendingAction((prev) => ({ ...prev, [service]: null }))
+        loadData()
+      }, 2000)
+    } catch (err: unknown) {
+      let msg = `Failed to ${action} ${label}`
+      if (typeof err === 'object' && err !== null && 'response' in err) {
+        const res = (err as { response?: { data?: { detail?: string } } }).response
+        if (res?.data?.detail) msg += `: ${res.data.detail}`
+      } else if (err instanceof Error) {
+        msg += `: ${err.message}`
+      }
+      setControlFeedback({ type: 'error', message: `✕ ${msg}` })
+      setPendingAction((prev) => ({ ...prev, [service]: null }))
+      setModalState(null)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   if (loading && !data) {
@@ -82,7 +206,17 @@ export function SystemMonitorPage() {
         <div className="status-badge off" style={{ padding: '12px', fontSize: '13px', marginBottom: '16px' }}>
           SYSTEM MONITOR UNAVAILABLE: {error}
         </div>
-        <button onClick={loadData} style={{ padding: '6px 14px', background: 'var(--panel-2)', color: 'var(--ink)', border: '1px solid var(--line)', borderRadius: '4px', cursor: 'pointer' }}>
+        <button
+          onClick={loadData}
+          style={{
+            padding: '6px 14px',
+            background: 'var(--panel-2)',
+            color: 'var(--ink)',
+            border: '1px solid var(--line)',
+            borderRadius: '4px',
+            cursor: 'pointer',
+          }}
+        >
           Retry Connection
         </button>
       </div>
@@ -90,7 +224,12 @@ export function SystemMonitorPage() {
   }
 
   const overall = data?.overall_status || 'UNKNOWN'
-  const overallBadgeClass = overall === 'HEALTHY' ? 'status-badge on' : overall === 'DEGRADED' ? 'status-badge idle' : 'status-badge off'
+  const overallBadgeClass =
+    overall === 'HEALTHY'
+      ? 'status-badge on'
+      : overall === 'DEGRADED' || overall === 'MARKET_CLOSED'
+      ? 'status-badge idle'
+      : 'status-badge off'
 
   return (
     <div style={{ padding: '20px 24px', maxWidth: '1280px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -267,14 +406,18 @@ export function SystemMonitorPage() {
                 data?.services.backend,
                 data?.services.demo_stream,
                 data?.services.ib_gateway,
+                data?.services.webhook,
                 data?.services.postgresql,
                 data?.services.redis,
+                data?.services.watchdog,
               ]
                 .filter((s): s is ServiceStatus => Boolean(s))
                 .map((svc) => (
                   <tr key={svc.name} style={{ borderBottom: '1px solid var(--line)' }}>
                     <td style={{ padding: '12px 16px', fontWeight: 600, color: 'var(--ink)' }}>{svc.name}</td>
-                    <td style={{ padding: '12px 16px', fontFamily: 'var(--mono)', color: 'var(--muted)' }}>:{svc.port}</td>
+                    <td style={{ padding: '12px 16px', fontFamily: 'var(--mono)', color: 'var(--muted)' }}>
+                      {svc.port > 0 ? `:${svc.port}` : '—'}
+                    </td>
                     <td style={{ padding: '12px 16px' }}>{renderServiceBadge(svc)}</td>
                     <td style={{ padding: '12px 16px', color: 'var(--muted)' }}>{svc.health_detail}</td>
                     <td style={{ padding: '12px 16px', textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--dim)' }}>
@@ -282,6 +425,133 @@ export function SystemMonitorPage() {
                     </td>
                   </tr>
                 ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Service Controls Section */}
+      <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '6px', overflow: 'hidden' }}>
+        <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--ink)' }}>Service Controls</div>
+            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>
+              Manual administrative service controls (systemd allowlisted operations)
+            </div>
+          </div>
+        </div>
+
+        {controlFeedback ? (
+          <div
+            style={{
+              padding: '10px 16px',
+              background: controlFeedback.type === 'success' ? 'var(--green-bg)' : 'rgba(239, 68, 68, 0.1)',
+              borderBottom: '1px solid var(--line)',
+              color: controlFeedback.type === 'success' ? 'var(--green)' : 'var(--red)',
+              fontSize: '12px',
+              fontWeight: 600,
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+          >
+            <span>{controlFeedback.message}</span>
+            <button
+              type="button"
+              onClick={() => setControlFeedback(null)}
+              style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: '14px' }}
+            >
+              ✕
+            </button>
+          </div>
+        ) : null}
+
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'left' }}>
+            <thead>
+              <tr style={{ background: 'var(--panel-2)', color: 'var(--muted)', borderBottom: '1px solid var(--line)' }}>
+                <th style={{ padding: '10px 16px' }}>Service</th>
+                <th style={{ padding: '10px 16px' }}>Systemd Unit</th>
+                <th style={{ padding: '10px 16px' }}>Current State</th>
+                <th style={{ padding: '10px 16px' }}>Timer / Session State</th>
+                <th style={{ padding: '10px 16px', textAlign: 'right' }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {CONTROL_CONFIG.map((cfg) => {
+                const svcState = data?.services[cfg.servicesKey]
+                const currentStatus = svcState?.status || 'UNKNOWN'
+                const isPending = Boolean(pendingAction[cfg.key])
+                const isRunning = currentStatus === 'RUNNING' || currentStatus === 'DEGRADED'
+                const isStopped = currentStatus === 'STOPPED' || currentStatus === 'MARKET_CLOSED' || currentStatus === 'UNKNOWN'
+
+                return (
+                  <tr key={cfg.key} style={{ borderBottom: '1px solid var(--line)' }}>
+                    <td style={{ padding: '12px 16px', fontWeight: 600, color: 'var(--ink)' }}>{cfg.label}</td>
+                    <td style={{ padding: '12px 16px', fontFamily: 'var(--mono)', color: 'var(--muted)' }}>{cfg.unit}</td>
+                    <td style={{ padding: '12px 16px' }}>
+                      {isPending ? (
+                        <span className="status-badge idle" style={{ padding: '2px 8px', fontSize: '11px' }}>
+                          ● {pendingAction[cfg.key]}...
+                        </span>
+                      ) : svcState ? (
+                        renderServiceBadge(svcState)
+                      ) : (
+                        <span className="status-badge off" style={{ padding: '2px 8px', fontSize: '11px' }}>
+                          ● UNKNOWN
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding: '12px 16px', color: 'var(--muted)', fontSize: '11px' }}>
+                      {cfg.sessionControlled && currentStatus === 'MARKET_CLOSED' ? (
+                        <span style={{ color: 'var(--amber)', fontWeight: 600 }}>Trading session closed</span>
+                      ) : cfg.sessionControlled ? (
+                        <span style={{ color: 'var(--muted)' }}>Trading-session controlled</span>
+                      ) : (
+                        <span style={{ color: 'var(--dim)' }}>24/7 / Continuous</span>
+                      )}
+                    </td>
+                    <td style={{ padding: '12px 16px', textAlign: 'right' }}>
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                        <button
+                          type="button"
+                          disabled={isRunning || isPending}
+                          onClick={() => handleOpenModal(cfg, 'start')}
+                          style={{
+                            padding: '4px 12px',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            borderRadius: '4px',
+                            border: '1px solid var(--line)',
+                            background: isRunning || isPending ? 'var(--panel-2)' : 'var(--green-bg, #064e3b)',
+                            color: isRunning || isPending ? 'var(--dim)' : 'var(--green, #3ecf8e)',
+                            cursor: isRunning || isPending ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          START
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isStopped || isPending}
+                          onClick={() => handleOpenModal(cfg, 'stop')}
+                          style={{
+                            padding: '4px 12px',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            borderRadius: '4px',
+                            border: '1px solid var(--line)',
+                            background: isStopped || isPending ? 'var(--panel-2)' : 'rgba(239, 68, 68, 0.15)',
+                            color: isStopped || isPending ? 'var(--dim)' : 'var(--red, #ef4444)',
+                            cursor: isStopped || isPending ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          STOP
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -374,6 +644,65 @@ export function SystemMonitorPage() {
           </div>
         </div>
       )}
+
+      {/* Confirmation Modal */}
+      {modalState ? (
+        <div className="modal-overlay" onClick={() => setModalState(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className={`modal-header ${modalState.action === 'stop' ? 'danger-header' : ''}`}>
+              <h3>
+                {modalState.action === 'stop' ? '⚠️ STOP SERVICE' : '▶ START SERVICE'} — {modalState.label.toUpperCase()}
+              </h3>
+              <button type="button" className="modal-close" onClick={() => setModalState(null)}>
+                ✕
+              </button>
+            </div>
+            <div className="modal-body">
+              <p style={{ fontSize: '13px', lineHeight: '1.5', margin: 0 }}>
+                {modalState.action === 'stop' ? (
+                  <>
+                    Are you sure you want to stop <strong>{modalState.label}</strong> ({modalState.unit})?
+                  </>
+                ) : (
+                  <>
+                    Are you sure you want to start <strong>{modalState.label}</strong> ({modalState.unit})?
+                  </>
+                )}
+              </p>
+              <div
+                style={{
+                  marginTop: '12px',
+                  padding: '10px 12px',
+                  background: 'var(--panel-2)',
+                  border: '1px solid var(--line)',
+                  borderRadius: '4px',
+                  fontSize: '11px',
+                  color: 'var(--muted)',
+                }}
+              >
+                {modalState.description}
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn" onClick={() => setModalState(null)} disabled={submitting}>
+                CANCEL
+              </button>
+              <button
+                type="button"
+                className={`btn ${modalState.action === 'stop' ? 'danger' : ''}`}
+                onClick={handleConfirmAction}
+                disabled={submitting}
+              >
+                {submitting
+                  ? 'EXECUTING...'
+                  : modalState.action === 'stop'
+                  ? `STOP ${modalState.label.toUpperCase()}`
+                  : `START ${modalState.label.toUpperCase()}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
