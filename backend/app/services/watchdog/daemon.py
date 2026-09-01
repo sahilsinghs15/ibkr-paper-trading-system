@@ -29,6 +29,7 @@ from app.services.watchdog.health import (
 from app.services.watchdog.models import (
     HealthStatus,
     NotificationEvent,
+    SafetyGateResult,
     ServiceName,
     ServiceSnapshot,
     ServiceState,
@@ -204,7 +205,6 @@ class WatchdogDaemon:
 
         # Market-closed semantics: expected stop outside trading window (weekdays 09:30-16:00 ET)
         is_market_closed = _is_market_closed_for(svc) if self.settings.market_closed_enabled else False
-        global_market_closed = (not _is_trading_session()) if self.settings.market_closed_enabled else False
         # If market closed and health shows stopped, treat as MARKET_CLOSED not FAILED
         # Don't count safety gates when market is closed — trading is intentionally unavailable
         if is_market_closed and health_failed:
@@ -371,8 +371,8 @@ class WatchdogDaemon:
                 # Allow next failure to notify promptly even within previous cooldown
                 try:
                     self.notifier.dedup.clear(svc)
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Failed to clear dedup for %s: %s", svc, exc)
 
     async def _check_resources(self) -> None:
         """Host resource checks with hysteresis — only notify on transitions."""
@@ -396,7 +396,7 @@ class WatchdogDaemon:
                 else:
                     # Recovery threshold
                     thr = t.recovery
-            except Exception:
+            except Exception:  # noqa: BLE001
                 thr = 80.0
             # Build resource alert
             text = format_resource_alert(
