@@ -768,11 +768,12 @@ def test_no_process_manager_runtime_reference():
     import pathlib
     import re
     # Production runtime modules should not contain process_manager supervisor logic
+    base = pathlib.Path(__file__).resolve().parents[1]  # backend/
     prod_files = [
-        pathlib.Path("backend/app/services/watchdog/daemon.py"),
-        pathlib.Path("backend/app/services/watchdog/status.py"),
-        pathlib.Path("backend/app/services/watchdog/notifier.py"),
-        pathlib.Path("backend/app/services/watchdog/telegram.py"),
+        base / "app/services/watchdog/daemon.py",
+        base / "app/services/watchdog/status.py",
+        base / "app/services/watchdog/notifier.py",
+        base / "app/services/watchdog/telegram.py",
     ]
     for p in prod_files:
         text = p.read_text()
