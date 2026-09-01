@@ -319,9 +319,9 @@ def test_market_closed_message_honest():
     assert "5/5" not in text
     assert "RECOVERING" not in text
 
-def test_market_closed_no_recovery():
+def test_market_closed_no_recovery(tmp_path):
     # Market closed should not start recovery or count towards budget
-    settings = WatchdogSettings(telegram_enabled=False, market_closed_enabled=True)
+    settings = WatchdogSettings(telegram_enabled=False, market_closed_enabled=True, recovery_state_path=str(tmp_path / "recovery.json"))
     daemon = WatchdogDaemon(settings)
     # Monkeypatch _is_trading_session to simulate market closed (Sunday)
     import app.services.watchdog.daemon as dm
