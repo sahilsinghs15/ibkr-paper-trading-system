@@ -153,3 +153,38 @@ def test_service_control_status_action(client: TestClient, mock_admin):
         assert data["unit"] == "webhook-ingest.service"
         assert data["active"] == "active"
         assert "MainPID=12345" in data["details"]
+
+
+@pytest.mark.parametrize(
+    "service_key,expected_unit",
+    [
+        ("ibgateway", "ibgateway.service"),
+        ("backend", "trading-backend.service"),
+        ("webhook", "webhook-ingest.service"),
+        ("watchdog", "watchdog.service"),
+    ],
+)
+def test_service_control_restart_allowed_services(
+    client: TestClient, mock_admin, service_key: str, expected_unit: str
+):
+    """Verify restarting each allowlisted service invokes systemctl restart safely without shell."""
+    mock_run = MagicMock()
+    mock_run.returncode = 0
+    mock_run.stdout = "Job for unit succeeded"
+    mock_run.stderr = ""
+
+    with patch("subprocess.run", return_value=mock_run) as patched_subprocess:
+        res = client.post(f"/api/v1/service-control/{service_key}/restart")
+        assert res.status_code == 200, res.text
+        data = res.json()
+        assert data["result"] == "ok"
+        assert data["service"] == service_key
+        assert data["unit"] == expected_unit
+
+        patched_subprocess.assert_called_once_with(
+            ["systemctl", "restart", expected_unit],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+

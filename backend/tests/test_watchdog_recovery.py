@@ -1,12 +1,14 @@
 """Recovery budget, safety gates, and demo isolation."""
 
 import asyncio
-from datetime import datetime, UTC
-from unittest.mock import AsyncMock, patch
+from datetime import UTC, datetime
 
 from app.services.watchdog.config import WatchdogSettings
 from app.services.watchdog.daemon import WatchdogDaemon
-from app.services.watchdog.models import HealthResult, HealthStatus, ServiceName, ServiceState
+from app.services.watchdog.models import (
+    ServiceName,
+    ServiceState,
+)
 from app.services.watchdog.safety import SafetyGateChecker
 
 
@@ -59,7 +61,10 @@ def test_health_checkers_do_not_raise():
     settings = WatchdogSettings(gateway_port=19997, backend_port=19998, webhook_port=19999, demo_port=19996)
 
     async def _run():
-        from app.services.watchdog.health import BackendHealthChecker, GatewayHealthChecker
+        from app.services.watchdog.health import (
+            BackendHealthChecker,
+            GatewayHealthChecker,
+        )
 
         g = GatewayHealthChecker(settings)
         b = BackendHealthChecker(settings)

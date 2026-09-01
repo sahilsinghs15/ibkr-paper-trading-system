@@ -96,7 +96,13 @@ async def test_clear_critical_unblocks_only_when_no_other_critical() -> None:
 
 @pytest.mark.asyncio
 async def test_fail_critical_schedules_recovery() -> None:
-    from tests.test_basket_coordinator import PlaceScript, _coord, _intent, _pass, _wired
+    from tests.test_basket_coordinator import (
+        PlaceScript,
+        _coord,
+        _intent,
+        _pass,
+        _wired,
+    )
 
     oms, _, _ = _wired(PlaceScript(["fill", "reject", "error"]))
     coord = _coord(oms, session_factory=None)
@@ -134,7 +140,7 @@ async def test_recovery_clears_when_broker_flat(session_factory: async_sessionma
         acc = AccountModel(
             name=f"Rec-{test_id}",
             ibkr_account=ibkr_account,
-            total_margin=Decimal("100000"),
+            total_margin=Decimal(100000),
             enabled=True,
         )
         session.add(acc)
@@ -159,7 +165,7 @@ async def test_recovery_clears_when_broker_flat(session_factory: async_sessionma
             action="OPEN",
             pair="AAPL",
             side="BUY",
-            ref_price_a=Decimal("100"),
+            ref_price_a=Decimal(100),
             raw_payload={"test": True},
             status="FAILED",
         )
@@ -178,10 +184,10 @@ async def test_recovery_clears_when_broker_flat(session_factory: async_sessionma
                 symbol="AAPL",
                 ibkr_contract=f"AAPL-STK-SMART-USD:{con_id}",
                 buy_sell="BUY",
-                quantity=Decimal("10"),
-                limit_price=Decimal("0"),
+                quantity=Decimal(10),
+                limit_price=Decimal(0),
                 status="FILLED",
-                fill_qty=Decimal("10"),
+                fill_qty=Decimal(10),
             )
         )
         await BrokerPositionRepository(session).replace_snapshot(
@@ -194,8 +200,8 @@ async def test_recovery_clears_when_broker_flat(session_factory: async_sessionma
                     "sec_type": "STK",
                     "currency": "USD",
                     "exchange": "SMART",
-                    "signed_qty": Decimal("0"),
-                    "avg_cost": Decimal("0"),
+                    "signed_qty": Decimal(0),
+                    "avg_cost": Decimal(0),
                 }
             ],
             as_of=datetime.now(UTC),
@@ -251,7 +257,7 @@ async def test_recovery_failed_leaves_critical_latched(
         acc = AccountModel(
             name=f"Fail-{test_id}",
             ibkr_account=ibkr_account,
-            total_margin=Decimal("100000"),
+            total_margin=Decimal(100000),
             enabled=True,
         )
         session.add(acc)
@@ -275,7 +281,7 @@ async def test_recovery_failed_leaves_critical_latched(
             action="OPEN",
             pair="AAPL",
             side="BUY",
-            ref_price_a=Decimal("100"),
+            ref_price_a=Decimal(100),
             raw_payload={"test": True},
             status="FAILED",
         )
@@ -294,10 +300,10 @@ async def test_recovery_failed_leaves_critical_latched(
                 symbol="AAPL",
                 ibkr_contract=f"AAPL-STK-SMART-USD:{con_id}",
                 buy_sell="BUY",
-                quantity=Decimal("10"),
-                limit_price=Decimal("0"),
+                quantity=Decimal(10),
+                limit_price=Decimal(0),
                 status="FILLED",
-                fill_qty=Decimal("10"),
+                fill_qty=Decimal(10),
             )
         )
         await BrokerPositionRepository(session).replace_snapshot(
@@ -310,8 +316,8 @@ async def test_recovery_failed_leaves_critical_latched(
                     "sec_type": "STK",
                     "currency": "USD",
                     "exchange": "SMART",
-                    "signed_qty": Decimal("5"),
-                    "avg_cost": Decimal("150"),
+                    "signed_qty": Decimal(5),
+                    "avg_cost": Decimal(150),
                 }
             ],
             as_of=datetime.now(UTC),
@@ -395,11 +401,12 @@ async def test_recovery_retries_inside_same_in_flight_task(
 async def test_connected_partial_fill_recovery_marks_critical(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    from unittest.mock import MagicMock
+
     from app.broker.ibkr.tws_client import TWSClient
     from app.db.models.signal import SignalModel
     from app.oms.ibkr_adapter import IBKRExecutionAdapter
     from app.oms.oms_service import OMSService
-    from unittest.mock import MagicMock
 
     test_id = uuid4().hex[:8]
     trade_id = f"T-PARTIAL-{test_id}"
@@ -407,7 +414,7 @@ async def test_connected_partial_fill_recovery_marks_critical(
         account = AccountModel(
             name=f"partial-{test_id}",
             ibkr_account=f"DU-P-{test_id}",
-            total_margin=Decimal("100000"),
+            total_margin=Decimal(100000),
             enabled=True,
         )
         session.add(account)
@@ -431,7 +438,7 @@ async def test_connected_partial_fill_recovery_marks_critical(
             action="OPEN",
             pair="XLE/XOP",
             side="BUY",
-            ref_price_a=Decimal("100"),
+            ref_price_a=Decimal(100),
             raw_payload={"test": True},
             status="FAILED",
         )
@@ -450,10 +457,10 @@ async def test_connected_partial_fill_recovery_marks_critical(
                 symbol="XLE",
                 ibkr_contract="XLE-STK-SMART-USD:111",
                 buy_sell="BUY",
-                quantity=Decimal("100"),
-                limit_price=Decimal("0"),
+                quantity=Decimal(100),
+                limit_price=Decimal(0),
                 status="PARTIALLY_FILLED",
-                fill_qty=Decimal("40"),
+                fill_qty=Decimal(40),
             )
         )
 

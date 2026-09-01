@@ -75,7 +75,7 @@ async def test_broker_flatten_submits_market_reverse_and_skips_ledger(
         acc = AccountModel(
             name=f"FlatAcc-{test_id}",
             ibkr_account=ibkr_account,
-            total_margin=Decimal("100000"),
+            total_margin=Decimal(100000),
         )
         session.add(acc)
         await session.flush()
@@ -92,8 +92,8 @@ async def test_broker_flatten_submits_market_reverse_and_skips_ledger(
                     "sec_type": "CFD",
                     "currency": "USD",
                     "exchange": "SMART",
-                    "signed_qty": Decimal("25"),
-                    "avg_cost": Decimal("150"),
+                    "signed_qty": Decimal(25),
+                    "avg_cost": Decimal(150),
                 }
             ],
             as_of=datetime.now(UTC),

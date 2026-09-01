@@ -28,7 +28,6 @@ from app.oms.basket import BasketState
 from app.oms.coordinator import BasketCoordinator
 from app.oms.ibkr_adapter import IBKRExecutionAdapter
 from app.oms.models import OMSOrderStatus
-from tests.ibkr_test_utils import wire_test_managed_accounts
 from app.oms.oms_service import OMSService
 from app.rms import RMSContext, RMSEngine
 from app.rms.models import (
@@ -47,6 +46,7 @@ from app.services.model_blue.parser import (
 )
 from app.services.model_blue.persistence import ModelBlueExecutionPersistence
 from app.services.order_manager import OrderManager
+from tests.ibkr_test_utils import wire_test_managed_accounts
 from tests.test_hardening_lifecycle import _ctx, _open_payload
 
 _TS = datetime(2026, 8, 18, 16, 0, tzinfo=UTC)

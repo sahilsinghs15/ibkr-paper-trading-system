@@ -10,11 +10,11 @@ from app.accounts.config_service import (
     AccountStrategyConfigService,
     AllocationConfigError,
 )
-from app.api.deps import get_order_manager, require_authenticated_user, require_admin
-from app.db.models.user import UserModel
+from app.api.deps import get_order_manager, require_admin, require_authenticated_user
 from app.core.config import get_settings
 from app.db.models.account import AccountModel, PerSymbolLimitModel
 from app.db.models.strategy import AllocationModel
+from app.db.models.user import UserModel
 from app.db.session import get_db_session
 from app.oms.retry_policy import paper_retry_ports_allowed
 from app.schemas.config_schemas import (

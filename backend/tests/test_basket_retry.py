@@ -19,6 +19,7 @@ from app.rms.models import (
     RMSOutcome,
     StrategyConfig,
 )
+from tests.ibkr_test_utils import wire_test_managed_accounts
 from tests.test_basket_coordinator import (
     _STRAT,
     PlaceScript,
@@ -27,7 +28,6 @@ from tests.test_basket_coordinator import (
     _pass,
     _wired,
 )
-from tests.ibkr_test_utils import wire_test_managed_accounts
 
 
 def _ctx() -> RMSContext:

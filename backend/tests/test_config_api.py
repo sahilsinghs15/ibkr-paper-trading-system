@@ -298,7 +298,6 @@ async def test_delete_account_cleans_kill_switch_operations_and_cache(
     """
     from app.db.models.account import AccountModel
     from app.db.models.position import PositionModel
-    from app.db.repositories.position_repository import PositionRepository
     from app.services.kill_switch import (
         KillSwitchService,
         hydrate_kill_switch_cache,

@@ -1,7 +1,6 @@
 """Worker terminal status when post-submit failures occur."""
 
 import asyncio
-from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -22,7 +21,7 @@ from app.oms.models import FanoutExecutionResult
 from app.services.worker_pool import ExecutionWorkerPool
 
 
-def _job(**overrides) -> SignalJobModel:  # noqa: ANN003
+def _job(**overrides) -> SignalJobModel:
     job = MagicMock(spec=SignalJobModel)
     job.job_id = overrides.get("job_id", uuid4())
     job.signal_id = overrides.get("signal_id", f"T-WK-{uuid4().hex[:8]}")
@@ -50,7 +49,7 @@ async def test_execute_job_quarantines_on_unexpected_fanout_error() -> None:
     pool = ExecutionWorkerPool(factory, om, worker_count=1)
     statuses: list[str] = []
 
-    async def capture_status(job_id, status, worker_id, lease_lost, error=None):  # noqa: ANN001
+    async def capture_status(job_id, status, worker_id, lease_lost, error=None):
         statuses.append(status)
         return True
 
@@ -72,7 +71,7 @@ async def test_execute_job_failed_when_exception_and_no_orders_emitted() -> None
     pool = ExecutionWorkerPool(factory, om, worker_count=1)
     statuses: list[str] = []
 
-    async def capture_status(job_id, status, worker_id, lease_lost, error=None):  # noqa: ANN001
+    async def capture_status(job_id, status, worker_id, lease_lost, error=None):
         statuses.append(status)
         return True
 
@@ -114,7 +113,7 @@ async def test_execute_job_quarantines_when_exception_and_orders_emitted() -> No
             action="OPEN",
             pair="XLE",
             side="BUY",
-            ref_price_a=Decimal("50"),
+            ref_price_a=Decimal(50),
             raw_payload={"test": True},
             status="NEW",
         )
@@ -131,13 +130,13 @@ async def test_execute_job_quarantines_when_exception_and_orders_emitted() -> No
                 symbol="XLE",
                 ibkr_contract="XLE-STK-SMART-USD",
                 buy_sell="BUY",
-                quantity=Decimal("10"),
-                limit_price=Decimal("0"),
+                quantity=Decimal(10),
+                limit_price=Decimal(0),
                 status="FILLED",
             )
         )
 
-    async def capture_status(job_id, status, worker_id, lease_lost, error=None):  # noqa: ANN001
+    async def capture_status(job_id, status, worker_id, lease_lost, error=None):
         statuses.append(status)
         return True
 

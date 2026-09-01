@@ -3,8 +3,17 @@
 import asyncio
 
 from app.services.watchdog.config import WatchdogSettings
-from app.services.watchdog.models import NotificationEvent, ServiceName, ServiceSnapshot, ServiceState
-from app.services.watchdog.notifier import NotificationDeduplicator, NotificationQueue, format_telegram_message
+from app.services.watchdog.models import (
+    NotificationEvent,
+    ServiceName,
+    ServiceSnapshot,
+    ServiceState,
+)
+from app.services.watchdog.notifier import (
+    NotificationDeduplicator,
+    NotificationQueue,
+    format_telegram_message,
+)
 from app.services.watchdog.telegram import TelegramClient
 
 

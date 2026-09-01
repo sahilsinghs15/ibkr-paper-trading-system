@@ -9,16 +9,15 @@ import platform
 import socket
 import time
 from datetime import UTC, datetime
+from datetime import time as dtime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 import psutil
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from datetime import time as dtime
-from zoneinfo import ZoneInfo
 
 from app.core.config import get_settings
 from app.schemas.system_monitor import (
@@ -27,8 +26,8 @@ from app.schemas.system_monitor import (
     MemoryMetrics,
     MetricUsage,
     ProcessInfo,
-    ServiceStatus,
     ServicesHealth,
+    ServiceStatus,
     StorageMetrics,
     SystemInfoResponse,
     SystemMonitorResponse,

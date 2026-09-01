@@ -5,13 +5,18 @@ import asyncio
 from app.services.watchdog.config import WatchdogSettings
 from app.services.watchdog.health import (
     BackendHealthChecker,
-    DemoHealthChecker,
     GatewayHealthChecker,
     PostgresHealthChecker,
     RedisHealthChecker,
-    WebhookHealthChecker,
 )
-from app.services.watchdog.models import HealthResult, HealthStatus, NotificationEvent, ServiceName, ServiceSnapshot, ServiceState
+from app.services.watchdog.models import (
+    HealthResult,
+    HealthStatus,
+    NotificationEvent,
+    ServiceName,
+    ServiceSnapshot,
+    ServiceState,
+)
 from app.services.watchdog.notifier import format_telegram_message
 
 

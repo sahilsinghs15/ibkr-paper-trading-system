@@ -3,11 +3,11 @@
 Only fixed services and actions are allowed. No arbitrary systemctl command is ever executed.
 """
 
+import logging
+import subprocess
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-import subprocess
-import logging
 
 from app.api.deps import require_admin
 from app.db.models.user import UserModel

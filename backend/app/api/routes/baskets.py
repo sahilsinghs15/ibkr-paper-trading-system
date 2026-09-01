@@ -11,13 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.account import AccountModel
 from app.db.repositories.basket_repository import BasketRepository
 from app.db.repositories.order_repository import OrderRepository
+from app.db.session import get_db_session
 from app.schemas.critical_basket_schemas import (
     CriticalBasketLegRow,
     CriticalBasketRow,
     CriticalBasketsResponse,
 )
 from app.services.critical_recovery import parse_ibkr_contract
-from app.db.session import get_db_session
 
 router = APIRouter(prefix="/baskets", tags=["baskets"])
 

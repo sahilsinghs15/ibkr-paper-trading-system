@@ -6,6 +6,7 @@ import logging
 
 import httpx
 
+from app.core.security import create_access_token
 from app.services.watchdog.config import WatchdogSettings
 from app.services.watchdog.models import SafetyGateResult
 
@@ -27,15 +28,21 @@ class SafetyGateChecker:
         self.settings = settings
         self._base = f"http://{self.settings.backend_host}:{self.settings.backend_port}"
 
+    def _get_auth_headers(self) -> dict[str, str]:
+        token = create_access_token({"sub": "1", "role": "admin", "email": "admin@zanrad.com"})
+        return {"Authorization": f"Bearer {token}"}
+
     async def check(self) -> SafetyGateResult:
         gates: dict[str, str] = {}  # gate -> SAFE/UNSAFE/UNKNOWN
         failures: list[str] = []
+        auth_headers = self._get_auth_headers()
 
         # Gate 1: system-monitor
         gates["system_monitor"] = "UNKNOWN"
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
+            async with httpx.AsyncClient(timeout=3.0, headers=auth_headers) as client:
                 resp = await client.get(f"{self._base}/api/v1/system-monitor")
+
                 if resp.status_code != 200:
                     failures.append(f"system-monitor HTTP {resp.status_code}")
                     gates["system_monitor"] = "UNSAFE"
@@ -58,7 +65,7 @@ class SafetyGateChecker:
         # Gate 2: kill switch — query accounts
         gates["kill_switch"] = "UNKNOWN"
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
+            async with httpx.AsyncClient(timeout=3.0, headers=auth_headers) as client:
                 resp = await client.get(f"{self._base}/api/v1/config/accounts")
                 if resp.status_code != 200:
                     failures.append(f"kill-switch check HTTP {resp.status_code}")
@@ -83,13 +90,13 @@ class SafetyGateChecker:
             # need account list — reuse same accounts fetch if available, else fetch again
             ibkr_accounts: list[str] = []
             try:
-                async with httpx.AsyncClient(timeout=3.0) as client:
+                async with httpx.AsyncClient(timeout=3.0, headers=auth_headers) as client:
                     resp = await client.get(f"{self._base}/api/v1/config/accounts")
                     if resp.status_code == 200:
                         data = resp.json()
                         accts = data.get("accounts", data if isinstance(data, list) else [])
                         ibkr_accounts = [a.get("ibkr_account") for a in accts if a.get("ibkr_account")]
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
 
             if not ibkr_accounts:
@@ -100,7 +107,7 @@ class SafetyGateChecker:
                 found_critical = False
                 for acct in ibkr_accounts:
                     try:
-                        async with httpx.AsyncClient(timeout=3.0) as client:
+                        async with httpx.AsyncClient(timeout=3.0, headers=auth_headers) as client:
                             resp = await client.get(f"{self._base}/api/v1/baskets/critical", params={"ibkr_account": acct})
                             if resp.status_code == 200:
                                 data = resp.json()

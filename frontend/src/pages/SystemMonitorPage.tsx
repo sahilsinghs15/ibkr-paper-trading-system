@@ -15,6 +15,7 @@ interface ServiceControlConfig {
   sessionControlled: boolean
   startImpact: string
   stopImpact: string
+  restartImpact: string
 }
 
 const CONTROL_CONFIG: ServiceControlConfig[] = [
@@ -26,6 +27,7 @@ const CONTROL_CONFIG: ServiceControlConfig[] = [
     sessionControlled: true,
     startImpact: 'This will start ibgateway.service and initiate IB Gateway TWS socket connectivity.',
     stopImpact: 'This will stop ibgateway.service and disconnect the IB Gateway session.',
+    restartImpact: 'This will restart ibgateway.service and reconnect the IB Gateway session.',
   },
   {
     key: 'backend',
@@ -36,6 +38,8 @@ const CONTROL_CONFIG: ServiceControlConfig[] = [
     startImpact: 'This will start trading-backend.service and resume API & worker pool processing.',
     stopImpact:
       'This will stop trading-backend.service. The trading execution API will become unavailable until started again.',
+    restartImpact:
+      'This will restart trading-backend.service and re-initialize the execution worker pool and recovery services.',
   },
   {
     key: 'webhook',
@@ -46,6 +50,7 @@ const CONTROL_CONFIG: ServiceControlConfig[] = [
     startImpact: 'This will start webhook-ingest.service and accept TradingView alerts on port 8000.',
     stopImpact:
       'This will stop webhook-ingest.service. Incoming TradingView alerts will not be enqueued while stopped.',
+    restartImpact: 'This will restart webhook-ingest.service on port 8000.',
   },
   {
     key: 'watchdog',
@@ -56,6 +61,7 @@ const CONTROL_CONFIG: ServiceControlConfig[] = [
     startImpact: 'This will start watchdog.service to resume background monitoring.',
     stopImpact:
       'This will stop watchdog.service. Automated monitoring and Telegram notifications will be paused until restarted.',
+    restartImpact: 'This will restart watchdog.service and re-trigger background monitoring probes.',
   },
 ]
 
@@ -70,7 +76,9 @@ export function SystemMonitorPage() {
     type: 'success' | 'error'
     message: string
   } | null>(null)
-  const [pendingAction, setPendingAction] = useState<Record<string, 'STARTING' | 'STOPPING' | null>>({})
+  const [pendingAction, setPendingAction] = useState<
+    Record<string, 'STARTING' | 'STOPPING' | 'RESTARTING' | null>
+  >({})
   const [submitting, setSubmitting] = useState<boolean>(false)
   const [modalState, setModalState] = useState<{
     service: ServiceKey
@@ -144,12 +152,16 @@ export function SystemMonitorPage() {
   }
 
   const handleOpenModal = (cfg: ServiceControlConfig, action: ActionKey) => {
+    let description = cfg.startImpact
+    if (action === 'stop') description = cfg.stopImpact
+    else if (action === 'restart') description = cfg.restartImpact
+
     setModalState({
       service: cfg.key,
       action,
       label: cfg.label,
       unit: cfg.unit,
-      description: action === 'start' ? cfg.startImpact : cfg.stopImpact,
+      description,
     })
   }
 
@@ -160,7 +172,8 @@ export function SystemMonitorPage() {
     setControlFeedback(null)
 
     // Mark as pending locally
-    const pendingLabel = action === 'start' ? 'STARTING' : 'STOPPING'
+    const pendingLabel =
+      action === 'start' ? 'STARTING' : action === 'stop' ? 'STOPPING' : 'RESTARTING'
     setPendingAction((prev) => ({ ...prev, [service]: pendingLabel }))
 
     try {
@@ -533,6 +546,23 @@ export function SystemMonitorPage() {
                         <button
                           type="button"
                           disabled={isStopped || isPending}
+                          onClick={() => handleOpenModal(cfg, 'restart')}
+                          style={{
+                            padding: '4px 12px',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            borderRadius: '4px',
+                            border: '1px solid var(--line)',
+                            background: isStopped || isPending ? 'var(--panel-2)' : 'rgba(59, 130, 246, 0.15)',
+                            color: isStopped || isPending ? 'var(--dim)' : 'var(--blue, #3b82f6)',
+                            cursor: isStopped || isPending ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          RESTART
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isStopped || isPending}
                           onClick={() => handleOpenModal(cfg, 'stop')}
                           style={{
                             padding: '4px 12px',
@@ -651,7 +681,12 @@ export function SystemMonitorPage() {
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <div className={`modal-header ${modalState.action === 'stop' ? 'danger-header' : ''}`}>
               <h3>
-                {modalState.action === 'stop' ? '⚠️ STOP SERVICE' : '▶ START SERVICE'} — {modalState.label.toUpperCase()}
+                {modalState.action === 'stop'
+                  ? '⚠️ STOP SERVICE'
+                  : modalState.action === 'restart'
+                  ? '🔄 RESTART SERVICE'
+                  : '▶ START SERVICE'}{' '}
+                — {modalState.label.toUpperCase()}
               </h3>
               <button type="button" className="modal-close" onClick={() => setModalState(null)}>
                 ✕
@@ -659,15 +694,8 @@ export function SystemMonitorPage() {
             </div>
             <div className="modal-body">
               <p style={{ fontSize: '13px', lineHeight: '1.5', margin: 0 }}>
-                {modalState.action === 'stop' ? (
-                  <>
-                    Are you sure you want to stop <strong>{modalState.label}</strong> ({modalState.unit})?
-                  </>
-                ) : (
-                  <>
-                    Are you sure you want to start <strong>{modalState.label}</strong> ({modalState.unit})?
-                  </>
-                )}
+                Are you sure you want to {modalState.action} <strong>{modalState.label}</strong> (
+                {modalState.unit})?
               </p>
               <div
                 style={{
@@ -695,9 +723,7 @@ export function SystemMonitorPage() {
               >
                 {submitting
                   ? 'EXECUTING...'
-                  : modalState.action === 'stop'
-                  ? `STOP ${modalState.label.toUpperCase()}`
-                  : `START ${modalState.label.toUpperCase()}`}
+                  : `${modalState.action.toUpperCase()} ${modalState.label.toUpperCase()}`}
               </button>
             </div>
           </div>

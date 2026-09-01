@@ -29,7 +29,11 @@ from app.rms.models import (
 from app.services.model_blue.allocation import TemporarySettingsCommittedCapitalProvider
 from app.services.model_blue.parser import parse_model_blue_payload
 from app.services.model_blue.sizer import ModelBlueSizer
-from tests.ibkr_test_utils import DEFAULT_TEST_IBKR_ACCOUNT, fill_on_place_order, wire_test_managed_accounts
+from tests.ibkr_test_utils import (
+    DEFAULT_TEST_IBKR_ACCOUNT,
+    fill_on_place_order,
+    wire_test_managed_accounts,
+)
 
 _TS = datetime(2026, 8, 18, 17, 0, tzinfo=UTC)
 

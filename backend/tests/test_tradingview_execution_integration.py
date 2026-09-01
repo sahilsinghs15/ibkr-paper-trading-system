@@ -20,7 +20,11 @@ from app.rms import RMSContext, RMSEngine
 from app.rms.models import OrderSide, StrategyConfig
 from app.services.model_blue.allocation import TemporarySettingsCommittedCapitalProvider
 from app.services.order_manager import OrderManager
-from tests.ibkr_test_utils import DEFAULT_TEST_IBKR_ACCOUNT, fill_on_place_order, wire_test_managed_accounts
+from tests.ibkr_test_utils import (
+    DEFAULT_TEST_IBKR_ACCOUNT,
+    fill_on_place_order,
+    wire_test_managed_accounts,
+)
 
 _COMMITTED = Decimal(25000)
 _MODEL_BLUE = "model_blue"
@@ -135,7 +139,7 @@ def client_with_execution() -> Generator[TestClient, None, None]:
                     ibkr_account=DEFAULT_TEST_IBKR_ACCOUNT,
                     strategy_id=_MODEL_BLUE,
                     total_margin=Decimal(100000),
-                    alloc_pct=Decimal("1"),
+                    alloc_pct=Decimal(1),
                     committed_notional=_COMMITTED,
                     target=Decimal(500),
                     stop=Decimal(250),

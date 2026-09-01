@@ -5,11 +5,17 @@ Covers scenarios 1-10 from audit spec without requiring live services.
 
 import asyncio
 import pathlib
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from app.services.watchdog.config import WatchdogSettings
 from app.services.watchdog.daemon import TRADING_CRITICAL, WatchdogDaemon
-from app.services.watchdog.models import HealthResult, HealthStatus, NotificationEvent, ServiceName, ServiceState
+from app.services.watchdog.models import (
+    HealthResult,
+    HealthStatus,
+    NotificationEvent,
+    ServiceName,
+    ServiceState,
+)
 from app.services.watchdog.notifier import NotificationQueue
 from app.services.watchdog.telegram import TelegramClient
 

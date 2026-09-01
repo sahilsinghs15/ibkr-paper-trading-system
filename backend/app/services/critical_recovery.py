@@ -6,7 +6,6 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Any, Literal
 
 from sqlalchemy import select

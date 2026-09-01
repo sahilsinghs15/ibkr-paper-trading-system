@@ -28,7 +28,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.config import get_settings
 from app.db.models.account import AccountModel
 from app.db.models.position import PositionModel
-from app.db.repositories.position_repository import PositionRepository
 from app.main import app
 from app.rms.checks.money_per_stock import MoneyPerStockCheck
 from app.rms.models import (
@@ -218,20 +217,20 @@ def test_changing_default_does_not_modify_explicit_overrides(client: TestClient)
         )
 
     # Initial state: Default=$10M, EWP=$15M, EWU=$20M
-    assert check.evaluate(make_intent("CORN", Decimal("11000000")), ctx).outcome == RMSOutcome.REJECT  # fallback $10M
-    assert check.evaluate(make_intent("EWP", Decimal("14000000")), ctx).outcome == RMSOutcome.PASS     # override $15M
-    assert check.evaluate(make_intent("EWU", Decimal("19000000")), ctx).outcome == RMSOutcome.PASS     # override $20M
-    assert check.evaluate(make_intent("SPY", Decimal("11000000")), ctx).outcome == RMSOutcome.REJECT  # fallback $10M
+    assert check.evaluate(make_intent("CORN", Decimal(11000000)), ctx).outcome == RMSOutcome.REJECT  # fallback $10M
+    assert check.evaluate(make_intent("EWP", Decimal(14000000)), ctx).outcome == RMSOutcome.PASS     # override $15M
+    assert check.evaluate(make_intent("EWU", Decimal(19000000)), ctx).outcome == RMSOutcome.PASS     # override $20M
+    assert check.evaluate(make_intent("SPY", Decimal(11000000)), ctx).outcome == RMSOutcome.REJECT  # fallback $10M
 
     # Change default to $12M
     ctx.default_symbol_limits[acc_id] = Decimal("12000000.00")
 
     # Verify:
-    assert check.evaluate(make_intent("CORN", Decimal("11000000")), ctx).outcome == RMSOutcome.PASS     # new default $12M allows $11M
-    assert check.evaluate(make_intent("EWP", Decimal("14000000")), ctx).outcome == RMSOutcome.PASS     # explicit override $15M unchanged
-    assert check.evaluate(make_intent("EWP", Decimal("16000000")), ctx).outcome == RMSOutcome.REJECT   # explicit override $15M still rejects $16M
-    assert check.evaluate(make_intent("EWU", Decimal("19000000")), ctx).outcome == RMSOutcome.PASS     # explicit override $20M unchanged
-    assert check.evaluate(make_intent("SPY", Decimal("11000000")), ctx).outcome == RMSOutcome.PASS     # new default $12M allows $11M
+    assert check.evaluate(make_intent("CORN", Decimal(11000000)), ctx).outcome == RMSOutcome.PASS     # new default $12M allows $11M
+    assert check.evaluate(make_intent("EWP", Decimal(14000000)), ctx).outcome == RMSOutcome.PASS     # explicit override $15M unchanged
+    assert check.evaluate(make_intent("EWP", Decimal(16000000)), ctx).outcome == RMSOutcome.REJECT   # explicit override $15M still rejects $16M
+    assert check.evaluate(make_intent("EWU", Decimal(19000000)), ctx).outcome == RMSOutcome.PASS     # explicit override $20M unchanged
+    assert check.evaluate(make_intent("SPY", Decimal(11000000)), ctx).outcome == RMSOutcome.PASS     # new default $12M allows $11M
 
 
 def test_multi_account_isolation_for_defaults(client: TestClient) -> None:

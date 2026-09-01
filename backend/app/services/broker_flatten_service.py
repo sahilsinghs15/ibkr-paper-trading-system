@@ -20,9 +20,11 @@ from app.rms.models import (
     OrderAction,
     OrderIntent,
     OrderLeg,
-    OrderSide as RMSOrderSide,
     RMSOutcome,
     RMSResult,
+)
+from app.rms.models import (
+    OrderSide as RMSOrderSide,
 )
 from app.schemas.reconcile_schemas import FlattenBrokerPositionResponse
 from app.services.position_reconciler import QTY_EPSILON

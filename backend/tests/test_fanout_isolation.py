@@ -9,7 +9,14 @@ import pytest
 from app.accounts.context import AccountExecutionContext
 from app.models.signal import Signal, SignalType
 from app.oms.models import ExecutionResult, OMSOrder, OMSOrderStatus
-from app.rms.models import OrderAction, OrderIntent, OrderLeg, OrderSide, RMSOutcome, RMSResult
+from app.rms.models import (
+    OrderAction,
+    OrderIntent,
+    OrderLeg,
+    OrderSide,
+    RMSOutcome,
+    RMSResult,
+)
 from app.services.model_blue.parser import MODEL_BLUE_STRATEGY_ID
 from app.services.order_manager import OrderManager
 
@@ -52,7 +59,7 @@ def _execution_result(account_id: int, ibkr: str) -> ExecutionResult:
                 symbol="XLE",
                 side=OrderSide.BUY,
                 quantity=10,
-                price=Decimal("50"),
+                price=Decimal(50),
                 contract_month="2026-09",
                 instrument_type="STK",
                 leg_index=0,
@@ -86,7 +93,7 @@ async def test_fanout_survives_sibling_runtime_error() -> None:
     ctx_b = _ctx(20, "DU-B")
     submitted: list[int] = []
 
-    async def fake_evaluate(intent, signal, **kwargs):  # noqa: ANN001
+    async def fake_evaluate(intent, signal, **kwargs):
         if intent.account_id == 10:
             raise RuntimeError("dictionary changed size during iteration")
         submitted.append(intent.account_id)
@@ -105,7 +112,7 @@ async def test_fanout_survives_sibling_runtime_error() -> None:
                     symbol="XLE",
                     side=OrderSide.BUY,
                     quantity=10,
-                    price=Decimal("50"),
+                    price=Decimal(50),
                     contract_month="2026-09",
                     instrument_type="STK",
                     leg_index=0,

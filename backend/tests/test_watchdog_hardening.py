@@ -1,12 +1,11 @@
 """Hardening regression tests for watchdog notification accuracy (prompt §21, 14 tests)."""
 import asyncio
 import sys
-from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, "backend")
 
-import pytest
 
 from app.services.watchdog.config import WatchdogSettings
 from app.services.watchdog.daemon import WatchdogDaemon
@@ -341,8 +340,9 @@ def test_market_closed_no_recovery(tmp_path):
 
 def test_weekend_market_closed():
     # Weekend (Saturday) should be market closed
-    from app.services.watchdog.daemon import _is_trading_session
     from zoneinfo import ZoneInfo
+
+    from app.services.watchdog.daemon import _is_trading_session
     ET = ZoneInfo("America/New_York")
     sat_noon = datetime(2026, 8, 29, 12, 0, tzinfo=ET)
     assert _is_trading_session(sat_noon) is False
@@ -352,8 +352,9 @@ def test_weekend_market_closed():
 
 def test_dst_aware_session():
     # DST handling: 09:30 ET should be same wall time regardless of DST offset
-    from app.services.watchdog.daemon import _is_trading_session
     from zoneinfo import ZoneInfo
+
+    from app.services.watchdog.daemon import _is_trading_session
     ET = ZoneInfo("America/New_York")
     # Winter (EST UTC-5) vs Summer (EDT UTC-4) — both 09:30 ET should be open
     winter = datetime(2026, 1, 12, 9, 30, tzinfo=ET)  # Jan, EST
@@ -503,7 +504,6 @@ def test_webhook_restart_isolation(tmp_path, monkeypatch):
 
 def test_market_closed_postgres_healthy_stays_healthy():
     # Market closed + postgres healthy should remain HEALTHY, not TRADING_BLOCKED
-    from app.services.watchdog.daemon import _is_trading_session
     import app.services.watchdog.daemon as dm
     orig = dm._is_trading_session
     dm._is_trading_session = lambda now=None: False  # market closed
@@ -541,8 +541,12 @@ def test_market_closed_postgres_down_still_failed():
         dm._is_trading_session = orig
 
 def test_resource_cpu_hysteresis():
-    from app.services.watchdog.resources import ResourceMonitor, ResourceState, ResourceType
     from app.services.watchdog.config import WatchdogSettings
+    from app.services.watchdog.resources import (
+        ResourceMonitor,
+        ResourceState,
+        ResourceType,
+    )
     settings = WatchdogSettings(cpu_warning_threshold=80.0, cpu_critical_threshold=90.0, cpu_recovery_threshold=75.0, resource_check_interval_seconds=0.0)
     mon = ResourceMonitor(settings)
     # Normal -> warning
@@ -577,8 +581,8 @@ def test_resource_cpu_hysteresis():
     assert cpu_res.is_transition is True
 
 def test_resource_dedup_no_spam(tmp_path):
-    from app.services.watchdog.resources import ResourceMonitor, ResourceState
     from app.services.watchdog.config import WatchdogSettings
+    from app.services.watchdog.resources import ResourceMonitor
     settings = WatchdogSettings(resource_check_interval_seconds=0.0, recovery_state_path=str(tmp_path / "r.json"))
     mon = ResourceMonitor(settings)
     mon._cpu_percent_fn = lambda: 95.0
@@ -590,10 +594,9 @@ def test_resource_dedup_no_spam(tmp_path):
     assert not any(rr.is_transition and rr.type.value == "cpu" for rr in r2)
 
 def test_status_includes_market_closed_not_failed():
-    from app.services.watchdog.status import build_status_message
+
     from app.services.watchdog.resources import ResourceMonitor
-    from zoneinfo import ZoneInfo
-    from datetime import datetime
+    from app.services.watchdog.status import build_status_message
     # Simulate market closed: gateway/backend/webhook MARKET_CLOSED, postgres/redis HEALTHY
     snaps = {
         ServiceName.GATEWAY: ServiceSnapshot(service=ServiceName.GATEWAY, state=ServiceState.MARKET_CLOSED, last_health=HealthResult(service=ServiceName.GATEWAY, status=HealthStatus.FAILED, detail="refused")),
@@ -615,8 +618,8 @@ def test_status_includes_market_closed_not_failed():
     assert "No active infrastructure alerts" in text or "MARKET_CLOSED" in text
 
 def test_status_does_not_leak_secrets():
-    from app.services.watchdog.status import build_status_message
     from app.services.watchdog.resources import ResourceMonitor
+    from app.services.watchdog.status import build_status_message
     snaps = {
         ServiceName.GATEWAY: ServiceSnapshot(service=ServiceName.GATEWAY, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.GATEWAY, status=HealthStatus.HEALTHY, detail="TELEGRAM_BOT_TOKEN=secret123")),
         ServiceName.BACKEND: ServiceSnapshot(service=ServiceName.BACKEND, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.BACKEND, status=HealthStatus.HEALTHY, detail="DATABASE_URL=secret")),
@@ -683,7 +686,7 @@ def test_backend_24_7_market_closed_stays_healthy():
         dm._is_trading_session = orig
 
 def test_service_control_allowlist():
-    from app.api.routes.service_control import ALLOWED_SERVICES, ALLOWED_ACTIONS
+    from app.api.routes.service_control import ALLOWED_ACTIONS, ALLOWED_SERVICES
     assert "ibgateway" in ALLOWED_SERVICES
     assert ALLOWED_SERVICES["ibgateway"] == "ibgateway.service"
     assert ALLOWED_SERVICES["backend"] == "trading-backend.service"
@@ -698,8 +701,8 @@ def test_service_control_allowlist():
     assert "daemon-reload" not in ALLOWED_ACTIONS
 
 def test_status_does_not_report_process_manager():
-    from app.services.watchdog.status import build_status_message
     from app.services.watchdog.resources import ResourceMonitor
+    from app.services.watchdog.status import build_status_message
     snaps = {
         ServiceName.GATEWAY: ServiceSnapshot(service=ServiceName.GATEWAY, state=ServiceState.MARKET_CLOSED, last_health=HealthResult(service=ServiceName.GATEWAY, status=HealthStatus.FAILED, detail="refused")),
         ServiceName.BACKEND: ServiceSnapshot(service=ServiceName.BACKEND, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.BACKEND, status=HealthStatus.HEALTHY, detail="HTTP 200")),
@@ -766,7 +769,6 @@ def test_market_closed_expected_services_are_not_failures():
 
 def test_no_process_manager_runtime_reference():
     import pathlib
-    import re
     # Production runtime modules should not contain process_manager supervisor logic
     base = pathlib.Path(__file__).resolve().parents[1]  # backend/
     prod_files = [
@@ -806,8 +808,8 @@ def test_backend_market_closed_message_is_expected():
     text = format_telegram_message(ServiceName.BACKEND, NotificationEvent.MARKET_CLOSED if False else NotificationEvent.START, snap, host="127.0.0.1", port=8001, health=hr)
     # For market closed, backend should be HEALTHY/HEALTH CONFIRMED, not MARKET_CLOSED, but message should explain TWS
     # Instead test via status
-    from app.services.watchdog.status import build_status_message
     from app.services.watchdog.resources import ResourceMonitor
+    from app.services.watchdog.status import build_status_message
     snaps = {
         ServiceName.GATEWAY: ServiceSnapshot(service=ServiceName.GATEWAY, state=ServiceState.MARKET_CLOSED, last_health=HealthResult(service=ServiceName.GATEWAY, status=HealthStatus.FAILED, detail="refused")),
         ServiceName.BACKEND: ServiceSnapshot(service=ServiceName.BACKEND, state=ServiceState.HEALTHY, last_health=hr),

@@ -28,8 +28,12 @@ from app.services.model_blue.allocation import TemporarySettingsCommittedCapital
 from app.services.model_blue.parser import parse_model_blue_payload
 from app.services.model_blue.sizer import ModelBlueSizer
 from app.services.order_manager import OrderManager
-from tests.ibkr_test_utils import DEFAULT_TEST_IBKR_ACCOUNT, fill_on_place_order, wire_test_managed_accounts
 from app.services.strategies.inbound import parse_tradingview_payload
+from tests.ibkr_test_utils import (
+    DEFAULT_TEST_IBKR_ACCOUNT,
+    fill_on_place_order,
+    wire_test_managed_accounts,
+)
 
 _TS = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
 _SYNTH = "synthetic_n_leg"

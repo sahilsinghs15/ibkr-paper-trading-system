@@ -4,17 +4,18 @@ import asyncio
 import json
 import pathlib
 import tempfile
-
-from unittest.mock import AsyncMock, patch, MagicMock
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.watchdog.config import WatchdogSettings
-from app.services.watchdog.models import NotificationEvent, ServiceName, ServiceState, ServiceSnapshot
+from app.services.watchdog.models import (
+    NotificationEvent,
+    ServiceName,
+)
 from app.services.watchdog.notifier import NotificationQueue
 from app.services.watchdog.recovery_store import RecoveryBudgetStore
 from app.services.watchdog.safety import SafetyGateChecker
 from app.services.watchdog.telegram import TelegramClient
-from datetime import UTC, datetime, timedelta
-
 
 # ---- safety gates ----
 
@@ -86,6 +87,10 @@ def test_safety_all_gates_healthy_passes():
             MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
             result = await checker.check()
             assert result.passed is True
+            # Verify Authorization Bearer header was passed
+            call_kwargs = MockClient.call_args.kwargs
+            assert "headers" in call_kwargs
+            assert call_kwargs["headers"].get("Authorization", "").startswith("Bearer ")
 
     asyncio.run(_run())
 

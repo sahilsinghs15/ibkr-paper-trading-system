@@ -25,7 +25,7 @@ def _order_with_execution() -> OMSOrder:
                 symbol="XLE",
                 side=OrderSide.BUY,
                 quantity=10,
-                price=Decimal("50"),
+                price=Decimal(50),
                 contract_month="2026-09",
                 instrument_type="STK",
                 leg_index=0,
@@ -47,8 +47,8 @@ def _order_with_execution() -> OMSOrder:
         internal_order_id=order.internal_order_id,
         symbol="XLE",
         side="BOT",
-        quantity=Decimal("10"),
-        price=Decimal("50"),
+        quantity=Decimal(10),
+        price=Decimal(50),
     )
     return order
 
@@ -71,15 +71,15 @@ async def test_persist_child_survives_executions_dict_mutation(
     )
     upserted_ids: list[str] = []
 
-    async def mutating_upsert(_self, execution, **kwargs):  # noqa: ANN001
+    async def mutating_upsert(_self, execution, **kwargs):
         upserted_ids.append(execution.exec_id)
         order.executions["EX-2"] = BrokerExecution(
             exec_id="EX-2",
             internal_order_id=order.internal_order_id,
             symbol="XLE",
             side="BOT",
-            quantity=Decimal("5"),
-            price=Decimal("50"),
+            quantity=Decimal(5),
+            price=Decimal(50),
         )
 
     with (

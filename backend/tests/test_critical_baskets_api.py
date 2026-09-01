@@ -1,7 +1,6 @@
 """Tests for GET /api/v1/baskets/critical."""
 
 from collections.abc import Generator
-from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -64,7 +63,7 @@ async def test_list_critical_baskets_api(
         acc = AccountModel(
             name=f"Api-{test_id}",
             ibkr_account=ibkr_account,
-            total_margin=Decimal("100000"),
+            total_margin=Decimal(100000),
             enabled=True,
         )
         session.add(acc)
@@ -89,7 +88,7 @@ async def test_list_critical_baskets_api(
             action="OPEN",
             pair="XLE",
             side="BUY",
-            ref_price_a=Decimal("100"),
+            ref_price_a=Decimal(100),
             raw_payload={"test": True},
             status="FAILED",
         )
@@ -108,10 +107,10 @@ async def test_list_critical_baskets_api(
                 symbol="XLE",
                 ibkr_contract="XLE-STK-SMART-USD:99901",
                 buy_sell="BUY",
-                quantity=Decimal("100"),
-                limit_price=Decimal("0"),
+                quantity=Decimal(100),
+                limit_price=Decimal(0),
                 status="FILLED",
-                fill_qty=Decimal("100"),
+                fill_qty=Decimal(100),
             )
         )
 

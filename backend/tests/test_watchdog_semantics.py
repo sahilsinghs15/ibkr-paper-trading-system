@@ -4,9 +4,7 @@ Verifies that the watchdog never claims actions it did not perform (e.g. process
 and that all Telegram notification event texts are semantically precise and non-misleading.
 """
 
-import pytest
 
-from app.services.watchdog.config import WatchdogSettings
 from app.services.watchdog.models import (
     HealthResult,
     HealthStatus,
@@ -16,7 +14,10 @@ from app.services.watchdog.models import (
     ServiceSnapshot,
     ServiceState,
 )
-from app.services.watchdog.notifier import NotificationDeduplicator, format_telegram_message
+from app.services.watchdog.notifier import (
+    NotificationDeduplicator,
+    format_telegram_message,
+)
 from app.services.watchdog.state_machine import event_for_transition, next_state
 
 

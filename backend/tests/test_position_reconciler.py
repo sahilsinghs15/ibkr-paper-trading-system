@@ -16,7 +16,7 @@ from app.db.models.broker_position import BrokerPositionModel
 from app.db.models.instrument import InstrumentModel
 from app.db.models.position import PositionModel
 from app.db.repositories.broker_position_repository import BrokerPositionRepository
-from app.db.repositories.position_repository import PositionRepository, RISK_STATE_OPEN
+from app.db.repositories.position_repository import RISK_STATE_OPEN, PositionRepository
 from app.models.model_blue_trade import OpenModelBlueTrade, OpenModelBlueTradeLeg
 from app.rms.models import OrderSide
 from app.services.position_reconciler import (
@@ -159,11 +159,11 @@ def test_build_ledger_net_lines_from_pair_row() -> None:
         trade_id="T1",
         strategy_id="model_blue",
         leg_a_symbol="AAPL",
-        leg_a_signed_qty=Decimal("100"),
-        leg_a_entry_mark=Decimal("150"),
+        leg_a_signed_qty=Decimal(100),
+        leg_a_entry_mark=Decimal(150),
         leg_b_symbol="MSFT",
-        leg_b_signed_qty=Decimal("-50"),
-        leg_b_entry_mark=Decimal("300"),
+        leg_b_signed_qty=Decimal(-50),
+        leg_b_entry_mark=Decimal(300),
         target=Decimal("0.05"),
         stop=Decimal("0.02"),
         time_limit=60,
@@ -276,8 +276,8 @@ async def test_broker_snapshot_replace(
                     "sec_type": "CFD",
                     "currency": "USD",
                     "exchange": "SMART",
-                    "signed_qty": Decimal("10"),
-                    "avg_cost": Decimal("150"),
+                    "signed_qty": Decimal(10),
+                    "avg_cost": Decimal(150),
                 }
             ]
         )
@@ -295,8 +295,8 @@ async def test_broker_snapshot_replace(
                     "sec_type": "CFD",
                     "currency": "USD",
                     "exchange": "SMART",
-                    "signed_qty": Decimal("5"),
-                    "avg_cost": Decimal("300"),
+                    "signed_qty": Decimal(5),
+                    "avg_cost": Decimal(300),
                 }
             ]
         )
@@ -321,15 +321,15 @@ async def test_reconcile_does_not_mutate_positions_table(
                 symbol="AAPL",
                 instrument_type="STK",
                 side=OrderSide.BUY,
-                quantity=Decimal("10"),
-                price=Decimal("150"),
+                quantity=Decimal(10),
+                price=Decimal(150),
             ),
             OpenModelBlueTradeLeg(
                 symbol="MSFT",
                 instrument_type="STK",
                 side=OrderSide.SELL,
-                quantity=Decimal("5"),
-                price=Decimal("300"),
+                quantity=Decimal(5),
+                price=Decimal(300),
             ),
         ),
     )
@@ -338,7 +338,7 @@ async def test_reconcile_does_not_mutate_positions_table(
         acc = AccountModel(
             name=f"ReconAcc-{test_id}",
             ibkr_account=f"DU-RECON-{test_id}",
-            total_margin=Decimal("100000"),
+            total_margin=Decimal(100000),
         )
         session.add(acc)
         await session.flush()
@@ -378,7 +378,7 @@ async def test_collect_reconcile_positions_ledger_ghost_when_broker_empty(
         acc = AccountModel(
             name=f"ReconApiAcc-{test_id}",
             ibkr_account=ibkr_account,
-            total_margin=Decimal("100000"),
+            total_margin=Decimal(100000),
         )
         session.add(acc)
         await session.flush()
@@ -393,15 +393,15 @@ async def test_collect_reconcile_positions_ledger_ghost_when_broker_empty(
                     symbol="AAPL",
                     instrument_type="STK",
                     side=OrderSide.BUY,
-                    quantity=Decimal("10"),
-                    price=Decimal("150"),
+                    quantity=Decimal(10),
+                    price=Decimal(150),
                 ),
                 OpenModelBlueTradeLeg(
                     symbol="MSFT",
                     instrument_type="STK",
                     side=OrderSide.SELL,
-                    quantity=Decimal("5"),
-                    price=Decimal("300"),
+                    quantity=Decimal(5),
+                    price=Decimal(300),
                 ),
             ),
         )

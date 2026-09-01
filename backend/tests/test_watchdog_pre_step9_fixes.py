@@ -64,7 +64,14 @@ def test_telegram_token_not_in_logs(caplog):
     assert "[REDACTED" in _sanitize("DATABASE_URL=postgresql://user:pass@host/db")
 
     # also ensure format_telegram_message sanitizes
-    from app.services.watchdog.models import HealthResult, HealthStatus, ServiceName, ServiceSnapshot, ServiceState, NotificationEvent
+    from app.services.watchdog.models import (
+        HealthResult,
+        HealthStatus,
+        NotificationEvent,
+        ServiceName,
+        ServiceSnapshot,
+        ServiceState,
+    )
     from app.services.watchdog.notifier import format_telegram_message
     hr = HealthResult(service=ServiceName.BACKEND, status=HealthStatus.FAILED, detail="token TELEGRAM_BOT_TOKEN=secret", underlying_error="TELEGRAM_BOT_TOKEN=secret")
     snap = ServiceSnapshot(service=ServiceName.BACKEND, state=ServiceState.FAILED, last_health=hr)

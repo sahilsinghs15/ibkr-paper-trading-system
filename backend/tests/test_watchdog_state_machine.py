@@ -1,6 +1,11 @@
 """Watchdog state machine tests."""
 
-from app.services.watchdog.models import NotificationEvent, ServiceName, ServiceSnapshot, ServiceState
+from app.services.watchdog.models import (
+    NotificationEvent,
+    ServiceName,
+    ServiceSnapshot,
+    ServiceState,
+)
 from app.services.watchdog.state_machine import event_for_transition, next_state
 
 
