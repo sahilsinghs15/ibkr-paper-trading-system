@@ -269,7 +269,7 @@ class WatchdogDaemon:
             # We are in recovering/verifying — perform verification
             # For gateway/backend, verification is re-check after short wait + safety
             # Simple: if current health is healthy, success
-            if not health_failed and not health_degraded and not safety_blocked:
+            if not health_failed and not health_degraded and not self.safety_blocked:
                 verifying_success = True
             elif health_failed:
                 verifying_success = False
@@ -290,7 +290,7 @@ class WatchdogDaemon:
             elif snap.state == ServiceState.VERIFYING:
                 # compute final
                 tmp = ServiceSnapshot(service=svc, state=ServiceState.VERIFYING)
-                nxt2 = next_state(tmp, health_failed, health_degraded, verifying_success=verifying_success, safety_trading_blocked=safety_blocked)
+                nxt2 = next_state(tmp, health_failed, health_degraded, verifying_success=verifying_success, safety_trading_blocked=self.safety_blocked)
                 if nxt2 == ServiceState.FAILED and verifying_success is False:
                     if self._is_recovery_budget_exhausted(snap):
                         nxt = ServiceState.MANUAL_INTERVENTION_REQUIRED
