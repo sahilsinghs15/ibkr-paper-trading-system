@@ -54,6 +54,21 @@ class WatchdogSettings(BaseSettings):
     # Market-closed semantics (expected stop outside 09:30-16:00 ET)
     market_closed_enabled: bool = True
 
+    # Host resource monitoring (config-driven thresholds, hysteresis)
+    resource_check_interval_seconds: float = 30.0
+    cpu_warning_threshold: float = 80.0
+    cpu_critical_threshold: float = 90.0
+    cpu_recovery_threshold: float = 75.0
+    memory_warning_threshold: float = 80.0
+    memory_critical_threshold: float = 90.0
+    memory_recovery_threshold: float = 75.0
+    storage_warning_threshold: float = 80.0
+    storage_critical_threshold: float = 90.0
+    storage_recovery_threshold: float = 75.0
+    inodes_warning_threshold: float = 80.0
+    inodes_critical_threshold: float = 90.0
+    inodes_recovery_threshold: float = 75.0
+
     # Persistence
     recovery_state_path: str = "/home/tradingapp/storage/state/watchdog_recovery.json"
 

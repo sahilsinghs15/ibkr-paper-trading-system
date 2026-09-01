@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
-from datetime import time as dtime
+from datetime import UTC, datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 from app.services.watchdog.config import WatchdogSettings, get_watchdog_settings
@@ -31,10 +30,12 @@ from app.services.watchdog.models import (
     ServiceSnapshot,
     ServiceState,
 )
-from app.services.watchdog.notifier import NotificationQueue, format_telegram_message
+from app.services.watchdog.notifier import NotificationQueue, format_resource_alert, format_telegram_message
 from app.services.watchdog.recovery_store import RecoveryBudgetStore
+from app.services.watchdog.resources import ResourceMonitor, ResourceState
 from app.services.watchdog.safety import SafetyGateChecker
 from app.services.watchdog.state_machine import event_for_transition, next_state
+from app.services.watchdog.status import build_status_message
 from app.services.watchdog.telegram import TelegramClient
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,9 @@ class WatchdogDaemon:
             logger.exception("Failed to load persisted recovery budget")
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
+        self._command_task: asyncio.Task | None = None
+        self._telegram_offset: int | None = None
+        self.resource_monitor = ResourceMonitor(self.settings)
 
         # health checkers
         self.checkers = {
@@ -171,6 +175,7 @@ class WatchdogDaemon:
 
         # Market-closed semantics: expected stop outside trading window (weekdays 09:30-16:00 ET)
         is_market_closed = _is_market_closed_for(svc) if self.settings.market_closed_enabled else False
+        global_market_closed = (not _is_trading_session()) if self.settings.market_closed_enabled else False
         # If market closed and health shows stopped, treat as MARKET_CLOSED not FAILED
         # Don't count safety gates when market is closed — trading is intentionally unavailable
         if is_market_closed and health_failed:
@@ -179,9 +184,9 @@ class WatchdogDaemon:
 
         # Safety gate: trading-critical services must have all gates SAFE to be READY
         # Check whenever health is healthy, not only after failure, to avoid claiming READY when blocked
-        # Skip safety check when market is closed — no trading anyway
+        # Skip safety check when market is closed globally — no trading anyway, so don't mark postgres healthy as TRADING_BLOCKED
         safety_blocked = False
-        if not is_market_closed and svc in TRADING_CRITICAL and not health_failed and not health_degraded:
+        if not global_market_closed and svc in TRADING_CRITICAL and not health_failed and not health_degraded:
             # Always verify safety gates for trading-critical healthy checks
             # To avoid excessive load, we still check every time (cheap HTTP), but could cache briefly
             gate = await self.safety.check()
@@ -354,6 +359,107 @@ class WatchdogDaemon:
                 except Exception:
                     pass
 
+    async def _check_resources(self) -> None:
+        """Host resource checks with hysteresis — only notify on transitions."""
+        if not self.resource_monitor.check_if_due():
+            return
+        results = self.resource_monitor.check_all()
+        for res in results:
+            if not res.is_transition:
+                continue
+            # Determine if this is recovery (NORMAL) or warning/critical
+            is_recovery = res.state == ResourceState.NORMAL and res.previous_state in (ResourceState.WARNING, ResourceState.CRITICAL)
+            # Threshold for message
+            thr = 0.0
+            try:
+                from app.services.watchdog.resources import _get_thresholds
+                t = _get_thresholds(self.settings, res.type)
+                if res.state == ResourceState.CRITICAL:
+                    thr = t.critical
+                elif res.state == ResourceState.WARNING:
+                    thr = t.warning
+                else:
+                    # Recovery threshold
+                    thr = t.recovery
+            except Exception:
+                thr = 80.0
+            # Build resource alert
+            text = format_resource_alert(
+                resource_type=res.type.value,
+                state=res.state.value,
+                usage_percent=res.metrics.usage_percent,
+                threshold=thr,
+                total_bytes=res.metrics.total_bytes,
+                used_bytes=res.metrics.used_bytes,
+                available_bytes=res.metrics.available_bytes,
+                mount=res.metrics.extra.get("mount") if res.metrics.extra else None,
+                extra=res.metrics.extra,
+                is_recovery=is_recovery,
+            )
+            # Use appropriate priority: critical → critical, warning → warning, recovery → info
+            # Map to ServiceName for queue — use a pseudo-service for resources
+            pseudo_service = ServiceName.GATEWAY  # placeholder for queue bucket, but text indicates resource
+            # Instead, use a dedicated resource service name if available, fallback to gateway for critical path
+            # To avoid mixing with trading critical, we enqueue with force to ensure delivery
+            event = NotificationEvent.FAILURE if res.state == ResourceState.CRITICAL else (NotificationEvent.UNHEALTHY if res.state == ResourceState.WARNING else NotificationEvent.RECOVERED)
+            # For resources, use ServiceName.POSTGRES as placeholder for infrastructure? Use gateway for now but with resource text
+            # Better to use ServiceName.REDIS for non-critical? Keep simple: use ServiceName.GATEWAY for all resources but dedup key will be per-resource via text
+            try:
+                # Use force to ensure resource transitions are not deduped as trading events
+                self.notifier.enqueue(pseudo_service, event, text, force=True)
+                logger.info("WATCHDOG RESOURCE: %s %s %.1f%% threshold %.1f%%", res.type.value, res.state.value, res.metrics.usage_percent, thr)
+            except Exception:
+                logger.exception("Failed to enqueue resource alert for %s", res.type.value)
+
+    async def _command_loop(self) -> None:
+        """Poll Telegram for /status commands (read-only)."""
+        if not self.telegram.configured:
+            return
+        while not self._stop.is_set():
+            try:
+                updates = await self.telegram.get_updates(offset=self._telegram_offset, timeout=10)
+                for upd in updates:
+                    try:
+                        upd_id = upd.get("update_id")
+                        if upd_id is not None:
+                            self._telegram_offset = max(self._telegram_offset or 0, upd_id + 1)
+                        msg = upd.get("message") or upd.get("edited_message") or {}
+                        text = (msg.get("text") or "").strip()
+                        chat = msg.get("chat") or {}
+                        chat_id = str(chat.get("id") or "")
+                        # Only respond to configured chat and /status
+                        if not text or not chat_id:
+                            continue
+                        # Restrict to configured chat_id if set
+                        expected_chat = str(self.settings.telegram_chat_id or "")
+                        if expected_chat and chat_id != expected_chat:
+                            continue
+                        if text.split()[0] in ("/status", "/status@"+ (self.telegram.bot_token.split(":")[0] if self.telegram.bot_token else "")):
+                            # Build status (read-only, no side effects)
+                            status_text = build_status_message(
+                                snapshots=self.snapshots,
+                                resource_monitor=self.resource_monitor,
+                                settings=self.settings,
+                            )
+                            # Reply to same chat (override chat_id temporarily)
+                            orig_chat = self.telegram.chat_id
+                            self.telegram.chat_id = chat_id
+                            try:
+                                await self.telegram.send_message(status_text)
+                                logger.info("WATCHDOG /status served to chat %s", chat_id)
+                            finally:
+                                self.telegram.chat_id = orig_chat
+                    except Exception:
+                        logger.exception("Failed to handle telegram update %s", upd.get("update_id"))
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Telegram command poll failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=2.0)
+            except TimeoutError:
+                continue
+
     async def _loop(self) -> None:
         logger.info("Watchdog daemon started host=%s interval=%.1fs", self.settings.watchdog_host, self.settings.watchdog_interval_seconds)
         # initial START notifications
@@ -368,6 +474,11 @@ class WatchdogDaemon:
                 except Exception:
                     logger.exception("Watchdog check failed for %s", svc.value)
                 # Demo failure must not affect trading — already isolated via separate state
+            # Host resources (CPU/RAM/disk/inodes) — hysteresis, only on transition
+            try:
+                await self._check_resources()
+            except Exception:
+                logger.exception("Watchdog resource check failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self.settings.watchdog_interval_seconds)
             except TimeoutError:
@@ -377,6 +488,9 @@ class WatchdogDaemon:
         await self.notifier.start()
         self._stop.clear()
         self._task = asyncio.create_task(self._loop())
+        # Telegram /status poller (read-only, observer)
+        if self.telegram.configured:
+            self._command_task = asyncio.create_task(self._command_loop())
 
     async def stop(self) -> None:
         self._stop.set()
@@ -385,6 +499,11 @@ class WatchdogDaemon:
                 await asyncio.wait_for(self._task, timeout=5.0)
             except TimeoutError:
                 self._task.cancel()
+        if self._command_task:
+            try:
+                await asyncio.wait_for(self._command_task, timeout=5.0)
+            except TimeoutError:
+                self._command_task.cancel()
         await self.notifier.stop()
 
     def run_forever(self) -> None:

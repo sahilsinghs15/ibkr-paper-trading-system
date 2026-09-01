@@ -528,6 +528,109 @@ def _default_action(event: NotificationEvent, service: ServiceName) -> str:
     return "None."
 
 
+def format_resource_alert(
+    resource_type: str,
+    state: str,
+    usage_percent: float,
+    threshold: float,
+    total_bytes: int | None = None,
+    used_bytes: int | None = None,
+    available_bytes: int | None = None,
+    mount: str | None = None,
+    extra: dict | None = None,
+    is_recovery: bool = False,
+) -> str:
+    """Format a resource alert (CPU/Memory/Storage/Inodes) for Telegram."""
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    now = datetime.now(UTC)
+    try:
+        now_et = now.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M:%S ET")
+    except Exception:
+        now_et = now.strftime("%H:%M:%S UTC")
+
+    if is_recovery or state == "NORMAL":
+        emoji, header = "🟢", "WATCHDOG — SYSTEM RESOURCE RECOVERED"
+    elif state == "WARNING":
+        emoji, header = "🟠", "WATCHDOG — SYSTEM RESOURCE WARNING"
+    elif state == "CRITICAL":
+        emoji, header = "🔴", "WATCHDOG — SYSTEM RESOURCE CRITICAL"
+    else:
+        emoji, header = "🟡", f"WATCHDOG — SYSTEM RESOURCE {state}"
+
+    def _fmt_bytes(b: int | None) -> str:
+        if b is None:
+            return "N/A"
+        for unit in ["B", "KB", "MB", "GB", "TB"]:
+            if abs(b) < 1024:
+                return f"{b:.1f} {unit}"
+            b /= 1024
+        return f"{b:.1f} PB"
+
+    lines: list[str] = []
+    lines.append(f"<b>{emoji} {header}</b>")
+    lines.append("━━━━━━━━━━━━━━━━━━━")
+    lines.append("<b>RESOURCE</b>")
+    lines.append(f"<code>{_sanitize_for_telegram(resource_type)}</code>")
+    lines.append("")
+    lines.append("<b>STATUS</b>")
+    lines.append(f"<code>{_sanitize_for_telegram(state)}</code>")
+    lines.append("")
+    lines.append("<b>USAGE</b>")
+    lines.append(f"<code>{usage_percent:.1f}%</code>")
+    lines.append("")
+    lines.append("<b>THRESHOLD</b>")
+    lines.append(f"<code>{threshold:.1f}%</code>")
+    if mount:
+        lines.append("")
+        lines.append("<b>MOUNT</b>")
+        lines.append(f"<code>{_sanitize_for_telegram(mount)}</code>")
+    if total_bytes is not None:
+        lines.append("")
+        lines.append("<b>TOTAL</b>")
+        lines.append(f"<code>{_fmt_bytes(total_bytes)}</code>")
+    if used_bytes is not None:
+        lines.append("")
+        lines.append("<b>USED</b>")
+        lines.append(f"<code>{_fmt_bytes(used_bytes)}</code>")
+    if available_bytes is not None:
+        lines.append("")
+        lines.append("<b>AVAILABLE</b>")
+        lines.append(f"<code>{_fmt_bytes(available_bytes)}</code>")
+    if extra:
+        # Show load avg for CPU, etc.
+        if "load_avg" in extra:
+            lines.append("")
+            lines.append("<b>LOAD</b>")
+            lines.append(f"<code>{extra['load_avg']}</code>")
+        if "cpu_count" in extra:
+            lines.append("")
+            lines.append("<b>CPU COUNT</b>")
+            lines.append(f"<code>{extra['cpu_count']}</code>")
+    lines.append("")
+    lines.append("<b>DETAILS</b>")
+    if is_recovery:
+        lines.append(_sanitize_for_telegram(f"{resource_type} usage has recovered to {usage_percent:.1f}% (below recovery threshold {threshold:.1f}%)."))
+    elif state == "CRITICAL":
+        lines.append(_sanitize_for_telegram(f"{resource_type} usage has exceeded critical threshold ({usage_percent:.1f}% >= {threshold:.1f}%). Immediate attention recommended."))
+    else:
+        lines.append(_sanitize_for_telegram(f"{resource_type} usage has exceeded warning threshold ({usage_percent:.1f}% >= {threshold:.1f}%)."))
+    lines.append("")
+    lines.append("<b>ACTION</b>")
+    if is_recovery:
+        lines.append(_sanitize_for_telegram("No action required. Resource has recovered."))
+    elif state == "CRITICAL":
+        lines.append(_sanitize_for_telegram("Investigate resource-consuming processes immediately; consider freeing space/memory or scaling."))
+    else:
+        lines.append(_sanitize_for_telegram("Investigate resource-consuming processes if usage remains elevated."))
+    lines.append("")
+    lines.append("<b>TIME</b>")
+    lines.append(f"<code>{_sanitize_for_telegram(now_et)}</code>")
+    lines.append("━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines)
+
+
 class NotificationDeduplicator:
     def __init__(self, cooldown_seconds: float = 300.0):
         self.cooldown = cooldown_seconds

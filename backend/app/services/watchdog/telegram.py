@@ -33,6 +33,27 @@ class TelegramClient:
     def configured(self) -> bool:
         return bool(self.enabled and self.bot_token and self.chat_id)
 
+    async def get_updates(self, offset: int | None = None, timeout: int = 10) -> list[dict[str, Any]]:
+        """Poll Telegram getUpdates for incoming commands (read-only). Returns list of update dicts."""
+        if not self.configured:
+            return []
+        url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
+        params: dict[str, Any] = {"timeout": timeout}
+        if offset is not None:
+            params["offset"] = offset
+        try:
+            async with httpx.AsyncClient(timeout=timeout + 5) as client:
+                resp = await client.get(url, params=params)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("ok"):
+                        return data.get("result", [])
+                else:
+                    logger.debug("Telegram getUpdates HTTP %s", resp.status_code)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Telegram getUpdates exception: %s", exc)
+        return []
+
     async def send_message(self, text: str, parse_mode: str | None = "HTML") -> bool:
         if not self.configured:
             logger.debug("Telegram not configured — skipping send")

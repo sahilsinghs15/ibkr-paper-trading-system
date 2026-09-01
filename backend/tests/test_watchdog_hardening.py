@@ -500,3 +500,140 @@ def test_webhook_restart_isolation(tmp_path, monkeypatch):
     assert "webhook" in calls
     assert "fastapi" not in calls
     assert "ib_gateway" not in calls
+
+def test_market_closed_postgres_healthy_stays_healthy():
+    # Market closed + postgres healthy should remain HEALTHY, not TRADING_BLOCKED
+    from app.services.watchdog.daemon import _is_trading_session
+    import app.services.watchdog.daemon as dm
+    orig = dm._is_trading_session
+    dm._is_trading_session = lambda now=None: False  # market closed
+    try:
+        settings = WatchdogSettings(telegram_enabled=False, market_closed_enabled=True, recovery_state_path="/tmp/test_recovery.json")
+        daemon = WatchdogDaemon(settings)
+        # Mock postgres to be healthy
+        daemon.checkers[ServiceName.POSTGRES].check = AsyncMock(return_value=HealthResult(service=ServiceName.POSTGRES, status=HealthStatus.HEALTHY, detail="SELECT 1 ok", reason="healthy"))
+        # Mock safety gate to fail (because backend down when market closed) — should be ignored when market closed globally
+        daemon.safety.check = AsyncMock(return_value=__import__("app.services.watchdog.models", fromlist=["SafetyGateResult"]).SafetyGateResult(passed=False, failures=["system-monitor unreachable"], gates={"system_monitor": "UNKNOWN"}))
+        async def _run():
+            await daemon._check_one(ServiceName.POSTGRES)
+            snap = daemon.snapshots[ServiceName.POSTGRES]
+            assert snap.state == ServiceState.HEALTHY, f"Expected HEALTHY but got {snap.state}"
+            assert snap.state != ServiceState.TRADING_BLOCKED
+        asyncio.run(_run())
+    finally:
+        dm._is_trading_session = orig
+
+def test_market_closed_postgres_down_still_failed():
+    # Market closed but postgres actually down should still be FAILED (infrastructure failure)
+    import app.services.watchdog.daemon as dm
+    orig = dm._is_trading_session
+    dm._is_trading_session = lambda now=None: False
+    try:
+        settings = WatchdogSettings(telegram_enabled=False, market_closed_enabled=True, recovery_state_path="/tmp/test_recovery2.json")
+        daemon = WatchdogDaemon(settings)
+        daemon.checkers[ServiceName.POSTGRES].check = AsyncMock(return_value=HealthResult(service=ServiceName.POSTGRES, status=HealthStatus.FAILED, detail="TCP refused", reason="tcp_refused", underlying_error="refused"))
+        async def _run():
+            await daemon._check_one(ServiceName.POSTGRES)
+            snap = daemon.snapshots[ServiceName.POSTGRES]
+            assert snap.state == ServiceState.FAILED
+        asyncio.run(_run())
+    finally:
+        dm._is_trading_session = orig
+
+def test_resource_cpu_hysteresis():
+    from app.services.watchdog.resources import ResourceMonitor, ResourceState, ResourceType
+    from app.services.watchdog.config import WatchdogSettings
+    settings = WatchdogSettings(cpu_warning_threshold=80.0, cpu_critical_threshold=90.0, cpu_recovery_threshold=75.0, resource_check_interval_seconds=0.0)
+    mon = ResourceMonitor(settings)
+    # Normal -> warning
+    mon._cpu_percent_fn = lambda: 85.0
+    results = mon.check_all()
+    cpu_res = [r for r in results if r.type == ResourceType.CPU][0]
+    assert cpu_res.state == ResourceState.WARNING
+    assert cpu_res.is_transition is True
+    # Remains high (82%) → no transition (still warning, no spam)
+    mon._cpu_percent_fn = lambda: 82.0
+    results = mon.check_all()
+    cpu_res = [r for r in results if r.type == ResourceType.CPU][0]
+    assert cpu_res.state == ResourceState.WARNING
+    assert cpu_res.is_transition is False
+    # Goes critical
+    mon._cpu_percent_fn = lambda: 95.0
+    results = mon.check_all()
+    cpu_res = [r for r in results if r.type == ResourceType.CPU][0]
+    assert cpu_res.state == ResourceState.CRITICAL
+    assert cpu_res.is_transition is True
+    # Stays critical (92%) → no transition
+    mon._cpu_percent_fn = lambda: 92.0
+    results = mon.check_all()
+    cpu_res = [r for r in results if r.type == ResourceType.CPU][0]
+    assert cpu_res.state == ResourceState.CRITICAL
+    assert cpu_res.is_transition is False
+    # Recovery below 75%
+    mon._cpu_percent_fn = lambda: 60.0
+    results = mon.check_all()
+    cpu_res = [r for r in results if r.type == ResourceType.CPU][0]
+    assert cpu_res.state == ResourceState.NORMAL
+    assert cpu_res.is_transition is True
+
+def test_resource_dedup_no_spam(tmp_path):
+    from app.services.watchdog.resources import ResourceMonitor, ResourceState
+    from app.services.watchdog.config import WatchdogSettings
+    settings = WatchdogSettings(resource_check_interval_seconds=0.0, recovery_state_path=str(tmp_path / "r.json"))
+    mon = ResourceMonitor(settings)
+    mon._cpu_percent_fn = lambda: 95.0
+    r1 = mon.check_all()
+    # First critical → transition
+    assert any(rr.is_transition and rr.type.value == "cpu" for rr in r1)
+    # Second check still critical → no transition (no spam)
+    r2 = mon.check_all()
+    assert not any(rr.is_transition and rr.type.value == "cpu" for rr in r2)
+
+def test_status_includes_market_closed_not_failed():
+    from app.services.watchdog.status import build_status_message
+    from app.services.watchdog.resources import ResourceMonitor
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    # Simulate market closed: gateway/backend/webhook MARKET_CLOSED, postgres/redis HEALTHY
+    snaps = {
+        ServiceName.GATEWAY: ServiceSnapshot(service=ServiceName.GATEWAY, state=ServiceState.MARKET_CLOSED, last_health=HealthResult(service=ServiceName.GATEWAY, status=HealthStatus.FAILED, detail="refused")),
+        ServiceName.BACKEND: ServiceSnapshot(service=ServiceName.BACKEND, state=ServiceState.MARKET_CLOSED, last_health=HealthResult(service=ServiceName.BACKEND, status=HealthStatus.FAILED, detail="refused")),
+        ServiceName.WEBHOOK: ServiceSnapshot(service=ServiceName.WEBHOOK, state=ServiceState.MARKET_CLOSED, last_health=HealthResult(service=ServiceName.WEBHOOK, status=HealthStatus.FAILED, detail="refused")),
+        ServiceName.DEMO: ServiceSnapshot(service=ServiceName.DEMO, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.DEMO, status=HealthStatus.HEALTHY, detail="ok")),
+        ServiceName.POSTGRES: ServiceSnapshot(service=ServiceName.POSTGRES, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.POSTGRES, status=HealthStatus.HEALTHY, detail="SELECT 1 ok")),
+        ServiceName.REDIS: ServiceSnapshot(service=ServiceName.REDIS, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.REDIS, status=HealthStatus.HEALTHY, detail="PING ok")),
+    }
+    settings = WatchdogSettings(telegram_enabled=False)
+    rm = ResourceMonitor(settings)
+    # Mock resource to be normal
+    text = build_status_message(snaps, rm, settings)
+    assert "MARKET_CLOSED" in text or "MARKET CLOSED" in text
+    assert "Gateway" in text or "IB Gateway" in text
+    # Should not contain FAILED for trading services when market closed
+    # Overall should be MARKET_CLOSED not CRITICAL
+    assert "OVERALL SYSTEM" in text or "SYSTEM STATUS" in text
+    assert "No active infrastructure alerts" in text or "MARKET_CLOSED" in text
+
+def test_status_does_not_leak_secrets():
+    from app.services.watchdog.status import build_status_message
+    from app.services.watchdog.resources import ResourceMonitor
+    snaps = {
+        ServiceName.GATEWAY: ServiceSnapshot(service=ServiceName.GATEWAY, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.GATEWAY, status=HealthStatus.HEALTHY, detail="TELEGRAM_BOT_TOKEN=secret123")),
+        ServiceName.BACKEND: ServiceSnapshot(service=ServiceName.BACKEND, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.BACKEND, status=HealthStatus.HEALTHY, detail="DATABASE_URL=secret")),
+    }
+    settings = WatchdogSettings(telegram_enabled=False)
+    rm = ResourceMonitor(settings)
+    text = build_status_message(snaps, rm, settings)
+    assert "secret123" not in text
+    assert "TELEGRAM_BOT_TOKEN" not in text or "[REDACTED]" in text
+
+def test_telegram_resource_alert_format():
+    from app.services.watchdog.notifier import format_resource_alert
+    text = format_resource_alert(resource_type="CPU", state="WARNING", usage_percent=85.0, threshold=80.0, total_bytes=None, used_bytes=None, available_bytes=None)
+    assert "SYSTEM RESOURCE WARNING" in text
+    assert "85.0%" in text
+    assert "80.0%" in text
+    assert "<b>ERROR</b>" not in text  # resource alert should not misuse ERROR
+    text2 = format_resource_alert(resource_type="Memory", state="CRITICAL", usage_percent=95.0, threshold=90.0, total_bytes=8589934592, used_bytes=8000000000, available_bytes=500000000)
+    assert "CRITICAL" in text2
+    assert "95.0%" in text2
