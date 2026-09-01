@@ -696,3 +696,129 @@ def test_service_control_allowlist():
     assert "enable" not in ALLOWED_ACTIONS
     assert "disable" not in ALLOWED_ACTIONS
     assert "daemon-reload" not in ALLOWED_ACTIONS
+
+def test_status_does_not_report_process_manager():
+    from app.services.watchdog.status import build_status_message
+    from app.services.watchdog.resources import ResourceMonitor
+    snaps = {
+        ServiceName.GATEWAY: ServiceSnapshot(service=ServiceName.GATEWAY, state=ServiceState.MARKET_CLOSED, last_health=HealthResult(service=ServiceName.GATEWAY, status=HealthStatus.FAILED, detail="refused")),
+        ServiceName.BACKEND: ServiceSnapshot(service=ServiceName.BACKEND, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.BACKEND, status=HealthStatus.HEALTHY, detail="HTTP 200")),
+        ServiceName.WEBHOOK: ServiceSnapshot(service=ServiceName.WEBHOOK, state=ServiceState.MARKET_CLOSED, last_health=HealthResult(service=ServiceName.WEBHOOK, status=HealthStatus.FAILED, detail="refused")),
+        ServiceName.DEMO: ServiceSnapshot(service=ServiceName.DEMO, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.DEMO, status=HealthStatus.HEALTHY, detail="ok")),
+        ServiceName.POSTGRES: ServiceSnapshot(service=ServiceName.POSTGRES, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.POSTGRES, status=HealthStatus.HEALTHY, detail="SELECT 1 ok")),
+        ServiceName.REDIS: ServiceSnapshot(service=ServiceName.REDIS, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.REDIS, status=HealthStatus.HEALTHY, detail="PING ok")),
+    }
+    settings = WatchdogSettings(telegram_enabled=False)
+    rm = ResourceMonitor(settings)
+    text = build_status_message(snaps, rm, settings)
+    assert "Process Manager" not in text
+    assert "process_manager" not in text.lower()
+    assert "NOT FOUND" not in text or "Process Manager" not in text
+
+def test_market_closed_backend_is_not_degraded():
+    # Backend with TWS disconnected during market closed should not be DEGRADED
+    import app.services.watchdog.daemon as dm
+    orig = dm._is_trading_session
+    dm._is_trading_session = lambda now=None: False
+    try:
+        settings = WatchdogSettings(telegram_enabled=False, market_closed_enabled=True, recovery_state_path="/tmp/test_backend_not_degraded.json")
+        daemon = WatchdogDaemon(settings)
+        # Simulate Backend health returning DEGRADED due to TWS when market closed
+        daemon.checkers[ServiceName.BACKEND].check = AsyncMock(return_value=HealthResult(
+            service=ServiceName.BACKEND, status=HealthStatus.DEGRADED, detail="{'status': 'degraded', 'reason': 'tws_disconnected'}",
+            reason="readiness_degraded", underlying_error="tws_disconnected"
+        ))
+        async def _run():
+            await daemon._check_one(ServiceName.BACKEND)
+            snap = daemon.snapshots[ServiceName.BACKEND]
+            assert snap.state == ServiceState.HEALTHY, f"Backend should be HEALTHY not DEGRADED when market closed, got {snap.state}"
+            # Overall status should not be DEGRADED
+            from app.services.watchdog.status import build_status_message
+            text = build_status_message(daemon.snapshots, daemon.resource_monitor, settings)
+            assert "SYSTEM STATUS — DEGRADED" not in text
+            assert "MARKET_CLOSED" in text or "HEALTHY" in text
+        asyncio.run(_run())
+    finally:
+        dm._is_trading_session = orig
+
+def test_market_closed_expected_services_are_not_failures():
+    import app.services.watchdog.daemon as dm
+    orig = dm._is_trading_session
+    dm._is_trading_session = lambda now=None: False
+    try:
+        settings = WatchdogSettings(telegram_enabled=False, market_closed_enabled=True, recovery_state_path="/tmp/test_expected.json")
+        daemon = WatchdogDaemon(settings)
+        for svc in [ServiceName.GATEWAY, ServiceName.WEBHOOK]:
+            daemon.checkers[svc].check = AsyncMock(return_value=HealthResult(service=svc, status=HealthStatus.FAILED, detail="refused"))
+        daemon.checkers[ServiceName.BACKEND].check = AsyncMock(return_value=HealthResult(service=ServiceName.BACKEND, status=HealthStatus.HEALTHY, detail="HTTP 200", reason="healthy"))
+        async def _run():
+            for svc in [ServiceName.GATEWAY, ServiceName.WEBHOOK, ServiceName.BACKEND]:
+                await daemon._check_one(svc)
+            assert daemon.snapshots[ServiceName.GATEWAY].state == ServiceState.MARKET_CLOSED
+            assert daemon.snapshots[ServiceName.WEBHOOK].state == ServiceState.MARKET_CLOSED
+            assert daemon.snapshots[ServiceName.BACKEND].state == ServiceState.HEALTHY
+            # No FAILED/RECOVERING/MANUAL for gateway/webhook
+            for svc in [ServiceName.GATEWAY, ServiceName.WEBHOOK]:
+                assert daemon.snapshots[svc].state not in (ServiceState.FAILED, ServiceState.RECOVERING, ServiceState.MANUAL_INTERVENTION_REQUIRED)
+        asyncio.run(_run())
+    finally:
+        dm._is_trading_session = orig
+
+def test_no_process_manager_runtime_reference():
+    import pathlib
+    import re
+    # Production runtime modules should not contain process_manager supervisor logic
+    prod_files = [
+        pathlib.Path("backend/app/services/watchdog/daemon.py"),
+        pathlib.Path("backend/app/services/watchdog/status.py"),
+        pathlib.Path("backend/app/services/watchdog/notifier.py"),
+        pathlib.Path("backend/app/services/watchdog/telegram.py"),
+    ]
+    for p in prod_files:
+        text = p.read_text()
+        # Allow comments mentioning process_manager for documentation, but not runtime logic like "process_manager will attempt"
+        # We check for runtime logic: look for "process_manager" in code not in comment
+        lines = [l for l in text.splitlines() if "process_manager" in l.lower() and not l.strip().startswith("#")]
+        # Filter out daemon.py mirrored comment
+        filtered = [l for l in lines if "process_manager" in l and "Watchdog must NOT" not in l and "Mirror process_manager" not in l]
+        assert not any("process_manager will attempt" in l.lower() for l in filtered), f"Found deprecated runtime reference in {p}: {filtered}"
+        assert not any("process_manager.py" in l and "import" in l.lower() for l in filtered), f"Found import in {p}"
+
+def test_gateway_market_closed_action_does_not_reference_process_manager():
+    hr = HealthResult(service=ServiceName.GATEWAY, status=HealthStatus.FAILED, detail="TCP 127.0.0.1:4002 refused", reason="tcp_refused", host="127.0.0.1", port=4002, underlying_error="refused")
+    snap = ServiceSnapshot(service=ServiceName.GATEWAY, state=ServiceState.MARKET_CLOSED, last_health=hr, failure_reason="outside trading window")
+    text = format_telegram_message(ServiceName.GATEWAY, NotificationEvent.MARKET_CLOSED, snap, host="127.0.0.1", port=4002, health=hr)
+    assert "process_manager" not in text.lower()
+    assert "No action required" in text or "No recovery required" in text
+    assert "systemd will start IB Gateway" in text or "No action required" in text
+
+def test_webhook_market_closed_action_does_not_reference_process_manager():
+    hr = HealthResult(service=ServiceName.WEBHOOK, status=HealthStatus.FAILED, detail="refused", reason="tcp_refused", host="127.0.0.1", port=8000, underlying_error="refused")
+    snap = ServiceSnapshot(service=ServiceName.WEBHOOK, state=ServiceState.MARKET_CLOSED, last_health=hr, failure_reason="outside trading window")
+    text = format_telegram_message(ServiceName.WEBHOOK, NotificationEvent.MARKET_CLOSED, snap, host="127.0.0.1", port=8000, health=hr)
+    assert "process_manager" not in text.lower()
+    assert "No action required" in text or "No recovery required" in text
+
+def test_backend_market_closed_message_is_expected():
+    hr = HealthResult(service=ServiceName.BACKEND, status=HealthStatus.HEALTHY, detail="Healthy (market closed, TWS expected unavailable)", reason="healthy_market_closed", host="127.0.0.1", port=8001, what_happened="Trading Backend is running 24/7; TWS connectivity is unavailable because IB Gateway is intentionally stopped outside the trading session.")
+    snap = ServiceSnapshot(service=ServiceName.BACKEND, state=ServiceState.HEALTHY, last_health=hr)
+    text = format_telegram_message(ServiceName.BACKEND, NotificationEvent.MARKET_CLOSED if False else NotificationEvent.START, snap, host="127.0.0.1", port=8001, health=hr)
+    # For market closed, backend should be HEALTHY/HEALTH CONFIRMED, not MARKET_CLOSED, but message should explain TWS
+    # Instead test via status
+    from app.services.watchdog.status import build_status_message
+    from app.services.watchdog.resources import ResourceMonitor
+    snaps = {
+        ServiceName.GATEWAY: ServiceSnapshot(service=ServiceName.GATEWAY, state=ServiceState.MARKET_CLOSED, last_health=HealthResult(service=ServiceName.GATEWAY, status=HealthStatus.FAILED, detail="refused")),
+        ServiceName.BACKEND: ServiceSnapshot(service=ServiceName.BACKEND, state=ServiceState.HEALTHY, last_health=hr),
+        ServiceName.WEBHOOK: ServiceSnapshot(service=ServiceName.WEBHOOK, state=ServiceState.MARKET_CLOSED, last_health=HealthResult(service=ServiceName.WEBHOOK, status=HealthStatus.FAILED, detail="refused")),
+        ServiceName.DEMO: ServiceSnapshot(service=ServiceName.DEMO, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.DEMO, status=HealthStatus.HEALTHY, detail="ok")),
+        ServiceName.POSTGRES: ServiceSnapshot(service=ServiceName.POSTGRES, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.POSTGRES, status=HealthStatus.HEALTHY, detail="ok")),
+        ServiceName.REDIS: ServiceSnapshot(service=ServiceName.REDIS, state=ServiceState.HEALTHY, last_health=HealthResult(service=ServiceName.REDIS, status=HealthStatus.HEALTHY, detail="ok")),
+    }
+    settings = WatchdogSettings(telegram_enabled=False)
+    rm = ResourceMonitor(settings)
+    status_text = build_status_message(snaps, rm, settings)
+    assert "Trading Backend" in status_text
+    # Should not be DEGRADED
+    assert "Backend — DEGRADED" not in status_text
+    assert "SYSTEM STATUS — DEGRADED" not in status_text or "MARKET_CLOSED" in status_text

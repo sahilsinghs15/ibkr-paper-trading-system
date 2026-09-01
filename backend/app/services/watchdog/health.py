@@ -177,7 +177,7 @@ class GatewayHealthChecker(ServiceHealthChecker):
                             what_happened="IB Gateway API socket is unreachable and Xvfb display :99 is not running.",
                             impact="IBC cannot start Gateway GUI; Trading Backend cannot communicate with IBKR.",
                             trading_impact="Order execution is BLOCKED.",
-                            operator_action="Inspect Xvfb + IBC + ib_gateway.log; process_manager will attempt restart.",
+                            operator_action="Inspect Xvfb + IBC + ib_gateway.log; systemd will restart ibgateway.service automatically when trading session is active. No action required outside trading hours.",
                         )
                 except Exception:
                     pass
@@ -194,7 +194,7 @@ class GatewayHealthChecker(ServiceHealthChecker):
                 what_happened="IB Gateway API socket is unreachable.",
                 impact="Trading Backend cannot communicate with IBKR.",
                 trading_impact="Order execution is BLOCKED.",
-                operator_action="Check ib_gateway.log for login/auth errors; process_manager is restarting Xvfb+IBC+Gateway.",
+                operator_action="Check ib_gateway.log for login/auth errors; systemd will restart ibgateway.service automatically when trading session is active. No action required outside trading hours.",
             )
         # TCP open => liveness OK; readiness needs login marker
         readiness = HealthStatus.HEALTHY
@@ -376,7 +376,7 @@ class BackendHealthChecker(ServiceHealthChecker):
             what_happened="Trading Backend is no longer responding on port 8001.",
             impact="Execution API is unavailable and execution workers cannot process trading jobs.",
             trading_impact="Trading execution is BLOCKED.",
-            operator_action="process_manager is responsible for restarting the Backend.",
+            operator_action="Check trading-backend logs; systemd will restart trading-backend.service automatically (Restart=always).",
         )
 
 
@@ -463,7 +463,7 @@ class WebhookHealthChecker(ServiceHealthChecker):
             what_happened="Webhook Ingest API is unavailable on port 8000.",
             impact="TradingView webhooks cannot currently be accepted; new webhook requests may fail while unavailable. Previously persisted signal_jobs remain in PostgreSQL.",
             trading_impact="No direct trading execution impact, but new signals will be missed.",
-            operator_action="process_manager will restart Webhook Ingest.",
+            operator_action="Check webhook-ingest logs; systemd will restart webhook-ingest.service automatically when trading session is active. No action required outside trading hours.",
         )
 
 

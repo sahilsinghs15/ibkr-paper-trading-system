@@ -2,9 +2,11 @@
 
 Never becomes a second process manager.
 Respects ownership:
-  systemd -> process_manager + watchdog + demo survival
-  process_manager -> gateway/backend/webhook
-  watchdog -> observe/notify/verify/escalate
+  systemd -> ibgateway + trading-backend + webhook + demo + watchdog (each Restart=always)
+  ibgateway (Xvfb+Gateway) --every START--> trading-backend (via trigger) --on healthy--> demo (one-way)
+  webhook -- independent, trading-hours only
+  trading-backend -- 24/7, triggers demo on each restart
+  watchdog -> observe/notify/verify/escalate (no systemctl, no process_manager)
 """
 
 from __future__ import annotations
@@ -164,6 +166,26 @@ class WatchdogDaemon:
         snap.last_health = hr
         health_failed = hr.status == HealthStatus.FAILED
         health_degraded = hr.status == HealthStatus.DEGRADED
+
+        # Backend 24/7: When market is closed, TWS disconnection due to intentionally stopped Gateway is expected, not a failure/DEGRADED
+        if svc == ServiceName.BACKEND and health_degraded:
+            global_closed_for_backend = (not _is_trading_session()) if self.settings.market_closed_enabled else False
+            if global_closed_for_backend:
+                reason_lower = (hr.reason or "").lower()
+                detail_lower = (hr.detail or "").lower()
+                underlying_lower = (hr.underlying_error or "").lower()
+                if reason_lower in ("readiness_failed", "readiness_degraded", "tws_disconnected") or "tws" in detail_lower or "tws" in underlying_lower or "readiness" in detail_lower or "readiness" in underlying_lower:
+                    logger.info("Market closed — treating Backend TWS disconnected as expected HEALTHY (not DEGRADED): %s", hr.detail[:100])
+                    health_degraded = False
+                    hr.status = HealthStatus.HEALTHY
+                    hr.liveness = HealthStatus.HEALTHY
+                    hr.readiness = HealthStatus.HEALTHY
+                    hr.reason = "healthy_market_closed"
+                    hr.what_happened = "Trading Backend is running 24/7; TWS connectivity is unavailable because IB Gateway is intentionally stopped outside the trading session."
+                    hr.impact = "Backend remains running; trading execution is paused outside session."
+                    hr.trading_impact = "Market closed — no trading expected."
+                    hr.underlying_error = None
+                    hr.detail = "Healthy (market closed, TWS expected unavailable)"
 
         # Update consecutive counters
         if health_failed:

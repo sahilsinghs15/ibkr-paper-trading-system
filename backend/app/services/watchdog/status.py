@@ -223,10 +223,10 @@ def build_status_message(
         lines.append(f"{emoji} <b>{disp}</b> — <code>{snap.state.value}</code>{pid_str}")
         if detail:
             lines.append(f"  <code>{detail}</code>")
-    # Watchdog and process-manager via psutil
+    # Watchdog via psutil (Process Manager is deprecated — systemd now owns trading children)
     if include_process_details:
         try:
-            for name, pattern in [("Watchdog", "watchdog"), ("Process Manager", "process_manager")]:
+            for name, pattern in [("Watchdog", "watchdog")]:
                 pid = None
                 for p in psutil.process_iter(["pid", "name", "cmdline"]):
                     try:

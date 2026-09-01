@@ -66,8 +66,12 @@ def _display(service: ServiceName) -> str:
 
 
 def _recovery_owner(service: ServiceName) -> str:
-    if service in (ServiceName.GATEWAY, ServiceName.BACKEND, ServiceName.WEBHOOK):
-        return "process_manager is responsible for restarting this service."
+    if service == ServiceName.GATEWAY:
+        return "systemd will restart ibgateway.service automatically (Restart=always, trading-hours controlled)."
+    if service == ServiceName.BACKEND:
+        return "systemd will restart trading-backend.service automatically (Restart=always, 24/7)."
+    if service == ServiceName.WEBHOOK:
+        return "systemd will restart webhook-ingest.service automatically when trading session is active."
     if service == ServiceName.DEMO:
         return "systemd will restart demo-streaming.service."
     if service in (ServiceName.POSTGRES, ServiceName.REDIS):
