@@ -1,0 +1,7 @@
+[Unit]
+Description=Restart demo-streaming.service via trigger file (one-shot)
+After=demo-streaming.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart demo-streaming.service

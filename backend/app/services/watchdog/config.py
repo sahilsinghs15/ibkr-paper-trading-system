@@ -51,6 +51,9 @@ class WatchdogSettings(BaseSettings):
     database_url: str = "postgresql+asyncpg://root:root123@localhost:5433/ibkr_trading"
     redis_url: str = "redis://127.0.0.1:6379/0"
 
+    # Market-closed semantics (expected stop outside 09:30-16:00 ET)
+    market_closed_enabled: bool = True
+
     # Persistence
     recovery_state_path: str = "/home/tradingapp/storage/state/watchdog_recovery.json"
 

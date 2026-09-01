@@ -68,6 +68,7 @@ HOME = os.environ.get("HOME_DIR", "/home/tradingapp")
 # Same tree as app.core.logger: storage/logs/{YYYY-MM-DD}/{name}.log
 STORAGE_LOG_ROOT = Path(os.environ.get("STORAGE_LOG_ROOT", f"{HOME}/storage/logs"))
 DEMO_RESTART_TRIGGER_FILE = Path(os.environ.get("DEMO_RESTART_TRIGGER_FILE", f"{HOME}/storage/state/restart_demo.trigger"))
+BACKEND_RESTART_TRIGGER_FILE = Path(os.environ.get("BACKEND_RESTART_TRIGGER_FILE", f"{HOME}/storage/state/restart_backend.trigger"))
 
 BACKEND_DIR = f"{HOME}/app/backend"
 VENV_PYTHON = f"{BACKEND_DIR}/.venv/bin/python"
@@ -584,9 +585,15 @@ class Supervisor:
         self._gateway_epoch = 0
         self._fastapi_epoch = 0
         self._demo_restarted_epoch = 0
+        self._pending_backend_restart = False
 
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
+        # SIGUSR1 → safe manual backend-only restart (does not affect Gateway/Webhook)
+        try:
+            signal.signal(signal.SIGUSR1, self._handle_backend_restart_signal)
+        except (AttributeError, ValueError, OSError):
+            pass
 
     @property
     def _webhook_enabled(self) -> bool:
@@ -742,6 +749,52 @@ class Supervisor:
         log.info(f"Received signal {signum}, initiating graceful shutdown")
         self.stopping = True
 
+    def _handle_backend_restart_signal(self, signum, _frame):
+        log.info(f"Received signal {signum}, scheduling backend-only restart")
+        self._pending_backend_restart = True
+
+    def _handle_backend_restart(self):
+        """Restart only Trading Backend (fastapi) without affecting Gateway/Webhook — safe manual operation."""
+        if not self._fastapi_enabled:
+            log.warning("Backend restart requested but fastapi group not enabled")
+            return False
+        log.info("=== Manual backend-only restart requested ===")
+        # Only restart fastapi; gateway/webhook remain untouched (independent PGIDs)
+        ok = self._restart(self.fastapi)
+        if ok:
+            log.info(f"Backend restart completed (PID {self.fastapi.proc.pid if self.fastapi.proc else '?'}) — gateway/webhook unaffected")
+            # Trigger demo streaming refresh exactly once for this manual epoch
+            # Use same trigger file mechanism as automatic _ensure_demo_streaming_reconnected (epoch-gated)
+            try:
+                # Force demo to restart on next healthy check by resetting its epoch marker
+                # Then _ensure_demo_streaming_reconnected will touch trigger file once
+                # Alternatively, touch directly now for immediacy
+                DEMO_RESTART_TRIGGER_FILE.parent.mkdir(parents=True, exist_ok=True)
+                DEMO_RESTART_TRIGGER_FILE.touch()
+                log.info(f"Triggered demo streaming restart for manual backend epoch")
+                # Mark demo as needing refresh — set to previous epoch so next check will also handle
+                # but avoid double-touch: we already touched, so set demo_restarted to current-1
+                self._demo_restarted_epoch = self._fastapi_epoch - 1 if self._fastapi_epoch > 0 else -1
+            except Exception as exc:
+                log.error(f"Failed to trigger demo restart after manual backend restart: {exc}")
+        return ok
+
+    def _check_backend_restart_trigger(self):
+        """Poll for operator trigger file: storage/state/restart_backend.trigger"""
+        try:
+            if BACKEND_RESTART_TRIGGER_FILE.exists():
+                log.info(f"Detected backend restart trigger file {BACKEND_RESTART_TRIGGER_FILE}")
+                try:
+                    BACKEND_RESTART_TRIGGER_FILE.unlink()
+                except OSError:
+                    pass
+                self._pending_backend_restart = True
+        except Exception:
+            pass
+        if self._pending_backend_restart:
+            self._pending_backend_restart = False
+            self._handle_backend_restart()
+
     def stop_children(self):
         """Stop enabled children without exiting the supervisor."""
         if not self._any_enabled_child_alive():
@@ -861,6 +914,9 @@ class Supervisor:
 
         try:
             while not self.stopping:
+                # Check for operator-requested backend-only restart (file or SIGUSR1) — isolated, no Gateway/Webhook impact
+                self._check_backend_restart_trigger()
+
                 in_session = is_trading_session()
 
                 if in_session:

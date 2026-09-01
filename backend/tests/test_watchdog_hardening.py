@@ -2,6 +2,7 @@
 import asyncio
 import sys
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, "backend")
 
@@ -290,3 +291,212 @@ def test_safety_blocked_ordering():
     assert text.index("SERVICE STATUS") < text.index("TRADING STATUS")
     assert text.index("TRADING STATUS") < text.index("EVENT")
     assert text.index("CHECK") < text.index("WHERE")
+
+# --- Market-closed semantics (Phase 2D-J.3) ---
+def test_market_closed_expected_stop():
+    snap = ServiceSnapshot(service=ServiceName.GATEWAY, state=ServiceState.HEALTHY)
+    nxt = next_state(snap, health_failed=True, health_degraded=False, is_market_closed=True)
+    assert nxt == ServiceState.MARKET_CLOSED
+    assert event_for_transition(ServiceState.HEALTHY, nxt) == NotificationEvent.MARKET_CLOSED
+
+def test_market_open_unexpected_failure():
+    snap = ServiceSnapshot(service=ServiceName.GATEWAY, state=ServiceState.HEALTHY)
+    nxt = next_state(snap, health_failed=True, health_degraded=False, is_market_closed=False)
+    assert nxt == ServiceState.FAILED
+    assert event_for_transition(ServiceState.HEALTHY, nxt) == NotificationEvent.FAILURE
+
+def test_market_closed_message_honest():
+    hr = HealthResult(service=ServiceName.GATEWAY, status=HealthStatus.FAILED, detail="TCP 127.0.0.1:4002 refused", reason="tcp_refused", host="127.0.0.1", port=4002, underlying_error="refused")
+    snap = ServiceSnapshot(service=ServiceName.GATEWAY, state=ServiceState.MARKET_CLOSED, last_health=hr, failure_reason="outside trading window")
+    text = format_telegram_message(ServiceName.GATEWAY, NotificationEvent.MARKET_CLOSED, snap, host="127.0.0.1", port=4002, health=hr)
+    assert "MARKET CLOSED" in text
+    assert "intentionally stopped" in text.lower()
+    assert "No recovery required" in text
+    assert "No action required" in text
+    assert "Trading window → CLOSED" in text
+    assert "<b>ERROR</b>" not in text
+    assert "FAILURE" not in text
+    assert "5/5" not in text
+    assert "RECOVERING" not in text
+
+def test_market_closed_no_recovery():
+    # Market closed should not start recovery or count towards budget
+    settings = WatchdogSettings(telegram_enabled=False, market_closed_enabled=True)
+    daemon = WatchdogDaemon(settings)
+    # Monkeypatch _is_trading_session to simulate market closed (Sunday)
+    import app.services.watchdog.daemon as dm
+    orig = dm._is_trading_session
+    dm._is_trading_session = lambda now=None: False
+    try:
+        async def _run():
+            # Mock gateway to always fail (would be MARKET_CLOSED, not FAILED)
+            daemon.checkers[ServiceName.GATEWAY].check = AsyncMock(return_value=HealthResult(service=ServiceName.GATEWAY, status=HealthStatus.FAILED, detail="refused"))  # type: ignore
+            await daemon._check_one(ServiceName.GATEWAY)
+            snap = daemon.snapshots[ServiceName.GATEWAY]
+            assert snap.state == ServiceState.MARKET_CLOSED
+            assert len(snap.recovery_attempts) == 0  # no recovery counted
+        asyncio.run(_run())
+    finally:
+        dm._is_trading_session = orig
+
+def test_weekend_market_closed():
+    # Weekend (Saturday) should be market closed
+    from app.services.watchdog.daemon import _is_trading_session
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo("America/New_York")
+    sat_noon = datetime(2026, 8, 29, 12, 0, tzinfo=ET)
+    assert _is_trading_session(sat_noon) is False
+    # Monday 10:00 ET should be open
+    mon_open = datetime(2026, 8, 24, 10, 0, tzinfo=ET)
+    assert _is_trading_session(mon_open) is True
+
+def test_dst_aware_session():
+    # DST handling: 09:30 ET should be same wall time regardless of DST offset
+    from app.services.watchdog.daemon import _is_trading_session
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo("America/New_York")
+    # Winter (EST UTC-5) vs Summer (EDT UTC-4) — both 09:30 ET should be open
+    winter = datetime(2026, 1, 12, 9, 30, tzinfo=ET)  # Jan, EST
+    summer = datetime(2026, 7, 13, 9, 30, tzinfo=ET)  # Jul, EDT
+    assert _is_trading_session(winter) is True
+    assert _is_trading_session(summer) is True
+    # 1:30 AM IST = 16:00 ET previous day → closed; 19:00 IST = 09:30 ET → open
+    IST = ZoneInfo("Asia/Kolkata")
+    # 19:00 IST on Monday = 09:30 ET Monday
+    ist_7pm = datetime(2026, 8, 24, 19, 0, tzinfo=IST)
+    # Convert to ET check
+    assert _is_trading_session(ist_7pm) is True
+    ist_130am = datetime(2026, 8, 25, 1, 30, tzinfo=IST)
+    assert _is_trading_session(ist_130am) is False
+
+def test_process_manager_individual_control():
+    import sys
+    from pathlib import Path
+    _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+    if str(_SCRIPTS_DIR) not in sys.path:
+        sys.path.insert(0, str(_SCRIPTS_DIR))
+    import process_manager as pm
+    sup = pm.Supervisor(enabled=frozenset({"gateway", "backend", "webhook"}))
+    # Verify each ManagedProcess exists and can be controlled individually
+    assert hasattr(sup, "gateway") and hasattr(sup, "webhook") and hasattr(sup, "fastapi")
+    # Simulate gateway alive, backend/webhook not — restart backend should not kill gateway
+    sup.gateway.proc = type("P", (), {"poll": lambda self: None, "pid": 123})()
+    sup.fastapi.proc = type("P", (), {"poll": lambda self: 1, "pid": 124})()  # dead
+    sup.webhook.proc = type("P", (), {"poll": lambda self: None, "pid": 125})()
+    assert sup.gateway.is_alive() is True
+    assert sup.fastapi.is_alive() is False
+    assert sup.webhook.is_alive() is True
+
+def test_demo_restart_once_per_epoch(tmp_path, monkeypatch):
+    import sys
+    from pathlib import Path
+    _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+    if str(_SCRIPTS_DIR) not in sys.path:
+        sys.path.insert(0, str(_SCRIPTS_DIR))
+    import process_manager as pm
+    trigger = tmp_path / "restart_demo.trigger"
+    monkeypatch.setattr(pm, "DEMO_RESTART_TRIGGER_FILE", trigger)
+    sup = pm.Supervisor(enabled=frozenset({"fastapi"}))
+    sup._fastapi_epoch = 2
+    sup._demo_restarted_epoch = 1
+    monkeypatch.setattr(sup.fastapi, "is_alive", lambda: True)
+    monkeypatch.setattr(pm, "fastapi_healthy", lambda: True)
+    sup._ensure_demo_streaming_reconnected()
+    assert trigger.exists()
+    assert sup._demo_restarted_epoch == 2
+    mtime = trigger.stat().st_mtime
+    sup._ensure_demo_streaming_reconnected()
+    assert trigger.stat().st_mtime == mtime  # no repeated restart
+
+def test_demo_no_loop():
+    # Ensure demo restart does not trigger backend restart (no circular dep)
+    import pathlib
+    base = pathlib.Path(__file__).resolve().parents[2] / "deploy" / "systemd"
+    demo = (base / "demo-streaming.service").read_text()
+    # demo must not have After=process-manager
+    for line in demo.splitlines():
+        if line.strip().startswith("After="):
+            assert "process-manager" not in line
+    # No BindsTo/PartOf coupling that would cause loop
+    assert "BindsTo=" not in demo
+    assert "PartOf=process-manager" not in demo
+
+def test_backend_manual_restart_isolation(tmp_path, monkeypatch):
+    import sys
+    from pathlib import Path
+    _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+    if str(_SCRIPTS_DIR) not in sys.path:
+        sys.path.insert(0, str(_SCRIPTS_DIR))
+    import process_manager as pm
+    trigger = tmp_path / "restart_backend.trigger"
+    demo_trigger = tmp_path / "restart_demo.trigger"
+    monkeypatch.setattr(pm, "BACKEND_RESTART_TRIGGER_FILE", trigger)
+    monkeypatch.setattr(pm, "DEMO_RESTART_TRIGGER_FILE", demo_trigger)
+    sup = pm.Supervisor(enabled=frozenset({"gateway", "fastapi", "webhook"}))
+    # Mock all as alive
+    monkeypatch.setattr(sup.gateway, "is_alive", lambda: True)
+    monkeypatch.setattr(sup.webhook, "is_alive", lambda: True)
+    monkeypatch.setattr(sup.fastapi, "is_alive", lambda: True)
+    # Mock _restart to track calls
+    calls = []
+    orig_restart = sup._restart
+    def mock_restart(proc, also_restart=None, count_against_budget=True):
+        calls.append(proc.name)
+        return True
+    monkeypatch.setattr(sup, "_restart", mock_restart)
+    sup._pending_backend_restart = True
+    sup._check_backend_restart_trigger()
+    # Only fastapi should be restarted, not gateway/webhook
+    assert calls == ["fastapi"]
+    assert demo_trigger.exists()  # manual restart triggers demo
+    # Gateway and webhook not restarted
+    assert "ib_gateway" not in calls
+    assert "webhook" not in calls
+
+def test_backend_restart_via_trigger_file(tmp_path, monkeypatch):
+    import sys
+    from pathlib import Path
+    _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+    if str(_SCRIPTS_DIR) not in sys.path:
+        sys.path.insert(0, str(_SCRIPTS_DIR))
+    import process_manager as pm
+    trigger = tmp_path / "restart_backend.trigger"
+    demo_trigger = tmp_path / "restart_demo.trigger"
+    monkeypatch.setattr(pm, "BACKEND_RESTART_TRIGGER_FILE", trigger)
+    monkeypatch.setattr(pm, "DEMO_RESTART_TRIGGER_FILE", demo_trigger)
+    sup = pm.Supervisor(enabled=frozenset({"fastapi"}))
+    monkeypatch.setattr(sup.fastapi, "is_alive", lambda: True)
+    calls = []
+    monkeypatch.setattr(sup, "_restart", lambda proc, also_restart=None, count_against_budget=True: calls.append(proc.name) or True)
+    trigger.touch()
+    sup._check_backend_restart_trigger()
+    assert "fastapi" in calls
+    assert not trigger.exists()  # file removed after handling
+    assert demo_trigger.exists()
+
+def test_webhook_restart_isolation(tmp_path, monkeypatch):
+    import sys
+    from pathlib import Path
+    _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+    if str(_SCRIPTS_DIR) not in sys.path:
+        sys.path.insert(0, str(_SCRIPTS_DIR))
+    import process_manager as pm
+    sup = pm.Supervisor(enabled=frozenset({"webhook", "fastapi", "gateway"}))
+    # Simulate webhook down
+    monkeypatch.setattr(sup.webhook, "is_alive", lambda: False)
+    monkeypatch.setattr(sup.gateway, "is_alive", lambda: True)
+    monkeypatch.setattr(sup.fastapi, "is_alive", lambda: True)
+    calls = []
+    monkeypatch.setattr(sup, "_restart", lambda proc, also_restart=None, count_against_budget=True: calls.append(proc.name) or True)
+    # Mock port checks to avoid real network
+    monkeypatch.setattr(pm, "ingest_healthy", lambda: False)
+    monkeypatch.setattr(pm, "port_open", lambda *a, **kw: True)
+    monkeypatch.setattr(pm, "log_contains_since", lambda *a, **kw: True)
+    # Supervise should only restart webhook
+    # Patch is_trading_session to True
+    monkeypatch.setattr(pm, "is_trading_session", lambda now=None: True)
+    # Avoid gateway logic
+    sup._supervise_session()
+    assert "webhook" in calls
+    assert "fastapi" not in calls
+    assert "ib_gateway" not in calls

@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for demo streaming restart trigger from process-manager
+
+[Path]
+PathModified=/home/tradingapp/storage/state/restart_demo.trigger
+Unit=demo-streaming-restart.service
+
+[Install]
+WantedBy=multi-user.target

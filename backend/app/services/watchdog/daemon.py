@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
+from datetime import time as dtime
+from zoneinfo import ZoneInfo
 
 from app.services.watchdog.config import WatchdogSettings, get_watchdog_settings
 from app.services.watchdog.health import (
@@ -49,6 +51,28 @@ MONITORED_SERVICES = [
 
 # Trading-critical services that can trigger TRADING_BLOCKED
 TRADING_CRITICAL = {ServiceName.GATEWAY, ServiceName.BACKEND, ServiceName.POSTGRES}
+
+# Trading session window — must match process_manager.py SESSION_* (weekdays 09:30-16:00 ET)
+# Reused here for market-closed semantics without importing process_manager (avoid circular dep)
+_SESSION_TZ = ZoneInfo("America/New_York")
+_SESSION_START = dtime(9, 30)
+_SESSION_END = dtime(16, 0)
+_MARKET_CLOSED_SERVICES = {ServiceName.GATEWAY, ServiceName.BACKEND, ServiceName.WEBHOOK}
+
+
+def _is_trading_session(now: datetime | None = None) -> bool:
+    """Mirror process_manager.is_trading_session — weekdays 09:30-16:00 ET."""
+    now_et = (now or datetime.now(_SESSION_TZ)).astimezone(_SESSION_TZ)
+    if now_et.weekday() >= 5:
+        return False
+    return _SESSION_START <= now_et.time() < _SESSION_END
+
+
+def _is_market_closed_for(svc: ServiceName, now: datetime | None = None) -> bool:
+    """True if svc is expected to be stopped because market is closed."""
+    if svc not in _MARKET_CLOSED_SERVICES:
+        return False
+    return not _is_trading_session(now)
 
 
 class WatchdogDaemon:
@@ -145,10 +169,19 @@ class WatchdogDaemon:
             if snap.consecutive_successes >= 1:
                 snap.consecutive_failures = 0
 
+        # Market-closed semantics: expected stop outside trading window (weekdays 09:30-16:00 ET)
+        is_market_closed = _is_market_closed_for(svc) if self.settings.market_closed_enabled else False
+        # If market closed and health shows stopped, treat as MARKET_CLOSED not FAILED
+        # Don't count safety gates when market is closed — trading is intentionally unavailable
+        if is_market_closed and health_failed:
+            # Override failure reason to honest expected-stop message (don't count as failure)
+            snap.failure_reason = "outside trading window 09:30-16:00 ET (market closed) – service intentionally stopped"
+
         # Safety gate: trading-critical services must have all gates SAFE to be READY
         # Check whenever health is healthy, not only after failure, to avoid claiming READY when blocked
+        # Skip safety check when market is closed — no trading anyway
         safety_blocked = False
-        if svc in TRADING_CRITICAL and not health_failed and not health_degraded:
+        if not is_market_closed and svc in TRADING_CRITICAL and not health_failed and not health_degraded:
             # Always verify safety gates for trading-critical healthy checks
             # To avoid excessive load, we still check every time (cheap HTTP), but could cache briefly
             gate = await self.safety.check()
@@ -160,13 +193,15 @@ class WatchdogDaemon:
                 if snap.failure_reason.startswith("safety gate:"):
                     snap.failure_reason = ""
 
-        # State transition — with safety_blocked considered
-        # If safety blocked, force TRADING_BLOCKED regardless of health_degraded flag
-        nxt = next_state(snap, health_failed=health_failed, health_degraded=health_degraded, safety_trading_blocked=safety_blocked)
+        # State transition — with safety_blocked and market_closed considered
+        nxt = next_state(snap, health_failed=health_failed, health_degraded=health_degraded, safety_trading_blocked=safety_blocked, is_market_closed=is_market_closed)
         # If safety blocked but state machine returned HEALTHY (should not happen after our change),
         # ensure we go to TRADING_BLOCKED
         if safety_blocked and nxt == ServiceState.HEALTHY:
             nxt = ServiceState.TRADING_BLOCKED
+        # If market closed, never go to FAILED/RECOVERING — ensures no recovery attempts during expected downtime
+        if is_market_closed and health_failed and nxt in (ServiceState.FAILED, ServiceState.RECOVERING, ServiceState.VERIFYING):
+            nxt = ServiceState.MARKET_CLOSED
 
         # Recovery budget handling: FAILED -> RECOVERING or MANUAL
         # Record attempt BEFORE emitting RECOVERY_STARTED so counter is 1/5 not 0/5

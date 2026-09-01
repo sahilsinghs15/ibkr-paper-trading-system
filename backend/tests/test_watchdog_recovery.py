@@ -44,13 +44,13 @@ def test_demo_failure_does_not_block_trading():
 
 
 def test_watchdog_survives_backend_down():
-    settings = WatchdogSettings(backend_port=19999, webhook_port=19998, gateway_port=19997)
+    settings = WatchdogSettings(backend_port=19999, webhook_port=19998, gateway_port=19997, market_closed_enabled=False)
     daemon = WatchdogDaemon(settings)
 
     async def _run():
         await daemon._check_one(ServiceName.BACKEND)
         snap = daemon.snapshots[ServiceName.BACKEND]
-        assert snap.state in (ServiceState.FAILED, ServiceState.STARTING, ServiceState.UNKNOWN, ServiceState.HEALTHY)
+        assert snap.state in (ServiceState.FAILED, ServiceState.STARTING, ServiceState.UNKNOWN, ServiceState.HEALTHY, ServiceState.MARKET_CLOSED)
 
     asyncio.run(_run())
 

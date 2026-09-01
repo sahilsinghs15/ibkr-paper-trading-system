@@ -14,6 +14,7 @@ from app.services.watchdog.models import (
     NotificationEvent,
     ServiceName,
     ServiceSnapshot,
+    ServiceState,
 )
 from app.services.watchdog.telegram import TelegramClient
 
@@ -34,6 +35,7 @@ _INFO_EVENTS = {
     NotificationEvent.START,
     NotificationEvent.STOP,
     NotificationEvent.RECOVERED,
+    NotificationEvent.MARKET_CLOSED,
 }
 
 def _severity(event: NotificationEvent) -> tuple[str, str]:
@@ -74,6 +76,17 @@ def _recovery_owner(service: ServiceName) -> str:
 
 
 def _impact_for(service: ServiceName, event: NotificationEvent, hr: HealthResult | None) -> tuple[str, str | None]:
+    if event == NotificationEvent.MARKET_CLOSED:
+        defaults = {
+            ServiceName.GATEWAY: ("IBKR connectivity is unavailable outside the trading session.", "Trading is unavailable because the market is closed."),
+            ServiceName.BACKEND: ("Trading execution is paused outside the trading window.", "Trading is unavailable because the market is closed."),
+            ServiceName.WEBHOOK: ("Webhook ingestion is paused outside the trading window; TradingView alerts received outside session will be queued or ignored.", "No trading execution outside session."),
+            ServiceName.DEMO: ("Demo dashboard is independent of trading session.", "None."),
+            ServiceName.POSTGRES: ("Database remains available.", "None."),
+            ServiceName.REDIS: ("Redis remains available.", "None."),
+        }
+        imp, trad = defaults.get(service, ("Service paused outside trading session.", "Trading unavailable."))
+        return imp, trad
     # For TRADING_BLOCKED, always use blocked impact, never health's READY impact
     if event == NotificationEvent.TRADING_BLOCKED:
         defaults = {
@@ -134,6 +147,8 @@ def _is_success_detail(text: str) -> bool:
 
 
 def _check_summary(service: ServiceName, event: NotificationEvent, health: HealthResult | None, port: int | None) -> str:
+    if event == NotificationEvent.MARKET_CLOSED:
+        return "Trading window → CLOSED (outside 09:30–16:00 ET)"
     # Structured: base on health.status, not string matching
     if health:
         from app.services.watchdog.models import HealthStatus as _HS
@@ -178,6 +193,7 @@ def _check_summary(service: ServiceName, event: NotificationEvent, health: Healt
 # RECOVERY_FAILED: verification still failed
 # MANUAL_INTERVENTION_REQUIRED: budget exhausted — automatic recovery stopped, operator required (does NOT mean currently unhealthy forever)
 # TRADING_BLOCKED: safety gate failed — trading must remain blocked
+# MARKET_CLOSED: service intentionally stopped outside trading window (weekdays 09:30-16:00 ET) — not a failure
 def _event_header(event: NotificationEvent) -> tuple[str, str]:
     """Return (emoji, header_text) for visual hierarchy — user-facing, precise."""
     mapping: dict[NotificationEvent, tuple[str, str]] = {
@@ -190,12 +206,15 @@ def _event_header(event: NotificationEvent) -> tuple[str, str]:
         NotificationEvent.RECOVERY_FAILED: ("🔴", "WATCHDOG — RECOVERY FAILED"),
         NotificationEvent.MANUAL_INTERVENTION_REQUIRED: ("🟠", "WATCHDOG — MANUAL ACTION REQUIRED"),
         NotificationEvent.TRADING_BLOCKED: ("🚨", "WATCHDOG — TRADING BLOCKED"),
+        NotificationEvent.MARKET_CLOSED: ("🟡", "WATCHDOG — MARKET CLOSED"),
     }
     return mapping.get(event, ("🛡️", f"WATCHDOG — {event.value}"))
 
 
 def _trading_status_for(service: ServiceName, event: NotificationEvent, health: HealthResult | None, snapshot: ServiceSnapshot) -> str:
-    """Derive trading readiness: READY / BLOCKED / NOT AFFECTED / UNKNOWN."""
+    """Derive trading readiness: READY / BLOCKED / NOT AFFECTED / UNKNOWN / MARKET_CLOSED."""
+    if event == NotificationEvent.MARKET_CLOSED:
+        return "MARKET CLOSED"
     # Non-trading services never affect execution
     if service in (ServiceName.DEMO, ServiceName.REDIS):
         return "NOT AFFECTED"
@@ -203,6 +222,8 @@ def _trading_status_for(service: ServiceName, event: NotificationEvent, health: 
         # webhook ingest failure does not block active execution, but blocks new signals
         if event in (NotificationEvent.FAILURE, NotificationEvent.UNHEALTHY, NotificationEvent.TRADING_BLOCKED):
             return "NEW SIGNALS BLOCKED (execution independent)"
+        if event == NotificationEvent.MARKET_CLOSED:
+            return "MARKET CLOSED"
         return "NOT AFFECTED"
     # Trading-critical: gateway, backend, postgres
     if event == NotificationEvent.TRADING_BLOCKED:
@@ -211,8 +232,8 @@ def _trading_status_for(service: ServiceName, event: NotificationEvent, health: 
         from app.services.watchdog.models import HealthStatus as _HS
         if health.status != _HS.HEALTHY:
             return "BLOCKED"
-    if snapshot.state.value == "TRADING_BLOCKED":
-        return "BLOCKED"
+    if snapshot.state.value in ("TRADING_BLOCKED", "MARKET_CLOSED"):
+        return "BLOCKED" if snapshot.state.value == "TRADING_BLOCKED" else "MARKET CLOSED"
     if event in (NotificationEvent.FAILURE, NotificationEvent.UNHEALTHY, NotificationEvent.RECOVERY_FAILED, NotificationEvent.MANUAL_INTERVENTION_REQUIRED):
         return "BLOCKED"
     if event in (NotificationEvent.START, NotificationEvent.RECOVERED):
@@ -275,14 +296,19 @@ def format_telegram_message(
             port = health.port
     # Service status vs trading status distinction
     from app.services.watchdog.models import HealthStatus as _HS
-    if health:
+    if event == NotificationEvent.MARKET_CLOSED:
+        service_status = ServiceState.MARKET_CLOSED.value
+    elif health:
         service_status = health.status.value
     else:
         service_status = snapshot.state.value
     trading_status = _trading_status_for(service, event, health, snapshot)
+    # Override impact/trading_impact for MARKET_CLOSED as well
+    if event == NotificationEvent.MARKET_CLOSED:
+        impact, trading_impact = _impact_for(service, event, None)
     # Override impact/trading_impact for contradictory cases
     # For TRADING_BLOCKED with healthy service, health's READY impact is misleading — use blocked impact
-    if event == NotificationEvent.TRADING_BLOCKED:
+    elif event == NotificationEvent.TRADING_BLOCKED:
         # force blocked impact regardless of health.trading_impact
         impact, trading_impact = _impact_for(service, event, None)
         # preserve health impact detail for DETAILS explanation but not for IMPACT
@@ -295,8 +321,11 @@ def format_telegram_message(
         if not trading_impact or "READY" in (trading_impact or ""):
             trading_impact = trading_status
     # DETAILS: separate service health from trading readiness
+    # MARKET_CLOSED honest messaging
+    if event == NotificationEvent.MARKET_CLOSED:
+        what = f"{_display(service)} is intentionally stopped because the US trading session is closed (weekdays 09:30–16:00 ET)."
     # If not already set, derive accurate what_happened
-    if event == NotificationEvent.TRADING_BLOCKED:
+    elif event == NotificationEvent.TRADING_BLOCKED:
         if health and health.status == _HS.HEALTHY:
             reason_text = snapshot.failure_reason or reason or "safety gate not cleared"
             what = f"{_display(service)} health check is passing, but trading remains blocked because safety gate has not been cleared: {reason_text}."
@@ -326,7 +355,9 @@ def format_telegram_message(
             what = f"Watchdog monitor for {_display(service)} was intentionally stopped."
         else:
             what = snapshot.failure_reason or (health.detail if health else "")
-    if event == NotificationEvent.RECOVERY_STARTED:
+    if event == NotificationEvent.MARKET_CLOSED:
+        recovery = "No recovery required — service will start automatically at next trading session (weekdays 09:30 ET / 19:00 IST)."
+    elif event == NotificationEvent.RECOVERY_STARTED:
         recovery = f"Recovery workflow started. {_recovery_owner(service)}"
     elif event == NotificationEvent.RECOVERED:
         recovery = "Health recovery verified by watchdog."
@@ -478,6 +509,8 @@ def _sanitize_for_telegram(text: str) -> str:
 
 
 def _default_action(event: NotificationEvent, service: ServiceName) -> str:
+    if event == NotificationEvent.MARKET_CLOSED:
+        return "No action required. Service will start automatically when the next trading session begins."
     if event == NotificationEvent.MANUAL_INTERVENTION_REQUIRED:
         return "Operator investigation required. Resolve root cause before clearing blocked state."
     if event == NotificationEvent.TRADING_BLOCKED:

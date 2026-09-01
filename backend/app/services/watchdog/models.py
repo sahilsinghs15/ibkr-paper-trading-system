@@ -27,6 +27,7 @@ class ServiceState(str, Enum):
     RECOVERED = "RECOVERED"
     MANUAL_INTERVENTION_REQUIRED = "MANUAL_INTERVENTION_REQUIRED"
     TRADING_BLOCKED = "TRADING_BLOCKED"
+    MARKET_CLOSED = "MARKET_CLOSED"
 
 
 class HealthStatus(str, Enum):
@@ -46,6 +47,7 @@ class NotificationEvent(str, Enum):
     RECOVERY_FAILED = "RECOVERY_FAILED"
     MANUAL_INTERVENTION_REQUIRED = "MANUAL_INTERVENTION_REQUIRED"
     TRADING_BLOCKED = "TRADING_BLOCKED"
+    MARKET_CLOSED = "MARKET_CLOSED"
 
 
 @dataclass
@@ -111,4 +113,5 @@ EVENT_EMOJI: dict[NotificationEvent, str] = {
     NotificationEvent.RECOVERY_FAILED: "❌",
     NotificationEvent.MANUAL_INTERVENTION_REQUIRED: "🚨",
     NotificationEvent.TRADING_BLOCKED: "⛔",
+    NotificationEvent.MARKET_CLOSED: "🟡",
 }

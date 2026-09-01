@@ -18,16 +18,32 @@ def next_state(
     health_degraded: bool,
     verifying_success: bool | None = None,
     safety_trading_blocked: bool = False,
+    is_market_closed: bool = False,
 ) -> ServiceState:
     """Compute next state deterministically.
 
     verifying_success is only relevant when current state is VERIFYING.
     safety_trading_blocked forces TRADING_BLOCKED if true and service is trading-critical.
+    is_market_closed indicates services are expected to be stopped outside trading window.
     """
     cur = snapshot.state
 
+    # Market-closed overrides: expected stop, not failure (only for session-aware services)
+    # Caller should only set is_market_closed for gateway/backend/webhook; we enforce here
+    if is_market_closed:
+        # If service is expected to be stopped and health shows failed (tcp refused), treat as MARKET_CLOSED
+        if health_failed:
+            # From any non-market-closed state, transition to MARKET_CLOSED instead of FAILED
+            if cur != ServiceState.MARKET_CLOSED:
+                return ServiceState.MARKET_CLOSED
+            return ServiceState.MARKET_CLOSED
+        # If health is healthy outside session (admin kept running), stay HEALTHY but don't consider failure
+        # If currently MARKET_CLOSED and health becomes healthy (session opened), go to HEALTHY
+        if cur == ServiceState.MARKET_CLOSED and not health_failed and not health_degraded:
+            return ServiceState.HEALTHY
+
     # Safety gate overrides
-    if safety_trading_blocked and cur not in (ServiceState.MANUAL_INTERVENTION_REQUIRED, ServiceState.TRADING_BLOCKED):
+    if safety_trading_blocked and cur not in (ServiceState.MANUAL_INTERVENTION_REQUIRED, ServiceState.TRADING_BLOCKED, ServiceState.MARKET_CLOSED):
         # Only trading-critical services should enter TRADING_BLOCKED (gateway/backend)
         return ServiceState.TRADING_BLOCKED
 
@@ -96,6 +112,18 @@ def next_state(
             return ServiceState.HEALTHY
         return cur
 
+    if cur == ServiceState.MARKET_CLOSED:
+        # Market closed is honest expected stop — stay there while health failed and market closed
+        if is_market_closed and health_failed:
+            return ServiceState.MARKET_CLOSED
+        if not health_failed and not health_degraded:
+            # Service became healthy (session opened) → back to healthy
+            return ServiceState.HEALTHY
+        if not is_market_closed and health_failed:
+            # Market opened but service still down → this is now a real failure, not scheduled
+            return ServiceState.FAILED
+        return cur
+
     return cur
 
 
@@ -121,6 +149,12 @@ def event_for_transition(prev: ServiceState, nxt: ServiceState) -> NotificationE
     # Generic fallback for TRADING_BLOCKED
     if nxt == ServiceState.TRADING_BLOCKED:
         return NotificationEvent.TRADING_BLOCKED
+    if nxt == ServiceState.MARKET_CLOSED:
+        return NotificationEvent.MARKET_CLOSED
+    if prev == ServiceState.MARKET_CLOSED and nxt == ServiceState.HEALTHY:
+        return NotificationEvent.RECOVERED
+    if prev == ServiceState.MARKET_CLOSED and nxt == ServiceState.FAILED:
+        return NotificationEvent.FAILURE
     if prev == ServiceState.TRADING_BLOCKED and nxt == ServiceState.HEALTHY:
         return NotificationEvent.RECOVERED
     if prev == ServiceState.TRADING_BLOCKED and nxt == ServiceState.RECOVERED:
