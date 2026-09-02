@@ -57,8 +57,13 @@ class MoneyPerStockCheck(BaseRMSCheck):
                 if account_limit is None:
                     account_limit = context.default_symbol_limits.get(intent.account_id)
             limit_per_symbol = account_limit if account_limit is not None else strategy_limit
-            if limit_per_symbol is None:
-                continue
+            if limit_per_symbol is None or limit_per_symbol <= 0:
+                return CheckResult(
+                    check_number=self.check_number,
+                    check_name=self.check_name,
+                    outcome=RMSOutcome.REJECT,
+                    reason=f"NO_SYMBOL_LIMIT_CONFIGURED: No per-symbol limit configured for account {intent.account_id} and symbol '{symbol}'",
+                )
             existing_exposure = context.symbol_exposures.get(
                 exposure_key(intent, symbol), Decimal(0)
             )

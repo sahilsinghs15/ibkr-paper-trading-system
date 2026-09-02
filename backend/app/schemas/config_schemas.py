@@ -39,7 +39,7 @@ class AccountConfigSchema(BaseModel):
     ibkr_account: str
     total_margin: Decimal
     enabled: bool
-    default_symbol_limit: Decimal | None = Decimal("10000000.00")
+    default_symbol_limit: Decimal | None = None
     kill_switch_active: bool = False
     allocations: list[AllocationConfigSchema] = Field(default_factory=list)
     symbol_limits: list[SymbolLimitSchema] = Field(default_factory=list)

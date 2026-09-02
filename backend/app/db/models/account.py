@@ -19,7 +19,7 @@ class AccountModel(Base):
     total_margin: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     default_symbol_limit: Mapped[Decimal | None] = mapped_column(
-        Numeric(18, 4), nullable=True, default=Decimal("10000000.0000")
+        Numeric(18, 4), nullable=True, default=None
     )
 
     __table_args__ = (

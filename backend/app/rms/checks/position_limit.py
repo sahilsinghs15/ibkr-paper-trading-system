@@ -50,6 +50,14 @@ class OpenPositionLimitCheck(BaseRMSCheck):
             if account_limit is not None:
                 max_positions = account_limit
 
+        if max_positions is None or max_positions <= 0:
+            return CheckResult(
+                check_number=self.check_number,
+                check_name=self.check_name,
+                outcome=RMSOutcome.REJECT,
+                reason=f"INVALID_MAX_POSITIONS_LIMIT: Max open positions for strategy '{intent.strategy_id}' is missing or invalid ({max_positions}).",
+            )
+
         if current_positions >= max_positions:
             return CheckResult(
                 check_number=self.check_number,
