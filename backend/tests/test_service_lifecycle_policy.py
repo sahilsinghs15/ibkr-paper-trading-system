@@ -159,16 +159,24 @@ class TestRestartChain:
         # Verify demo-streaming-restart.path configuration
         demo_path_file = os.path.join(repo_root, "deploy", "systemd", "demo-streaming-restart.path")
         with open(demo_path_file, "r") as f:
-            demo_content = f.read()
-        assert "PathModified=/home/tradingapp/storage/state/restart_demo.trigger" in demo_content
+            content = f.read()
+        assert "PathModified=/home/tradingapp/storage/state/restart_demo.trigger" in content
+
+    def test_ibgateway_wrapper_port_resolution(self):
+        import os
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        wrapper_file = os.path.join(repo_root, "scripts", "ibgateway-wrapper.sh")
+        with open(wrapper_file, "r") as f:
+            content = f.read()
+        assert "GATEWAY_PORT=\"${ENV_PORT:-4001}\"" in content
 
     def test_backend_ready_trigger_script(self):
         import os
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        script = os.path.join(repo_root, "scripts", "backend-ready-trigger.sh")
-        with open(script, "r") as f:
+        script_file = os.path.join(repo_root, "scripts", "backend-ready-trigger.sh")
+        with open(script_file, "r") as f:
             content = f.read()
         assert 'TRIGGER="/home/tradingapp/storage/state/restart_demo.trigger"' in content
+        assert 'touch "$TRIGGER"' in content
         assert 'HEALTH_URL="http://127.0.0.1:8001/health"' in content
         assert 'curl -sf "$HEALTH_URL"' in content
-
