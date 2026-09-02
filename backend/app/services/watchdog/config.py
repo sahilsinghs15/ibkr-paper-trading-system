@@ -1,5 +1,6 @@
 """Watchdog configuration (env-driven, no hardcoded secrets)."""
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,7 +38,10 @@ class WatchdogSettings(BaseSettings):
 
     # Service endpoints (override for tests)
     gateway_host: str = "127.0.0.1"
-    gateway_port: int = 4002
+    gateway_port: int = Field(
+        default=4001,
+        validation_alias=AliasChoices("GATEWAY_PORT", "WATCHDOG_GATEWAY_PORT", "IBKR_PORT", "gateway_port"),
+    )
     backend_host: str = "127.0.0.1"
     backend_port: int = 8001
     webhook_host: str = "127.0.0.1"
