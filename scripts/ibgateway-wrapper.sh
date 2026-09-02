@@ -18,7 +18,7 @@ IBC_INI="${HOME_DIR}/ibc/config.ini"
 GATEWAY_HOST="127.0.0.1"
 ENV_PORT=""
 if [ -f "${HOME_DIR}/app/backend/.env" ]; then
-  ENV_PORT=$(grep -E '^(IBKR_PORT|GATEWAY_PORT)=' "${HOME_DIR}/app/backend/.env" | head -n 1 | cut -d'=' -f2 | tr -d ' "\'\r')
+  ENV_PORT=$(grep -E '^(IBKR_PORT|GATEWAY_PORT)=' "${HOME_DIR}/app/backend/.env" | head -n 1 | cut -d'=' -f2 | tr -d ' "\r')
 fi
 GATEWAY_PORT="${ENV_PORT:-4001}"
 GATEWAY_LOGIN_MARKER="Login has completed"
