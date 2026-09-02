@@ -139,8 +139,18 @@ done
 
 # Now wait on Gateway process (keeps service alive)
 # If Gateway was already ready, we have triggered Backend; now just wait
-wait "$GATEWAY_PID"
+wait "$GATEWAY_PID" || true
 EXIT_CODE=$?
 echo "IB Gateway exited with code $EXIT_CODE" >&2
-# Cleanup will kill Xvfb via trap
-exit $EXIT_CODE
+
+PYTHON_BIN="${HOME_DIR}/app/backend/.venv/bin/python"
+SESSION_GUARD="${HOME_DIR}/app/scripts/session_guard.py"
+
+if [ -f "$SESSION_GUARD" ] && [ -x "$PYTHON_BIN" ] && "$PYTHON_BIN" "$SESSION_GUARD" >/dev/null 2>&1; then
+  echo "Gateway process exited during active trading session (09:30-16:00 ET). Preserving failure code $EXIT_CODE for systemd restart." >&2
+  exit $EXIT_CODE
+else
+  echo "Gateway process exited outside market trading hours (market closed). Exiting cleanly (code 0) to prevent unwanted auto-restart." >&2
+  exit 0
+fi
+

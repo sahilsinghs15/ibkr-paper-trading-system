@@ -9,8 +9,8 @@ Type=simple
 User=tradingapp
 WorkingDirectory=/home/tradingapp/app/backend
 EnvironmentFile=/home/tradingapp/app/backend/.env
-ExecStart=/home/tradingapp/app/backend/.venv/bin/python -m uvicorn app.webhook_ingest:app --host 127.0.0.1 --port 8000
-Restart=always
+ExecStart=/bin/bash /home/tradingapp/app/scripts/webhook-ingest-wrapper.sh
+Restart=on-failure
 RestartSec=10
 KillMode=mixed
 KillSignal=SIGTERM
@@ -23,4 +23,4 @@ NoNewPrivileges=true
 PrivateTmp=true
 
 [Install]
-WantedBy=multi-user.target
+# Intentionally disabled in multi-user.target; lifecycle controlled by trading-session-start/stop timers

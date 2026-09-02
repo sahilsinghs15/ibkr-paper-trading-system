@@ -11,7 +11,7 @@ WorkingDirectory=/home/tradingapp/app
 EnvironmentFile=/home/tradingapp/app/backend/.env
 ExecStart=/bin/bash /home/tradingapp/app/scripts/ibgateway-wrapper.sh
 ExecStopPost=/bin/bash -c 'rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 || true'
-Restart=always
+Restart=on-failure
 RestartSec=10
 KillMode=mixed
 KillSignal=SIGTERM
@@ -24,4 +24,4 @@ NoNewPrivileges=true
 PrivateTmp=true
 
 [Install]
-WantedBy=multi-user.target
+# Intentionally disabled in multi-user.target; lifecycle controlled by trading-session-start/stop timers

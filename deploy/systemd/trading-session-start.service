@@ -1,10 +1,11 @@
 [Unit]
-Description=Trading session start — start IB Gateway and Webhook (09:30 ET)
+Description=Trading session start — start IB Gateway, Webhook Ingest, and ngrok (09:30 ET)
 After=network.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/systemctl start ibgateway.service
 ExecStart=/usr/bin/systemctl start webhook-ingest.service
+ExecStart=/usr/bin/sudo -u tradingapp /bin/bash /home/tradingapp/app/scripts/ngrok-control.sh start
 # Ensure trading-backend is running (24/7, but start if not)
 ExecStart=/usr/bin/systemctl start trading-backend.service

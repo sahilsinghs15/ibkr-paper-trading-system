@@ -329,7 +329,7 @@ def format_telegram_message(
     # DETAILS: separate service health from trading readiness
     # MARKET_CLOSED honest messaging
     if event == NotificationEvent.MARKET_CLOSED:
-        what = f"{_display(service)} is intentionally stopped because the US trading session is closed (weekdays 09:30–16:00 ET)."
+        what = f"{_display(service)} is intentionally stopped because the market is closed (weekdays 09:30–16:00 ET). No action required."
     # If not already set, derive accurate what_happened
     elif event == NotificationEvent.TRADING_BLOCKED:
         if health and health.status == _HS.HEALTHY:
