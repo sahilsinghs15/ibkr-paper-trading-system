@@ -141,3 +141,34 @@ class TestBackend247Behavior:
         # Backend is NOT in _MARKET_CLOSED_SERVICES
         off_market = _et(2026, 9, 2, 6, 10)
         assert _is_market_closed_for(ServiceName.BACKEND, off_market) is False
+
+
+class TestRestartChain:
+    """Verify IB Gateway -> Backend -> Demo Streaming restart chain definitions."""
+
+    def test_restart_trigger_paths(self):
+        import os
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+        # Verify trading-backend-restart.path configuration
+        path_file = os.path.join(repo_root, "deploy", "systemd", "trading-backend-restart.path")
+        with open(path_file, "r") as f:
+            content = f.read()
+        assert "PathModified=/home/tradingapp/storage/state/restart_backend.trigger" in content
+
+        # Verify demo-streaming-restart.path configuration
+        demo_path_file = os.path.join(repo_root, "deploy", "systemd", "demo-streaming-restart.path")
+        with open(demo_path_file, "r") as f:
+            demo_content = f.read()
+        assert "PathModified=/home/tradingapp/storage/state/restart_demo.trigger" in demo_content
+
+    def test_backend_ready_trigger_script(self):
+        import os
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        script = os.path.join(repo_root, "scripts", "backend-ready-trigger.sh")
+        with open(script, "r") as f:
+            content = f.read()
+        assert 'TRIGGER="/home/tradingapp/storage/state/restart_demo.trigger"' in content
+        assert 'HEALTH_URL="http://127.0.0.1:8001/health"' in content
+        assert 'curl -sf "$HEALTH_URL"' in content
+
