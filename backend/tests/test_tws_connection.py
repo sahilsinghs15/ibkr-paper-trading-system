@@ -14,7 +14,7 @@ class TestTWSConnection:
         """Verify settings default connection values."""
         settings = Settings(_env_file=None)
         assert settings.ibkr_host == "127.0.0.1"
-        assert settings.ibkr_port == 7497
+        assert settings.ibkr_port == 4001
         assert settings.ibkr_client_id == 1
         assert settings.ibkr_connection_timeout == 10
 

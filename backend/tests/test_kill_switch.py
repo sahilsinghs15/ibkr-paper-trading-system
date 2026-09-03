@@ -70,6 +70,49 @@ async def test_emergency_flatten_bypasses_entry_rms_checks():
 
 
 @pytest.mark.asyncio
+async def test_emergency_flatten_passes_margin_check_at_zero_headroom():
+    from datetime import UTC, datetime
+
+    from app.rms.checks.margin import MarginCheck
+    from app.rms.models import MarginPolicy
+    from app.services.account_margin import AccountMarginSnapshot
+
+    context = RMSContext(
+        margin_policy=MarginPolicy(check_enabled=True),
+        margin_snapshots={
+            "DU12345": AccountMarginSnapshot(
+                ibkr_account="DU12345",
+                as_of=datetime.now(UTC),
+                available_funds=Decimal("0"),
+                net_liquidation=Decimal("1"),
+                max_age_sec=300,
+            )
+        },
+    )
+    result = MarginCheck().evaluate(
+        OrderIntent(
+            signal_id="TEST-EMERGENCY-MARGIN",
+            strategy_id="UNKNOWN_STRATEGY",
+            action=OrderAction.CLOSE,
+            legs=[
+                OrderLeg(
+                    symbol="AAPL",
+                    side=OrderSide.SELL,
+                    quantity=100.0,
+                    price=Decimal("150.00"),
+                    contract_month="202612",
+                )
+            ],
+            account_id=1,
+            ibkr_account="DU12345",
+            intent_mode=ExecutionIntentMode.EMERGENCY_FLATTEN,
+        ),
+        context,
+    )
+    assert result.outcome == RMSOutcome.PASS
+
+
+@pytest.mark.asyncio
 async def test_kill_switch_idempotency_and_active_flag(session_factory: async_sessionmaker[AsyncSession]):
     """Verify repeated square-off calls return existing active operation and activate blocking flag."""
     test_id = uuid4().hex[:6]

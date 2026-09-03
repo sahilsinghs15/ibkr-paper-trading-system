@@ -9,16 +9,16 @@ This file lists things agents must **not** claim are implemented. Items appear h
 | Architecture item | Code reality |
 |-------------------|--------------|
 | Separate Listener / Strategy / per-account OMS / Risk processes | **Partial** — webhook ingest is a separate process (`app.webhook_ingest:app` on `:8000`); strategy/OMS/risk still in-process on trading app `:8001` |
-| Nine RMS checks | Only checks 2, 3, 4, 7, 8 as classes |
-| RMS check 1 (margin), 5, 6, 9 | No check modules |
+| Nine RMS checks | Checks 1, 2, 3, 4, 7, 8 plus local 101 (model market value). 5, 6, 9 remain unbuilt |
+| RMS check 1 (margin) | **Implemented** — `MarginCheck` + Gate A/C; ships `check_enabled=true`. Uncheck on Settings for shadow (`MARGIN_CHECK_DISABLED`). Check 101 does **not** satisfy check 1: 101 is gross market value, not broker margin. `orders.margin_impact` is still unpopulated except from broker-derived rates. Checks 5, 6, 9 still missing |
 | N IB Gateway instances / account→gateway routing | **Not built.** Multi-account today = `ib_order.account` on **one** socket. Target: [`backend-multi-gateway.md`](backend-multi-gateway.md) |
 | Per-gateway rate limiter (token bucket / fairness / Error 100) | **Partial.** One `GatewayRateLimiter` on the single socket (~30/24/6, P0 reserve, Error 100 cooldown). Not per-gateway, not fair across accounts |
-| TWS reconnect / failover | **Not built.** Lifespan log claims auto-reconnect; adapter does not |
+| TWS reconnect / failover | **Partial.** `TWSClient` reconnects the **one** socket on `connectionClosed`. No second host / clientId rotation. Parked baskets wait for reconnect; they are not compensated on disconnect. See [`runbooks/gateway-failure.md`](runbooks/gateway-failure.md) |
 | Dashboard config API (accounts / allocations / limits CRUD) | **Implemented** at `/api/v1/config/*` on trading app; proxied from `:8010`. Does **not** bind accounts to Gateways |
 | Kill switch / flatten-all | **Partial** — HTTP API exists (`POST .../square-off`, clear, status); see [`backend-kill-switch.md`](backend-kill-switch.md). Dashboard UX may not expose all controls — verify frontend before claiming UI. |
 | `IBKRExecutionScheduler` / `OrderSubmitPacer` | **Removed** — replaced by `GatewayRateLimiter` |
 | Risk-engine auto exit on target / stop / time_limit | No exit-trigger loop found |
-| Redis hot margin / locks / health for trading | Redis only in `demo_streaming` |
+| Redis hot margin / locks / health for trading | Redis only in `demo_streaming`. Live headroom is an in-process snapshot + running tally on `RMSContext` (same property as `symbol_exposures`); `margin_rates` / `margin_settings` are durable |
 | `signal_legs` table | Not created |
 | Dedicated IBKR reconciler engine as described | **Partial** — in-process `PositionReconciler` snapshots IBKR lines to `broker_positions`, diffs vs OPEN `positions`, logs to `event_log` / `position_reconcile_runs`. Dashboard at `/account/:ibkrAccount/reconcile` via `GET /api/v1/reconcile/positions`; per-row broker flatten via `POST /api/v1/reconcile/positions/flatten` (no ledger repair, no kill switch) |
 
@@ -28,7 +28,7 @@ This file lists things agents must **not** claim are implemented. Items appear h
 |-------|--------------|
 | MockBroker / `BROKER_MODE` | Not in `Settings`; no MockBroker class |
 | Place / modify order HTTP APIs | Schemas exist; **no** routes |
-| Positions / margin / broker status HTTP APIs on `app.main` | Schemas exist; **no** routes on trading app (read-only positions live on `demo_streaming` `:8010`) |
+| Positions / margin / broker status HTTP APIs on `app.main` | Live margin: `GET /api/v1/margin/accounts` and `GET /api/v1/margin/accounts/{ibkr_account}` (503 if gateway down). Positions remain read-only on `demo_streaming` `:8010`. Place/modify order routes still absent |
 | Five Candle live strategy engine as product path | Model Blue webhook path is what executes; candle Settings fields are unused by that path |
 | Webhook runs pipeline synchronously in HTTP handler | **Stale** — normal path enqueues `signal_jobs`; workers execute (HTTP 202 `accepted`) |
 | React “Live Dashboard” | **Implemented** — PnL on `/` and Settings on `/settings` (Vite + `:8010`) |

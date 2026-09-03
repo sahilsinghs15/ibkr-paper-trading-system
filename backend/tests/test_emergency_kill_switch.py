@@ -414,3 +414,52 @@ async def test_database_failure_returns_500(async_client: AsyncClient, session_f
         )
         assert response.status_code == 500
         assert "Failed to persist emergency kill switch state" in response.json()["detail"]
+
+
+def test_flatten_succeeds_when_model_is_at_full_market_value_ceiling() -> None:
+    """Kill-switch flatten must PASS check 101 when the model is already at 100% of ceiling."""
+    from app.rms.engine import RMSEngine
+    from app.rms.models import (
+        ExecutionIntentMode,
+        OrderAction,
+        OrderIntent,
+        OrderLeg,
+        OrderSide,
+        RMSContext,
+        RMSOutcome,
+    )
+
+    ceiling = Decimal(500)
+    intent = OrderIntent(
+        signal_id="KILLSWITCH-T-FULL",
+        strategy_id="model_blue",
+        action=OrderAction.CLOSE,
+        account_id=1,
+        ibkr_account="DU1",
+        intent_mode=ExecutionIntentMode.EMERGENCY_FLATTEN,
+        legs=[
+            OrderLeg(
+                symbol="XLE",
+                side=OrderSide.SELL,
+                quantity=10,
+                price=Decimal(25),
+                contract_month="2026-09",
+                notional=Decimal(250),
+            ),
+            OrderLeg(
+                symbol="XOP",
+                side=OrderSide.BUY,
+                quantity=10,
+                price=Decimal(25),
+                contract_month="2026-09",
+                notional=Decimal(250),
+            ),
+        ],
+    )
+    ctx = RMSContext(
+        model_value_limit={(1, "model_blue"): ceiling},
+        model_value_used={(1, "model_blue"): ceiling},
+        market_value_check_enabled=True,
+    )
+    result = RMSEngine().evaluate(intent, ctx)
+    assert result.outcome == RMSOutcome.PASS

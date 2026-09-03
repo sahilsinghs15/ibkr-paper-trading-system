@@ -6,16 +6,19 @@ import {
   fetchAccountByIdentifier,
   fetchExecutionSettings,
   fetchKillSwitchStatus,
+  fetchMarginSettings,
   patchAccount,
   patchAllocation,
   patchExecutionSettings,
+  patchMarginSettings,
   putSymbolLimit,
   updateDefaultSymbolLimit,
 } from '../api/configApi'
+import { fetchAccountMargin } from '../api/marginApi'
 import { KillSwitchModal } from '../components/KillSwitchModal'
 import { StartAgainModal } from '../components/StartAgainModal'
 import { usePnlStore } from '../store/pnlStore'
-import type { ExecutionSettings } from '../types/config'
+import type { ExecutionSettings, MarginSettings } from '../types/config'
 import { normalizeIbkrAccount } from '../utils/activeAccount'
 import {
   cleanNumberInput,
@@ -45,6 +48,7 @@ interface AllocationDraft {
   allocPct: number
   enabled: boolean
   maxOpenPositions: number
+  pairMaxAllocationPct: number
 }
 
 function executionSummary(s: {
@@ -229,6 +233,176 @@ function ExecutionSettingsCard() {
   )
 }
 
+function MarginSettingsCard() {
+  const queryClient = useQueryClient()
+  const { data, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ['config', 'margin'],
+    queryFn: fetchMarginSettings,
+  })
+  const [draft, setDraft] = useState<MarginSettings | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+  const [localError, setLocalError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (data) setDraft(data)
+  }, [data])
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      if (!draft) throw new Error('No draft')
+      const comfort = parseFloat(String(draft.comfort_ratio))
+      if (!(comfort > 0 && comfort <= 1)) {
+        throw new Error('Comfort ratio must be in (0, 1].')
+      }
+      return patchMarginSettings({
+        check_enabled: draft.check_enabled,
+        gate_basis: draft.gate_basis,
+        min_free_buffer: draft.min_free_buffer,
+        min_free_pct_of_netliq: draft.min_free_pct_of_netliq,
+        comfort_ratio: draft.comfort_ratio,
+        confirm_borderline: draft.confirm_borderline,
+        enforce_look_ahead: draft.enforce_look_ahead,
+        reject_on_stale_snapshot: draft.reject_on_stale_snapshot,
+        default_rate: draft.default_rate,
+        rate_safety_multiplier: draft.rate_safety_multiplier,
+      })
+    },
+    onSuccess: (saved) => {
+      setDraft(saved)
+      setMessage('Margin policy saved.')
+      setLocalError(null)
+      void queryClient.invalidateQueries({ queryKey: ['config', 'margin'] })
+    },
+    onError: (err) => {
+      setLocalError(extractError(err))
+      setMessage(null)
+    },
+  })
+
+  return (
+    <section className="settings-card">
+      <div className="settings-block">
+        <div className="settings-block-h">
+          <h2>MARGIN GATE</h2>
+          {draft ? (
+            <label className="toggle-row">
+              <input
+                type="checkbox"
+                checked={draft.check_enabled}
+                onChange={(e) => setDraft({ ...draft, check_enabled: e.target.checked })}
+              />
+              <span>{draft.check_enabled ? 'Margin check enabled' : 'Shadow mode'}</span>
+            </label>
+          ) : null}
+        </div>
+        {isLoading ? <p className="field-hint">Loading…</p> : null}
+        {isError ? (
+          <p className="settings-msg err">
+            {extractError(error)}{' '}
+            <button type="button" className="btn" onClick={() => void refetch()}>
+              Retry
+            </button>
+          </p>
+        ) : null}
+        {draft ? (
+          <>
+            <div className="settings-grid">
+              <label className="field">
+                <span>Gate basis</span>
+                <select
+                  className="inline-input"
+                  value={draft.gate_basis}
+                  onChange={(e) => setDraft({ ...draft, gate_basis: e.target.value })}
+                >
+                  <option value="available_funds">Available funds (initial)</option>
+                  <option value="excess_liquidity">Excess liquidity (maintenance)</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Comfort ratio</span>
+                <input
+                  className="inline-input"
+                  type="number"
+                  min="0.01"
+                  max="1"
+                  step="0.05"
+                  value={draft.comfort_ratio}
+                  onChange={(e) => setDraft({ ...draft, comfort_ratio: e.target.value })}
+                />
+              </label>
+              <label className="field">
+                <span>Min free buffer</span>
+                <input
+                  className="inline-input"
+                  type="number"
+                  min="0"
+                  step="100"
+                  value={draft.min_free_buffer}
+                  onChange={(e) => setDraft({ ...draft, min_free_buffer: e.target.value })}
+                />
+              </label>
+              <label className="field">
+                <span>Min free % of net liq</span>
+                <input
+                  className="inline-input"
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={draft.min_free_pct_of_netliq}
+                  onChange={(e) =>
+                    setDraft({ ...draft, min_free_pct_of_netliq: e.target.value })
+                  }
+                />
+              </label>
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={draft.confirm_borderline}
+                  onChange={(e) =>
+                    setDraft({ ...draft, confirm_borderline: e.target.checked })
+                  }
+                />
+                <span>Confirm borderline with what-if</span>
+              </label>
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={draft.enforce_look_ahead}
+                  onChange={(e) =>
+                    setDraft({ ...draft, enforce_look_ahead: e.target.checked })
+                  }
+                />
+                <span>Enforce look-ahead</span>
+              </label>
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={draft.reject_on_stale_snapshot}
+                  onChange={(e) =>
+                    setDraft({ ...draft, reject_on_stale_snapshot: e.target.checked })
+                  }
+                />
+                <span>Reject on stale snapshot</span>
+              </label>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={mutation.isPending}
+                onClick={() => mutation.mutate()}
+              >
+                Save
+              </button>
+            </div>
+          </>
+        ) : null}
+        {message ? <p className="settings-msg ok">{message}</p> : null}
+        {localError ? <p className="settings-msg err">{localError}</p> : null}
+      </div>
+    </section>
+  )
+}
+
 export function AccountSettingsPage() {
   const { ibkrAccount } = useParams<{ ibkrAccount: string }>()
   const cleanAccount = normalizeIbkrAccount(ibkrAccount)
@@ -237,6 +411,14 @@ export function AccountSettingsPage() {
   const { data: account, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['config', 'account', cleanAccount],
     queryFn: () => fetchAccountByIdentifier(cleanAccount),
+  })
+
+  const { data: brokerMargin } = useQuery({
+    queryKey: ['margin', 'account', cleanAccount],
+    queryFn: () => fetchAccountMargin(cleanAccount),
+    enabled: Boolean(cleanAccount),
+    refetchInterval: 15_000,
+    retry: false,
   })
 
   const { data: killSwitchData } = useQuery({
@@ -289,6 +471,7 @@ export function AccountSettingsPage() {
               allocPct: pctFromDecimal(a.alloc_pct),
               enabled: a.enabled,
               maxOpenPositions: a.max_open_positions,
+              pairMaxAllocationPct: pctFromDecimal(a.pair_max_allocation_pct),
             },
           ]),
         ),
@@ -322,6 +505,7 @@ export function AccountSettingsPage() {
         alloc_pct: decimalFromPct(draft.allocPct),
         enabled: draft.enabled,
         max_open_positions: draft.maxOpenPositions,
+        pair_max_allocation_pct: decimalFromPct(draft.pairMaxAllocationPct),
       }),
     onSuccess: () => {
       setMessage('Strategy allocation saved.')
@@ -406,6 +590,11 @@ export function AccountSettingsPage() {
     [drafts],
   )
   const sumOver = enabledSum > 100.0001
+  const showIbkrId = Boolean(
+    account?.name &&
+      account.ibkr_account &&
+      account.name.trim().toUpperCase() !== account.ibkr_account.trim().toUpperCase(),
+  )
 
   return (
     <main className="page settings-page">
@@ -413,9 +602,16 @@ export function AccountSettingsPage() {
         <div className="settings-header-title">
           <h1>MODEL BLUE ACCOUNT SETTINGS</h1>
           <div className="settings-header-meta">
-            <span>Account: <strong className="mono">{cleanAccount}</strong></span>
-            <span>·</span>
-            <span className="paper-pill">PAPER</span>
+            <span>
+              Account:{' '}
+              <strong>{account?.name || cleanAccount}</strong>
+            </span>
+            {showIbkrId ? (
+              <>
+                <span>·</span>
+                <span className="mono">{account?.ibkr_account}</span>
+              </>
+            ) : null}
             {account ? (
               <>
                 <span className={`account-status-pill ${enabled ? 'enabled' : 'disabled'}`}>
@@ -472,7 +668,7 @@ export function AccountSettingsPage() {
                   </label>
 
                   <label className="field">
-                    <span>Total Margin</span>
+                    <span>Trading capital</span>
                     <div className="money-field">
                       <span className="money-prefix">$</span>
                       <input
@@ -484,6 +680,12 @@ export function AccountSettingsPage() {
                       />
                     </div>
                     <span className="field-hint">{fmtUsd(margin)}</span>
+                    {brokerMargin?.effective_free_margin ? (
+                      <span className="field-hint">
+                        Broker free: {fmtUsd(brokerMargin.effective_free_margin)}
+                        {brokerMargin.is_stale ? ' (stale)' : ''}
+                      </span>
+                    ) : null}
                   </label>
 
                   <button
@@ -504,6 +706,7 @@ export function AccountSettingsPage() {
                 allocPct: pctFromDecimal(a.alloc_pct),
                 enabled: a.enabled,
                 maxOpenPositions: a.max_open_positions,
+                pairMaxAllocationPct: pctFromDecimal(a.pair_max_allocation_pct),
               }
               const committed =
                 (parseFloat(account.total_margin) * (draft.enabled ? draft.allocPct : 0)) / 100
@@ -568,6 +771,38 @@ export function AccountSettingsPage() {
                           />
                         </label>
 
+                        <label className="field">
+                          <span>Per-pair allocation</span>
+                          <div className="money-field">
+                            <input
+                              className="inline-input"
+                              type="number"
+                              min="0.01"
+                              max="100"
+                              step="0.01"
+                              value={draft.pairMaxAllocationPct}
+                              onChange={(e) =>
+                                updateDraft(a.id, {
+                                  pairMaxAllocationPct: parseFloat(e.target.value) || 0,
+                                })
+                              }
+                            />
+                            <span className="money-suffix">%</span>
+                          </div>
+                          <span className="field-hint">
+                            {fmtPct(draft.pairMaxAllocationPct)} of {fmtUsd(String(committed))} ={' '}
+                            {fmtUsd(
+                              String((committed * draft.pairMaxAllocationPct) / 100),
+                            )}{' '}
+                            per pair
+                            {committed > 0 && draft.pairMaxAllocationPct > 0
+                              ? ` · room for ${Math.floor(
+                                  100 / draft.pairMaxAllocationPct,
+                                )} pairs`
+                              : ''}
+                          </span>
+                        </label>
+
                         <button
                           type="button"
                           className="btn primary"
@@ -585,6 +820,7 @@ export function AccountSettingsPage() {
 
             {/* Auto Square-Off & Retry */}
             <ExecutionSettingsCard />
+            <MarginSettingsCard />
           </div>
 
           <div className="settings-column">

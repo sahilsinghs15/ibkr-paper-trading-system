@@ -1,7 +1,8 @@
 """Incomplete-leg retry tests. IBKR is mocked; extends BasketCoordinator compensation."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -13,6 +14,7 @@ from app.rms.checks.base import BaseRMSCheck
 from app.rms.engine import RMSEngine
 from app.rms.models import (
     CheckResult,
+    MarginPolicy,
     OrderIntent,
     OrderSide,
     RMSContext,
@@ -287,4 +289,167 @@ def test_retry_policy_validation_rejects_invalid_config() -> None:
         ExecutionRetryPolicy(retry_interval_sec=0).validate()
     with pytest.raises(ValueError, match="retry_window_sec must be >= retry_interval_sec"):
         ExecutionRetryPolicy(retry_interval_sec=10, retry_window_sec=5).validate()
+
+
+@pytest.mark.asyncio
+async def test_retry_reevaluates_margin_check_without_whatif() -> None:
+    from app.services.account_margin import AccountMarginSnapshot
+
+    oms, adapter, script = _wired(PlaceScript(["partial:140", "fill"]))
+    adapter.probe_margin = AsyncMock()
+    ctx = _ctx()
+    ctx.margin_policy = MarginPolicy(
+        check_enabled=True,
+        min_free_buffer=Decimal(0),
+        min_free_pct_of_netliq=Decimal(0),
+        default_rate=Decimal("0.10"),
+        confirm_borderline=False,
+    )
+    ctx.margin_snapshots["DUTEST"] = AccountMarginSnapshot(
+        ibkr_account="DUTEST",
+        as_of=datetime.now(UTC),
+        available_funds=Decimal(1000000),
+        net_liquidation=Decimal(2000000),
+        max_age_sec=300,
+    )
+    intent = _intent(["SIL", "GDX"], trade_id="T-MARG", qtys=[275.0, 275.0])
+    result = await BasketCoordinator(
+        oms,
+        fill_timeout=0.05,
+        cancel_timeout=0.05,
+        retry_policy=ExecutionRetryPolicy(
+            enabled=True,
+            square_off_after_sec=0.05,
+            max_retries=3,
+            retry_interval_sec=0.01,
+            retry_window_sec=1.0,
+        ),
+        rms_engine=RMSEngine(),
+        rms_context=ctx,
+        paper_retries_allowed=True,
+    ).execute(intent, _pass(intent), order_type="MARKET")
+    assert result.state == BasketState.OPEN
+    adapter.probe_margin.assert_not_called()
+    assert script.place_count == 3
+
+
+def test_persist_signal_identity_strips_retry_and_unwind() -> None:
+    from app.oms.coordinator import _persist_signal_identity
+
+    assert _persist_signal_identity("T1:RETRY:L0:1") == ("T1", "T1")
+    assert _persist_signal_identity("T1:UNWIND:L0") == ("T1", "T1")
+    assert _persist_signal_identity("T1:CLOSE") == ("T1", "T1:CLOSE")
+    assert _persist_signal_identity("T1:CLOSE:RETRY:L0:1") == ("T1", "T1:CLOSE")
+
+
+def test_open_trade_from_fills_groups_remainder_retry_by_leg_index() -> None:
+    from app.models.model_blue_trade import OpenModelBlueTrade, OpenModelBlueTradeLeg
+    from app.oms.models import OMSOrder, OMSOrderStatus
+    from app.services.model_blue.persistence import _open_trade_from_fills
+
+    intent = _intent(["XLE", "XOP"], trade_id="T-GROUP")
+    trade = OpenModelBlueTrade(
+        trade_id="T-GROUP",
+        strategy_id=_STRAT,
+        direction=1,
+        legs=(
+            OpenModelBlueTradeLeg(
+                symbol="XLE",
+                instrument_type="STK",
+                side=OrderSide.BUY,
+                quantity=Decimal(100),
+                price=Decimal(10),
+            ),
+            OpenModelBlueTradeLeg(
+                symbol="XOP",
+                instrument_type="STK",
+                side=OrderSide.BUY,
+                quantity=Decimal(100),
+                price=Decimal(10),
+            ),
+        ),
+    )
+
+    def _filled(
+        internal: str,
+        symbol: str,
+        idx: int,
+        qty: float,
+        px: float,
+        parent: str | None = None,
+    ) -> OMSOrder:
+        return OMSOrder(
+            internal_order_id=internal,
+            intent=intent,
+            symbol=symbol,
+            side=OrderSide.BUY,
+            quantity=qty,
+            status=OMSOrderStatus.FILLED,
+            filled_quantity=qty,
+            remaining_quantity=0.0,
+            average_fill_price=Decimal(str(px)),
+            last_fill_price=Decimal(str(px)),
+            leg_index=idx,
+            parent_signal_id=parent,
+        )
+
+    opened = _open_trade_from_fills(
+        trade,
+        [
+            _filled("o0", "XLE", 0, 100.0, 10.0),
+            _filled("o1", "XOP", 1, 40.0, 10.0),
+            _filled("o1r", "XOP", 1, 60.0, 12.0, parent="T-GROUP:RETRY:L1:1"),
+        ],
+    )
+    by_sym = {leg.symbol: leg for leg in opened.legs}
+    assert by_sym["XLE"].quantity == Decimal(100)
+    assert by_sym["XOP"].quantity == Decimal(100)
+    assert by_sym["XOP"].price == Decimal("11.2")
+
+
+@pytest.mark.asyncio
+async def test_disconnect_mid_basket_does_not_compensate() -> None:
+    import asyncio
+
+    oms, adapter, _script = _wired(PlaceScript(["pending", "pending"]))
+    intent = _intent(["XLE", "XOP"], trade_id="T-DISC")
+    coord = BasketCoordinator(
+        oms,
+        fill_timeout=0.2,
+        cancel_timeout=0.05,
+        paper_retries_allowed=False,
+    )
+
+    async def drop() -> None:
+        await asyncio.sleep(0.03)
+        adapter.on_connection_closed()
+
+    drop_task = asyncio.create_task(drop())
+    result = await coord.execute(intent, _pass(intent), order_type="MARKET")
+    await drop_task
+    assert result.state != BasketState.COMPENSATED
+    assert result.state == BasketState.EXECUTING
+    assert not result.compensation_orders
+
+
+def test_compensation_complete_empty_with_fills_is_failure() -> None:
+    from app.oms.models import OMSOrder, OMSOrderStatus
+
+    oms, _adapter, _script = _wired(PlaceScript(["fill", "fill"]))
+    coord = BasketCoordinator(oms)
+    filled = OMSOrder(
+        internal_order_id="x",
+        intent=_intent(["XLE", "XOP"], trade_id="T-EMPTY"),
+        symbol="XLE",
+        side=OrderSide.BUY,
+        quantity=100.0,
+        status=OMSOrderStatus.FILLED,
+        filled_quantity=100.0,
+        remaining_quantity=0.0,
+        leg_index=0,
+    )
+    assert coord._compensation_complete([]) is False
+    assert coord._compensation_complete([], submitted=[filled]) is False
+    assert coord._compensation_complete([], submitted=[]) is True
+
 

@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes.health import router as health_router
 from app.api.routes.webhooks import router as webhooks_router
-from app.core.config import get_settings
+from app.core.config import assert_webhook_auth_configured, get_settings
 from app.core.logger import setup_logging
 from app.db.session import AsyncSessionLocal
 
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     """Initialize Postgres session factory only — no IBKR or worker pool."""
     settings = get_settings()
+    assert_webhook_auth_configured(settings)
     setup_logging(level=settings.log_level, filename_prefix="webhook")
 
     fastapi_app.state.session_factory = AsyncSessionLocal

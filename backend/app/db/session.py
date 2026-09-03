@@ -1,5 +1,6 @@
 """Database engine and session management using SQLAlchemy 2.x and asyncpg."""
 
+import os
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 
@@ -16,6 +18,14 @@ from app.core.config import get_settings
 def create_engine_from_settings() -> AsyncEngine:
     """Create and return an AsyncEngine instance configured with Settings."""
     settings = get_settings()
+    if os.environ.get("TRADINGAPP_TESTING") == "1":
+        # NullPool avoids asyncpg connections sticking to a previous event loop
+        # when pytest-asyncio and Starlette TestClient each create their own.
+        return create_async_engine(
+            settings.database_url,
+            echo=False,
+            poolclass=NullPool,
+        )
     return create_async_engine(
         settings.database_url,
         echo=False,

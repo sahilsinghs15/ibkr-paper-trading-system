@@ -3,9 +3,10 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.identifiers import normalize_symbol
 from app.db.models.position import PositionModel
 from app.models.model_blue_trade import OpenModelBlueTrade, OpenModelBlueTradeLeg
 from app.rms.models import OrderSide
@@ -76,25 +77,14 @@ class PositionRepository:
             )
         return rows[0] if rows else None
 
-    async def get_open_by_strategy_symbol(
-        self, strategy_id: str, symbol: str
-    ) -> list[PositionModel]:
-        result = await self._session.execute(
-            select(PositionModel).where(
-                PositionModel.strategy_id == strategy_id,
-                PositionModel.risk_state == RISK_STATE_OPEN,
-                or_(
-                    PositionModel.leg_a_symbol == symbol,
-                    PositionModel.leg_b_symbol == symbol,
-                ),
-            )
-        )
-        return list(result.scalars().all())
-
     async def list_open(self) -> list[PositionModel]:
         result = await self._session.execute(
             select(PositionModel).where(PositionModel.risk_state == RISK_STATE_OPEN)
         )
+        return list(result.scalars().all())
+
+    async def list_all(self) -> list[PositionModel]:
+        result = await self._session.execute(select(PositionModel))
         return list(result.scalars().all())
 
     async def get_open_trade(
@@ -143,52 +133,34 @@ class PositionRepository:
         if len(trade.legs) != 2:
             raise ValueError("Model Blue position requires exactly two legs.")
         existing = await self.get_by_trade_id(trade.trade_id, account_id=account_id)
-        if existing is not None and existing.risk_state == RISK_STATE_OPEN:
+        if existing is not None:
             raise ValueError(
-                f"Open position already exists for trade_id '{trade.trade_id}' "
-                f"account_id={account_id}."
+                f"TRADE_ID_NOT_UNIQUE: trade_id '{trade.trade_id}' already exists "
+                f"for account_id={account_id} (risk_state={existing.risk_state}); "
+                "refusing to mutate."
             )
 
         leg_a, leg_b = trade.legs[0], trade.legs[1]
-        if existing is None:
-            row = PositionModel(
-                trade_id=trade.trade_id,
-                strategy_id=trade.strategy_id,
-                account_id=account_id,
-                leg_a_symbol=leg_a.symbol,
-                leg_a_signed_qty=_signed_qty(leg_a.side, leg_a.quantity),
-                leg_a_entry_mark=leg_a.price,
-                leg_b_symbol=leg_b.symbol,
-                leg_b_signed_qty=_signed_qty(leg_b.side, leg_b.quantity),
-                leg_b_entry_mark=leg_b.price,
-                leg_a_instrument_type=leg_a.instrument_type,
-                leg_b_instrument_type=leg_b.instrument_type,
-                target=target,
-                stop=stop,
-                time_limit=time_limit,
-                risk_state=RISK_STATE_OPEN,
-            )
-            self._session.add(row)
-            await self._session.flush()
-            return row
-
-        existing.strategy_id = trade.strategy_id
-        existing.account_id = account_id
-        existing.leg_a_symbol = leg_a.symbol
-        existing.leg_a_signed_qty = _signed_qty(leg_a.side, leg_a.quantity)
-        existing.leg_a_entry_mark = leg_a.price
-        existing.leg_b_symbol = leg_b.symbol
-        existing.leg_b_signed_qty = _signed_qty(leg_b.side, leg_b.quantity)
-        existing.leg_b_entry_mark = leg_b.price
-        existing.leg_a_instrument_type = leg_a.instrument_type
-        existing.leg_b_instrument_type = leg_b.instrument_type
-        existing.target = target
-        existing.stop = stop
-        existing.time_limit = time_limit
-        existing.risk_state = RISK_STATE_OPEN
-        existing.closed_at = None
+        row = PositionModel(
+            trade_id=trade.trade_id,
+            strategy_id=trade.strategy_id,
+            account_id=account_id,
+            leg_a_symbol=normalize_symbol(leg_a.symbol),
+            leg_a_signed_qty=_signed_qty(leg_a.side, leg_a.quantity),
+            leg_a_entry_mark=leg_a.price,
+            leg_b_symbol=normalize_symbol(leg_b.symbol),
+            leg_b_signed_qty=_signed_qty(leg_b.side, leg_b.quantity),
+            leg_b_entry_mark=leg_b.price,
+            leg_a_instrument_type=leg_a.instrument_type,
+            leg_b_instrument_type=leg_b.instrument_type,
+            target=target,
+            stop=stop,
+            time_limit=time_limit,
+            risk_state=RISK_STATE_OPEN,
+        )
+        self._session.add(row)
         await self._session.flush()
-        return existing
+        return row
 
     async def close_trade(
         self,
@@ -201,25 +173,38 @@ class PositionRepository:
         row = await self.get_open_by_trade_id(trade_id, account_id=account_id)
         if row is None:
             raise KeyError(trade_id)
+        needed: list[str] = []
+        if row.leg_a_symbol:
+            needed.append(row.leg_a_symbol)
+        if row.leg_b_symbol:
+            needed.append(row.leg_b_symbol)
+        if exit_marks is not None:
+            missing = [symbol for symbol in needed if symbol not in exit_marks]
+            if missing:
+                raise ValueError(
+                    f"INCOMPLETE_EXIT_MARKS: trade_id={trade_id} missing {missing}"
+                )
+        marks = exit_marks or {}
         realised = Decimal(0)
-        if exit_marks:
-            if row.leg_a_symbol in exit_marks and row.leg_a_entry_mark is not None:
+        if marks:
+            if row.leg_a_symbol in marks and row.leg_a_entry_mark is not None:
                 realised += row.leg_a_signed_qty * (
-                    exit_marks[row.leg_a_symbol] - row.leg_a_entry_mark
+                    marks[row.leg_a_symbol] - row.leg_a_entry_mark
                 )
             if (
                 row.leg_b_symbol
-                and row.leg_b_symbol in exit_marks
+                and row.leg_b_symbol in marks
                 and row.leg_b_entry_mark is not None
                 and row.leg_b_signed_qty is not None
             ):
                 realised += row.leg_b_signed_qty * (
-                    exit_marks[row.leg_b_symbol] - row.leg_b_entry_mark
+                    marks[row.leg_b_symbol] - row.leg_b_entry_mark
                 )
         row.realised_pnl = realised
         if commission is not None and commission > 0:
-            row.commission = commission
-            realised = realised - commission
+            prior = row.commission or Decimal(0)
+            row.commission = prior + commission
+            realised = realised - row.commission
             row.realised_pnl = realised
         row.live_pnl = realised
         row.risk_state = RISK_STATE_CLOSED

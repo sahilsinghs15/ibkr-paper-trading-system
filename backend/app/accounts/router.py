@@ -37,17 +37,12 @@ class StaticStrategyAccountRouter:
         wanted = (strategy_id or "").strip()
         contexts = [ctx for ctx in self._contexts if ctx.strategy_id == wanted]
         logger.info(
-            "Account router (static) resolved strategy_id=%s accounts=%d: %s",
+            "Account router (static) resolved strategy_id=%s accounts=%d preview=%s",
             wanted,
             len(contexts),
             [
-                {
-                    "account_id": c.account_id,
-                    "ibkr_account": c.ibkr_account,
-                    "committed_notional": str(c.committed_notional),
-                    "alloc_pct": str(c.alloc_pct),
-                }
-                for c in contexts
+                {"account_id": c.account_id, "ibkr_account": c.ibkr_account}
+                for c in contexts[:5]
             ],
         )
         return contexts
@@ -59,33 +54,51 @@ class DatabaseStrategyAccountRouter:
     def __init__(self, session_factory: SessionFactory) -> None:
         self._session_factory = session_factory
 
-    async def resolve(self, strategy_id: str) -> list[AccountExecutionContext]:
+    async def resolve(
+        self, strategy_id: str, *, session: AsyncSession | None = None
+    ) -> list[AccountExecutionContext]:
         wanted = (strategy_id or "").strip()
         if not wanted:
             return []
-        async with self._session_factory() as session:
-            stmt = (
-                select(AccountModel, AllocationModel, StrategyModel)
-                .join(AllocationModel, AllocationModel.account_id == AccountModel.id)
-                .join(
-                    StrategyModel,
-                    StrategyModel.strategy_id == AllocationModel.strategy_id,
-                )
-                .where(
-                    AllocationModel.strategy_id == wanted,
-                    AccountModel.enabled.is_(True),
-                    StrategyModel.enabled.is_(True),
-                    AllocationModel.enabled.is_(True),
-                    AccountModel.total_margin > 0,
-                    AllocationModel.alloc_pct > 0,
-                )
-                .order_by(AccountModel.id)
+        if session is not None:
+            return await self._resolve(session, wanted)
+        async with self._session_factory() as owned:
+            return await self._resolve(owned, wanted)
+
+    async def _resolve(
+        self, session: AsyncSession, wanted: str
+    ) -> list[AccountExecutionContext]:
+        stmt = (
+            select(AccountModel, AllocationModel, StrategyModel)
+            .join(AllocationModel, AllocationModel.account_id == AccountModel.id)
+            .join(
+                StrategyModel,
+                StrategyModel.strategy_id == AllocationModel.strategy_id,
             )
-            rows = (await session.execute(stmt)).all()
+            .where(
+                AllocationModel.strategy_id == wanted,
+                AccountModel.enabled.is_(True),
+                StrategyModel.enabled.is_(True),
+                AllocationModel.enabled.is_(True),
+                AccountModel.total_margin > 0,
+                AllocationModel.alloc_pct > 0,
+            )
+            .order_by(AccountModel.id)
+        )
+        rows = (await session.execute(stmt)).all()
         contexts: list[AccountExecutionContext] = []
         for account, allocation, strategy in rows:
             committed = account.total_margin * allocation.alloc_pct
             if committed <= 0:
+                continue
+            pair_budget = committed * allocation.pair_max_allocation_pct
+            if pair_budget <= 0:
+                logger.warning(
+                    "Skipping account_id=%s strategy_id=%s: pair budget resolves to %s",
+                    account.id,
+                    strategy.strategy_id,
+                    pair_budget,
+                )
                 continue
             contexts.append(
                 AccountExecutionContext(
@@ -95,6 +108,8 @@ class DatabaseStrategyAccountRouter:
                     total_margin=account.total_margin,
                     alloc_pct=allocation.alloc_pct,
                     committed_notional=committed,
+                    pair_max_allocation_pct=allocation.pair_max_allocation_pct,
+                    pair_budget=pair_budget,
                     target=allocation.target,
                     stop=allocation.stop,
                     time_limit=allocation.time_limit,
@@ -102,19 +117,14 @@ class DatabaseStrategyAccountRouter:
                 )
             )
         logger.info(
-            "Account router resolved strategy_id=%s accounts=%d: %s",
+            "Account router resolved strategy_id=%s accounts=%d preview=%s%s",
             wanted,
             len(contexts),
             [
-                {
-                    "account_id": c.account_id,
-                    "ibkr_account": c.ibkr_account,
-                    "committed_notional": str(c.committed_notional),
-                    "alloc_pct": str(c.alloc_pct),
-                    "max_open_positions": c.max_open_positions,
-                }
-                for c in contexts
+                {"account_id": c.account_id, "ibkr_account": c.ibkr_account}
+                for c in contexts[:5]
             ],
+            "" if len(contexts) <= 5 else f" (+{len(contexts) - 5} more)",
         )
         return contexts
 
@@ -126,6 +136,7 @@ def context_from_rows(
 ) -> AccountExecutionContext:
     """Build a context from already-loaded ORM rows (tests / config service)."""
     committed = account.total_margin * allocation.alloc_pct
+    pair_pct = allocation.pair_max_allocation_pct
     return AccountExecutionContext(
         account_id=account.id,
         ibkr_account=account.ibkr_account,
@@ -133,6 +144,8 @@ def context_from_rows(
         total_margin=account.total_margin,
         alloc_pct=allocation.alloc_pct,
         committed_notional=Decimal(committed),
+        pair_max_allocation_pct=pair_pct,
+        pair_budget=Decimal(committed) * pair_pct,
         target=allocation.target,
         stop=allocation.stop,
         time_limit=allocation.time_limit,

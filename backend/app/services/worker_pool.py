@@ -74,6 +74,11 @@ class ExecutionWorkerPool:
         self._running = False
         self._domain_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._domain_locks_guard = asyncio.Lock()
+        self._in_flight = 0
+
+    def has_in_flight_jobs(self) -> bool:
+        """True while any worker is inside _execute_job (live signal path)."""
+        return self._in_flight > 0
 
     async def _get_domain_lock(self, account_scope: str | None, strategy_id: str) -> asyncio.Lock:
         """Get or create an async lock for (account_scope, strategy_id) partition safety."""
@@ -98,10 +103,18 @@ class ExecutionWorkerPool:
         logger.info("ExecutionWorkerPool started with %d workers", self._worker_count)
 
     async def stop(self) -> None:
-        """Gracefully stop worker pool."""
+        """Gracefully stop worker pool, waiting for in-flight jobs before cancel."""
         if not self._running:
             return
         self._running = False
+        deadline = asyncio.get_running_loop().time() + 90.0
+        while self.has_in_flight_jobs() and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.1)
+        if self.has_in_flight_jobs():
+            logger.warning(
+                "Worker pool stop: %s job(s) still in flight after drain wait",
+                self._in_flight,
+            )
         if self._reclaimer_task is not None:
             self._reclaimer_task.cancel()
             try:
@@ -140,6 +153,22 @@ class ExecutionWorkerPool:
                             "Orphaned claim sweep: released=%d sealed=%d",
                             claim_stats["released"],
                             claim_stats["sealed"],
+                        )
+                async with self._session_factory() as session, session.begin():
+                    from app.db.repositories.basket_repository import BasketRepository
+                    from app.db.repositories.order_repository import OrderRepository
+
+                    reaped = await BasketRepository(session).reap_stale_executing(
+                        older_than_sec=120.0
+                    )
+                    if reaped:
+                        logger.warning("Basket reaper escalated %d aged EXECUTING baskets", reaped)
+                    order_reaped = await OrderRepository(session).reap_stale_orders(
+                        older_than_sec=120.0
+                    )
+                    if order_reaped:
+                        logger.warning(
+                            "Order reaper processed %d aged zero-fill orders", order_reaped
                         )
             except asyncio.CancelledError:
                 break
@@ -198,7 +227,11 @@ class ExecutionWorkerPool:
                         job.job_id,
                     )
                     return
-                await self._execute_job(worker_id, job, lease_lost)
+                self._in_flight += 1
+                try:
+                    await self._execute_job(worker_id, job, lease_lost)
+                finally:
+                    self._in_flight = max(0, self._in_flight - 1)
         finally:
             heartbeat_cancel.set()
             heartbeat_task.cancel()
@@ -243,7 +276,13 @@ class ExecutionWorkerPool:
             except asyncio.CancelledError:
                 break
             except Exception:  # noqa: BLE001
-                logger.warning("Worker %s failed to renew heartbeat for job %s", worker_id, job_id)
+                logger.warning(
+                    "Worker %s failed to renew heartbeat for job %s; treating as lease_lost",
+                    worker_id,
+                    job_id,
+                )
+                lease_lost.set()
+                break
 
     async def _write_status(
         self,
@@ -384,7 +423,10 @@ class ExecutionWorkerPool:
                     emitted = await SignalJobRepository(session).count_orders_emitted(
                         job.strategy_id, job.signal_id
                     )
-                if emitted > 0:
+                    claimed = await ExecutionClaimRepository(session).has_claimed(
+                        job.strategy_id, job.signal_id
+                    )
+                if emitted > 0 or claimed:
                     terminal_status = JOB_STATUS_RECOVERY_REQUIRED
                     error_msg = (
                         f"{exc} — {emitted} order(s) already emitted; reconciliation required."

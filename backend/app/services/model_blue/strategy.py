@@ -9,6 +9,7 @@ from decimal import Decimal
 from inspect import isawaitable, iscoroutinefunction
 
 from app.accounts.context import AccountExecutionContext
+from app.core.config import get_settings
 from app.models.model_blue_trade import OpenModelBlueTrade, OpenModelBlueTradeLeg
 from app.models.signal import Signal
 from app.oms.models import ExecutionResult
@@ -34,8 +35,6 @@ from app.services.strategies.handler import StrategyHandler
 
 logger = logging.getLogger(__name__)
 
-_STK_CONTRACT_MONTH = "2026-09"
-
 
 class ModelBlueStrategy(StrategyHandler):
     """First registered strategy. Currently produces exactly two legs."""
@@ -57,9 +56,19 @@ class ModelBlueStrategy(StrategyHandler):
             and get_committed is not None
             and not iscoroutinefunction(get_committed)
         ):
-            self._sizer = ModelBlueSizer(committed_capital_provider)
+            self._sizer = self._sizer_from_provider(committed_capital_provider)
         self._trades: ModelBlueTradeBook = trade_book or InMemoryModelBlueTradeBook()
         self._persistence = persistence
+
+    @staticmethod
+    def _sizer_from_provider(provider: CommittedCapitalProvider) -> ModelBlueSizer:
+        settings = get_settings()
+        return ModelBlueSizer(
+            provider,
+            min_order_notional=settings.min_order_notional,
+            ratio_tolerance=settings.pair_ratio_tolerance,
+            min_deployment=settings.pair_min_deployment_pct,
+        )
 
     def can_handle(self, strategy_id: str | None) -> bool:
         return is_model_blue_strategy(strategy_id)
@@ -143,16 +152,22 @@ class ModelBlueStrategy(StrategyHandler):
         if not trade_id:
             raise ModelBlueValidationError("MODEL_BLUE_MISSING_TRADE_ID: trade_id is required.")
         account_id = account.account_id if account is not None else None
-        if await self._trades.get(trade_id, account_id=account_id) is not None:
+        existing = await self._trades.get_row(trade_id, account_id=account_id)
+        if existing is not None:
             raise ModelBlueValidationError(
-                f"MODEL_BLUE_DUPLICATE_OPEN: trade_id '{trade_id}' is already open."
+                f"TRADE_ID_NOT_UNIQUE: trade_id '{trade_id}' already exists for "
+                f"account_id={account_id} (risk_state={existing.risk_state}); "
+                "refusing to open again."
             )
 
         sizer = self._sizer
+        pair_budget: Decimal | None = None
         if account is not None:
-            sizer = ModelBlueSizer(
-                TemporarySettingsCommittedCapitalProvider(account.committed_notional)
-            )
+            pair_budget = account.pair_budget
+            if sizer is None:
+                sizer = self._sizer_from_provider(
+                    TemporarySettingsCommittedCapitalProvider(None)
+                )
         elif sizer is None:
             committed = await self._resolve_committed(
                 signal.strategy_id or MODEL_BLUE_STRATEGY_ID
@@ -162,9 +177,11 @@ class ModelBlueStrategy(StrategyHandler):
                     "MODEL_BLUE_COMMITTED_NOT_CONFIGURED: no PostgreSQL allocation "
                     "(and no injected committed-capital provider) for Model Blue sizing."
                 )
-            sizer = ModelBlueSizer(TemporarySettingsCommittedCapitalProvider(committed))
+            sizer = self._sizer_from_provider(
+                TemporarySettingsCommittedCapitalProvider(committed)
+            )
 
-        sized = sizer.size_open(signal)
+        sized = sizer.size_open(signal, pair_budget=pair_budget)
         legs = [self._order_leg_from_sized(index, leg) for index, leg in enumerate(sized)]
         if len(legs) != 2:
             raise ModelBlueValidationError(
@@ -220,7 +237,6 @@ class ModelBlueStrategy(StrategyHandler):
                     side=close_side,
                     quantity=float(open_leg.quantity),
                     price=open_leg.price,
-                    contract_month=_STK_CONTRACT_MONTH,
                     notional=open_leg.quantity * open_leg.price,
                     instrument_type=open_leg.instrument_type,
                     leg_index=index,
@@ -253,7 +269,6 @@ class ModelBlueStrategy(StrategyHandler):
             side=sized.side,
             quantity=float(sized.quantity),
             price=sized.price,
-            contract_month=_STK_CONTRACT_MONTH,
             notional=sized.notional,
             instrument_type=sized.instrument_type,
             weight=sized.weight,

@@ -27,6 +27,7 @@ class AllocationConfigSchema(BaseModel):
     target: Decimal
     stop: Decimal
     time_limit: int
+    pair_max_allocation_pct: Decimal
 
 
 class AccountConfigSchema(BaseModel):
@@ -80,6 +81,7 @@ class CreateAllocationRequest(BaseModel):
     target: Decimal = Field(Decimal("500.00"), gt=0)
     stop: Decimal = Field(Decimal("250.00"), gt=0)
     time_limit: int = Field(3600, gt=0)
+    pair_max_allocation_pct: Decimal = Field(Decimal("0.10"), gt=0, le=1)
     enabled: bool = True
 
 
@@ -97,6 +99,7 @@ class PatchAllocationRequest(BaseModel):
     alloc_pct: Decimal | None = Field(None, ge=0, le=1)
     enabled: bool | None = None
     max_open_positions: int | None = Field(None, ge=0)
+    pair_max_allocation_pct: Decimal | None = Field(None, gt=0, le=1)
 
 
 class PutSymbolLimitRequest(BaseModel):
@@ -132,6 +135,38 @@ class PatchExecutionSettingsRequest(BaseModel):
     max_retries: int | None = Field(None, ge=0)
     retry_interval_sec: int | None = Field(None, gt=0)
     retry_window_sec: int | None = Field(None, gt=0)
+
+
+class MarginSettingsSchema(BaseModel):
+    """Operator-tunable margin-gate policy (singleton row)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    check_enabled: bool
+    gate_basis: str
+    min_free_buffer: Decimal
+    min_free_pct_of_netliq: Decimal
+    comfort_ratio: Decimal
+    confirm_borderline: bool
+    enforce_look_ahead: bool
+    reject_on_stale_snapshot: bool
+    default_rate: Decimal
+    rate_safety_multiplier: Decimal
+
+
+class PatchMarginSettingsRequest(BaseModel):
+    """Partial update for margin-gate policy."""
+
+    check_enabled: bool | None = None
+    gate_basis: str | None = None
+    min_free_buffer: Decimal | None = Field(None, ge=0)
+    min_free_pct_of_netliq: Decimal | None = Field(None, ge=0, le=1)
+    comfort_ratio: Decimal | None = None
+    confirm_borderline: bool | None = None
+    enforce_look_ahead: bool | None = None
+    reject_on_stale_snapshot: bool | None = None
+    default_rate: Decimal | None = Field(None, gt=0, le=1)
+    rate_safety_multiplier: Decimal | None = Field(None, ge=1, le=2)
 
 
 class SquareOffResponse(BaseModel):

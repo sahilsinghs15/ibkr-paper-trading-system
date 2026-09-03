@@ -1,6 +1,8 @@
 """Application entrypoint for the FastAPI backend execution system."""
 
+import asyncio
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -11,12 +13,15 @@ from app.api.router import api_router
 from app.api.routes.health import router as health_router
 from app.broker.ibkr.gateway_rate_limiter import GatewayRateLimiter
 from app.broker.ibkr.tws_client import TWSClient
-from app.core.config import get_settings
+from app.core.config import get_settings, refuse_testing_flag_on_order_process
 from app.core.logger import setup_logging
 from app.db.session import AsyncSessionLocal
 from app.oms.ibkr_adapter import IBKRExecutionAdapter
 from app.oms.oms_service import OMSService
+from app.services.account_margin import AccountMarginService
 from app.services.critical_recovery import CriticalRecoveryService
+from app.services.margin_rate import MarginRateService
+from app.services.margin_scanner import MarginScanner
 from app.services.model_blue.db_allocation import DatabaseCommittedCapitalProvider
 from app.services.model_blue.db_trade_book import DatabaseModelBlueTradeBook
 from app.services.model_blue.persistence import ModelBlueExecutionPersistence
@@ -33,10 +38,11 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
 
     Initializes TWSClient -> IBKRExecutionAdapter -> OMSService -> OrderManager.
     """
+    refuse_testing_flag_on_order_process()
     settings = get_settings()
     setup_logging(level=settings.log_level)
 
-    logger.info("Initializing paper-trading execution components (IBKR Paper TWS target)...")
+    logger.info("Initializing execution components (IBKR Gateway target)...")
 
     client = TWSClient()
     rate_limiter = GatewayRateLimiter(
@@ -58,6 +64,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     oms = OMSService(adapter=ibkr_adapter)
 
     persistence = ModelBlueExecutionPersistence(AsyncSessionLocal)
+    margin_rate_service = MarginRateService(AsyncSessionLocal)
+    account_margin = AccountMarginService(client, rate_limiter=rate_limiter)
     order_manager = OrderManager(
         oms=oms,
         symbol=settings.trading_symbol,
@@ -67,14 +75,23 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         model_blue_trade_book=DatabaseModelBlueTradeBook(AsyncSessionLocal),
         session_factory=AsyncSessionLocal,
         persistence=persistence,
+        account_margin=account_margin,
+        margin_rate_service=margin_rate_service,
     )
     order_manager._live_pnl = LivePnlService(
         AsyncSessionLocal, client, rate_limiter=rate_limiter
     )
-    try:
-        await order_manager.hydrate_runtime_from_db()
-    except Exception:
-        logger.exception("Failed to hydrate Model Blue/RMS runtime state from PostgreSQL.")
+    testing = os.environ.get("TRADINGAPP_TESTING") == "1"
+    if not testing:
+        try:
+            await order_manager.hydrate_runtime_from_db()
+        except Exception:
+            logger.exception("Failed to hydrate Model Blue/RMS runtime state from PostgreSQL.")
+    else:
+        try:
+            await order_manager.reload_margin_settings()
+        except Exception:
+            logger.exception("Failed to load margin settings during test lifespan.")
 
     critical_recovery = CriticalRecoveryService(
         session_factory=AsyncSessionLocal,
@@ -84,6 +101,7 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     if order_manager._baskets is not None:
         order_manager._baskets.set_recovery_service(critical_recovery)
         critical_recovery.set_coordinator(order_manager._baskets)
+        order_manager._baskets.bind_loop(asyncio.get_running_loop())
     fastapi_app.state.critical_recovery = critical_recovery
 
     # Establish TWS connection session
@@ -94,12 +112,18 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         timeout=float(settings.ibkr_connection_timeout),
     )
     if not success:
-        logger.warning("Initial TWS connection attempt unconfirmed; execution adapter will auto-reconnect on active traffic.")
-    else:
+        logger.warning(
+            "Initial TWS connection attempt unconfirmed; orders will wait until the socket is up."
+        )
+    elif not testing:
         try:
             await order_manager.hydrate_live_pnl()
         except Exception:
             logger.exception("Failed to re-subscribe live P&L for open positions.")
+        try:
+            account_margin.start()
+        except Exception:
+            logger.exception("Failed to start AccountMarginService.")
 
     # Store references on application state for dependency lookup
     fastapi_app.state.session_factory = AsyncSessionLocal
@@ -107,16 +131,34 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     fastapi_app.state.ibkr_adapter = ibkr_adapter
     fastapi_app.state.oms = oms
     fastapi_app.state.order_manager = order_manager
+    fastapi_app.state.account_margin = account_margin
 
     from app.services.recovery import RecoveryManager
     from app.services.worker_pool import ExecutionWorkerPool
 
     # Run startup recovery scanner
     recovery_mgr = RecoveryManager(AsyncSessionLocal, order_manager)
-    try:
-        await recovery_mgr.run_startup_recovery()
-    except Exception:
-        logger.exception("Failed to execute startup crash recovery scanner.")
+    if not testing:
+        try:
+            await recovery_mgr.run_startup_recovery()
+        except Exception:
+            logger.exception("Failed to execute startup crash recovery scanner.")
+
+    margin_scanner = MarginScanner(
+        AsyncSessionLocal,
+        ibkr_adapter,
+        margin_rate_service,
+        live_pnl=order_manager._live_pnl,
+    )
+    fastapi_app.state.margin_scanner = margin_scanner
+    if settings.margin_scan_enabled and success and not testing:
+        try:
+            await margin_scanner.run_scan(
+                budget_sec=float(settings.margin_scan_startup_budget_sec)
+            )
+            await order_manager.reload_margin_rates()
+        except Exception:
+            logger.exception("Startup margin scan failed")
 
     # Start background execution worker pool
     worker_pool = ExecutionWorkerPool(
@@ -124,14 +166,27 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         order_manager=order_manager,
         worker_count=10,
     )
-    await worker_pool.start()
+    if not testing:
+        await worker_pool.start()
     fastapi_app.state.worker_pool = worker_pool
+    margin_scanner._worker_pool = worker_pool
+    if settings.margin_scan_enabled and not testing:
+        await margin_scanner.start_background()
 
-    position_reconciler = PositionReconciler(AsyncSessionLocal, client)
-    await position_reconciler.start()
+    position_reconciler = PositionReconciler(
+        AsyncSessionLocal,
+        client,
+        after_sweep=order_manager.after_reconcile_sweep,
+    )
+    if not testing:
+        await position_reconciler.start()
     fastapi_app.state.position_reconciler = position_reconciler
 
-    await critical_recovery.enqueue_all_critical()
+    if not testing:
+        try:
+            await critical_recovery.enqueue_all_critical()
+        except Exception:
+            logger.exception("Failed to enqueue critical baskets at startup.")
 
     critical_count = 0
     baskets = getattr(order_manager, "_baskets", None)
@@ -156,6 +211,10 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     yield
 
     logger.info("Shutting down paper-trading application...")
+    if hasattr(fastapi_app.state, "margin_scanner"):
+        await fastapi_app.state.margin_scanner.stop()
+    if hasattr(fastapi_app.state, "account_margin"):
+        fastapi_app.state.account_margin.stop()
     if hasattr(fastapi_app.state, "position_reconciler"):
         await fastapi_app.state.position_reconciler.stop()
     if hasattr(fastapi_app.state, "worker_pool"):

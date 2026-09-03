@@ -1,4 +1,4 @@
-"""Temporary paper demo: requested STK executes as IBKR CFD without a catalog."""
+"""Production Model Blue: requested STK executes as IBKR CFD without a catalog."""
 
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.instruments.execution_override import (
-    STK_TO_CFD_DEMO,
+    STK_TO_CFD,
     execution_instrument_type,
 )
 from app.instruments.models import InstrumentRecord, InstrumentResolutionError
@@ -68,7 +68,7 @@ def _demo_cfd(symbol: str) -> object:
     return resolve_leg(
         symbol=symbol,
         instrument_type="STK",
-        apply_demo_override=True,
+        apply_stk_to_cfd=True,
     )
 
 
@@ -84,7 +84,7 @@ def test_parser_preserves_requested_stk() -> None:
 def test_stk_to_cfd_demo_converts_execution_type() -> None:
     exec_type, override = execution_instrument_type("STK", enabled=True)
     assert exec_type == "CFD"
-    assert override == STK_TO_CFD_DEMO
+    assert override == STK_TO_CFD
     resolved = _demo_cfd("SIL")
     assert resolved.requested_instrument_type == "STK"
     assert resolved.sec_type == "CFD"
@@ -96,7 +96,7 @@ def test_empty_instruments_table_does_not_reject_demo_cfd() -> None:
         symbol="SIL",
         instrument_type="STK",
         catalog=InMemoryInstrumentCatalog(),
-        apply_demo_override=True,
+        apply_stk_to_cfd=True,
     )
     assert resolved.sec_type == "CFD"
     assert ibkr_contract_from_resolved(resolved).secType == "CFD"
@@ -167,7 +167,7 @@ def test_stk_catalog_row_does_not_fall_back_to_stk() -> None:
         symbol="SIL",
         instrument_type="STK",
         catalog=catalog,
-        apply_demo_override=True,
+        apply_stk_to_cfd=True,
     )
     assert resolved.sec_type == "CFD"
     assert ibkr_contract_from_resolved(resolved).secType != "STK"
@@ -177,7 +177,7 @@ def test_override_disabled_still_resolves_stk() -> None:
     resolved = resolve_leg(
         symbol="SIL",
         instrument_type="STK",
-        apply_demo_override=False,
+        apply_stk_to_cfd=False,
     )
     assert resolved.requested_instrument_type == "STK"
     assert resolved.sec_type == "STK"
@@ -188,7 +188,7 @@ def test_etf_is_not_mapped_to_cfd() -> None:
     resolved = resolve_leg(
         symbol="SIL",
         instrument_type="ETF",
-        apply_demo_override=True,
+        apply_stk_to_cfd=True,
     )
     assert resolved.requested_instrument_type == "ETF"
     assert resolved.sec_type == "STK"
@@ -196,7 +196,7 @@ def test_etf_is_not_mapped_to_cfd() -> None:
 
 def test_explicit_cfd_without_demo_still_requires_catalog() -> None:
     with pytest.raises(InstrumentResolutionError, match="INSTRUMENT_METADATA_MISSING"):
-        resolve_leg(symbol="SIL", instrument_type="CFD", apply_demo_override=False)
+        resolve_leg(symbol="SIL", instrument_type="CFD", apply_stk_to_cfd=False)
 
 
 def test_attach_resolved_keeps_requested_stk_on_leg() -> None:
@@ -219,7 +219,7 @@ def test_attach_resolved_keeps_requested_stk_on_leg() -> None:
         ],
         timestamp=_TS,
     )
-    resolved_intent = attach_resolved(intent, apply_demo_override=True)
+    resolved_intent = attach_resolved(intent, apply_stk_to_cfd=True)
     assert resolved_intent.legs[0].instrument_type == "STK"
     assert resolved_intent.legs[0].resolved is not None
     assert resolved_intent.legs[0].resolved.sec_type == "CFD"
@@ -337,7 +337,7 @@ async def test_close_uses_persisted_cfd_without_catalog() -> None:
         resolved = resolve_leg(
             symbol=leg.symbol,
             instrument_type=leg.instrument_type,
-            apply_demo_override=True,
+            apply_stk_to_cfd=True,
         )
         contract = ibkr_contract_from_resolved(resolved)
         assert resolved.requested_instrument_type == "CFD"

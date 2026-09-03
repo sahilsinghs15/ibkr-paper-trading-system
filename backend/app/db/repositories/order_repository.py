@@ -1,16 +1,43 @@
 """Persistence for OMS/IBKR order ledger rows."""
 
+import logging
 import math
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.order import OrderModel
 from app.oms.models import OMSOrder, executions_weighted_average
 
-_TERMINAL_ORDER_STATUSES = frozenset({"FILLED", "CANCELLED", "REJECTED", "ERROR"})
+logger = logging.getLogger(__name__)
+
+_TERMINAL_ORDER_STATUSES = frozenset({"FILLED", "CANCELLED", "REJECTED"})
+_BROKER_MARGIN_SOURCES = frozenset({"WHAT_IF"})
+
+
+def _margin_impact_from_order(order: OMSOrder) -> Decimal | None:
+    """Persist margin_impact only when the rate source is broker-derived."""
+    legs = getattr(order.intent, "legs", None) or []
+    idx = order.leg_index if order.leg_index is not None else 0
+    if not (0 <= idx < len(legs)):
+        return None
+    meta = getattr(legs[idx], "metadata", None) or {}
+    source = str(meta.get("margin_source") or "")
+    if source not in _BROKER_MARGIN_SOURCES:
+        return None
+    raw = meta.get("margin_impact")
+    if raw is None:
+        return None
+    try:
+        value = Decimal(str(raw))
+    except Exception:
+        return None
+    if value < 0:
+        return None
+    return value
 
 
 class OrderRepository:
@@ -111,6 +138,9 @@ class OrderRepository:
             "fill_qty": persist_filled,
             "filled_at": persist_filled_at,
         }
+        margin_impact = _margin_impact_from_order(order)
+        if margin_impact is not None:
+            values["margin_impact"] = margin_impact
         update = {
             "status": values["status"],
             "broker_order_id": values["broker_order_id"],
@@ -120,6 +150,8 @@ class OrderRepository:
             "fill_qty": values["fill_qty"],
             "is_compensation": values["is_compensation"],
         }
+        if "margin_impact" in values:
+            update["margin_impact"] = values["margin_impact"]
         if persist_filled_at is not None:
             update["filled_at"] = persist_filled_at
         if basket_id is not None:
@@ -142,3 +174,56 @@ class OrderRepository:
                 f"Failed to persist order {order.internal_order_id}."
             )
         return row
+
+    async def reap_stale_orders(self, *, older_than_sec: float = 120.0) -> int:
+        """Escalate aged non-terminal orders with zero fills (M16).
+
+        Does not touch disconnect-parked ERROR rows — only PENDING/SUBMITTED/
+        PARTIALLY_FILLED with fill_qty=0.
+        """
+        from app.db.models.basket import BasketModel
+        from app.oms.basket import BasketState
+
+        cutoff = datetime.now(UTC) - timedelta(seconds=older_than_sec)
+        stale_statuses = ("PENDING", "SUBMITTED", "PARTIALLY_FILLED")
+        result = await self._session.execute(
+            select(OrderModel).where(
+                OrderModel.status.in_(stale_statuses),
+                OrderModel.updated_at < cutoff,
+                func.coalesce(OrderModel.fill_qty, 0) == 0,
+            )
+        )
+        reaped = 0
+        for row in list(result.scalars().all()):
+            detail = (
+                f"Stale order {row.internal_order_id} status={row.status} "
+                f"with zero fills for {older_than_sec:.0f}s"
+            )
+            if row.basket_id is None:
+                logger.critical("Order reaper: %s (no basket_id)", detail)
+                reaped += 1
+                continue
+            basket = await self._session.get(BasketModel, row.basket_id)
+            if basket is None:
+                logger.critical("Order reaper: %s (missing basket %s)", detail, row.basket_id)
+                reaped += 1
+                continue
+            if basket.state == BasketState.EXECUTING.value:
+                logger.critical(
+                    "Order reaper: %s; basket_id=%s already EXECUTING",
+                    detail,
+                    row.basket_id,
+                )
+            else:
+                basket.state = BasketState.CRITICAL.value
+                basket.recovery_status = "ORDER_REAPED"
+                basket.recovery_detail = detail
+                logger.warning(
+                    "Order reaper escalated basket_id=%s: %s",
+                    row.basket_id,
+                    detail,
+                )
+            reaped += 1
+        if reaped:
+            await self._session.flush()
+        return reaped

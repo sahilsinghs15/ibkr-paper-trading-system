@@ -5,6 +5,7 @@ partial-fill aware retries, and authoritative broker reconciliation.
 """
 
 import asyncio
+import inspect
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -152,6 +153,7 @@ class KillSwitchService:
         self._order_manager = order_manager
         self._max_concurrent_positions = max_concurrent_positions
         self._semaphore = asyncio.Semaphore(max_concurrent_positions)
+        self._in_flight: dict[UUID, asyncio.Task[None]] = {}
 
     async def initiate_square_off(
         self, account_id: int, requested_by: str = "operator"
@@ -169,14 +171,7 @@ class KillSwitchService:
             # Check for existing active operation to enforce strict idempotency
             stmt = select(KillSwitchOperationModel).where(
                 KillSwitchOperationModel.account_id == account_id,
-                KillSwitchOperationModel.status.in_(
-                    [
-                        KILL_SWITCH_STATUS_ACTIVATING,
-                        KILL_SWITCH_STATUS_FLATTENING,
-                        KILL_SWITCH_STATUS_RECONCILING,
-                        KILL_SWITCH_STATUS_RETRYING,
-                    ]
-                ),
+                KillSwitchOperationModel.status.in_(_ARMED_STATUSES),
             )
             result = await session.execute(stmt)
             existing_op = result.scalars().first()
@@ -296,10 +291,53 @@ class KillSwitchService:
 
     async def execute_flatten_operation_background(self, operation_id: UUID) -> None:
         """Trigger background worker task to execute non-blocking position flattening."""
-        asyncio.create_task(
+        if operation_id in self._in_flight and not self._in_flight[operation_id].done():
+            logger.info(
+                "Kill-switch flatten already in flight operation_id=%s", operation_id
+            )
+            return
+        task = asyncio.create_task(
             self._execute_flatten_operation(operation_id),
             name=f"kill-switch-flatten-{operation_id}",
         )
+        self._in_flight[operation_id] = task
+
+        def _clear(done: asyncio.Task[None], *, op_id: UUID = operation_id) -> None:
+            self._in_flight.pop(op_id, None)
+            if done.cancelled():
+                return
+            exc = done.exception() if not done.cancelled() else None
+            if exc is not None:
+                logger.exception(
+                    "Kill-switch flatten task failed operation_id=%s",
+                    op_id,
+                    exc_info=exc,
+                )
+
+        task.add_done_callback(_clear)
+
+    async def resume_incomplete_flattens(self) -> None:
+        """Restart flatten workers for armed ops that were mid-flatten at crash (M22)."""
+        resume_statuses = (
+            KILL_SWITCH_STATUS_ACTIVATING,
+            KILL_SWITCH_STATUS_FLATTENING,
+            KILL_SWITCH_STATUS_RECONCILING,
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(KillSwitchOperationModel).where(
+                    KillSwitchOperationModel.status.in_(resume_statuses)
+                )
+            )
+            ops = list(result.scalars().all())
+        for op in ops:
+            logger.warning(
+                "Resuming kill-switch flatten operation_id=%s account_id=%s status=%s",
+                op.operation_id,
+                op.account_id,
+                op.status,
+            )
+            await self.execute_flatten_operation_background(op.operation_id)
 
     async def _execute_flatten_operation(self, operation_id: UUID) -> None:
         """Execute durable flatten operation asynchronously off the HTTP request thread."""
@@ -342,6 +380,14 @@ class KillSwitchService:
             for pos in open_positions
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        rebuild = getattr(self._order_manager, "rebuild_rms_from_positions", None)
+        if callable(rebuild):
+            try:
+                rebuilt = rebuild()
+                if inspect.isawaitable(rebuilt):
+                    await rebuilt
+            except Exception:
+                logger.exception("Kill-switch RMS rebuild after flatten failed")
 
         # Reconcile authoritatively against PostgreSQL & Broker state
         await self._reconcile_and_finalize(operation_id, open_positions[0].account_id, results)
@@ -354,6 +400,30 @@ class KillSwitchService:
         baskets_coord: Any | None,
     ) -> bool:
         """Flatten a single position with bounded concurrency and EMERGENCY_FLATTEN intent mode."""
+        from app.services import flatten_inflight
+
+        key = flatten_inflight.ledger_key(account_id, pos.trade_id)
+        if not await flatten_inflight.try_acquire(key):
+            logger.info(
+                "Kill-switch flatten skipped; already flattening account_id=%s trade_id=%s",
+                account_id,
+                pos.trade_id,
+            )
+            return True
+        try:
+            return await self._flatten_single_position_locked(
+                account_id, ibkr_account, pos, baskets_coord
+            )
+        finally:
+            await flatten_inflight.release(key)
+
+    async def _flatten_single_position_locked(
+        self,
+        account_id: int,
+        ibkr_account: str,
+        pos: PositionModel,
+        baskets_coord: Any | None,
+    ) -> bool:
         async with self._semaphore:
             legs: list[OrderLeg] = []
 
@@ -367,7 +437,6 @@ class KillSwitchService:
                         side=side,
                         quantity=qty,
                         price=Decimal(0),
-                        contract_month="202612",
                         instrument_type=pos.leg_a_instrument_type or "STK",
                         leg_index=0,
                     )
@@ -383,7 +452,6 @@ class KillSwitchService:
                         side=side,
                         quantity=qty,
                         price=Decimal(0),
-                        contract_month="202612",
                         instrument_type=pos.leg_b_instrument_type or "STK",
                         leg_index=1,
                     )
@@ -393,7 +461,7 @@ class KillSwitchService:
                 return True
 
             close_intent = OrderIntent(
-                signal_id=f"KILLSWITCH-{pos.trade_id}-{uuid4().hex[:6]}",
+                signal_id=f"KILLSWITCH-{pos.trade_id}",
                 strategy_id=pos.strategy_id,
                 action=OrderAction.CLOSE,
                 legs=legs,
@@ -433,9 +501,19 @@ class KillSwitchService:
                                     from app.services.model_blue.persistence import (
                                         _commission_from_orders,
                                         _exit_marks_from_orders,
+                                        _filled_qty_by_symbol,
+                                        assert_close_qty_matches_open,
                                     )
                                     exit_marks = _exit_marks_from_orders(fill_orders)
                                     comm = _commission_from_orders(fill_orders)
+                                    assert_close_qty_matches_open(
+                                        trade_id=pos.trade_id,
+                                        leg_a_symbol=p_row.leg_a_symbol,
+                                        leg_a_signed_qty=p_row.leg_a_signed_qty,
+                                        leg_b_symbol=p_row.leg_b_symbol,
+                                        leg_b_signed_qty=p_row.leg_b_signed_qty,
+                                        filled_by_symbol=_filled_qty_by_symbol(fill_orders),
+                                    )
                                     await pos_repo.close_trade(
                                         pos.trade_id,
                                         account_id=account_id,
@@ -460,6 +538,9 @@ class KillSwitchService:
                                         account_id,
                                         pos.trade_id,
                                     )
+                                    live = getattr(self._order_manager, "_live_pnl", None)
+                                    if live is not None:
+                                        live.unwatch(account_id, pos.trade_id)
                     return success
                 except Exception:
                     logger.exception("Failed to execute position reduction for trade_id=%s", pos.trade_id)
@@ -482,16 +563,58 @@ class KillSwitchService:
                 pos_orders = await order_repo.list_by_trade_id(pos.trade_id)
                 close_orders = [
                     o for o in pos_orders
-                    if "KILLSWITCH-" in (o.internal_order_id or "") or ":CLOSE" in (o.internal_order_id or "")
+                    if (
+                        "KILLSWITCH-" in (o.internal_order_id or "")
+                        or ":CLOSE" in (o.internal_order_id or "")
+                    )
+                    and not getattr(o, "is_compensation", False)
+                    and ":UNWIND:" not in (o.internal_order_id or "")
                 ]
                 if close_orders:
                     filled_close = [o for o in close_orders if o.status == "FILLED"]
                     req_legs = 2 if pos.leg_b_symbol else 1
                     if len(filled_close) >= req_legs:
                         exit_marks = {}
+                        filled_by_symbol: dict[str, Decimal] = {}
                         for co in filled_close:
-                            if co.fill_price is not None:
+                            if co.fill_price is not None and co.symbol:
                                 exit_marks[co.symbol] = Decimal(str(co.fill_price))
+                            qty = Decimal(str(
+                                getattr(co, "fill_qty", None)
+                                or getattr(co, "filled_quantity", None)
+                                or 0
+                            ))
+                            if co.symbol and qty > 0:
+                                filled_by_symbol[co.symbol] = (
+                                    filled_by_symbol.get(co.symbol, Decimal(0)) + qty
+                                )
+                        needed = [s for s in (pos.leg_a_symbol, pos.leg_b_symbol) if s]
+                        if any(symbol not in exit_marks for symbol in needed):
+                            logger.warning(
+                                "INCOMPLETE_EXIT_MARKS: skip KS reconcile close trade_id=%s missing=%s",
+                                pos.trade_id,
+                                [s for s in needed if s not in exit_marks],
+                            )
+                            continue
+                        from app.services.model_blue.parser import (
+                            ModelBlueValidationError,
+                        )
+                        from app.services.model_blue.persistence import (
+                            assert_close_qty_matches_open,
+                        )
+
+                        try:
+                            assert_close_qty_matches_open(
+                                trade_id=pos.trade_id,
+                                leg_a_symbol=pos.leg_a_symbol,
+                                leg_a_signed_qty=pos.leg_a_signed_qty,
+                                leg_b_symbol=pos.leg_b_symbol,
+                                leg_b_signed_qty=pos.leg_b_signed_qty,
+                                filled_by_symbol=filled_by_symbol,
+                            )
+                        except ModelBlueValidationError as exc:
+                            logger.warning("Skip KS reconcile close: %s", exc)
+                            continue
                         await pos_repo.close_trade(
                             pos.trade_id,
                             account_id=account_id,

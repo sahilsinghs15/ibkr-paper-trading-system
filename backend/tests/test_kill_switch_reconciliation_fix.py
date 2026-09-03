@@ -28,13 +28,6 @@ from app.rms.models import OrderSide as RMSOrderSide
 from app.services.kill_switch import KillSwitchService
 
 
-@pytest.fixture
-async def session_factory():
-    from app.db.session import AsyncSessionLocal, engine
-    yield AsyncSessionLocal
-    await engine.dispose()
-
-
 @pytest.mark.asyncio
 async def test_kill_switch_full_close_persists_closed_at_and_completes_op(
     session_factory: async_sessionmaker[AsyncSession],

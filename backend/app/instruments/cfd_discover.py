@@ -130,7 +130,7 @@ async def discover_and_upsert_cfd(
 
     contract = cfd_search_contract(sym, exchange=market, currency=currency)
     req_async = getattr(client, "request_contract_details_async", None)
-    if callable(req_async):
+    if asyncio.iscoroutinefunction(req_async):
         details = await req_async(contract, timeout=timeout)
     else:
         details = await asyncio.to_thread(client.request_contract_details, contract, timeout=timeout)

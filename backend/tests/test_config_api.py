@@ -43,8 +43,20 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]
             new_callable=AsyncMock,
         ),
         patch(
-            "app.services.order_manager.OrderManager.hydrate_live_pnl",
-            return_value=None,
+            "app.services.order_manager.OrderManager.reload_margin_rates",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.margin_scanner.MarginScanner.start_background",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.margin_scanner.MarginScanner.stop",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.critical_recovery.CriticalRecoveryService.enqueue_all_critical",
+            new_callable=AsyncMock,
         ),
         TestClient(app) as c,
     ):
@@ -164,6 +176,43 @@ def test_execution_settings_reject_window_lt_interval(client: TestClient) -> Non
         json={"retry_interval_sec": 10, "retry_window_sec": 5},
     )
     assert res.status_code == 400
+
+
+def test_margin_settings_roundtrip(client: TestClient) -> None:
+    res = client.get("/api/v1/config/margin")
+    assert res.status_code == 200
+    body = res.json()
+    assert "check_enabled" in body
+    assert body["comfort_ratio"] is not None
+    empty = client.patch("/api/v1/config/margin", json={})
+    assert empty.status_code == 400
+    invalid = client.patch("/api/v1/config/margin", json={"comfort_ratio": "1.5"})
+    assert invalid.status_code == 400
+    enabled = client.patch("/api/v1/config/margin", json={"check_enabled": True})
+    assert enabled.status_code == 200
+    assert enabled.json()["check_enabled"] is True
+    patch = client.patch(
+        "/api/v1/config/margin",
+        json={"check_enabled": False, "comfort_ratio": "0.75", "confirm_borderline": False},
+    )
+    assert patch.status_code == 200
+    assert patch.json()["comfort_ratio"] in ("0.7500", "0.75")
+    assert client.app.state.order_manager._rms_context.margin_policy.comfort_ratio == Decimal(
+        "0.75"
+    )
+    again = client.get("/api/v1/config/margin")
+    assert again.json()["confirm_borderline"] is False
+    restore = client.patch(
+        "/api/v1/config/margin",
+        json={"check_enabled": True, "comfort_ratio": "0.80", "confirm_borderline": True},
+    )
+    assert restore.status_code == 200
+    assert restore.json()["check_enabled"] is True
+
+
+def test_margin_accounts_503_when_gateway_down(client: TestClient) -> None:
+    res = client.get("/api/v1/margin/accounts")
+    assert res.status_code == 503
 
 
 def test_create_account_api(client: TestClient) -> None:
@@ -366,5 +415,28 @@ async def test_delete_account_cleans_kill_switch_operations_and_cache(
     assert is_account_kill_switch_active(id_a) is False
     # Account B must remain active
     assert is_account_kill_switch_active(id_b) is True
+
+
+def test_patch_allocation_pair_pct_only(client: TestClient, seeded_config: dict) -> None:
+    res = client.patch(
+        f"/api/v1/config/allocations/{seeded_config['allocation_id']}",
+        json={"pair_max_allocation_pct": "0.20"},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert Decimal(body["pair_max_allocation_pct"]) == Decimal("0.20")
+
+
+def test_create_allocation_invalid_pair_pct(client: TestClient, seeded_config: dict) -> None:
+    res = client.post(
+        f"/api/v1/config/accounts/{seeded_config['account_id']}/allocations",
+        json={
+            "strategy_id": f"STRAT_{uuid.uuid4().hex[:8]}",
+            "alloc_pct": 0.10,
+            "pair_max_allocation_pct": 0,
+        },
+    )
+    assert res.status_code == 422
+
 
 

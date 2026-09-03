@@ -1,9 +1,8 @@
-"""Prune raw TradingView webhook capture files.
+"""Prune the temporary incoming_signals.csv webhook dump.
 
-Every webhook writes a JSON capture under ``backend/data/tradingview_webhooks/``
-(see ``app/api/routes/webhooks.py``). Nothing deletes them, so the directory grows
-for the life of the host. Captures are a debugging aid only -- the durable record
-of a signal is Postgres (``signals``, ``signal_jobs``), so pruning is safe.
+Durable webhook authority is Postgres ``signal_jobs.capture_data``.
+JSON ``webhook_*.json`` files are no longer written. The only file this
+directory may still grow is the TEMPORARY CSV dump.
 
 Dry run is the default; pass --apply to actually delete.
 
@@ -25,12 +24,13 @@ logger = logging.getLogger("prune_webhook_captures")
 # Mirrors WEBHOOK_CAPTURE_DIR in app/api/routes/webhooks.py.
 CAPTURE_DIR = Path(__file__).resolve().parents[1] / "data" / "tradingview_webhooks"
 DEFAULT_RETENTION_DAYS = 14
+_PRUNE_NAMES = ("incoming_signals.csv",)
 
 
 def prune(
     capture_dir: Path, retention_days: int, apply: bool
 ) -> tuple[int, int, int]:
-    """Delete captures older than the retention window.
+    """Delete aged CSV dumps. JSON webhook captures are no longer written.
 
     Returns (scanned, matched, bytes_freed). With apply=False nothing is removed.
     """
@@ -43,7 +43,10 @@ def prune(
     matched = 0
     freed = 0
 
-    for path in capture_dir.glob("webhook_*.json"):
+    for name in _PRUNE_NAMES:
+        path = capture_dir / name
+        if not path.is_file():
+            continue
         scanned += 1
         try:
             stat = path.stat()
@@ -89,7 +92,8 @@ def main() -> int:
     scanned, matched, freed = prune(args.dir, args.days, args.apply)
     verb = "Deleted" if args.apply else "Would delete"
     logger.info(
-        "%s %d of %d capture file(s) older than %d day(s), freeing %.1f MB from %s",
+        "%s %d of %d capture file(s) older than %d day(s), freeing %.1f MB from %s. "
+        "Durable payload is signal_jobs.capture_data.",
         verb,
         matched,
         scanned,

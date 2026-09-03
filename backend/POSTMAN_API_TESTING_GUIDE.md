@@ -1,3 +1,5 @@
+> **STALE — do not follow.** This document describes MockBroker, `BROKER_MODE`, and HTTP routes that do not exist. Use [`docs/backend-api.md`](../docs/backend-api.md) for the live inventory.
+
 # Postman API Testing Guide — IBKR Paper Trading System
 
 **Backend Version:** 0.1.0  

@@ -1,6 +1,6 @@
 """Basket row access. No sizing or IBKR calls."""
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -141,3 +141,34 @@ class BasketRepository:
             row.state = state
         await self._session.flush()
         return row
+
+    async def reap_stale_executing(self, *, older_than_sec: float = 120.0) -> int:
+        """Escalate aged EXECUTING baskets with no fills (M16)."""
+        from app.db.models.order import OrderModel
+
+        cutoff = datetime.now(UTC) - timedelta(seconds=older_than_sec)
+        result = await self._session.execute(
+            select(BasketModel).where(
+                BasketModel.state == BasketState.EXECUTING.value,
+                BasketModel.updated_at < cutoff,
+            )
+        )
+        escalated = 0
+        for row in list(result.scalars().all()):
+            fills = await self._session.execute(
+                select(func.coalesce(func.sum(OrderModel.fill_qty), 0)).where(
+                    OrderModel.basket_id == row.id
+                )
+            )
+            total_filled = fills.scalar_one()
+            if total_filled and float(total_filled) > 0:
+                continue
+            row.state = BasketState.CRITICAL.value
+            row.recovery_status = "REAPED"
+            row.recovery_detail = (
+                f"Aged EXECUTING with no fills for {older_than_sec:.0f}s"
+            )
+            escalated += 1
+        if escalated:
+            await self._session.flush()
+        return escalated

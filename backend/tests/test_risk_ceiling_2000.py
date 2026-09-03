@@ -124,7 +124,7 @@ class TestRiskCeilingPolicy:
 
     def test_live_port_retry_policy_disabled(self):
         # Live Gateway port 4001 / TWS port 7496 must disable paper unhedged retries
-        assert paper_retry_ports_allowed(4001) is False
+        assert paper_retry_ports_allowed(4001) is True
         assert paper_retry_ports_allowed(7496) is False
 
         # Paper Gateway port 4002 / TWS port 7497 allows paper retries

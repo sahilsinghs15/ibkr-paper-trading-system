@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -12,12 +13,14 @@ from ibapi.contract import Contract  # type: ignore[import-untyped]
 from ibapi.order import Order as IBOrder  # type: ignore[import-untyped]
 
 from app.broker.ibkr.gateway_rate_limiter import (
+    PRIORITY_DIAGNOSTIC,
     PRIORITY_EMERGENCY_FLATTEN,
     PRIORITY_ORDER_EXECUTION,
     GatewayPacingTimeout,
     GatewayRateLimiter,
 )
 from app.broker.ibkr.tws_client import TWSClient
+from app.core.config import get_settings
 from app.instruments.models import InstrumentResolutionError
 from app.instruments.resolver import ibkr_contract_from_resolved
 from app.oms.models import (
@@ -28,10 +31,25 @@ from app.oms.models import (
     executions_weighted_average,
 )
 from app.rms.models import ExecutionIntentMode, OrderSide
+from app.services.account_margin import parse_ibkr_number
 
 logger = logging.getLogger(__name__)
 
 _MAX_SANE_PRICE = 1e12
+
+
+@dataclass(frozen=True)
+class WhatIfResult:
+    """Parsed orderState from a what-if placeOrder. unknown means inf/timeout."""
+
+    order_id: int
+    unknown: bool
+    init_margin_change: Decimal | None = None
+    maint_margin_change: Decimal | None = None
+    init_margin_after: Decimal | None = None
+    commission: Decimal | None = None
+    warning_text: str | None = None
+    rate: Decimal | None = None
 
 
 def _usable_price(raw: float, fallback: Decimal | None = None) -> Decimal | None:
@@ -91,6 +109,9 @@ class IBKRExecutionAdapter:
         self._commissioned_exec_ids: set[str] = set()
         self._pending_commissions: dict[str, Any] = {}
         self._partial_qty_emitted: dict[str, float] = {}
+        self._whatif_pending: dict[
+            int, tuple[asyncio.Future[WhatIfResult], asyncio.AbstractEventLoop]
+        ] = {}
 
         # Register self as TWSClient listener
         self._client.register_listener(self)
@@ -179,11 +200,22 @@ class IBKRExecutionAdapter:
 
     def _get_next_tws_order_id(self) -> int:
         """Reserve and increment the next valid order ID from TWS under lock."""
+        allocate = getattr(self._client, "allocate_next_order_id", None)
+        if callable(allocate):
+            try:
+                value = allocate()
+            except RuntimeError:
+                raise
+            except Exception:
+                value = None
+            if isinstance(value, int):
+                return value
         with self._lock:
             current_id = self._client.next_order_id
             if current_id is None:
-                current_id = 1
-                self._client.next_order_id = 1
+                raise RuntimeError(
+                    "TWS next_order_id unavailable; refusing to mint order id 1"
+                )
             self._client.next_order_id = current_id + 1
             return current_id
 
@@ -242,7 +274,125 @@ class IBKRExecutionAdapter:
             order.error_message = "Gateway pacing timeout"
             return False
 
-    async def submit_order(self, order: OMSOrder) -> OMSOrder:
+    @staticmethod
+    def _parse_whatif_state(
+        order_id: int, orderState: Any, *, quantity: float, price: Decimal
+    ) -> WhatIfResult:
+        init_change = parse_ibkr_number(getattr(orderState, "initMarginChange", None))
+        maint_change = parse_ibkr_number(getattr(orderState, "maintMarginChange", None))
+        init_after = parse_ibkr_number(getattr(orderState, "initMarginAfter", None))
+        commission = parse_ibkr_number(getattr(orderState, "commission", None))
+        warning = getattr(orderState, "warningText", None)
+        warning_text = str(warning) if warning else None
+        unknown = init_change is None
+        rate = None
+        notional = Decimal(str(quantity)) * abs(price)
+        if init_change is not None and notional > 0:
+            rate = abs(init_change) / notional
+        return WhatIfResult(
+            order_id=order_id,
+            unknown=unknown,
+            init_margin_change=init_change,
+            maint_margin_change=maint_change,
+            init_margin_after=init_after,
+            commission=commission,
+            warning_text=warning_text,
+            rate=rate,
+        )
+
+    def _resolve_whatif(self, order_id: int, result: WhatIfResult) -> None:
+        with self._lock:
+            waiter = self._whatif_pending.pop(order_id, None)
+        if waiter is None:
+            return
+        future, loop = waiter
+        if not future.done():
+            loop.call_soon_threadsafe(future.set_result, result)
+
+    def _fail_whatif(self, order_id: int, exc: BaseException) -> None:
+        with self._lock:
+            waiter = self._whatif_pending.pop(order_id, None)
+        if waiter is None:
+            return
+        future, loop = waiter
+        if not future.done():
+            loop.call_soon_threadsafe(future.set_exception, exc)
+
+    async def probe_margin(
+        self,
+        *,
+        contract: Contract,
+        side: str,
+        quantity: Decimal | float,
+        price: Decimal,
+        ibkr_account: str,
+        timeout: float | None = None,
+    ) -> WhatIfResult:
+        """Run a what-if credit check. Burns a real orderId. Never transmits."""
+        settings = get_settings()
+        if not settings.margin_whatif_enabled:
+            logger.info("probe_margin skipped: MARGIN_WHATIF_ENABLED=false")
+            return WhatIfResult(order_id=0, unknown=True)
+
+        if not self.is_connected():
+            raise ConnectionError("Cannot probe margin: TWS is not connected.")
+
+        wait_timeout = (
+            float(timeout)
+            if timeout is not None
+            else float(settings.margin_whatif_timeout_sec)
+        )
+        if self._rate_limiter is not None:
+            await self._rate_limiter.acquire(PRIORITY_DIAGNOSTIC, "whatIfOrder")
+
+        tws_order_id = self._get_next_tws_order_id()
+        ib_order = IBOrder()
+        ib_order.action = "BUY" if str(side).upper() == "BUY" else "SELL"
+        ib_order.totalQuantity = float(quantity)
+        ib_order.orderType = "LMT"
+        ib_order.lmtPrice = float(price)
+        ib_order.transmit = True
+        ib_order.whatIf = True
+        ib_order.eTradeOnly = False
+        ib_order.firmQuoteOnly = False
+        ib_order.account = ibkr_account
+
+        assert ib_order.whatIf is True, "whatIf flag dropped; refusing live placeOrder"
+        logger.info(
+            "whatIf probe: order_id=%s account=%s action=%s qty=%s price=%s symbol=%s",
+            tws_order_id,
+            ibkr_account,
+            ib_order.action,
+            ib_order.totalQuantity,
+            ib_order.lmtPrice,
+            getattr(contract, "symbol", None),
+        )
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[WhatIfResult] = loop.create_future()
+        with self._lock:
+            self._whatif_pending[tws_order_id] = (future, loop)
+        self._client.register_request_id(tws_order_id, "what_if")
+
+        try:
+            self._client.placeOrder(tws_order_id, contract, ib_order)
+            result = await asyncio.wait_for(future, timeout=wait_timeout)
+            return result
+        except TimeoutError:
+            with self._lock:
+                self._whatif_pending.pop(tws_order_id, None)
+            logger.warning("whatIf probe timed out order_id=%s", tws_order_id)
+            return WhatIfResult(order_id=tws_order_id, unknown=True)
+        finally:
+            try:
+                self._client.cancelOrder(tws_order_id)
+            except Exception:
+                logger.exception("cancelOrder after whatIf failed order_id=%s", tws_order_id)
+            unregister = getattr(self._client, "unregister_request_id", None)
+            if callable(unregister):
+                unregister(tws_order_id)
+
+    async def submit_order(self, order: OMSOrder, *, before_place=None) -> OMSOrder:
         """Submit internal OMSOrder to IBKR TWS API."""
         if not self.is_connected():
             order.status = OMSOrderStatus.ERROR
@@ -275,6 +425,9 @@ class IBKRExecutionAdapter:
             self._tws_id_to_internal_id[tws_order_id] = order.internal_order_id
 
         self._client.register_request_id(tws_order_id, "order")
+
+        if before_place is not None:
+            await before_place(order)
 
         logger.info(
             "Submitting order to IBKR TWS: internal_id=%s, tws_id=%d, symbol=%s, "
@@ -318,8 +471,120 @@ class IBKRExecutionAdapter:
             self._orders_by_internal_id[order.internal_order_id] = order
             if order.ibkr_order_id is not None:
                 tws_id = int(order.ibkr_order_id)
-                self._orders_by_tws_id[tws_id] = order
-                self._tws_id_to_internal_id[tws_id] = order.internal_order_id
+                self._bind_tws_id_locked(order, tws_id)
+
+    def _bind_tws_id_locked(self, order: OMSOrder, tws_id: int) -> None:
+        old_id = order.ibkr_order_id
+        if old_id is not None and int(old_id) != tws_id:
+            self._orders_by_tws_id.pop(int(old_id), None)
+            self._tws_id_to_internal_id.pop(int(old_id), None)
+        order.ibkr_order_id = tws_id
+        self._orders_by_tws_id[tws_id] = order
+        self._tws_id_to_internal_id[tws_id] = order.internal_order_id
+
+    def _unmapped_adopted_orders_locked(self) -> list[OMSOrder]:
+        mapped_internal = {
+            o.internal_order_id for o in self._orders_by_tws_id.values()
+        }
+        return [
+            o
+            for o in self._orders_by_internal_id.values()
+            if o.internal_order_id not in mapped_internal
+            and o.status not in self._TERMINAL_STATUSES
+        ]
+
+    @staticmethod
+    def _normalize_broker_side(raw: str | None) -> str | None:
+        if not raw:
+            return None
+        upper = str(raw).strip().upper()
+        if upper in ("BOT", "BUY"):
+            return "BUY"
+        if upper in ("SLD", "SELL"):
+            return "SELL"
+        return upper
+
+    def _order_con_id(self, order: OMSOrder) -> int | None:
+        resolved = getattr(order, "resolved", None)
+        if resolved is not None and getattr(resolved, "con_id", None) is not None:
+            return int(resolved.con_id)
+        legs = getattr(order.intent, "legs", None) or []
+        idx = order.leg_index if order.leg_index is not None else 0
+        if 0 <= idx < len(legs) and legs[idx].con_id is not None:
+            return int(legs[idx].con_id)
+        return None
+
+    def _resolve_order_for_tws_callback_locked(
+        self,
+        tws_id: int,
+        *,
+        perm_id: int | None = None,
+        contract: Any = None,
+        side: str | None = None,
+        qty: float | None = None,
+    ) -> OMSOrder | None:
+        """Match unknown TWS orderId to an adopted OMS order (M17)."""
+        existing = self._orders_by_tws_id.get(tws_id)
+        if existing is not None:
+            return existing
+
+        if perm_id:
+            for order in self._orders_by_internal_id.values():
+                if order.perm_id == int(perm_id):
+                    self._bind_tws_id_locked(order, tws_id)
+                    logger.info(
+                        "Adopted tws_id=%d onto internal_id=%s via permId=%d",
+                        tws_id,
+                        order.internal_order_id,
+                        perm_id,
+                    )
+                    return order
+
+        con_id = getattr(contract, "conId", None) if contract is not None else None
+        norm_side = self._normalize_broker_side(side)
+        if con_id and norm_side and qty is not None:
+            candidates: list[OMSOrder] = []
+            for order in self._unmapped_adopted_orders_locked():
+                order_con = self._order_con_id(order)
+                if order_con != int(con_id):
+                    continue
+                if order.side.value.upper() != norm_side:
+                    continue
+                if abs(float(order.quantity) - float(qty)) > 1e-6:
+                    continue
+                candidates.append(order)
+            if len(candidates) == 1:
+                order = candidates[0]
+                self._bind_tws_id_locked(order, tws_id)
+                logger.info(
+                    "Adopted tws_id=%d onto internal_id=%s via (conId=%s, side=%s, qty=%s)",
+                    tws_id,
+                    order.internal_order_id,
+                    con_id,
+                    norm_side,
+                    qty,
+                )
+                return order
+            if len(candidates) > 1:
+                logger.warning(
+                    "Ambiguous tws_id=%d: %d orders match (conId=%s, side=%s, qty=%s)",
+                    tws_id,
+                    len(candidates),
+                    con_id,
+                    norm_side,
+                    qty,
+                )
+                return None
+
+        logger.warning(
+            "Unmapped broker callback tws_id=%d permId=%s conId=%s side=%s qty=%s",
+            tws_id,
+            perm_id,
+            con_id,
+            norm_side,
+            qty,
+        )
+        return None
 
     def fetch_broker_order_snapshot(self) -> bool:
         """Ask TWS for open orders. Returns False if broker state cannot be requested."""
@@ -464,10 +729,16 @@ class IBKRExecutionAdapter:
 
         if filled > 0 and remaining > 0:
             order.status = OMSOrderStatus.PARTIALLY_FILLED
-        elif filled >= order.quantity or mapped_status == OMSOrderStatus.FILLED:
+        elif filled >= order.quantity or (
+            mapped_status == OMSOrderStatus.FILLED and filled > 0
+        ):
             order.status = OMSOrderStatus.FILLED
             if order.timestamps.execution_received_at is None:
                 order.timestamps.execution_received_at = now or datetime.now(UTC)
+        elif mapped_status == OMSOrderStatus.FILLED:
+            # Qty-less Filled stays SUBMITTED / PARTIALLY_FILLED until a real fill lands.
+            if order.status == OMSOrderStatus.PENDING:
+                order.status = OMSOrderStatus.SUBMITTED
         else:
             order.status = mapped_status
 
@@ -501,8 +772,15 @@ class IBKRExecutionAdapter:
     ) -> None:
         """Handle orderStatus callback from TWSClient."""
         now = datetime.now(UTC)
+        qty_filled = float(filled)
+        qty_remaining = float(remaining)
         with self._lock:
-            order = self._orders_by_tws_id.get(orderId)
+            order = self._resolve_order_for_tws_callback_locked(
+                orderId,
+                perm_id=int(permId) if permId else None,
+                side=None,
+                qty=(qty_filled + qty_remaining) if (qty_filled or qty_remaining) else None,
+            )
             if not order:
                 return
 
@@ -512,8 +790,6 @@ class IBKRExecutionAdapter:
                 order.perm_id = int(permId)
 
             mapped_status = self._map_ib_status(status)
-            qty_filled = float(filled)
-            qty_remaining = float(remaining)
 
             derived = executions_weighted_average(order.executions)
             avg = _usable_price(avgFillPrice, fallback=order.limit_price)
@@ -597,6 +873,15 @@ class IBKRExecutionAdapter:
         orderState: Any,
     ) -> None:
         """Handle openOrder: apply broker orderState.status onto the existing OMSOrder."""
+        with self._lock:
+            whatif_waiter = self._whatif_pending.get(orderId)
+        if whatif_waiter is not None:
+            qty = float(getattr(order, "totalQuantity", 0) or 0)
+            price = Decimal(str(getattr(order, "lmtPrice", 0) or 0))
+            result = self._parse_whatif_state(orderId, orderState, quantity=qty, price=price)
+            self._resolve_whatif(orderId, result)
+            return
+
         raw_status = str(getattr(orderState, "status", "") or "")
         if not raw_status:
             return
@@ -605,13 +890,21 @@ class IBKRExecutionAdapter:
         kinds: list[str] = []
         captured = None
         with self._lock:
-            oms_order = self._orders_by_tws_id.get(orderId)
+            perm_id = getattr(order, "permId", None) or None
+            qty = float(getattr(order, "totalQuantity", 0) or 0)
+            side = getattr(order, "action", None)
+            oms_order = self._resolve_order_for_tws_callback_locked(
+                orderId,
+                perm_id=int(perm_id) if perm_id else None,
+                contract=contract,
+                side=str(side) if side else None,
+                qty=qty if qty > 0 else None,
+            )
             if not oms_order:
-                logger.debug(
-                    "Ignoring openOrder for unknown tws_id=%s (no duplicate OMS order created)",
-                    orderId,
-                )
                 return
+
+            if perm_id:
+                oms_order.perm_id = int(perm_id)
 
             if oms_order.timestamps.order_status_received_at is None:
                 oms_order.timestamps.order_status_received_at = now
@@ -645,7 +938,16 @@ class IBKRExecutionAdapter:
         kinds: list[str] = []
         captured = None
         with self._lock:
-            order = self._orders_by_tws_id.get(tws_order_id)
+            match_qty = float(getattr(execution, "shares", 0) or 0)
+            side_raw = getattr(execution, "side", None)
+            perm_id = getattr(execution, "permId", None)
+            order = self._resolve_order_for_tws_callback_locked(
+                tws_order_id,
+                perm_id=int(perm_id) if perm_id else None,
+                contract=contract,
+                side=str(side_raw) if side_raw else None,
+                qty=match_qty if match_qty > 0 else None,
+            )
             if not order:
                 return
 
@@ -677,10 +979,12 @@ class IBKRExecutionAdapter:
             if avg_price is not None:
                 order.average_fill_price = avg_price
 
-            if order.filled_quantity >= order.quantity:
-                order.status = OMSOrderStatus.FILLED
-            elif order.filled_quantity > 0:
-                order.status = OMSOrderStatus.PARTIALLY_FILLED
+            was_terminal = order.status in self._TERMINAL_STATUSES
+            if not was_terminal:
+                if order.filled_quantity >= order.quantity:
+                    order.status = OMSOrderStatus.FILLED
+                elif order.filled_quantity > 0:
+                    order.status = OMSOrderStatus.PARTIALLY_FILLED
 
             side = str(getattr(execution, "side", "") or order.side.value)
             if side.upper() in ("BOT", "BUY"):
@@ -800,6 +1104,17 @@ class IBKRExecutionAdapter:
         """Handle TWS error callback."""
         if errorCode == 100 and self._rate_limiter is not None:
             self._rate_limiter.notify_error_100()
+        with self._lock:
+            waiter = self._whatif_pending.get(reqId)
+        if waiter is not None:
+            logger.warning(
+                "whatIf probe error order_id=%s code=%s msg=%s",
+                reqId,
+                errorCode,
+                errorString,
+            )
+            self._resolve_whatif(reqId, WhatIfResult(order_id=reqId, unknown=True))
+            return
         # Check if error corresponds to an active order
         req_type = self._client.get_request_type(reqId)
         with self._lock:
@@ -868,4 +1183,19 @@ class IBKRExecutionAdapter:
                 ):
                     order.status = OMSOrderStatus.ERROR
                     order.error_message = "Connection closed unexpectedly"
-                    self._notify_future_if_terminal(order)
+                    # Park waiters; do not resolve as terminal or compensate.
+
+    def on_connection_restored(self) -> None:
+        """Unpark disconnected orders and re-request broker snapshots (M17/M34)."""
+        logger.info("IBKRExecutionAdapter connection restored; adopting live orders")
+        with self._lock:
+            for order in self._orders_by_internal_id.values():
+                if order.status == OMSOrderStatus.ERROR and (
+                    order.error_message or ""
+                ).startswith("Connection closed"):
+                    order.status = OMSOrderStatus.SUBMITTED
+                    order.error_message = None
+        try:
+            self.fetch_broker_order_snapshot()
+        except Exception:
+            logger.exception("Failed to request broker snapshot after reconnect")

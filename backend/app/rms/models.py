@@ -7,8 +7,15 @@ from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from app.core.identifiers import (
+    normalize_signal_id,
+    normalize_strategy_id,
+    normalize_symbol,
+)
+
 if TYPE_CHECKING:
     from app.instruments.models import ResolvedInstrument
+    from app.services.account_margin import AccountMarginSnapshot
 
 
 class OrderAction(Enum):
@@ -54,7 +61,7 @@ class OrderLeg:
     side: OrderSide
     quantity: float
     price: Decimal
-    contract_month: str
+    contract_month: str | None = None
     con_id: int | None = None
     notional: Decimal | None = None
     instrument_type: str | None = None
@@ -100,27 +107,57 @@ class OrderIntent:
 
 def duplicate_lookup_key(intent: OrderIntent) -> tuple:
     """Account-scoped duplicate key when account_id is present."""
+    strategy_id = normalize_strategy_id(intent.strategy_id)
+    signal_id = normalize_signal_id(intent.signal_id)
     if intent.account_id is not None:
-        return (intent.account_id, intent.strategy_id, intent.signal_id)
-    return (intent.strategy_id, intent.signal_id)
+        return (intent.account_id, strategy_id, signal_id)
+    return (strategy_id, signal_id)
 
 
 def open_position_key(intent: OrderIntent) -> str | tuple[int, str]:
     """Account-scoped open-count key when account_id is present."""
+    strategy_id = normalize_strategy_id(intent.strategy_id)
     if intent.account_id is not None:
-        return (intent.account_id, intent.strategy_id)
-    return intent.strategy_id
+        return (intent.account_id, strategy_id)
+    return strategy_id
 
 
 def exposure_key(intent: OrderIntent, symbol: str) -> str | tuple[int, str]:
     """Account-scoped symbol exposure key when account_id is present."""
+    symbol_key = normalize_symbol(symbol)
     if intent.account_id is not None:
-        return (intent.account_id, symbol)
-    return symbol
+        return (intent.account_id, symbol_key)
+    return symbol_key
+
+
+def model_value_key(intent: OrderIntent) -> tuple[int, str] | None:
+    """Account-scoped model market-value key, or None when unaccounted."""
+    if intent.account_id is None:
+        return None
+    return (intent.account_id, normalize_strategy_id(intent.strategy_id))
 
 
 # Generic aliases: execution pipeline operates on List[TradeLeg], not leg_a/leg_b.
 TradeLeg = OrderLeg
+
+
+@dataclass(frozen=True)
+class MarginPolicy:
+    """Operator-tunable margin-gate policy, frozen onto RMSContext.
+
+    Checks stay pure: they read this dataclass, never get_settings().
+    """
+
+    check_enabled: bool = False
+    gate_basis: str = "available_funds"
+    min_free_buffer: Decimal = Decimal("0")
+    min_free_pct_of_netliq: Decimal = Decimal("0.05")
+    comfort_ratio: Decimal = Decimal("0.80")
+    confirm_borderline: bool = True
+    enforce_look_ahead: bool = True
+    reject_on_stale_snapshot: bool = True
+    default_rate: Decimal = Decimal("0.30")
+    rate_safety_multiplier: Decimal = Decimal("1.10")
 
 
 @dataclass(frozen=True)
@@ -153,6 +190,20 @@ class RMSContext:
         rollover_window_days: Days before contract month expiry during which rollover is active.
         target_rollover_month: Optional explicit next contract month string for rollover adjustments.
         rollover_checker: Optional custom callback to evaluate if a contract month is in rollover.
+        margin_snapshots: Latest AccountMarginSnapshot keyed by IBKR account code.
+        margin_commitments: Running (timestamp, amount) tally keyed by IBKR account.
+            Bridges the ~3 minute accountSummary gap; broker overwrites on refresh.
+        margin_rates: Directional rates keyed (symbol, instrument_type, side).
+        margin_rate_sources: WHAT_IF or DEFAULT for each rate key.
+        margin_policy: Frozen operator policy from margin_settings.
+        model_value_limit: Per (account_id, strategy_id) market-value ceiling
+            (total_margin * alloc_pct * market_value_utilisation_cap).
+            Refreshed from routing per signal.
+        model_value_used: Running sum of market value of that model's open
+            positions on that account. Seeded from `positions` at hydrate,
+            maintained in-process thereafter.
+        market_value_check_enabled: When False, check 101 passes everything
+            (shadow mode).
     """
 
     processed_signals: set[tuple] = field(default_factory=set)
@@ -162,6 +213,16 @@ class RMSContext:
     per_symbol_limits: dict[tuple[int, str], Decimal] = field(default_factory=dict)
     default_symbol_limits: dict[int, Decimal] = field(default_factory=dict)
     account_open_limits: dict[tuple[int, str], int] = field(default_factory=dict)
+    model_value_limit: dict[tuple[int, str], Decimal] = field(default_factory=dict)
+    model_value_used: dict[tuple[int, str], Decimal] = field(default_factory=dict)
+    market_value_check_enabled: bool = False
+    margin_snapshots: dict[str, "AccountMarginSnapshot"] = field(default_factory=dict)
+    margin_commitments: dict[str, list[tuple[datetime, Decimal]]] = field(
+        default_factory=dict
+    )
+    margin_rates: dict[tuple[str, str, str], Decimal] = field(default_factory=dict)
+    margin_rate_sources: dict[tuple[str, str, str], str] = field(default_factory=dict)
+    margin_policy: MarginPolicy = field(default_factory=MarginPolicy)
     current_time: datetime = field(default_factory=lambda: datetime.now(UTC))
     rollover_window_days: int = 7
     target_rollover_month: str | None = None

@@ -39,6 +39,7 @@ def test_safety_kill_switch_active_blocks():
                 MagicMock(status_code=200, json=lambda: {"accounts": [{"id": 1, "ibkr_account": "U123", "kill_switch_active": True}]}),
                 MagicMock(status_code=200, json=lambda: {"accounts": [{"ibkr_account": "U123"}]}),
                 MagicMock(status_code=200, json=lambda: {"incidents": []}),
+                MagicMock(status_code=200, json=lambda: {"accounts": []}),
             ])
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -60,6 +61,7 @@ def test_safety_baskets_critical_blocks():
                 MagicMock(status_code=200, json=lambda: {"accounts": [{"id": 1, "ibkr_account": "U123", "kill_switch_active": False}]}),
                 MagicMock(status_code=200, json=lambda: {"accounts": [{"ibkr_account": "U123"}]}),
                 MagicMock(status_code=200, json=lambda: {"incidents": [{"basket_id": 1}]}),
+                MagicMock(status_code=200, json=lambda: {"accounts": []}),
             ])
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -82,6 +84,7 @@ def test_safety_all_gates_healthy_passes():
                 MagicMock(status_code=200, json=lambda: {"accounts": [{"id": 1, "ibkr_account": "U123", "kill_switch_active": False}]}),
                 MagicMock(status_code=200, json=lambda: {"accounts": [{"ibkr_account": "U123"}]}),
                 MagicMock(status_code=200, json=lambda: {"incidents": []}),
+                MagicMock(status_code=200, json=lambda: {"accounts": []}),
             ])
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -186,3 +189,76 @@ def test_recovery_atomic_write():
         store.save({"backend": [datetime.now(UTC).isoformat(), datetime.now(UTC).isoformat()]} )
         data = json.loads(path.read_text())
         assert "backend" in data
+
+
+def test_margin_gate_below_floor_blocks():
+    s = WatchdogSettings(backend_host="127.0.0.1", backend_port=8001)
+    checker = SafetyGateChecker(s)
+
+    async def _run():
+        with patch("httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(
+                side_effect=[
+                    MagicMock(status_code=200, json=lambda: {"overall_status": "HEALTHY", "alerts": []}),
+                    MagicMock(
+                        status_code=200,
+                        json=lambda: {
+                            "accounts": [{"id": 1, "ibkr_account": "U123", "kill_switch_active": False}]
+                        },
+                    ),
+                    MagicMock(status_code=200, json=lambda: {"accounts": [{"ibkr_account": "U123"}]}),
+                    MagicMock(status_code=200, json=lambda: {"incidents": []}),
+                    MagicMock(
+                        status_code=200,
+                        json=lambda: {
+                            "accounts": [
+                                {
+                                    "ibkr_account": "U123",
+                                    "is_stale": False,
+                                    "effective_free_margin": "100",
+                                    "floor": "500",
+                                }
+                            ]
+                        },
+                    ),
+                ]
+            )
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
+            result = await checker.check()
+            assert result.passed is False
+            assert result.gates["margin"] == "UNSAFE"
+            assert any("margin UNSAFE" in f for f in result.failures)
+
+    asyncio.run(_run())
+
+
+def test_margin_gate_transport_failure_unknown_fail_closed():
+    s = WatchdogSettings(backend_host="127.0.0.1", backend_port=8001)
+    checker = SafetyGateChecker(s)
+
+    async def _run():
+        with patch("httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(
+                side_effect=[
+                    MagicMock(status_code=200, json=lambda: {"overall_status": "HEALTHY", "alerts": []}),
+                    MagicMock(
+                        status_code=200,
+                        json=lambda: {
+                            "accounts": [{"id": 1, "ibkr_account": "U123", "kill_switch_active": False}]
+                        },
+                    ),
+                    MagicMock(status_code=200, json=lambda: {"accounts": [{"ibkr_account": "U123"}]}),
+                    MagicMock(status_code=200, json=lambda: {"incidents": []}),
+                    MagicMock(status_code=503, json=lambda: {"detail": "TWS gateway is down."}),
+                ]
+            )
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
+            result = await checker.check()
+            assert result.passed is False
+            assert result.gates["margin"] == "UNKNOWN"
+
+    asyncio.run(_run())

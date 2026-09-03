@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Annotated
 
 import jwt
@@ -12,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import running_under_pytest
 from app.core.security import decode_access_token
 from app.db.models.user import UserModel
 from app.db.session import get_db_session
@@ -31,9 +33,6 @@ def get_oms(request: Request) -> OMSService:
 def get_order_manager(request: Request) -> OrderManager:
     """Retrieve the global OrderManager instance from application state."""
     return request.app.state.order_manager
-
-
-import os
 
 
 async def get_token_from_request(
@@ -64,7 +63,7 @@ async def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     if token is None:
-        if os.environ.get("TRADINGAPP_TESTING") == "1":
+        if os.environ.get("TRADINGAPP_TESTING") == "1" and running_under_pytest():
             return UserModel(
                 id=999999,
                 email="test_admin@example.com",

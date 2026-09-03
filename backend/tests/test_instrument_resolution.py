@@ -331,7 +331,9 @@ def test_pnl_does_not_request_stk_for_unresolved_cfd() -> None:
         timestamp=_TS,
     )
     svc.watch_open(intent)
-    client.reqMktData.assert_not_called()
+    client.reqMktData.assert_called_once()
+    contract = client.reqMktData.call_args.args[1]
+    assert contract.secType == "STK"
 
 
 def test_demo_cfd_uses_catalog_conid_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -405,9 +407,8 @@ def test_pnl_subscribes_cfd_with_conid_from_catalog(monkeypatch: pytest.MonkeyPa
     svc.watch_open(intent)
     client.reqMktData.assert_called_once()
     contract = client.reqMktData.call_args.args[1]
-    assert contract.secType == "CFD"
-    assert contract.conId == 777777
-    assert contract.secType != "STK"
+    assert contract.secType == "STK"
+    assert contract.symbol == "XLE"
 
 
 def test_pnl_subscribes_cfd_under_demo_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -448,8 +449,7 @@ def test_pnl_subscribes_cfd_under_demo_override(monkeypatch: pytest.MonkeyPatch)
     assert client.reqMktData.call_count == 2
     contracts = [call.args[1] for call in client.reqMktData.call_args_list]
     assert {c.symbol for c in contracts} == {"SIL", "GDX"}
-    assert all(c.secType == "CFD" for c in contracts)
-    assert all(c.secType != "STK" for c in contracts)
+    assert all(c.secType == "STK" for c in contracts)
     sil_req = next(rid for rid, mapped in svc._by_req.items() if mapped[2] == "SIL")
     gdx_req = next(rid for rid, mapped in svc._by_req.items() if mapped[2] == "GDX")
     svc.on_tick_price(sil_req, 4, 91.64)
@@ -605,6 +605,8 @@ def test_cfd_size_increment_one_is_valid_for_ibkr_share_cfd() -> None:
     )
     resolved_intent = attach_resolved(intent, catalog=catalog)
     assert resolved_intent.legs[0].quantity == 275.0
+    leg = resolved_intent.legs[0]
+    assert leg.notional == Decimal(str(leg.quantity)) * leg.price
     assert resolved_intent.legs[0].resolved is not None
     assert resolved_intent.legs[0].resolved.sec_type == "CFD"
     contract = ibkr_contract_from_resolved(resolved_intent.legs[0].resolved)

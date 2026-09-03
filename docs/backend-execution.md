@@ -39,8 +39,8 @@ ExecutionWorkerPool on trading app :8001 (background)
        → DatabaseStrategyAccountRouter.resolve(strategy_id)
        → asyncio.gather per AccountExecutionContext  (in-process; still one job)
             → kill-switch gate on OPEN
-            → ModelBlueStrategy.build_intent (sizer uses ctx.committed_notional)
-            → exposure_guard → RMSEngine.evaluate (checks 2, 3, 4, 7, 8)
+            → ModelBlueStrategy.build_intent (sizer uses ctx.pair_budget)
+            → exposure_guard → RMSEngine.evaluate (checks 1, 2, 3, 4, 7, 8, 101)
              → instrument resolve (catalog / paper STK→CFD; auto CFD conId discovery)
              → execution_claims.acquire (durable dedupe barrier, account-scoped key)
              → BasketCoordinator.execute
@@ -88,7 +88,7 @@ From `main.py` lifespan:
 2. Build adapter / OMS / OrderManager (+ DB capital, trade book, persistence, LivePnl).
 3. `order_manager.hydrate_runtime_from_db()` — RMS context, open positions, kill-switch cache, critical baskets, execution policy.
 4. `client.connect_and_start(...)` to `ibkr_host:ibkr_port` (the **only** IB session).
-5. On successful connect: `hydrate_live_pnl()`. On failure: lifespan logs that the adapter will “auto-reconnect on active traffic.” **`IBKRExecutionAdapter.submit_order` does not reconnect** — it raises `ConnectionError` if `not is_connected()`. `on_connection_closed` marks in-memory working orders `ERROR` without `reqOpenOrders`.
+5. On successful connect: `hydrate_live_pnl()`. On failure: lifespan logs that orders wait until the socket is up. `TWSClient` reconnects on `connectionClosed` (unless `_intentional_disconnect`). `next_order_id` is allocated under a lock and never defaults `None→1`. `on_connection_closed` parks in-memory working orders as `ERROR` **without** resolving fill waiters or compensating. Reconnect unparks disconnect-ERROR → `SUBMITTED`, `fetch_broker_order_snapshot`, adopts non-terminal `orders` rows, and resubscribes live P&L.
 6. Store `session_factory`, `client`, `ibkr_adapter`, `oms`, `order_manager` on `app.state`.
 7. `RecoveryManager.run_startup_recovery()` — reconcile stale jobs/claims.
 8. `ExecutionWorkerPool(worker_count=10).start()` → `app.state.worker_pool`.
@@ -142,14 +142,28 @@ Format: `%(asctime)s | %(levelname)-8s | %(name)s | %(trace)s | %(message)s` whe
 2. Intent: `ModelBlueStrategy._build_open_intent` / `_build_close_intent` set `OrderIntent.account_id` and `ibkr_account`.
 3. Broker: `IBKRExecutionAdapter._build_ibkr_order` copies `ib_order.account`. IBKR routes the order to that account **on the connected Gateway login**. There is no second `TWSClient`.
 
-One webhook → one `signal_jobs` row (`account_scope` left `NULL`) → worker → N-account fan-out. See [`backend-concurrency.md`](backend-concurrency.md).
+One webhook → N `signal_jobs` rows (one per routed `account_id`, `account_scope=str(account_id)`) → workers → per-account execute. See [`backend-concurrency.md`](backend-concurrency.md).
+
+## Model Blue sizing (weight-proportional)
+
+`pair_budget = total_margin × alloc_pct × pair_max_allocation_pct`, resolved by `DatabaseStrategyAccountRouter` onto `AccountExecutionContext.pair_budget`. The sizer does **not** invent a dollar amount.
+
+Rules in `services/model_blue/sizer.py`:
+
+- Exactly two legs; abs(weights) must sum to 1.0 (± `WEIGHT_SUM_TOLERANCE`). Malformed sums are rejected (`MODEL_BLUE_WEIGHT_SUM_INVALID`), not renormalised.
+- `leg_target = pair_budget × |weight|` for every leg. The first-leg-as-capital-anchor model is gone.
+- STK/ETF quantities are whole shares `ROUND_DOWN` so realised notional never exceeds the leg target.
+- Post-rounding, `_validate_realised_ratio` compares each leg's share of realised notional to its share of total weight (`PAIR_RATIO_TOLERANCE`, currently wide at 0.5 in Settings).
+- `MIN_ORDER_NOTIONAL` is a Settings field (default 100).
+
+Production OPEN always passes `pair_budget`. The no-account fallback treats committed capital as a pair budget and exists for tests only.
 
 ## Not on this path
 
 - No automatic target / stop / time_limit exit loop (columns may exist on allocations; no exit-trigger process).
 - Demo SSE UI (`demo_streaming`) is a **separate** process; it does not place orders.
 - Production pacing is `GatewayRateLimiter` (~30 msg/sec global, 24 normal, 6 emergency reserve for P0 flatten) on the **single** adapter (all accounts, including kill-switch). Covers `placeOrder`, `cancelOrder`, and `reqMktData` (P3 try_acquire).
-- No N-Gateway pool, no per-gateway limiter, no reconnect/failover — [`backend-multi-gateway.md`](backend-multi-gateway.md) (target, not as-is).
+- One Gateway socket (reconnect-on-drop is implemented on that socket; N-Gateway pool / per-gateway limiter / failover to a second host are not) — [`backend-multi-gateway.md`](backend-multi-gateway.md) (target, not as-is).
 
 ## Related docs
 

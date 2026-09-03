@@ -21,7 +21,7 @@ flowchart LR
     WORKERS --> RMS[RMS 2/3/4/7/8]
     RMS --> OMS[Basket OMS]
     OMS --> RL[GatewayRateLimiter<br/>30/24/6 msg/s]
-    RL --> TWS[TWS/Gateway :7497]
+    RL --> TWS[TWS/Gateway :4001]
     TWS --> IBKR[IBKR]
     PG -.-> DEMO[Demo :8010<br/>Bridge + SSE + Redis]
     DEMO --> FE[React PnL Dashboard]
@@ -50,10 +50,10 @@ flowchart LR
 
 | Component | Implementation | Doc |
 |-----------|---------------|-----|
-| Signal ingestion (HTTP 202, idempotency, disk capture) | `backend/app/api/routes/webhooks.py`, `backend/app/webhook_ingest.py` | [`backend-execution.md`](docs/backend-execution.md) |
+| Signal ingestion (HTTP 202, `signal_jobs.capture_data`) | `backend/app/api/routes/webhooks.py`, `backend/app/webhook_ingest.py` | [`backend-execution.md`](docs/backend-execution.md) |
 | Signal parsing (Model Blue parser/sizer) | `backend/app/services/model_blue/*`, `backend/app/services/strategies/*` | same |
 | Account routing / allocation | `backend/app/accounts/router.py` | [`backend-rms-oms.md`](docs/backend-rms-oms.md) |
-| RMS (checks 2/3/4/7/8) | `backend/app/rms/engine.py` | same |
+| RMS (checks 1/2/3/4/7/8/101) | `backend/app/rms/engine.py` | same |
 | OMS / BasketCoordinator (PENDING→EXECUTING→OPEN/CLOSED/COMPENSATED/CRITICAL/RECOVERED) | `backend/app/oms/coordinator.py` | same |
 | Execution adapter (IBKR contracts, `ib_order.account` tag) | `backend/app/oms/ibkr_adapter.py` | same |
 | TWS client + managedAccounts gate | `backend/app/broker/ibkr/tws_client.py` | same |
@@ -83,8 +83,8 @@ Application structure details: [`docs/backend-map.md`](docs/backend-map.md).
 | Topic | Doc |
 |-------|-----|
 | Gateway, IBC, TWS connection lifecycle, managedAccounts | [`docs/backend-rms-oms.md`](docs/backend-rms-oms.md) + [`docs/backend-map.md`](docs/backend-map.md) |
-| Order execution flow, pacing, retries (paper `{7497,4002}`) | [`docs/backend-rms-oms.md`](docs/backend-rms-oms.md) |
-| Paper vs live ports, STK→CFD override | [`docs/safety.md`](docs/safety.md) |
+| Order execution flow, pacing, remainder-retry gate | [`docs/backend-rms-oms.md`](docs/backend-rms-oms.md) |
+| Live Gateway 4001, STK→CFD (production Model Blue) | [`docs/safety.md`](docs/safety.md) |
 | Multi-gateway target architecture | [`docs/backend-multi-gateway.md`](docs/backend-multi-gateway.md) |
 
 ---
@@ -97,7 +97,7 @@ Application structure details: [`docs/backend-map.md`](docs/backend-map.md).
 | Redis (demo streaming only) | same |
 | Docker / `docker-compose.yml` | [`docs/EC2_OPERATIONS_GUIDE.md`](docs/EC2_OPERATIONS_GUIDE.md) |
 | EC2 + process supervisor (session window, health checks) | same + [`AGENTS.md`](AGENTS.md) |
-| Ports: ingest `8000`, trading `8001`, demo `8010`, postgres `5433→5432`, redis `6379`, IBKR `7497` | [`docs/safety.md`](docs/safety.md) |
+| Ports: ingest `8000`, trading `8001`, demo `8010`, postgres `5433→5432`, redis `6379`, IBKR `4001` | [`docs/safety.md`](docs/safety.md) |
 
 ---
 
@@ -139,8 +139,8 @@ Complete HTTP inventory verified from live routers — see [`docs/backend-api.md
 | Start ingest only | `uvicorn app.webhook_ingest:app --host 127.0.0.1 --port 8000` — [`AGENTS.md`](AGENTS.md) |
 | Start trading only | `uvicorn app.main:app --host 127.0.0.1 --port 8001` |
 | Start demo streaming | `python -m demo_streaming` → `:8010` |
-| Process supervisor (weekdays 09:30–16:00 ET) | `scripts/process_manager.py [webhook|gateway|fastapi]` |
-| EC2 paper host | [`docs/EC2_OPERATIONS_GUIDE.md`](docs/EC2_OPERATIONS_GUIDE.md) |
+| systemd (production) | `trading-backend.service`, `webhook-ingest.service`, `ibgateway.service` — do **not** enable `process-manager.service` |
+| EC2 host | [`docs/EC2_OPERATIONS_GUIDE.md`](docs/EC2_OPERATIONS_GUIDE.md) |
 | Watchdog (Telegram, state machine, gates) | [`docs/watchdog.md`](docs/watchdog.md) |
 | Emergency flatten (sidecar) | `scripts/oms/flatten_gateway_positions.py` — [`docs/backend-kill-switch.md`](docs/backend-kill-switch.md) |
 

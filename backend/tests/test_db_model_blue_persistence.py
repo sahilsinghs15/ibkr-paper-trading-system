@@ -122,14 +122,18 @@ async def _seed_allocation(
     return account
 
 
-def _oms() -> OMSService:
+def _oms(*extra_accounts: str) -> OMSService:
     tws = MagicMock(spec=TWSClient)
     tws.is_connected.return_value = True
     tws.next_order_id = 200
     tws.get_request_type.return_value = "order"
     adapter = IBKRExecutionAdapter(client=tws)
     adapter.is_connected = lambda: True  # type: ignore[method-assign]
-    wire_test_managed_accounts(adapter)
+    from tests.ibkr_test_utils import DEFAULT_TEST_MANAGED_ACCOUNTS
+
+    accounts = list(DEFAULT_TEST_MANAGED_ACCOUNTS)
+    accounts.extend(code for code in extra_accounts if code)
+    wire_test_managed_accounts(adapter, accounts)
     fill_on_place_order(adapter, tws)
     return OMSService(adapter=adapter)
 
@@ -144,6 +148,8 @@ def _static_router(account: AccountModel) -> StaticStrategyAccountRouter:
                 total_margin=account.total_margin,
                 alloc_pct=Decimal(1),
                 committed_notional=account.total_margin,
+                pair_max_allocation_pct=Decimal("1"),
+                pair_budget=account.total_margin,
                 target=Decimal("500.00"),
                 stop=Decimal("250.00"),
                 time_limit=3600,
@@ -194,7 +200,7 @@ async def test_a_open_persistence_survives_new_session(db_factory: async_session
     async with db_factory() as session, session.begin():
         account = await _seed_allocation(session)
 
-    oms = _oms()
+    oms = _oms(account.ibkr_account)
     manager = _order_manager(db_factory, oms, account_id=account.id, account=account)
     signal = parse_model_blue_payload(payload, timestamp=_TS, reason="test-a")
     result = await manager.process_signal_execution(signal)
@@ -225,7 +231,7 @@ async def test_b_close_recovery_after_new_order_manager(db_factory: async_sessio
     async with db_factory() as session, session.begin():
         account = await _seed_allocation(session)
 
-    oms = _oms()
+    oms = _oms(account.ibkr_account)
     opener = _order_manager(db_factory, oms, account_id=account.id, account=account)
     await opener.process_signal_execution(
         parse_model_blue_payload(payload, timestamp=_TS, reason="test-b-open")
@@ -284,7 +290,7 @@ async def test_c_duplicate_signal_survives_restart(db_factory: async_sessionmake
             persist_signal_id=trade_id,
         )
 
-    oms = _oms()
+    oms = _oms(account.ibkr_account)
     manager = _order_manager(db_factory, oms, account_id=account.id, account=account)
     await manager.hydrate_runtime_from_db()
     payload = {**XLE_XOP_OPEN, "trade_id": trade_id}
@@ -319,7 +325,9 @@ async def test_d_allocation_is_authoritative_for_sizer(db_factory: async_session
         ),
     )
     xle, _xop = sizer.size_open(signal)
-    expected_qty = (_COMMITTED / Decimal("62.59")).quantize(Decimal(1), rounding=ROUND_DOWN)
+    expected_qty = (_COMMITTED * Decimal("0.5943") / Decimal("62.59")).quantize(
+        Decimal(1), rounding=ROUND_DOWN
+    )
     assert xle.quantity == expected_qty
 
     missing = DatabaseCommittedCapitalProvider(db_factory, account_id=account.id + 10_000_000)

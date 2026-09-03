@@ -6,7 +6,6 @@ import asyncio
 import logging
 from decimal import Decimal
 from typing import Any
-from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -137,6 +136,62 @@ class BrokerFlattenService:
             snapshot_exchange = snapshot.exchange or None
             snapshot_currency = snapshot.currency or None
 
+            from app.db.repositories.position_repository import PositionRepository
+            from app.services import flatten_inflight
+
+            flatten_keys: list = [flatten_inflight.broker_key(ibkr_account, con_id)]
+            if account_id is not None:
+                open_rows = await PositionRepository(session).list_open()
+                for pos in open_rows:
+                    if pos.account_id != account_id:
+                        continue
+                    symbols = {
+                        (pos.leg_a_symbol or "").strip().upper(),
+                        (pos.leg_b_symbol or "").strip().upper(),
+                    }
+                    if norm_symbol in symbols:
+                        flatten_keys.append(flatten_inflight.ledger_key(account_id, pos.trade_id))
+
+        from app.services import flatten_inflight as _fi
+
+        if not await _fi.try_acquire_many(flatten_keys):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Flatten already in progress for ibkr_account={ibkr_account} "
+                    f"con_id={con_id}."
+                ),
+            )
+        try:
+            return await self._submit_flatten_line(
+                ibkr_account=ibkr_account,
+                account_id=account_id,
+                norm_symbol=norm_symbol,
+                norm_sec_type=norm_sec_type,
+                con_id=con_id,
+                close_side=close_side,
+                close_qty=close_qty,
+                side_label=side_label,
+                snapshot_exchange=snapshot_exchange,
+                snapshot_currency=snapshot_currency,
+            )
+        finally:
+            await _fi.release_many(flatten_keys)
+
+    async def _submit_flatten_line(
+        self,
+        *,
+        ibkr_account: str,
+        account_id: int | None,
+        norm_symbol: str,
+        norm_sec_type: str,
+        con_id: int,
+        close_side: RMSOrderSide,
+        close_qty: float,
+        side_label: str,
+        snapshot_exchange: str | None,
+        snapshot_currency: str | None,
+    ) -> FlattenBrokerPositionResponse:
         baskets_coord = (
             getattr(self._order_manager, "_baskets", None) if self._order_manager else None
         )
@@ -147,7 +202,7 @@ class BrokerFlattenService:
             )
 
         flatten_intent = OrderIntent(
-            signal_id=f"RECON-FLAT-{con_id}-{uuid4().hex[:6]}",
+            signal_id=f"RECON-FLAT-{con_id}",
             strategy_id="reconcile_flatten",
             action=OrderAction.CLOSE,
             legs=[
@@ -156,7 +211,6 @@ class BrokerFlattenService:
                     side=close_side,
                     quantity=close_qty,
                     price=Decimal(0),
-                    contract_month="",
                     con_id=con_id,
                     instrument_type=norm_sec_type,
                     exchange=snapshot_exchange,

@@ -1,7 +1,8 @@
 """Persist Model Blue execution state (signal + pair position + per-leg orders) atomically."""
 
 import logging
-from decimal import Decimal
+from collections import defaultdict
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -25,6 +26,19 @@ logger = logging.getLogger(__name__)
 SessionFactory = async_sessionmaker[AsyncSession]
 
 
+def _decimal_or_none(raw: object) -> Decimal | None:
+    if raw is None:
+        return None
+    if isinstance(raw, Decimal):
+        return raw
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return None
+    try:
+        return Decimal(str(raw))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
 def _exit_marks_from_orders(orders: list[OMSOrder]) -> dict[str, Decimal]:
     marks: dict[str, Decimal] = {}
     for order in orders:
@@ -32,9 +46,10 @@ def _exit_marks_from_orders(orders: list[OMSOrder]) -> dict[str, Decimal]:
             continue
         derived = executions_weighted_average(getattr(order, "executions", {}) or {})
         raw = derived or order.average_fill_price or order.last_fill_price
-        if raw is None:
+        price = _decimal_or_none(raw)
+        if price is None or not order.symbol:
             continue
-        marks[order.symbol] = raw if isinstance(raw, Decimal) else Decimal(str(raw))
+        marks[order.symbol] = price
     return marks
 
 
@@ -57,55 +72,112 @@ def _commission_from_orders(orders: list[OMSOrder]) -> Decimal | None:
     return total if found and total > 0 else None
 
 
+_CLOSE_QTY_EPS = Decimal("0.0001")
+
+
+def _filled_qty_by_symbol(orders: list[OMSOrder]) -> dict[str, Decimal]:
+    filled: dict[str, Decimal] = defaultdict(lambda: Decimal(0))
+    for order in orders:
+        if getattr(order, "is_compensation", False):
+            continue
+        qty = _decimal_or_none(
+            getattr(order, "filled_quantity", None)
+            or getattr(order, "fill_qty", None)
+            or getattr(order, "quantity", None)
+        )
+        if qty is None or qty <= 0 or not order.symbol:
+            continue
+        filled[order.symbol] += qty
+    return dict(filled)
+
+
+def assert_close_qty_matches_open(
+    *,
+    trade_id: str,
+    leg_a_symbol: str | None,
+    leg_a_signed_qty: Decimal | None,
+    leg_b_symbol: str | None,
+    leg_b_signed_qty: Decimal | None,
+    filled_by_symbol: dict[str, Decimal],
+) -> None:
+    """Refuse CLOSE that would mark the full open size while fills are short (M40)."""
+    for symbol, signed in (
+        (leg_a_symbol, leg_a_signed_qty),
+        (leg_b_symbol, leg_b_signed_qty),
+    ):
+        if not symbol or signed is None:
+            continue
+        open_qty = abs(signed)
+        close_qty = filled_by_symbol.get(symbol, Decimal(0))
+        if abs(close_qty - open_qty) > _CLOSE_QTY_EPS:
+            raise ModelBlueValidationError(
+                f"CLOSE_QTY_MISMATCH: trade_id={trade_id} symbol={symbol} "
+                f"close_filled={close_qty} open_qty={open_qty}"
+            )
+
+
 def _open_trade_from_fills(
     trade: OpenModelBlueTrade, orders: list[OMSOrder]
 ) -> OpenModelBlueTrade:
     """Build the pair row from actual FILLED broker quantities and avg prices."""
     fill_orders = [o for o in orders if not getattr(o, "is_compensation", False)]
-    fill_orders.sort(key=lambda o: (o.leg_index is None, o.leg_index or 0))
-    if len(fill_orders) != 2:
+    by_leg: dict[int, list[OMSOrder]] = defaultdict(list)
+    for order in fill_orders:
+        idx = order.leg_index if order.leg_index is not None else 0
+        by_leg[idx].append(order)
+    if len(by_leg) != 2:
         raise ModelBlueValidationError(
             "POSITION_REQUIRES_FILLS: Model Blue OPEN persists only after both "
-            f"legs are filled (got {len(fill_orders)} child orders)."
+            f"legs are filled (got {len(by_leg)} leg_index groups)."
         )
     legs: list[OpenModelBlueTradeLeg] = []
-    for order in fill_orders:
-        if order.status != OMSOrderStatus.FILLED:
+    for index in sorted(by_leg):
+        group = by_leg[index]
+        qty = Decimal(0)
+        weighted = Decimal(0)
+        instrument_type = None
+        symbol = None
+        side = None
+        for order in group:
+            if order.status != OMSOrderStatus.FILLED and float(order.filled_quantity or 0) <= 0:
+                continue
+            fill_qty = Decimal(str(order.filled_quantity))
+            if fill_qty <= 0:
+                continue
+            derived = executions_weighted_average(getattr(order, "executions", {}) or {})
+            raw = derived or order.average_fill_price or order.last_fill_price
+            if raw is None:
+                raise ModelBlueValidationError(
+                    f"POSITION_REQUIRES_FILLS: {order.symbol} has no fill price."
+                )
+            price = raw if isinstance(raw, Decimal) else Decimal(str(raw))
+            qty += fill_qty
+            weighted += fill_qty * price
+            symbol = order.symbol
+            side = order.side
+            resolved = getattr(order, "resolved", None)
+            if resolved is not None:
+                instrument_type = resolved.sec_type
+            elif (
+                order.leg_index is not None
+                and order.intent.legs
+                and 0 <= order.leg_index < len(order.intent.legs)
+            ):
+                instrument_type = order.intent.legs[order.leg_index].instrument_type
+        if qty <= 0 or symbol is None or side is None:
             raise ModelBlueValidationError(
-                f"POSITION_REQUIRES_FILLS: {order.symbol} status={order.status.value}."
+                f"POSITION_REQUIRES_FILLS: leg_index={index} has no filled quantity."
             )
-        qty = Decimal(str(order.filled_quantity))
-        if qty <= 0:
+        if not instrument_type:
             raise ModelBlueValidationError(
-                f"POSITION_REQUIRES_FILLS: {order.symbol} filled_quantity={qty}."
+                f"POSITION_REQUIRES_INSTRUMENT_TYPE: {symbol} fill has no instrument_type."
             )
-        derived = executions_weighted_average(getattr(order, "executions", {}) or {})
-        raw = derived or order.average_fill_price or order.last_fill_price
-        if raw is None:
-            raise ModelBlueValidationError(
-                f"POSITION_REQUIRES_FILLS: {order.symbol} has no fill price."
-            )
-        price = raw if isinstance(raw, Decimal) else Decimal(str(raw))
-        resolved = getattr(order, "resolved", None)
-        itype = None
-        if resolved is not None:
-            # Persist the executed IBKR product, not the TradingView requested type.
-            itype = resolved.sec_type
-        elif (
-            order.leg_index is not None
-            and order.intent.legs
-            and 0 <= order.leg_index < len(order.intent.legs)
-        ):
-            itype = order.intent.legs[order.leg_index].instrument_type
-        if not itype:
-            raise ModelBlueValidationError(
-                f"POSITION_REQUIRES_INSTRUMENT_TYPE: {order.symbol} fill has no instrument_type."
-            )
+        price = weighted / qty
         legs.append(
             OpenModelBlueTradeLeg(
-                symbol=order.symbol,
-                instrument_type=itype,
-                side=order.side,
+                symbol=symbol,
+                instrument_type=instrument_type,
+                side=side,
                 quantity=qty,
                 price=price,
             )
@@ -160,13 +232,16 @@ class ModelBlueExecutionPersistence:
             sig_row = await SignalRepository(session).record_processed(
                 signal, persist_signal_id=trade.trade_id
             )
-            await TradeRepository(session).open_trade(
+            row = await TradeRepository(session).open_trade(
                 trade,
                 account_id=account.id,
                 target=allocation.target,
                 stop=allocation.stop,
                 time_limit=allocation.time_limit,
             )
+            comm = _commission_from_orders(orders)
+            if comm is not None and comm > 0:
+                row.commission = comm
             order_repo = OrderRepository(session)
             for index, order in enumerate(orders):
                 if getattr(order, "is_compensation", False):
@@ -210,6 +285,19 @@ class ModelBlueExecutionPersistence:
     ) -> OpenModelBlueTrade:
         resolved = self._account_id_from(orders, account_id)
         async with self._session_factory() as session, session.begin():
+            row = await TradeRepository(session).get_row(
+                trade_id, account_id=resolved
+            )
+            if row is None:
+                raise KeyError(trade_id)
+            assert_close_qty_matches_open(
+                trade_id=trade_id,
+                leg_a_symbol=row.leg_a_symbol,
+                leg_a_signed_qty=row.leg_a_signed_qty,
+                leg_b_symbol=row.leg_b_symbol,
+                leg_b_signed_qty=row.leg_b_signed_qty,
+                filled_by_symbol=_filled_qty_by_symbol(orders),
+            )
             closed = await TradeRepository(session).close_trade(
                 trade_id,
                 account_id=resolved,

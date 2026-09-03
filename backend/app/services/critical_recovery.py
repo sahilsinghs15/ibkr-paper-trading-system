@@ -11,7 +11,7 @@ from typing import Any, Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.broker.ibkr.positions import BrokerPositionLine
+from app.core.identifiers import normalize_account
 from app.db.models.account import AccountModel
 from app.db.repositories.basket_repository import BasketRepository
 from app.db.repositories.broker_position_repository import BrokerPositionRepository
@@ -345,12 +345,12 @@ class CriticalRecoveryService:
             accounts = list(
                 (await session.execute(select(AccountModel))).scalars().all()
             )
-            ibkr_to_account = {acc.ibkr_account: acc.id for acc in accounts}
+            ibkr_to_account = {normalize_account(acc.ibkr_account): acc.id for acc in accounts}
             snapshot_rows = [
                 {
                     "ibkr_account": line.ibkr_account,
                     "con_id": line.con_id,
-                    "account_id": ibkr_to_account.get(line.ibkr_account),
+                    "account_id": ibkr_to_account.get(normalize_account(line.ibkr_account)),
                     "symbol": _norm_symbol(line.symbol),
                     "sec_type": _norm_sec_type(line.sec_type),
                     "currency": line.currency,

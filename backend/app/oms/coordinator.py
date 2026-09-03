@@ -43,10 +43,30 @@ _TERMINAL = (
     OMSOrderStatus.FILLED,
     OMSOrderStatus.CANCELLED,
     OMSOrderStatus.REJECTED,
-    OMSOrderStatus.ERROR,
 )
 _FILL_EPS = 1e-8
 SessionFactory = async_sessionmaker[AsyncSession]
+
+
+def _is_disconnect_parked(order: OMSOrder) -> bool:
+    """Disconnect marks in-memory ERROR but must not count as a failed fill (M7)."""
+    return order.status == OMSOrderStatus.ERROR and (order.error_message or "").startswith(
+        "Connection closed"
+    )
+
+
+def _is_wait_terminal(order: OMSOrder) -> bool:
+    """FILLED/CANCELLED/REJECTED, plus real TWS ERROR — not disconnect park."""
+    if order.status in _TERMINAL:
+        return True
+    return order.status == OMSOrderStatus.ERROR and not _is_disconnect_parked(order)
+
+
+def _persist_signal_identity(signal_id: str) -> tuple[str, str]:
+    """Strip :RETRY: / :UNWIND: so remainder-retry does not mint a second signals row."""
+    persist_id = signal_id.split(":RETRY:")[0].split(":UNWIND:")[0]
+    trade_id = persist_id.split(":CLOSE")[0]
+    return trade_id, persist_id
 
 
 class BasketCoordinator:
@@ -80,10 +100,18 @@ class BasketCoordinator:
         self._order_baskets: dict[str, Basket] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._recovery_service: CriticalRecoveryService | None = None
+        self._persist_lock = asyncio.Lock()
+        self._persist_inflight: set[str] = set()
+        self._persist_dirty: set[str] = set()
+        self._persist_kinds: dict[str, set[str]] = {}
         adapter = getattr(oms, "_adapter", None)
         add_listener = getattr(adapter, "add_order_state_listener", None)
         if callable(add_listener):
             add_listener(self._on_broker_order_state)
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Pin the asyncio loop used to marshal TWS-thread persist callbacks (M37)."""
+        self._loop = loop
 
     def is_open_blocked(self, account_id: int | None, strategy_id: str) -> bool:
         if account_id is None:
@@ -200,7 +228,8 @@ class BasketCoordinator:
         order_type: str,
         signal_pk: int | None = None,
     ) -> BasketExecutionResult:
-        self._loop = asyncio.get_running_loop()
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
         try:
             intent = attach_resolved(intent)
         except InstrumentResolutionError as exc:
@@ -269,10 +298,12 @@ class BasketCoordinator:
                 index,
                 oms_received_at=received_at,
                 order_type=order_type,
+                before_place=lambda o, _intent=intent, _pk=signal_pk, _basket=basket: self._persist_reserved_child(
+                    o, _intent, signal_pk=_pk, basket=_basket
+                ),
             )
             submitted.append(order)
             self._order_baskets[order.internal_order_id] = basket
-            await self._persist_child(order, intent, signal_pk=signal_pk, basket=basket)
             close = action == "CLOSE"
             created_kind = "CLOSE_ORDER_CREATED" if close else "ORDER_CREATED"
             submit_kind = "CLOSE_ORDER_SUBMITTED" if close else "ORDER_SUBMITTED"
@@ -327,6 +358,13 @@ class BasketCoordinator:
         await self._wait_terminals(submitted, timeout=self._fill_timeout)
         for order in submitted:
             await self._persist_child(order, intent, signal_pk=signal_pk, basket=basket)
+
+        if any(_is_disconnect_parked(o) for o in submitted):
+            logger.warning(
+                "BASKET_PARKED: disconnect mid-basket trade_id=%s; not compensating",
+                trade_id,
+            )
+            return BasketExecutionResult(basket=basket, intent=intent, orders=submitted)
 
         completeness = [
             {
@@ -403,7 +441,7 @@ class BasketCoordinator:
             completeness,
         )
 
-        working = [o for o in submitted if o.status not in _TERMINAL]
+        working = [o for o in submitted if not _is_wait_terminal(o)]
         for order in working:
             try:
                 await self._oms.cancel_order(order.internal_order_id)
@@ -415,7 +453,7 @@ class BasketCoordinator:
                     basket=basket, intent=intent, orders=submitted
                 )
         await self._wait_terminals(working, timeout=self._cancel_timeout)
-        if any(o.status not in _TERMINAL for o in working):
+        if any(not _is_wait_terminal(o) for o in working):
             basket.state = BasketState.CRITICAL
             await self._fail_critical(basket, intent, submitted, [], signal_pk)
             return BasketExecutionResult(basket=basket, intent=intent, orders=submitted)
@@ -440,7 +478,7 @@ class BasketCoordinator:
             )
 
         await self._wait_terminals(compensation, timeout=self._fill_timeout)
-        if not self._compensation_complete(compensation):
+        if not self._compensation_complete(compensation, submitted=submitted):
             basket.state = BasketState.CRITICAL
             await self._fail_critical(basket, intent, submitted, compensation, signal_pk)
             return BasketExecutionResult(
@@ -590,9 +628,17 @@ class BasketCoordinator:
                 return False
         return True
 
-    def _compensation_complete(self, orders: list[OMSOrder]) -> bool:
+    def _compensation_complete(
+        self, orders: list[OMSOrder], *, submitted: list[OMSOrder] | None = None
+    ) -> bool:
         if not orders:
-            return True
+            if submitted is None:
+                return False
+            return not any(
+                not getattr(o, "is_compensation", False)
+                and float(o.filled_quantity or 0) > _FILL_EPS
+                for o in submitted
+            )
         return all(
             o.status == OMSOrderStatus.FILLED
             and o.filled_quantity + _FILL_EPS >= o.quantity
@@ -603,7 +649,7 @@ class BasketCoordinator:
         adapter = self._oms._adapter
 
         async def _wait_one(order: OMSOrder) -> None:
-            if order.status in _TERMINAL:
+            if _is_wait_terminal(order):
                 return
             try:
                 await adapter.wait_for_terminal_or_fill(
@@ -646,7 +692,7 @@ class BasketCoordinator:
         signal_pk: int | None,
         basket: Basket,
     ) -> bool:
-        working = [o for o in submitted if o.status not in _TERMINAL]
+        working = [o for o in submitted if not _is_wait_terminal(o)]
         for order in working:
             try:
                 await self._oms.cancel_order(order.internal_order_id)
@@ -654,7 +700,7 @@ class BasketCoordinator:
                 logger.warning("Cancel failed for %s: %s", order.internal_order_id, exc)
                 return False
         await self._wait_terminals(working, timeout=self._cancel_timeout)
-        if any(o.status not in _TERMINAL for o in working):
+        if any(not _is_wait_terminal(o) for o in working):
             return False
         for order in submitted:
             await self._persist_child(order, intent, signal_pk=signal_pk, basket=basket)
@@ -669,6 +715,18 @@ class BasketCoordinator:
         signal_pk: int | None,
         basket: Basket,
     ) -> list[OMSOrder]:
+        from app.services.kill_switch import is_account_kill_switch_active
+
+        if (
+            intent.action == OrderAction.OPEN
+            and intent.account_id is not None
+            and is_account_kill_switch_active(intent.account_id)
+        ):
+            logger.warning(
+                "KILL_SWITCH_ACTIVE: skipping remainder-retry for OPEN trade_id=%s",
+                intent.signal_id,
+            )
+            return []
         if not self._retries_enabled():
             return []
         policy = self._retry_policy
@@ -877,6 +935,18 @@ class BasketCoordinator:
         signal_pk: int | None,
         basket: Basket,
     ) -> list[OMSOrder]:
+        from app.services.kill_switch import is_account_kill_switch_active
+
+        if (
+            original.action == OrderAction.OPEN
+            and original.account_id is not None
+            and is_account_kill_switch_active(original.account_id)
+        ):
+            logger.warning(
+                "KILL_SWITCH_ACTIVE: skipping compensation for OPEN trade_id=%s",
+                original.signal_id,
+            )
+            return []
         created: list[OMSOrder] = []
         now = datetime.now(UTC)
         for orig_index, orig_leg in enumerate(original.legs):
@@ -1016,6 +1086,18 @@ class BasketCoordinator:
             )
             basket.id = row.id
 
+    async def _persist_reserved_child(
+        self,
+        order: OMSOrder,
+        intent: OrderIntent,
+        *,
+        signal_pk: int | None,
+        basket: Basket,
+    ) -> None:
+        """Write the orders row with the reserved TWS id before placeOrder."""
+        self._order_baskets[order.internal_order_id] = basket
+        await self._persist_child(order, intent, signal_pk=signal_pk, basket=basket)
+
     async def _persist_child(
         self,
         order: OMSOrder,
@@ -1038,7 +1120,7 @@ class BasketCoordinator:
                 order,
                 signal_pk=pk,
                 account_id=intent.account_id,
-                trade_id=intent.signal_id.split(":UNWIND:")[0],
+                trade_id=_persist_signal_identity(intent.signal_id)[0],
                 strategy_id=intent.strategy_id,
                 leg_label=f"L{order.leg_index if order.leg_index is not None else 0}",
             )
@@ -1055,8 +1137,7 @@ class BasketCoordinator:
         from sqlalchemy import select
         from sqlalchemy.dialects.postgresql import insert
 
-        trade_id = intent.signal_id.split(":UNWIND:")[0].split(":CLOSE")[0]
-        persist_id = intent.signal_id.split(":UNWIND:")[0]
+        trade_id, persist_id = _persist_signal_identity(intent.signal_id)
         legs = list(intent.legs or [])
         pair = ":".join(leg.symbol for leg in legs) if legs else ""
         if legs:
@@ -1148,10 +1229,38 @@ class BasketCoordinator:
             return
         try:
             asyncio.run_coroutine_threadsafe(
-                self._persist_broker_snapshot(order, kind), loop
+                self._persist_broker_snapshot_coalesced(order, kind), loop
             )
         except Exception:
             logger.exception("Failed to schedule broker snapshot persist")
+
+    async def _persist_broker_snapshot_coalesced(self, order: OMSOrder, kind: str) -> None:
+        """One in-flight persist per internal_order_id (M32).
+
+        Coalesced callbacks keep a set of kinds so COMMISSION cannot drop FILL/ACK
+        events, and a later ACK cannot overwrite an earlier FILL.
+        """
+        oid = order.internal_order_id
+        async with self._persist_lock:
+            self._persist_kinds.setdefault(oid, set()).add(kind)
+            if oid in self._persist_inflight:
+                self._persist_dirty.add(oid)
+                return
+            self._persist_inflight.add(oid)
+        try:
+            while True:
+                async with self._persist_lock:
+                    self._persist_dirty.discard(oid)
+                    persist_kinds = set(self._persist_kinds.get(oid) or {kind})
+                    self._persist_kinds[oid] = set()
+                await self._persist_broker_snapshot(order, persist_kinds)
+                async with self._persist_lock:
+                    if oid not in self._persist_dirty:
+                        self._persist_kinds.pop(oid, None)
+                        break
+        finally:
+            async with self._persist_lock:
+                self._persist_inflight.discard(oid)
 
     def _event_idempotency_key(self, kind: str, order: OMSOrder | None, detail: dict) -> str | None:
         if kind == "BROKER_ACK" and order is not None:
@@ -1167,7 +1276,17 @@ class BasketCoordinator:
             return f"commission:{order.last_exec_id}"
         return None
 
-    async def _persist_broker_snapshot(self, order: OMSOrder, kind: str) -> None:
+    _PERSIST_EVENT_KIND_ORDER = (
+        "BROKER_ACK",
+        "PARTIAL_FILL",
+        "FILL",
+        "REJECTED",
+        "CANCELLED",
+        "ERROR",
+    )
+
+    async def _persist_broker_snapshot(self, order: OMSOrder, kinds: str | set[str]) -> None:
+        kind_set = {kinds} if isinstance(kinds, str) else set(kinds)
         basket = self._order_baskets.get(order.internal_order_id)
         if basket is None:
             basket = Basket(
@@ -1182,27 +1301,27 @@ class BasketCoordinator:
             )
         signal_pk = basket.signal_pk
         await self._persist_child(order, order.intent, signal_pk=signal_pk, basket=basket)
-        if kind == "COMMISSION":
-            return
-        await self._event(
-            kind,
-            {
-                "account_id": order.intent.account_id,
-                "trade_id": order.intent.signal_id.split(":UNWIND:")[0],
-                "internal_order_id": order.internal_order_id,
-                "broker_order_id": str(order.ibkr_order_id) if order.ibkr_order_id else None,
-                "status": order.status.value,
-                "filled_quantity": order.filled_quantity,
-                "average_fill_price": str(order.average_fill_price)
-                if order.average_fill_price is not None
-                else None,
-                "exec_id": order.last_exec_id,
-            },
-            signal_pk=signal_pk,
-            basket=basket,
-            order=order,
-            idempotency_key=self._event_idempotency_key(kind, order, {}),
-        )
+        event_kinds = [k for k in self._PERSIST_EVENT_KIND_ORDER if k in kind_set]
+        for persist_kind in event_kinds:
+            await self._event(
+                persist_kind,
+                {
+                    "account_id": order.intent.account_id,
+                    "trade_id": order.intent.signal_id.split(":UNWIND:")[0],
+                    "internal_order_id": order.internal_order_id,
+                    "broker_order_id": str(order.ibkr_order_id) if order.ibkr_order_id else None,
+                    "status": order.status.value,
+                    "filled_quantity": order.filled_quantity,
+                    "average_fill_price": str(order.average_fill_price)
+                    if order.average_fill_price is not None
+                    else None,
+                    "exec_id": order.last_exec_id,
+                },
+                signal_pk=signal_pk,
+                basket=basket,
+                order=order,
+                idempotency_key=self._event_idempotency_key(persist_kind, order, {}),
+            )
 
     async def _event(
         self,

@@ -51,6 +51,15 @@ class TWSClient(EWrapper, EClient):
 
         self.managed_accounts: frozenset[str] = frozenset()
         self._managed_accounts_event = threading.Event()
+        self._order_id_lock = threading.Lock()
+        self._connect_host: str | None = None
+        self._connect_port: int | None = None
+        self._connect_client_id: int | None = None
+        self._connect_timeout: float = 10.0
+        self._intentional_disconnect = False
+        self._reconnect_thread: threading.Thread | None = None
+        self._reconnect_stop = threading.Event()
+        self._on_restored: list[Any] = []
 
     def register_rate_limiter(self, limiter: GatewayRateLimiter) -> None:
         """Attach the shared gateway rate limiter for outbound API pacing."""
@@ -79,12 +88,24 @@ class TWSClient(EWrapper, EClient):
         Indicates the connection is ready to accept commands.
         """
         super().nextValidId(orderId)
-        self.next_order_id = orderId
+        with self._order_id_lock:
+            self.next_order_id = orderId
         self._connected_event.set()
         logger.info(
             "TWS nextValidId received: next_order_id=%d. Handshake complete.",
             orderId,
         )
+
+    def allocate_next_order_id(self) -> int:
+        """Reserve the next TWS order id. Never defaults None→1 (M34)."""
+        with self._order_id_lock:
+            current = self.next_order_id
+            if current is None:
+                raise RuntimeError(
+                    "TWS next_order_id unavailable; refusing to mint order id 1"
+                )
+            self.next_order_id = current + 1
+            return current
 
     def managedAccounts(self, accountsList: str) -> None:
         """Callback listing IBKR account codes this session may trade."""
@@ -152,7 +173,8 @@ class TWSClient(EWrapper, EClient):
         """Callback when TWS connection drops unexpectedly or closes."""
         logger.warning("TWS connection has been closed.")
         self._connected_event.clear()
-        self.next_order_id = None
+        with self._order_id_lock:
+            self.next_order_id = None
         self.managed_accounts = frozenset()
         self._managed_accounts_event.clear()
         for listener in list(self._market_data_listeners):
@@ -162,11 +184,12 @@ class TWSClient(EWrapper, EClient):
                 logger.exception("Error in connectionClosed listener callback")
         for listener in list(self._listeners):
             try:
-                listener.on_connection_closed()
-            except AttributeError:
-                pass
+                if hasattr(listener, "on_connection_closed"):
+                    listener.on_connection_closed()
             except Exception:
                 logger.exception("Error in connectionClosed general listener callback")
+        if not self._intentional_disconnect:
+            self._start_reconnect_loop()
 
     def tickPrice(self, reqId: int, tickType: int, price: float, attrib: Any) -> None:
         """Callback received when a market price updates."""
@@ -327,21 +350,20 @@ class TWSClient(EWrapper, EClient):
         )
         for listener in list(self._listeners):
             try:
-                listener.on_order_status(
-                    orderId,
-                    status,
-                    filled,
-                    remaining,
-                    avgFillPrice,
-                    permId,
-                    parentId,
-                    lastFillPrice,
-                    clientId,
-                    whyHeld,
-                    mktCapPrice,
-                )
-            except AttributeError:
-                pass
+                if hasattr(listener, "on_order_status"):
+                    listener.on_order_status(
+                        orderId,
+                        status,
+                        filled,
+                        remaining,
+                        avgFillPrice,
+                        permId,
+                        parentId,
+                        lastFillPrice,
+                        clientId,
+                        whyHeld,
+                        mktCapPrice,
+                    )
             except Exception:
                 logger.exception("Error in orderStatus listener callback")
 
@@ -361,9 +383,8 @@ class TWSClient(EWrapper, EClient):
         super().execDetails(reqId, contract, execution)
         for listener in list(self._listeners):
             try:
-                listener.on_exec_details(reqId, contract, execution)
-            except AttributeError:
-                pass
+                if hasattr(listener, "on_exec_details"):
+                    listener.on_exec_details(reqId, contract, execution)
             except Exception:
                 logger.exception("Error in execDetails listener callback")
 
@@ -526,6 +547,13 @@ class TWSClient(EWrapper, EClient):
         Returns:
             True if connection and handshake succeeded, False otherwise.
         """
+        self._connect_host = host
+        self._connect_port = port
+        self._connect_client_id = client_id
+        self._connect_timeout = timeout
+        self._intentional_disconnect = False
+        self._reconnect_stop.clear()
+
         if self.is_connected():
             logger.warning("Already connected to TWS.")
             return True
@@ -570,12 +598,23 @@ class TWSClient(EWrapper, EClient):
                 "TWS connection handshake timed out after %.1f seconds.",
                 timeout,
             )
-            self.disconnect_clean()
+            try:
+                self.disconnect()
+            except Exception:
+                logger.exception("TWS disconnect after handshake timeout failed")
+            if self._thread and self._thread.is_alive():
+                self._thread.join(timeout=2.0)
+                self._thread = None
+            self._connected_event.clear()
+            with self._order_id_lock:
+                self.next_order_id = None
             return False
 
     def disconnect_clean(self) -> None:
         """Cleanly disconnect from TWS and join the background thread."""
         logger.info("Disconnecting cleanly from TWS...")
+        self._intentional_disconnect = True
+        self._reconnect_stop.set()
         self.disconnect()
 
         if self._thread and self._thread.is_alive():
@@ -583,7 +622,8 @@ class TWSClient(EWrapper, EClient):
             self._thread = None
 
         self._connected_event.clear()
-        self.next_order_id = None
+        with self._order_id_lock:
+            self.next_order_id = None
         self.managed_accounts = frozenset()
         self._managed_accounts_event.clear()
         with self._registry_lock:
@@ -594,3 +634,45 @@ class TWSClient(EWrapper, EClient):
             self._contract_details_events.clear()
             self._contract_details_results.clear()
         logger.info("TWS disconnected.")
+
+    def _start_reconnect_loop(self) -> None:
+        if self._reconnect_thread is not None and self._reconnect_thread.is_alive():
+            return
+        if self._connect_host is None or self._connect_port is None or self._connect_client_id is None:
+            logger.warning("TWS reconnect skipped: no stored connect parameters")
+            return
+        self._reconnect_stop.clear()
+        self._reconnect_thread = threading.Thread(
+            target=self._reconnect_loop, name="TWSReconnect", daemon=True
+        )
+        self._reconnect_thread.start()
+
+    def _reconnect_loop(self) -> None:
+        delay = 1.0
+        while not self._reconnect_stop.is_set() and not self._intentional_disconnect:
+            if self.is_connected():
+                return
+            logger.warning("TWS reconnect attempt host=%s port=%s", self._connect_host, self._connect_port)
+            try:
+                ok = self.connect_and_start(
+                    self._connect_host,
+                    int(self._connect_port),
+                    int(self._connect_client_id),
+                    timeout=float(self._connect_timeout),
+                )
+            except Exception:
+                logger.exception("TWS reconnect raised")
+                ok = False
+            if ok:
+                logger.info("TWS reconnect succeeded")
+                for listener in list(self._listeners) + list(self._market_data_listeners):
+                    try:
+                        restored = getattr(listener, "on_connection_restored", None)
+                        if callable(restored):
+                            restored()
+                    except Exception:
+                        logger.exception("Error in on_connection_restored listener")
+                return
+            if self._reconnect_stop.wait(delay):
+                return
+            delay = min(delay * 2.0, 30.0)

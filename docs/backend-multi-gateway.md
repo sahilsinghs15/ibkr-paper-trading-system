@@ -21,27 +21,27 @@ Never read the target section as implemented. Each row below is what the process
 | Persist accounts | `AccountModel` in `db/models/account.py` | Columns: `id`, `name`, `ibkr_account`, `total_margin`, `enabled`. **No** host / port / clientId / gateway id. |
 | Resolve strategy → accounts | `DatabaseStrategyAccountRouter.resolve` in `accounts/router.py` | Joins `accounts` × `allocations` × `strategies` where all three `enabled`, `total_margin > 0`, `alloc_pct > 0`. Returns `list[AccountExecutionContext]`. Never infers a default account. |
 | Fan-out | `OrderManager._fanout_accounts` / `_fanout_single_account` in `services/order_manager.py` | One inbound signal → `asyncio.gather` of per-account tasks **in this process**. Not one OS process per account. |
-| Size per account | `ModelBlueStrategy._build_open_intent` in `services/model_blue/strategy.py` | Uses `account.committed_notional` (`total_margin * alloc_pct`) via `TemporarySettingsCommittedCapitalProvider`. Sets `OrderIntent.account_id` and `OrderIntent.ibkr_account`. |
+| Size per account | `ModelBlueStrategy._build_open_intent` in `services/model_blue/strategy.py` | Uses `account.pair_budget` (`total_margin * alloc_pct * pair_max_allocation_pct`). Sets `OrderIntent.account_id` and `OrderIntent.ibkr_account`. |
 | Tag the IB order | `IBKRExecutionAdapter._build_ibkr_order` in `oms/ibkr_adapter.py` | `ib_order.account = order.intent.ibkr_account` when set. That is how IBKR distinguishes FA / managed accounts **on the same socket**. |
 | RMS / claims / positions | `duplicate_lookup_key` / `open_position_key` / `exposure_key` in `rms/models.py`; `execution_dedupe_key` in `execution_claim_repository.py`; `positions` PK `(account_id, trade_id)` | Per-account isolation in risk, dedupe, and ledger. |
 | Kill switch | `KillSwitchService` + `is_account_kill_switch_active` | Per-account OPEN block and flatten. See [`backend-kill-switch.md`](backend-kill-switch.md). |
 
 **What this is not.** Independent IB logins (different usernames) cannot share one Gateway session. Today's `ib_order.account` tagging only works when **that Gateway login is authorized for those account ids** (typically one paper/live login, or an FA master). There is no `reqManagedAccts` / `managedAccounts` handling in `TWSClient`.
 
-**Job shape (undocumented until this change).** Webhook ingest creates **one** `signal_jobs` row per TradingView alert (`webhooks._process_tradingview_webhook` → `SignalJobRepository.create_job_if_not_exists`). It does **not** pass `account_scope` (column exists, stays `NULL`). Fan-out to N accounts happens **inside** `process_signal_execution` after the worker claims that single job. Domain lock key is therefore `( "default", strategy_id )` for every live job (`ExecutionWorkerPool._get_domain_lock`).
+**Job shape.** Webhook ingest creates **N** `signal_jobs` rows per TradingView alert (one per routed account) via `DatabaseStrategyAccountRouter`. Each row sets `account_scope=str(account_id)` and idempotency `{hash}:{account_id}`. Domain lock key is `(account_id, strategy_id)`. Same-trade OPEN/CLOSE still serialize via sibling `EXISTS` plus live `execution_claims`.
 
 ### IB connectivity — PARTIAL (exactly one session)
 
 | Concern | Code | Reality |
 |---------|------|---------|
 | How many sockets | `lifespan` in `main.py` | One `TWSClient()`, one `IBKRExecutionAdapter`, stored as `app.state.client` / `app.state.ibkr_adapter`. |
-| Where it connects | `Settings.ibkr_host` / `ibkr_port` / `ibkr_client_id` in `core/config.py` | Env `IBKR_HOST` / `IBKR_PORT` / `IBKR_CLIENT_ID`. Defaults `127.0.0.1:7497` clientId `1`. |
-| Handshake | `TWSClient.connect_and_start` | TCP connect, daemon reader thread, wait for `nextValidId`. Returns `False` on timeout and calls `disconnect_clean`. |
-| Startup failure | `main.py` lifespan | Logs *“execution adapter will auto-reconnect on active traffic.”* **That reconnect is not implemented.** |
-| Submit when down | `IBKRExecutionAdapter.submit_order` | If `not self.is_connected()`: set order `ERROR`, raise `ConnectionError("Cannot submit order: TWS is not connected.")`. No retry connect. |
-| Drop while in-flight | `IBKRExecutionAdapter.on_connection_closed` | Marks every non-terminal in-memory OMS order `ERROR` / `"Connection closed unexpectedly"` and completes fill waiters. Does **not** `reqOpenOrders` first. Orders may still be live at IB. |
+| Where it connects | `Settings.ibkr_host` / `ibkr_port` / `ibkr_client_id` in `core/config.py` | Env `IBKR_HOST` / `IBKR_PORT` / `IBKR_CLIENT_ID`. Defaults `127.0.0.1:4001` clientId `1`. |
+| Handshake | `TWSClient.connect_and_start` | TCP connect, daemon reader thread, wait for `nextValidId`. Handshake timeout no longer calls `disconnect_clean` (that would mark the drop intentional). |
+| Startup failure | `main.py` lifespan | Logs that orders wait until the socket is up. `TWSClient` reconnects on `connectionClosed`. |
+| Submit when down | `IBKRExecutionAdapter.submit_order` | If `not self.is_connected()`: set order `ERROR`, raise `ConnectionError`. Reconnect loop is on the client, not inside `submit_order`. |
+| Drop while in-flight | `IBKRExecutionAdapter.on_connection_closed` | Marks every non-terminal in-memory OMS order `ERROR` / `"Connection closed unexpectedly"` and **parks** fill waiters (does not resolve them as terminal). Does not compensate. Reconnect unparks, `reqOpenOrders` via snapshot, adopts non-terminal `orders` rows. |
 | Failover | — | **MISSING.** No second host, no health loop, no clientId rotation. |
-| Live PnL | `LivePnlService` on the same `TWSClient` | Market-data `reqMktData` shares the one socket (and therefore the one pacer is **not** applied to those messages — pacer is `placeOrder` only). |
+| Live PnL | `LivePnlService` on the same `TWSClient` | Market-data `reqMktData` shares the one socket. Reconnect calls `_resubscribe_all_active`. |
 
 `IBKR_PORT` is not validated against paper vs live. See [`safety.md`](safety.md).
 

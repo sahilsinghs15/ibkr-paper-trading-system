@@ -12,6 +12,8 @@ from sqlalchemy.engine import make_url
 
 os.environ.setdefault("PAPER_EXECUTE_STK_AS_CFD", "false")
 os.environ["TRADINGAPP_TESTING"] = "1"
+# Tests that exercise webhook auth patch get_settings(); the rest omit the header.
+os.environ["WEBHOOK_AUTH_ENABLED"] = "false"
 
 TEST_DATABASE_NAME = "ibkr_trading_test"
 
@@ -62,6 +64,7 @@ def _run_alembic_upgrade() -> None:
         env={**os.environ},
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -70,7 +73,7 @@ def _run_alembic_upgrade() -> None:
         )
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="session", autouse=True)
 def _ensure_test_database() -> None:
     """Create ibkr_trading_test and apply Alembic migrations once per session."""
     asyncio.run(_create_test_database_if_missing())
@@ -99,3 +102,22 @@ def _redirect_webhook_capture_dir(
     target_dir = tmp_path / "tradingview_webhooks"
     monkeypatch.setattr("app.api.routes.webhooks.WEBHOOK_CAPTURE_DIR", target_dir)
     return target_dir
+
+
+@pytest.fixture(autouse=True)
+def _clear_kill_switch_cache() -> None:
+    """Process-global kill-switch cache must not leak account ids across tests."""
+    from app.services.kill_switch import _KILL_SWITCH_ACTIVE_ACCOUNTS
+
+    _KILL_SWITCH_ACTIVE_ACCOUNTS.clear()
+    yield
+    _KILL_SWITCH_ACTIVE_ACCOUNTS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_flatten_inflight() -> None:
+    from app.services.flatten_inflight import _HELD
+
+    _HELD.clear()
+    yield
+    _HELD.clear()

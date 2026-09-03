@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
+import { fetchAccountsConfig } from '../api/configApi'
 import { usePnlStore } from '../store/pnlStore'
 import { useAuthStore } from '../store/authStore'
 import { useActiveIbkrAccount } from '../hooks/useActiveIbkrAccount'
+import { findAccountByIbkr } from '../utils/activeAccount'
 import { TZ_IN, TZ_NY, type DisplayTimezone } from '../types/position'
 import {
   formatInTz,
@@ -14,6 +17,14 @@ import { AppNav } from './AppNav'
 
 export function AppHeader() {
   const currentAccount = useActiveIbkrAccount()
+  const { data: accountsData } = useQuery({
+    queryKey: ['config', 'accounts'],
+    queryFn: fetchAccountsConfig,
+  })
+  const managedAccount = useMemo(
+    () => findAccountByIbkr(accountsData?.accounts, currentAccount),
+    [accountsData?.accounts, currentAccount],
+  )
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
   const navigate = useNavigate()
@@ -57,9 +68,14 @@ export function AppHeader() {
           <div className="brand-name">Zahnrad</div>
           <div className="brand-meta">
             <span>Model Blue</span>
-            <span className="brand-dot" />
-            <span className="paper-pill">Paper</span>
-            {currentAccount ? (
+            {managedAccount?.name ? (
+              <>
+                <span className="brand-dot" />
+                <span className="bold" style={{ color: 'var(--blue)' }}>
+                  {managedAccount.name}
+                </span>
+              </>
+            ) : currentAccount ? (
               <>
                 <span className="brand-dot" />
                 <span className="mono bold" style={{ color: 'var(--blue)' }}>

@@ -8,18 +8,16 @@ Lightweight daemon (layer 3) — observes, classifies state transitions, sends T
 
 | Layer | Owner | Protects |
 |-------|-------|----------|
-| systemd | OS | `process-manager.service`, `watchdog.service`, `demo-streaming.service` survival |
-| process_manager.py | `process_manager` | Gateway (Xvfb+IBC), Backend `:8001`, Webhook `:8000` |
-| systemd | OS | Demo Streaming `:8010` survival (not in process_manager) |
-| watchdog | `watchdog` | Observe/notify/verify/escalate; no direct kill of Gateway/Backend |
+| systemd | OS | `trading-backend.service`, `webhook-ingest.service`, `ibgateway.service`, `watchdog.service`, `demo-streaming.service` |
+| watchdog | `watchdog` | Observe/notify/verify/escalate; never `systemctl`, never a second supervisor |
 
-No competing supervisors: watchdog never `kill -9` Gateway; process_manager owns restarts.
+`process-manager.service` must stay **disabled**. `scripts/process_manager.py` is deprecated. Watchdog already does not call `systemctl`.
 
 ## Health — liveness vs readiness
 
 | Service | Liveness | Readiness |
 |---------|----------|-----------|
-| Gateway `:4002` | TCP 127.0.0.1:4002 open | TCP + `ib_gateway.log` contains `Login has completed` (best-effort) |
+| Gateway `:4001` | TCP 127.0.0.1:4001 open | TCP + `ib_gateway.log` contains `Login has completed` (best-effort) |
 | Backend `:8001` | `GET /health` 2xx | `GET /health/ready` (DB `SELECT 1` + TWS `is_connected`) + `GET /api/v1/system-monitor` if available |
 | Webhook `:8000` | `GET /health` 2xx | same (DB `SELECT 1`) |
 | Demo `:8010` | `GET /health` 2xx (redis flag) | redis `PING` |
@@ -50,7 +48,7 @@ All alerts follow consistent ordering per spec (WATCHDOG → EVENT → SERVICE �
 
 Service-specific examples:
 
-- **Gateway**: `tcp_refused` → `TCP 127.0.0.1:4002 refused`, `xvfb_missing` → `Xvfb :99 not running`, `login_marker_missing` → `Login has completed` not in `ib_gateway.log`; includes `LAST LOG DETAIL`.
+- **Gateway**: `tcp_refused` → `TCP 127.0.0.1:4001 refused`, `xvfb_missing` → `Xvfb :99 not running`, `login_marker_missing` → `Login has completed` not in `ib_gateway.log`; includes `LAST LOG DETAIL`.
 - **Backend**: `tcp_refused` vs `http_failed_tcp_open` vs `readiness_failed` (`/health/ready` TWS/DB), PID via `psutil`; trading impact always `BLOCKED` on failure.
 - **Webhook**: `readiness_failed_postgres` with `SELECT 1` error; impact notes `signal_jobs` durable.
 - **Demo**: `redis_degraded` → explicit `TRADING IMPACT: None`.
@@ -84,6 +82,7 @@ Events: `START, STOP, FAILURE, UNHEALTHY, RECOVERY_STARTED, RECOVERED, RECOVERY_
 | `kill_switch` | `GET /api/v1/config/accounts` (`kill_switch_active`) | no account armed | `TRADING_BLOCKED` if any armed or API unreachable |
 | `baskets` | `GET /api/v1/baskets/critical?ibkr_account=...` per account | `incidents == 0` for all accounts | `TRADING_BLOCKED` if any `>0` or cannot determine accounts |
 | `trading_mode` | `gateway_port` ∈ {4002,7497,7496,4001} | recognized port | `UNKNOWN` → `TRADING_BLOCKED` |
+| `margin` | `GET /api/v1/margin/accounts` | no account stale or `effective_free <= floor`; empty list is SAFE | `UNSAFE` below floor / stale; `UNKNOWN` on 503/transport → `TRADING_BLOCKED`. Observe and notify only — this gate does not flatten |
 | `recovery` | implicit via `baskets` + `system_monitor` | — | — |
 
 `SafetyGateResult` returns `passed, failures, gates dict`. Trading-critical (`gateway, backend, postgres`) only declare `RECOVERED` after `safety.check()` passes; otherwise `TRADING_BLOCKED`. Unknown (API 500/timeout) **never** interpreted as safe.
@@ -99,12 +98,14 @@ Queue total `100`, critical reserved `20`. Three buckets: `critical={FAILURE,MAN
 ## Systemd
 
 ```
-deploy/systemd/process-manager.service → ExecStart .venv/bin/python scripts/process_manager.py (User=tradingapp, Restart=always, After=network/postgresql/redis)
-deploy/systemd/demo-streaming.service   → ExecStart .venv/bin/python -m demo_streaming (User=tradingapp, Restart=always, After=network/postgresql/redis, MemoryMax=512M, independent — no After/Requires on process-manager)
-deploy/systemd/watchdog.service         → ExecStart .venv/bin/python scripts/watchdog_main.py (User=tradingapp, Restart=always, After=network.target only, MemoryMax=256M, Requires=network.target only)
+deploy/systemd/trading-backend.service  → uvicorn app.main:app :8001
+deploy/systemd/webhook-ingest.service   → uvicorn app.webhook_ingest:app :8000
+deploy/systemd/ibgateway.service        → IBC + Gateway (API 4001)
+deploy/systemd/demo-streaming.service   → python -m demo_streaming :8010
+deploy/systemd/watchdog.service         → python scripts/watchdog_main.py
 ```
 
-All `NoNewPrivileges=true PrivateTmp=true`. No `BindsTo/PartOf` coupling. Install: `sudo cp deploy/systemd/*.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now process-manager watchdog demo-streaming`. Rollback: `sudo systemctl disable --now watchdog` (trading unaffected).
+Do **not** enable `process-manager.service`. Install: `sudo systemctl enable --now trading-backend webhook-ingest ibgateway watchdog demo-streaming`. Watchdog never calls `systemctl`.
 
 ## Logs
 

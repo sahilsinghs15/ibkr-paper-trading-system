@@ -42,6 +42,29 @@ from app.services.kill_switch import (
 from app.services.position_close_service import SinglePairCloseService
 
 
+def _filled_close_order(
+    symbol: str,
+    qty: Decimal | float,
+    *,
+    fill_price: Decimal,
+    commission: Decimal = Decimal("1.00"),
+    status: OMSOrderStatus = OMSOrderStatus.FILLED,
+) -> MagicMock:
+    order = MagicMock()
+    order.status = status
+    order.is_compensation = False
+    order.symbol = symbol
+    order.filled_quantity = float(qty)
+    order.fill_qty = float(qty)
+    order.quantity = float(qty)
+    order.average_fill_price = fill_price
+    order.fill_price = fill_price
+    order.last_fill_price = fill_price
+    order.commission = commission
+    order.executions = {}
+    return order
+
+
 @pytest.fixture
 async def session_factory():
     settings = get_settings()
@@ -154,17 +177,8 @@ async def test_close_single_pair_success_and_isolation(
 
     # Setup mock order manager with mock baskets coordinator returning filled orders
     mock_basket = AsyncMock()
-    mock_order1 = MagicMock()
-    mock_order1.status = OMSOrderStatus.FILLED
-    mock_order1.is_compensation = False
-    mock_order1.symbol = "EWP"
-    mock_order1.commission = Decimal("1.00")
-    mock_order2 = MagicMock()
-    mock_order2.status = OMSOrderStatus.FILLED
-    mock_order2.is_compensation = False
-    mock_order2.symbol = "EWU"
-    mock_order2.fill_price = Decimal("39.00")
-    mock_order2.commission = Decimal("1.00")
+    mock_order1 = _filled_close_order("EWP", 100, fill_price=Decimal("31.00"))
+    mock_order2 = _filled_close_order("EWU", 100, fill_price=Decimal("39.00"))
 
     b_obj = MagicMock()
     b_obj.state = BasketState.CLOSED
@@ -404,17 +418,8 @@ async def test_leg_targeting_and_reverse_orders(
         )
 
     mock_basket = AsyncMock()
-    mock_order1 = MagicMock()
-    mock_order1.status = OMSOrderStatus.FILLED
-    mock_order1.is_compensation = False
-    mock_order1.symbol = "EWP"
-    mock_order1.commission = Decimal("1.00")
-    mock_order2 = MagicMock()
-    mock_order2.status = OMSOrderStatus.FILLED
-    mock_order2.is_compensation = False
-    mock_order2.symbol = "EWU"
-    mock_order2.fill_price = Decimal("39.00")
-    mock_order2.commission = Decimal("1.00")
+    mock_order1 = _filled_close_order("EWP", 100, fill_price=Decimal("31.00"))
+    mock_order2 = _filled_close_order("EWU", 50, fill_price=Decimal("39.00"))
 
     b_obj = MagicMock()
     b_obj.state = BasketState.CLOSED
@@ -594,12 +599,7 @@ async def test_duplicate_in_flight_close_requests_deduplicated(
         )
 
     mock_basket = AsyncMock()
-    mock_order = MagicMock()
-    mock_order.status = OMSOrderStatus.FILLED
-    mock_order.is_compensation = False
-    mock_order.symbol = "EWP"
-    mock_order.fill_price = Decimal("31.00")
-    mock_order.commission = Decimal("1.00")
+    mock_order = _filled_close_order("EWP", 100, fill_price=Decimal("31.00"))
 
     async def delayed_execute(*args, **kwargs):
         await asyncio.sleep(0.1)  # Simulate non-instant execution

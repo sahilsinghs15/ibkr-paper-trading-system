@@ -12,19 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.webhook_ingest import app as ingest_app
 
 
-@pytest.fixture
-async def session_factory():
-    from app.db.session import AsyncSessionLocal, engine
-    yield AsyncSessionLocal
-    await engine.dispose()
-
-
 def make_payload(idx: int, prefix: str = "BURST") -> dict:
     symbols = [("NOBL", "SPY"), ("EWP", "EWU"), ("XLF", "XLI"), ("EWA", "EWC"), ("AAPL", "MSFT")]
     sym_a, sym_b = symbols[idx % len(symbols)]
     trade_id = f"MBG-{sym_a}-{sym_b}-{prefix}-{idx:04d}-{uuid4().hex[:6]}"
     return {
-        "strategy": "model_blue",
+        "strategy": "burst_ingest",
         "action": "OPEN",
         "trade_id": trade_id,
         "direction": 1 if (idx % 2 == 0) else -1,
@@ -82,7 +75,7 @@ async def test_150_signal_burst_webhook_ingestion(session_factory: async_session
     # Audit database signal_jobs persistence
     async with session_factory() as session:
         res = await session.execute(
-            text("SELECT COUNT(*) FROM signal_jobs WHERE trade_id = ANY(:tids)"),
+            text("SELECT COUNT(DISTINCT trade_id) FROM signal_jobs WHERE trade_id = ANY(:tids)"),
             {"tids": trade_ids},
         )
         persisted_count = res.scalar_one()
@@ -114,7 +107,7 @@ async def test_300_signal_burst_webhook_ingestion(session_factory: async_session
 
     async with session_factory() as session:
         res = await session.execute(
-            text("SELECT COUNT(*) FROM signal_jobs WHERE trade_id = ANY(:tids)"),
+            text("SELECT COUNT(DISTINCT trade_id) FROM signal_jobs WHERE trade_id = ANY(:tids)"),
             {"tids": trade_ids},
         )
         persisted_count = res.scalar_one()

@@ -81,12 +81,20 @@ body,
   display: inline-block;
 }
 
-.paper-pill {
-  color: var(--green);
+.paper-pill,
+.live-pill {
   font-size: 10px;
   font-weight: 650;
   letter-spacing: 0.1em;
   text-transform: uppercase;
+}
+
+.paper-pill {
+  color: var(--green);
+}
+
+.live-pill {
+  color: var(--amber);
 }
 
 .header-status {
@@ -1217,7 +1225,7 @@ body,
 
 .factory-kpis {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 16px;
 }

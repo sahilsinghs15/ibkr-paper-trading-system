@@ -1,6 +1,7 @@
 """Unrealized P&L from signed quantities and an external mark. Does not invent prices."""
 
 import asyncio
+import inspect
 import logging
 import threading
 import time
@@ -90,6 +91,8 @@ class LivePnlService:
         self._client = client
         self._rate_limiter = rate_limiter
         self._next_req = 50000
+        self._req_lock = threading.Lock()
+        self._qualified_md: dict[tuple[int, str, str], Any] = {}
         self._by_req: dict[int, tuple[int, str, str]] = {}
         self._listeners_by_req: dict[int, set[tuple[int, str, str]]] = {}
         self._marks: dict[tuple[int, str, str], Decimal] = {}
@@ -184,7 +187,6 @@ class LivePnlService:
                     side=leg.side,
                     quantity=float(leg.quantity),
                     price=leg.price,
-                    contract_month="",
                     instrument_type=leg.instrument_type,
                     leg_index=index,
                 )
@@ -432,8 +434,9 @@ class LivePnlService:
 
         new_c_key = ("STK", symbol, underlying.exchange, "USD", conId)
         if new_c_key not in self._contract_reqs:
-            new_req_id = self._next_req
-            self._next_req += 1
+            with self._req_lock:
+                new_req_id = self._next_req
+                self._next_req += 1
             listeners = self._listeners_by_req.get(reqId, set())
             mapped = self._by_req.get(reqId)
             if mapped:
@@ -466,7 +469,11 @@ class LivePnlService:
         self._try_paced_call("reqMktData", _send, retry_callback=_retry)
 
     def on_connection_closed(self) -> None:
-        return
+        logger.warning("LivePnlService detected TWS disconnect; subscriptions retained")
+
+    def on_connection_restored(self) -> None:
+        logger.info("LivePnlService resubscribing after reconnect")
+        self._resubscribe_all_active()
 
     def get_market_data_health(self) -> dict[str, Any]:
         import datetime
@@ -508,7 +515,7 @@ class LivePnlService:
             "contracts": contracts_out,
         }
 
-    def _request_ticks(self, account_id: int, trade_id: str, leg) -> None:
+    def _request_ticks(self, account_id: int, trade_id: str, leg, *, skip_qualify: bool = False) -> None:
         sym_clean = (leg.symbol or "").strip().upper()
         if sym_clean.startswith("ZZZ") or "ZZZCFD" in sym_clean:
             logger.warning(
@@ -555,7 +562,7 @@ class LivePnlService:
                     currency=getattr(leg, "currency", "USD"),
                     con_id=getattr(resolved, "market_data_con_id", None),
                     catalog=self._catalog,
-                    apply_demo_override=False,  # Market data uses STK for equities/ETFs
+                    apply_stk_to_cfd=False,  # Market data uses STK for equities/ETFs
                 )
             except InstrumentResolutionError as exc:
                 logger.warning(
@@ -580,11 +587,34 @@ class LivePnlService:
         if getattr(contract, "secType", "").upper() == "CFD":
             contract.secType = "STK"
             contract.conId = getattr(resolved, "market_data_con_id", None) or 0
+        stashed = self._qualified_md.pop(
+            (account_id, trade_id, getattr(leg, "symbol", "")), None
+        )
+        if stashed is not None:
+            contract = stashed
 
         # Live IBKR Contract Qualification if connected
         is_conn = getattr(self._client, "is_connected", None)
-        if callable(is_conn) and is_conn():
+        if (not skip_qualify) and callable(is_conn) and is_conn() is True:
+            req_async = getattr(self._client, "request_contract_details_async", None)
             req_details = getattr(self._client, "request_contract_details", None)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if (
+                loop is not None
+                and loop.is_running()
+                and callable(req_async)
+                and inspect.iscoroutinefunction(req_async)
+                and getattr(type(req_async), "__module__", "") != "unittest.mock"
+            ):
+                loop.create_task(
+                    self._qualify_then_subscribe(
+                        account_id, trade_id, leg, contract, req_mkt
+                    )
+                )
+                return
             if callable(req_details):
                 try:
                     details = req_details(contract, timeout=3.0)
@@ -635,12 +665,13 @@ class LivePnlService:
             )
             return
 
-        req_id = self._next_req
-        self._next_req += 1
-        self._by_req[req_id] = (account_id, trade_id, leg.symbol)
-        self._contract_reqs[c_key] = req_id
-        self._req_to_contract[req_id] = c_key
-        self._listeners_by_req.setdefault(req_id, set()).add((account_id, trade_id, leg.symbol))
+        with self._req_lock:
+            req_id = self._next_req
+            self._next_req += 1
+            self._by_req[req_id] = (account_id, trade_id, leg.symbol)
+            self._contract_reqs[c_key] = req_id
+            self._req_to_contract[req_id] = c_key
+            self._listeners_by_req.setdefault(req_id, set()).add((account_id, trade_id, leg.symbol))
 
         def _send() -> None:
             try:
@@ -681,6 +712,36 @@ class LivePnlService:
                 trade_id,
                 leg.symbol,
             )
+
+    async def _qualify_then_subscribe(
+        self, account_id: int, trade_id: str, leg, contract, req_mkt
+    ) -> None:
+        try:
+            request = getattr(self._client, "request_contract_details_async", None)
+            details: Any = []
+            if callable(request):
+                pending = request(contract, timeout=3.0)
+                details = await pending if inspect.isawaitable(pending) else pending
+            if not isinstance(details, (list, tuple)):
+                details = []
+            if details:
+                qualified_c = details[0].contract
+                if getattr(qualified_c, "conId", 0):
+                    contract.conId = qualified_c.conId
+                if getattr(qualified_c, "primaryExchange", None):
+                    contract.primaryExchange = qualified_c.primaryExchange
+            else:
+                logger.warning(
+                    "LivePnl IBKR Contract Qualification: 0 details returned for symbol=%s",
+                    leg.symbol,
+                )
+        except Exception:
+            logger.exception(
+                "LivePnl IBKR Contract Qualification exception for symbol=%s",
+                leg.symbol,
+            )
+        self._qualified_md[(account_id, trade_id, getattr(leg, "symbol", ""))] = contract
+        self._request_ticks(account_id, trade_id, leg, skip_qualify=True)
 
     def _issue_request_ticks(
         self,

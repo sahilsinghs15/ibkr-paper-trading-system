@@ -12,6 +12,13 @@ from app.broker.ibkr.tws_client import TWSClient
 from app.instruments.models import ResolvedInstrument
 from app.oms.ibkr_adapter import IBKRExecutionAdapter
 from app.oms.models import OMSOrder, OMSOrderStatus
+from app.rms.models import (
+    ExecutionIntentMode,
+    OrderAction,
+    OrderIntent,
+    OrderLeg,
+    OrderSide,
+)
 from tests.ibkr_test_utils import DEFAULT_TEST_IBKR_ACCOUNT, wire_test_managed_accounts
 
 

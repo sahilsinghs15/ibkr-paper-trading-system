@@ -31,6 +31,15 @@ export function writeLastIbkrAccount(account: string): void {
   }
 }
 
+export function findAccountByIbkr<T extends { ibkr_account?: string | null }>(
+  accounts: T[] | undefined,
+  ibkr: string,
+): T | undefined {
+  const clean = normalizeIbkrAccount(ibkr)
+  if (!clean || !accounts) return undefined
+  return accounts.find((row) => normalizeIbkrAccount(row.ibkr_account) === clean)
+}
+
 export function pickDefaultIbkrAccount(
   accounts: Array<{ ibkr_account?: string | null; enabled?: boolean }>,
   last: string,

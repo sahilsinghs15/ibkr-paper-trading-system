@@ -114,9 +114,9 @@ async def _run_pipeline(intent: OrderIntent) -> tuple[Any, IBKRExecutionAdapter,
     submit_calls: list[Any] = []
     original_submit = adapter.submit_order
 
-    async def spy_submit(order: Any) -> Any:
+    async def spy_submit(order: Any, before_place: Any = None) -> Any:
         submit_calls.append(order)
-        return await original_submit(order)
+        return await original_submit(order, before_place=before_place)
 
     adapter.submit_order = spy_submit  # type: ignore[method-assign]
     recorder = _LegRecorder()
@@ -211,6 +211,13 @@ async def test_4_strategy_isolation_skips_model_blue_sizer() -> None:
     sizer = MagicMock(spec=ModelBlueSizer)
     adapter = _mock_adapter()
     oms = OMSService(adapter=adapter)
+    rms_context = _rms_context()
+    for sid in ("model_red", "default_strategy", "model_blue"):
+        rms_context.strategy_configs[sid] = StrategyConfig(
+            strategy_id=sid,
+            max_open_positions=10,
+            money_limit_per_symbol=Decimal(1_000_000),
+        )
     order_manager = OrderManager(
         oms=oms,
         symbol=None,
@@ -218,7 +225,7 @@ async def test_4_strategy_isolation_skips_model_blue_sizer() -> None:
         order_type="MARKET",
         model_blue_sizer=sizer,
         committed_capital_provider=TemporarySettingsCommittedCapitalProvider(Decimal(25000)),
-        rms_context=_rms_context(),
+        rms_context=rms_context,
         rms_engine=RMSEngine(),
     )
     from dataclasses import replace

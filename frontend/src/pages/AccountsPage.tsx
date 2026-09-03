@@ -295,6 +295,7 @@ function AddAllocationModal({
   const [allocPct, setAllocPct] = useState('25')
   const [enabled, setEnabled] = useState(true)
   const [maxOpenPositions, setMaxOpenPositions] = useState('200')
+  const [pairMaxAllocationPct, setPairMaxAllocationPct] = useState('10')
   const [error, setError] = useState<string | null>(null)
 
   const mutation = useMutation({
@@ -302,6 +303,7 @@ function AddAllocationModal({
       if (!account) throw new Error('No account selected.')
       const pct = parseFloat(allocPct)
       const cap = parseInt(maxOpenPositions, 10)
+      const pairPct = parseFloat(pairMaxAllocationPct)
 
       if (isNaN(pct) || pct <= 0 || pct > 100) {
         throw new Error('Allocation percentage must be between 0.01% and 100%.')
@@ -309,12 +311,16 @@ function AddAllocationModal({
       if (isNaN(cap) || cap <= 0) {
         throw new Error('Max open positions cap must be at least 1.')
       }
+      if (isNaN(pairPct) || pairPct <= 0 || pairPct > 100) {
+        throw new Error('Per-pair allocation must be between 0.01% and 100%.')
+      }
 
       return createAllocation(account.id, {
         strategy_id: strategyId,
         alloc_pct: pct / 100,
         enabled,
         max_open_positions: cap,
+        pair_max_allocation_pct: pairPct / 100,
       })
     },
     onSuccess: () => {
@@ -376,6 +382,31 @@ function AddAllocationModal({
               value={maxOpenPositions}
               onChange={(e) => setMaxOpenPositions(e.target.value)}
             />
+          </label>
+          <label className="field">
+            <span>Per-pair allocation</span>
+            <div className="money-field">
+              <input
+                type="number"
+                min="0.01"
+                max="100"
+                step="0.01"
+                value={pairMaxAllocationPct}
+                onChange={(e) => setPairMaxAllocationPct(e.target.value)}
+              />
+              <span className="money-suffix">%</span>
+            </div>
+            <span className="field-hint">
+              {(() => {
+                const committed =
+                  (parseFloat(account.total_margin) * (parseFloat(allocPct) || 0)) / 100
+                const pairBudget = (committed * (parseFloat(pairMaxAllocationPct) || 0)) / 100
+                const pairPct = parseFloat(pairMaxAllocationPct) || 0
+                const room =
+                  pairPct > 0 ? ` · room for ${Math.floor(100 / pairPct)} pairs` : ''
+                return `${fmtPct(pairPct)} of ${fmtUsd(String(committed))} = ${fmtUsd(String(pairBudget))} per pair${room}`
+              })()}
+            </span>
           </label>
           <label className="toggle-row">
             <input

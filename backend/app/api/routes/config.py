@@ -28,9 +28,11 @@ from app.schemas.config_schemas import (
     ExecutionSettingsSchema,
     KillSwitchClearResponse,
     KillSwitchStatusResponse,
+    MarginSettingsSchema,
     PatchAccountRequest,
     PatchAllocationRequest,
     PatchExecutionSettingsRequest,
+    PatchMarginSettingsRequest,
     PutDefaultSymbolLimitRequest,
     PutSymbolLimitRequest,
     SquareOffResponse,
@@ -197,8 +199,10 @@ async def square_off_account_positions(
     order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
     session_factory = getattr(request.app.state, "session_factory", None)
     if session_factory is None:
-        from app.db.session import AsyncSessionLocal
-        session_factory = AsyncSessionLocal
+        raise HTTPException(
+            status_code=503,
+            detail="Session factory is unavailable.",
+        )
 
     kill_switch_svc = KillSwitchService(
         session_factory=session_factory,
@@ -246,9 +250,10 @@ async def clear_account_kill_switch_endpoint(
 
     session_factory = getattr(request.app.state, "session_factory", None)
     if session_factory is None:
-        from app.db.session import AsyncSessionLocal
-
-        session_factory = AsyncSessionLocal
+        raise HTTPException(
+            status_code=503,
+            detail="Session factory is unavailable.",
+        )
 
     from app.services.kill_switch import (
         clear_account_kill_switch,
@@ -307,9 +312,10 @@ async def close_selected_pair_endpoint(
     order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
     session_factory = getattr(request.app.state, "session_factory", None)
     if session_factory is None:
-        from app.db.session import AsyncSessionLocal
-
-        session_factory = AsyncSessionLocal
+        raise HTTPException(
+            status_code=503,
+            detail="Session factory is unavailable.",
+        )
 
     from app.services.position_close_service import SinglePairCloseService
 
@@ -467,16 +473,18 @@ async def create_account_allocation(
             time_limit=body.time_limit,
             enabled=body.enabled,
             max_open_positions=body.max_open_positions,
+            pair_max_allocation_pct=body.pair_max_allocation_pct,
         )
         await session.commit()
     except AllocationConfigError as exc:
         await session.rollback()
         raise _config_error(exc) from exc
     logger.info(
-        "Config POST allocation account_id=%s strategy=%s pct=%s enabled=%s",
+        "Config POST allocation account_id=%s strategy=%s pct=%s pair_pct=%s enabled=%s",
         account_id,
         body.strategy_id,
         body.alloc_pct,
+        body.pair_max_allocation_pct,
         body.enabled,
     )
     return AllocationConfigSchema.model_validate(allocation)
@@ -559,6 +567,7 @@ async def patch_allocation(
         body.alloc_pct is None
         and body.enabled is None
         and body.max_open_positions is None
+        and body.pair_max_allocation_pct is None
     ):
         raise HTTPException(status_code=400, detail="No fields to update.")
     try:
@@ -567,17 +576,19 @@ async def patch_allocation(
             alloc_pct=body.alloc_pct,
             enabled=body.enabled,
             max_open_positions=body.max_open_positions,
+            pair_max_allocation_pct=body.pair_max_allocation_pct,
         )
         await session.commit()
     except AllocationConfigError as exc:
         await session.rollback()
         raise _config_error(exc) from exc
     logger.info(
-        "Config PATCH allocation id=%s pct=%s enabled=%s cap=%s",
+        "Config PATCH allocation id=%s pct=%s enabled=%s cap=%s pair_pct=%s",
         allocation_id,
         body.alloc_pct,
         body.enabled,
         body.max_open_positions,
+        body.pair_max_allocation_pct,
     )
     return AllocationConfigSchema.model_validate(allocation)
 
@@ -767,4 +778,86 @@ async def patch_execution_settings(
     )
     paper = paper_retry_ports_allowed(get_settings().ibkr_port)
     return _execution_schema(row, paper_active=paper)
+
+
+def _margin_schema(row) -> MarginSettingsSchema:
+    return MarginSettingsSchema(
+        check_enabled=row.check_enabled,
+        gate_basis=row.gate_basis,
+        min_free_buffer=row.min_free_buffer,
+        min_free_pct_of_netliq=row.min_free_pct_of_netliq,
+        comfort_ratio=row.comfort_ratio,
+        confirm_borderline=row.confirm_borderline,
+        enforce_look_ahead=row.enforce_look_ahead,
+        reject_on_stale_snapshot=row.reject_on_stale_snapshot,
+        default_rate=row.default_rate,
+        rate_safety_multiplier=row.rate_safety_multiplier,
+    )
+
+
+@router.get(
+    "/margin",
+    response_model=MarginSettingsSchema,
+    summary="Margin-gate operator policy",
+)
+async def get_margin_settings(
+    session: AsyncSession = Depends(get_db_session),
+    _user: UserModel = Depends(require_authenticated_user),
+) -> MarginSettingsSchema:
+    svc = AccountStrategyConfigService(session)
+    row = await svc.get_or_create_margin_settings()
+    await session.commit()
+    return _margin_schema(row)
+
+
+@router.patch(
+    "/margin",
+    response_model=MarginSettingsSchema,
+    summary="Update margin-gate operator policy",
+)
+async def patch_margin_settings(
+    body: PatchMarginSettingsRequest,
+    session: AsyncSession = Depends(get_db_session),
+    order_manager: OrderManager = Depends(get_order_manager),
+    _admin: UserModel = Depends(require_admin),
+) -> MarginSettingsSchema:
+    if (
+        body.check_enabled is None
+        and body.gate_basis is None
+        and body.min_free_buffer is None
+        and body.min_free_pct_of_netliq is None
+        and body.comfort_ratio is None
+        and body.confirm_borderline is None
+        and body.enforce_look_ahead is None
+        and body.reject_on_stale_snapshot is None
+        and body.default_rate is None
+        and body.rate_safety_multiplier is None
+    ):
+        raise HTTPException(status_code=400, detail="No fields to update.")
+    svc = AccountStrategyConfigService(session)
+    try:
+        row = await svc.update_margin_settings(
+            check_enabled=body.check_enabled,
+            gate_basis=body.gate_basis,
+            min_free_buffer=body.min_free_buffer,
+            min_free_pct_of_netliq=body.min_free_pct_of_netliq,
+            comfort_ratio=body.comfort_ratio,
+            confirm_borderline=body.confirm_borderline,
+            enforce_look_ahead=body.enforce_look_ahead,
+            reject_on_stale_snapshot=body.reject_on_stale_snapshot,
+            default_rate=body.default_rate,
+            rate_safety_multiplier=body.rate_safety_multiplier,
+        )
+        await session.commit()
+    except AllocationConfigError as exc:
+        await session.rollback()
+        raise _config_error(exc) from exc
+    await order_manager.reload_margin_settings()
+    logger.info(
+        "Config PATCH margin check_enabled=%s basis=%s comfort=%s",
+        row.check_enabled,
+        row.gate_basis,
+        row.comfort_ratio,
+    )
+    return _margin_schema(row)
 

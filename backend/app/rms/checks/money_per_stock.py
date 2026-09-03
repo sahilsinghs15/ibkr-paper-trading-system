@@ -2,6 +2,7 @@
 
 from decimal import Decimal
 
+from app.core.identifiers import normalize_symbol
 from app.rms.checks.base import BaseRMSCheck
 from app.rms.models import (
     CheckResult,
@@ -40,8 +41,9 @@ class MoneyPerStockCheck(BaseRMSCheck):
 
         symbol_order_notionals: dict[str, Decimal] = {}
         for leg in intent.legs:
-            current_notional = symbol_order_notionals.get(leg.symbol, Decimal(0))
-            symbol_order_notionals[leg.symbol] = current_notional + leg.effective_notional
+            symbol = normalize_symbol(leg.symbol)
+            current_notional = symbol_order_notionals.get(symbol, Decimal(0))
+            symbol_order_notionals[symbol] = current_notional + leg.effective_notional
 
         if not symbol_order_notionals:
             return CheckResult(

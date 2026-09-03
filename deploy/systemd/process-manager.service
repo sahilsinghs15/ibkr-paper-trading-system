@@ -1,5 +1,5 @@
 [Unit]
-Description=IBKR Trading Process Manager (Gateway + Backend + Webhook)
+Description=DEPRECATED — do not enable. Use trading-backend / webhook-ingest / ibgateway.
 After=network.target postgresql.service redis-server.service
 Wants=postgresql.service
 Requires=network.target

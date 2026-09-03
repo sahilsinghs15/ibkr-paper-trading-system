@@ -48,6 +48,7 @@ async def collect_system_monitor_data(
     session: AsyncSession | None = None,
     tws_client: Any | None = None,
     redis_client: Redis | None = None,
+    account_margin: Any | None = None,
 ) -> SystemMonitorResponse:
     """Collect complete system metrics and service health states safely without side-effects."""
     settings = get_settings()
@@ -277,6 +278,41 @@ async def collect_system_monitor_data(
     if not is_open and overall_status == "HEALTHY":
         if ib_gateway_status.status == "MARKET_CLOSED" or webhook_status.status == "MARKET_CLOSED":
             overall_status = "MARKET_CLOSED"
+
+    if account_margin is not None:
+        try:
+            snapshots = account_margin.all_snapshots()
+            if not snapshots:
+                alerts.append(
+                    AlertItem(
+                        level="WARNING",
+                        component="Margin",
+                        message="No live IBKR account-margin snapshot yet",
+                    )
+                )
+                if overall_status == "HEALTHY":
+                    overall_status = "DEGRADED"
+            for snap in snapshots.values():
+                if snap.is_stale:
+                    alerts.append(
+                        AlertItem(
+                            level="CRITICAL",
+                            component="Margin",
+                            message=f"{snap.ibkr_account} margin snapshot is stale",
+                        )
+                    )
+                    overall_status = "CRITICAL"
+                elif snap.available_funds is not None and snap.available_funds <= 0:
+                    alerts.append(
+                        AlertItem(
+                            level="CRITICAL",
+                            component="Margin",
+                            message=f"{snap.ibkr_account} AvailableFunds={snap.available_funds}",
+                        )
+                    )
+                    overall_status = "CRITICAL"
+        except Exception:
+            logger.exception("Failed to collect account margin for system monitor")
 
     return SystemMonitorResponse(
         overall_status=overall_status, # type: ignore[arg-type]

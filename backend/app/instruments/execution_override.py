@@ -1,22 +1,28 @@
-"""TEMPORARY paper/demo execution mapping.
+"""Production Model Blue execution mapping.
 
 TradingView / Model Blue continue to send instrument_type=STK.
 When enabled, execution uses IBKR CFD from symbol + secType=CFD
 (no instruments-table row, no invented conId).
 
-Disable with PAPER_EXECUTE_STK_AS_CFD=false. Do not copy this mapping
+This is the intended production instrument for Model Blue; options
+are added later as a new requested type. Do not copy this mapping
 into the IBKR adapter, TWS client, OMS placeOrder, basket, or RMS.
 """
 
 from __future__ import annotations
 
-STK_TO_CFD_DEMO = "STK_TO_CFD_DEMO"
+import logging
+
+logger = logging.getLogger(__name__)
+
+STK_TO_CFD = "STK_TO_CFD"
 
 
-def paper_execute_stk_as_cfd_enabled() -> bool:
+def execute_stk_as_cfd_enabled() -> bool:
     from app.core.config import get_settings
 
-    return bool(get_settings().paper_execute_stk_as_cfd)
+    settings = get_settings()
+    return bool(getattr(settings, "execute_stk_as_cfd", True))
 
 
 def execution_instrument_type(
@@ -31,7 +37,10 @@ def execution_instrument_type(
     raw = (requested or "").strip().upper()
     if not raw:
         return raw, None
-    on = paper_execute_stk_as_cfd_enabled() if enabled is None else enabled
+    on = execute_stk_as_cfd_enabled() if enabled is None else enabled
     if on and raw == "STK":
-        return "CFD", STK_TO_CFD_DEMO
+        logger.info(
+            "Executed secType=CFD for requested STK (Model Blue STK→CFD map)"
+        )
+        return "CFD", STK_TO_CFD
     return raw, None

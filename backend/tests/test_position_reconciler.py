@@ -252,14 +252,6 @@ async def test_reconciler_never_calls_position_repository_mutators(
         mock_close.assert_not_called()
 
 
-@pytest.fixture
-async def session_factory():
-    from app.db.session import AsyncSessionLocal, engine
-
-    yield AsyncSessionLocal
-    await engine.dispose()
-
-
 @pytest.mark.asyncio
 async def test_broker_snapshot_replace(
     session_factory: async_sessionmaker[AsyncSession],
@@ -441,3 +433,75 @@ async def test_collect_reconcile_positions_ledger_ghost_when_broker_empty(
     assert len(ghost_diffs) >= 1
     assert any(d.symbol == "AAPL" for d in ghost_diffs)
     assert any(d.symbol == "MSFT" for d in ghost_diffs)
+
+
+@pytest.mark.asyncio
+async def test_reconciler_sweep_invokes_after_sweep(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    called: list[bool] = []
+
+    async def after_sweep() -> None:
+        called.append(True)
+
+    client = MagicMock()
+    client.is_connected.return_value = True
+    client.request_positions_async = AsyncMock(return_value=([], False))
+    reconciler = PositionReconciler(
+        session_factory, client, interval_sec=9999.0, after_sweep=after_sweep
+    )
+    await reconciler.run_once()
+    assert called == [True]
+
+
+@pytest.mark.asyncio
+async def test_after_reconcile_sweep_reseeds_model_value_used(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from app.services.order_manager import OrderManager
+
+    test_id = uuid4().hex[:8]
+    trade_id = f"RESEED-MV-{test_id}"
+    trade = OpenModelBlueTrade(
+        trade_id=trade_id,
+        strategy_id="model_blue",
+        direction=1,
+        legs=(
+            OpenModelBlueTradeLeg(
+                symbol="XLE",
+                instrument_type="STK",
+                side=OrderSide.BUY,
+                quantity=Decimal(10),
+                price=Decimal(20),
+            ),
+            OpenModelBlueTradeLeg(
+                symbol="XOP",
+                instrument_type="STK",
+                side=OrderSide.SELL,
+                quantity=Decimal(5),
+                price=Decimal(12),
+            ),
+        ),
+    )
+    account_id: int
+    async with session_factory() as session, session.begin():
+        acc = AccountModel(
+            name=f"ReseedAcc-{test_id}",
+            ibkr_account=f"DU-RESEED-{test_id}",
+            total_margin=Decimal(100000),
+        )
+        session.add(acc)
+        await session.flush()
+        account_id = acc.id
+        await PositionRepository(session).open_trade(
+            trade,
+            account_id=account_id,
+            target=Decimal("0.05"),
+            stop=Decimal("0.02"),
+            time_limit=60,
+        )
+
+    mgr = OrderManager(oms=None, session_factory=session_factory)
+    mgr._rms_context.model_value_used[(account_id, "model_blue")] = Decimal(9999)
+    await mgr.after_reconcile_sweep()
+    assert mgr._rms_context.model_value_used[(account_id, "model_blue")] == Decimal(260)

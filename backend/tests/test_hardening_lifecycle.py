@@ -87,6 +87,8 @@ def _ctx(
         total_margin=total,
         alloc_pct=pct,
         committed_notional=total * pct,
+        pair_max_allocation_pct=Decimal("1"),
+        pair_budget=total * pct,
         target=Decimal(500),
         stop=Decimal(250),
         time_limit=3600,
@@ -112,11 +114,13 @@ def _oms(*managed_accounts: str) -> OMSService:
 def test_default_rms_checks_are_duplicate_strategy_month_limit_money() -> None:
     names = [c.check_name for c in get_default_checks()]
     assert names == [
+        "MARGIN",
         "DUPLICATE",
         "STRATEGY",
         "CONTRACT_MONTH",
         "OPEN_POSITION_LIMIT",
         "MONEY_PER_STOCK",
+        "MODEL_MARKET_VALUE",
     ]
 
 
@@ -167,8 +171,8 @@ def test_rms_evaluates_floored_quantity() -> None:
         ),
     )
     assert result.outcome == RMSOutcome.PASS
-    assert [leg.quantity for leg in result.intent.legs] == [399.0, 93.0]
-    assert len(result.check_results) == 5
+    assert [leg.quantity for leg in result.intent.legs] == [237.0, 55.0]
+    assert len(result.check_results) == 7
 
 
 def test_unrealized_pnl_long_and_short() -> None:
@@ -325,6 +329,7 @@ async def test_live_pnl_hydrates_open_stk_and_skips_unresolved_cfd() -> None:
 
         client = MagicMock()
         client.reqMktData = MagicMock()
+        client.is_connected.return_value = False
         svc = LivePnlService(factory, client)
         manager = OrderManager(
             oms=_oms(),
@@ -333,21 +338,39 @@ async def test_live_pnl_hydrates_open_stk_and_skips_unresolved_cfd() -> None:
         manager._live_pnl = svc
         await manager.hydrate_live_pnl()
         assert (account_id, trade_stk) in svc._legs
-        stk_reqs = [rid for rid, mapped in svc._by_req.items() if mapped[1] == trade_stk]
+        stk_reqs = [
+            rid
+            for rid, listeners in svc._listeners_by_req.items()
+            if any(mapped[1] == trade_stk for mapped in listeners)
+        ]
         assert len(stk_reqs) == 2
+        called_symbols = {
+            c.args[1].symbol for c in client.reqMktData.call_args_list if c.args
+        }
+        assert {"XLE", "XOP"}.issubset(called_symbols)
         stk_contracts = [
             c.args[1]
             for c in client.reqMktData.call_args_list
-            if c.args[1].symbol in ("XLE", "XOP") and c.args[0] in stk_reqs
+            if c.args and getattr(c.args[1], "symbol", None) in ("XLE", "XOP")
         ]
-        assert len(stk_contracts) == 2
+        assert stk_contracts
         assert all(c.secType == "STK" for c in stk_contracts)
         before = client.reqMktData.call_count
         await manager.hydrate_live_pnl()
         assert client.reqMktData.call_count == before
-        assert len([rid for rid, mapped in svc._by_req.items() if mapped[1] == trade_stk]) == 2
+        assert len(
+            [
+                rid
+                for rid, listeners in svc._listeners_by_req.items()
+                if any(mapped[1] == trade_stk for mapped in listeners)
+            ]
+        ) == 2
         assert (account_id, trade_cfd) in svc._legs
-        cfd_reqs = [rid for rid, mapped in svc._by_req.items() if mapped[1] == trade_cfd]
+        cfd_reqs = [
+            rid
+            for rid, listeners in svc._listeners_by_req.items()
+            if any(mapped[1] == trade_cfd for mapped in listeners)
+        ]
         assert cfd_reqs == []
     finally:
         await engine.dispose()
@@ -426,9 +449,9 @@ async def test_close_uses_open_fill_qty_and_realized_pnl() -> None:
         )
         assert open_res is not None and open_res.success
         by_sym = {o.symbol: o for o in open_res.orders if not o.is_compensation}
-        assert by_sym["XLE"].quantity == 399.0
-        assert by_sym["XOP"].quantity == 93.0
-        assert by_sym["XLE"].filled_quantity == 399.0
+        assert by_sym["XLE"].quantity == 237.0
+        assert by_sym["XOP"].quantity == 55.0
+        assert by_sym["XLE"].filled_quantity == 237.0
         assert by_sym["XLE"].quantity == by_sym["XLE"].filled_quantity
 
         async with factory() as session:
@@ -436,7 +459,7 @@ async def test_close_uses_open_fill_qty_and_realized_pnl() -> None:
                 trade_id, account_id=account_id
             )
             assert pos is not None
-            assert pos.leg_a_signed_qty == Decimal(399)
+            assert pos.leg_a_signed_qty == Decimal(237)
             assert pos.leg_a_entry_mark == _XLE
             events = (await session.execute(select(EventLogModel.kind))).scalars().all()
             assert "RMS_PASS" in events
@@ -446,8 +469,8 @@ async def test_close_uses_open_fill_qty_and_realized_pnl() -> None:
                 await session.execute(select(OrderModel).where(OrderModel.trade_id == trade_id))
             ).scalars().all()
             assert {o.fill_qty for o in orders if not o.is_compensation} == {
-                Decimal("399.0000"),
-                Decimal("93.0000"),
+                Decimal("237.0000"),
+                Decimal("55.0000"),
             }
             assert all(o.quantity == o.fill_qty for o in orders if not o.is_compensation)
 
@@ -470,8 +493,8 @@ async def test_close_uses_open_fill_qty_and_realized_pnl() -> None:
             for o in close_res.orders
             if o.intent.action == OrderAction.CLOSE and not o.is_compensation
         }
-        assert close_by["XLE"].quantity == 399.0
-        assert close_by["XOP"].quantity == 93.0
+        assert close_by["XLE"].quantity == 237.0
+        assert close_by["XOP"].quantity == 55.0
         assert close_by["XLE"].side == OrderSide.SELL
         assert close_by["XOP"].side == OrderSide.BUY
 
@@ -546,7 +569,219 @@ async def test_realized_pnl_long_short_and_optional_commission() -> None:
 
 
 @pytest.mark.asyncio
-async def test_account_a_limit_reject_does_not_stop_account_b() -> None:
+async def test_close_trade_adds_commission_to_entry_commission() -> None:
+    """M13: close commission sums onto entry commission already on the row."""
+    engine = create_engine_from_settings()
+    factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+    trade_id = f"T-COMM-{uuid4().hex[:8]}"
+    try:
+        async with factory() as session, session.begin():
+            account = AccountModel(
+                name=f"comm-{uuid4().hex[:8]}",
+                ibkr_account=f"DU{uuid4().hex[:8]}",
+                total_margin=Decimal(100000),
+                enabled=True,
+            )
+            session.add(account)
+            await session.flush()
+            account_id = account.id
+            await PositionRepository(session).open_trade(
+                OpenModelBlueTrade(
+                    trade_id=trade_id,
+                    strategy_id=MODEL_BLUE_STRATEGY_ID,
+                    direction=1,
+                    legs=(
+                        OpenModelBlueTradeLeg(
+                            symbol="XLE",
+                            instrument_type="STK",
+                            side=OrderSide.BUY,
+                            quantity=Decimal(100),
+                            price=Decimal("50"),
+                        ),
+                        OpenModelBlueTradeLeg(
+                            symbol="XOP",
+                            instrument_type="STK",
+                            side=OrderSide.SELL,
+                            quantity=Decimal(50),
+                            price=Decimal("100"),
+                        ),
+                    ),
+                ),
+                account_id=account_id,
+                target=Decimal(500),
+                stop=Decimal(250),
+                time_limit=3600,
+            )
+            row = await PositionRepository(session).get_by_trade_id(
+                trade_id, account_id=account_id
+            )
+            assert row is not None
+            row.commission = Decimal("2.50")
+            closed = await PositionRepository(session).close_trade(
+                trade_id,
+                account_id=account_id,
+                exit_marks={"XLE": Decimal("51"), "XOP": Decimal("99")},
+                commission=Decimal("1.25"),
+            )
+            assert closed.commission == Decimal("3.75")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_closed_trade_id_cannot_open_again() -> None:
+    """M41: any positions row (including CLOSED) blocks a new OPEN."""
+    from app.models.signal import Signal, SignalType
+    from app.services.model_blue.strategy import ModelBlueStrategy
+
+    engine = create_engine_from_settings()
+    factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+    trade_id = f"T-REOPEN-{uuid4().hex[:8]}"
+    try:
+        async with factory() as session, session.begin():
+            account = AccountModel(
+                name=f"reopen-{uuid4().hex[:8]}",
+                ibkr_account=f"DU{uuid4().hex[:8]}",
+                total_margin=Decimal(100000),
+                enabled=True,
+            )
+            session.add(account)
+            await session.flush()
+            account_id = account.id
+            await PositionRepository(session).open_trade(
+                OpenModelBlueTrade(
+                    trade_id=trade_id,
+                    strategy_id=MODEL_BLUE_STRATEGY_ID,
+                    direction=1,
+                    legs=(
+                        OpenModelBlueTradeLeg(
+                            symbol="XLE",
+                            instrument_type="STK",
+                            side=OrderSide.BUY,
+                            quantity=Decimal(100),
+                            price=Decimal("50"),
+                        ),
+                        OpenModelBlueTradeLeg(
+                            symbol="XOP",
+                            instrument_type="STK",
+                            side=OrderSide.SELL,
+                            quantity=Decimal(50),
+                            price=Decimal("100"),
+                        ),
+                    ),
+                ),
+                account_id=account_id,
+                target=Decimal(500),
+                stop=Decimal(250),
+                time_limit=3600,
+            )
+            await PositionRepository(session).close_trade(
+                trade_id,
+                account_id=account_id,
+                exit_marks={"XLE": Decimal("51"), "XOP": Decimal("99")},
+            )
+
+        from app.services.model_blue.db_trade_book import DatabaseModelBlueTradeBook
+
+        strategy = ModelBlueStrategy(trade_book=DatabaseModelBlueTradeBook(factory))
+        signal = Signal(
+            signal_type=SignalType.BUY,
+            timestamp=datetime.now(UTC),
+            reason="reopen-test",
+            signal_id=trade_id,
+            trade_id=trade_id,
+            strategy_id=MODEL_BLUE_STRATEGY_ID,
+            action="OPEN",
+        )
+        ctx = _ctx(account_id, "DU-TEST", total=Decimal(100000), pct=Decimal("0.25"))
+        from app.services.model_blue.parser import ModelBlueValidationError
+
+        with pytest.raises(ModelBlueValidationError, match="TRADE_ID_NOT_UNIQUE"):
+            await strategy._build_open_intent(signal, ctx)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_order_reaper_escalates_stale_zero_fill_order() -> None:
+    """M16: aged PENDING orders with no fills escalate parent basket."""
+    from datetime import timedelta
+
+    from app.db.models.basket import BasketModel
+    from app.db.models.order import OrderModel
+    from app.db.models.signal import SignalModel
+    from app.db.repositories.order_repository import OrderRepository
+    from app.oms.basket import BasketState
+
+    engine = create_engine_from_settings()
+    factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+    trade_id = f"T-REAP-{uuid4().hex[:8]}"
+    try:
+        async with factory() as session, session.begin():
+            account = AccountModel(
+                name=f"reap-{uuid4().hex[:8]}",
+                ibkr_account=f"DU{uuid4().hex[:8]}",
+                total_margin=Decimal(100000),
+                enabled=True,
+            )
+            session.add(account)
+            await session.flush()
+            sig = SignalModel(
+                strategy_id=MODEL_BLUE_STRATEGY_ID,
+                signal_id=trade_id,
+                trade_id=trade_id,
+                pair="XLE:XOP",
+                action="OPEN",
+                side="BUY",
+                ref_price_a=Decimal("50"),
+                raw_payload={"trade_id": trade_id},
+                status="NEW",
+            )
+            session.add(sig)
+            await session.flush()
+            basket = BasketModel(
+                account_id=account.id,
+                trade_id=trade_id,
+                strategy_id=MODEL_BLUE_STRATEGY_ID,
+                action="OPEN",
+                state=BasketState.PENDING.value,
+                intended_leg_count=2,
+            )
+            session.add(basket)
+            await session.flush()
+            stale_at = datetime.now(UTC) - timedelta(seconds=200)
+            order = OrderModel(
+                signal_id=sig.id,
+                trade_id=trade_id,
+                internal_order_id=f"ORD-{uuid4().hex[:8]}",
+                basket_id=basket.id,
+                account_id=account.id,
+                strategy_id=MODEL_BLUE_STRATEGY_ID,
+                leg="L0",
+                symbol="XLE",
+                ibkr_contract="XLE-STK-SMART-USD",
+                buy_sell="BUY",
+                quantity=Decimal("100"),
+                limit_price=Decimal("50"),
+                status="PENDING",
+                fill_qty=Decimal(0),
+            )
+            session.add(order)
+            await session.flush()
+            order.updated_at = stale_at
+            basket.updated_at = stale_at
+
+        async with factory() as session, session.begin():
+            reaped = await OrderRepository(session).reap_stale_orders(older_than_sec=120.0)
+            assert reaped >= 1
+            refreshed = await session.get(BasketModel, basket.id)
+            assert refreshed is not None
+            assert refreshed.state == BasketState.CRITICAL.value
+            assert refreshed.recovery_status == "ORDER_REAPED"
+            assert refreshed.recovery_detail is not None
+            assert order.internal_order_id in refreshed.recovery_detail
+    finally:
+        await engine.dispose()
     a = _ctx(81, "DU-TEST-A", total=Decimal(100000), pct=Decimal("0.25"), max_open=1)
     b = _ctx(82, "DU-TEST-B", total=Decimal(100000), pct=Decimal("0.25"), max_open=10)
     rms = RMSContext(

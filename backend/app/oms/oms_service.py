@@ -169,6 +169,7 @@ class OMSService:
         override_internal_id: str | None = None,
         limit_price: Decimal | None = None,
         order_type: str = "LIMIT",
+        before_place: object | None = None,
     ) -> OMSOrder:
         """Submit a single intent leg. Does not wait for broker fill."""
         received = oms_received_at or datetime.now(UTC)
@@ -196,6 +197,7 @@ class OMSService:
             override_internal_id=override_internal_id,
             limit_price=limit_price,
             order_type=order_type,
+            before_place=before_place,
         )
 
     async def _submit_leg(
@@ -208,6 +210,7 @@ class OMSService:
         override_internal_id: str | None,
         limit_price: Decimal | None,
         order_type: str,
+        before_place: object | None = None,
     ) -> OMSOrder:
         if index < 0 or index >= len(intent.legs):
             raise IndexError(f"Leg index {index} out of range for intent {intent.signal_id}")
@@ -280,7 +283,7 @@ class OMSService:
         )
 
         try:
-            order = await self._adapter.submit_order(order)
+            order = await self._adapter.submit_order(order, before_place=before_place)
             self._orders[internal_order_id] = order
         except Exception as e:
             logger.exception(

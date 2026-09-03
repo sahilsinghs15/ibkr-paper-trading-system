@@ -12,6 +12,7 @@ export interface AllocationConfig {
   target: string
   stop: string
   time_limit: number
+  pair_max_allocation_pct: string
 }
 
 export interface AccountConfig {
@@ -39,6 +40,19 @@ export interface ExecutionSettings {
   paper_retries_active: boolean
 }
 
+export interface MarginSettings {
+  check_enabled: boolean
+  gate_basis: string
+  min_free_buffer: string
+  min_free_pct_of_netliq: string
+  comfort_ratio: string
+  confirm_borderline: boolean
+  enforce_look_ahead: boolean
+  reject_on_stale_snapshot: boolean
+  default_rate: string
+  rate_safety_multiplier: string
+}
+
 export interface CreateAccountPayload {
   name: string
   ibkr_account: string
@@ -60,6 +74,7 @@ export interface CreateAllocationPayload {
   target?: number
   stop?: number
   time_limit?: number
+  pair_max_allocation_pct?: number
   enabled?: boolean
 }
 

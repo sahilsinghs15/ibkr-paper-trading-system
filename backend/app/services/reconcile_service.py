@@ -5,6 +5,8 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.identifiers import normalize_account
+
 from app.broker.ibkr.positions import BrokerPositionLine
 from app.db.models.account import AccountModel
 from app.db.models.instrument import InstrumentModel
@@ -64,12 +66,12 @@ async def collect_reconcile_positions(
     timed_out = latest_run.timed_out if latest_run is not None else False
 
     accounts = list((await session.execute(select(AccountModel))).scalars().all())
-    ibkr_to_account = {acc.ibkr_account: acc.id for acc in accounts}
+    ibkr_to_account = {normalize_account(acc.ibkr_account): acc.id for acc in accounts}
     account_to_ibkr = {acc.id: acc.ibkr_account for acc in accounts}
 
     target_account_id: int | None = None
     if ibkr_account is not None:
-        target_account_id = ibkr_to_account.get(ibkr_account)
+        target_account_id = ibkr_to_account.get(normalize_account(ibkr_account))
         if target_account_id is None:
             return ReconcilePositionsResponse(
                 run=run_summary,

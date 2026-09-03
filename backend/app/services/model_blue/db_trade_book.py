@@ -37,6 +37,13 @@ class DatabaseModelBlueTradeBook:
         async with self._session_factory() as session:
             return await TradeRepository(session).get_open(trade_id, account_id=resolved)
 
+    async def get_row(
+        self, trade_id: str, *, account_id: int | None = None
+    ):
+        resolved = self._require_account(account_id)
+        async with self._session_factory() as session:
+            return await TradeRepository(session).get_row(trade_id, account_id=resolved)
+
     async def record_open(
         self, trade: OpenModelBlueTrade, *, account_id: int | None = None
     ) -> None:

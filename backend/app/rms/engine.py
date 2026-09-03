@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from app.rms.checks.base import BaseRMSCheck
 from app.rms.checks.contract_month import ContractMonthCheck
 from app.rms.checks.duplicate import DuplicateCheck
+from app.rms.checks.margin import MarginCheck
+from app.rms.checks.model_market_value import ModelMarketValueCheck
 from app.rms.checks.money_per_stock import MoneyPerStockCheck
 from app.rms.checks.position_limit import OpenPositionLimitCheck
 from app.rms.checks.strategy import StrategyCheck
@@ -19,18 +21,22 @@ def get_default_checks() -> list[BaseRMSCheck]:
     """Get the default sequence of RMS checks in mandatory execution order.
 
     Order:
-        1. Check 2  — DUPLICATE
-        2. Check 3  — STRATEGY
-        3. Check 4  — CONTRACT MONTH
-        4. Check 7  — OPEN-POSITION LIMIT
-        5. Check 8  — MONEY PER STOCK
+        1. Check 1   — MARGIN
+        2. Check 2   — DUPLICATE
+        3. Check 3   — STRATEGY
+        4. Check 4   — CONTRACT MONTH
+        5. Check 7   — OPEN-POSITION LIMIT
+        6. Check 8   — MONEY PER STOCK
+        7. Check 101 — MODEL MARKET VALUE (local extension)
     """
     return [
+        MarginCheck(),
         DuplicateCheck(),
         StrategyCheck(),
         ContractMonthCheck(),
         OpenPositionLimitCheck(),
         MoneyPerStockCheck(),
+        ModelMarketValueCheck(),
     ]
 
 
@@ -41,7 +47,7 @@ class RMSEngine:
         """Initialize RMSEngine.
 
         Args:
-            checks: Custom sequence of RMS checks. If None, uses default 5 checks.
+            checks: Custom sequence of RMS checks. If None, uses default 7 checks.
         """
         self.checks: list[BaseRMSCheck] = list(checks) if checks is not None else get_default_checks()
 

@@ -12,13 +12,6 @@ from app.db.models.signal import SignalJobModel, SignalModel
 from demo_streaming.snapshot import load_signals
 
 
-@pytest.fixture
-async def session_factory():
-    from app.db.session import AsyncSessionLocal, engine
-    yield AsyncSessionLocal
-    await engine.dispose()
-
-
 @pytest.mark.asyncio
 async def test_load_signals_includes_account_metadata_and_rejected_signals(
     session_factory: async_sessionmaker[AsyncSession],

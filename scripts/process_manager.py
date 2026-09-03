@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 """
+DEPRECATED — do not run this as the production supervisor.
+
+Systemd units own restarts: trading-backend.service, webhook-ingest.service,
+ibgateway.service. `process-manager.service` must stay disabled. Watchdog
+observes/notifies only and does not call systemctl.
+
 process_manager.py
 
 Supervises the One Alpha trading stack as three selectable CLI groups:
@@ -124,7 +130,7 @@ XVFB_SETTLE_SEC = 2
 
 # Paper Gateway API socket (must match IBC / backend IBKR_PORT on this host)
 GATEWAY_API_HOST = "127.0.0.1"
-GATEWAY_API_PORT = 4002
+GATEWAY_API_PORT = 4001
 # IBC writes this after a successful paper/live logon (see ib_gateway.log)
 GATEWAY_LOGIN_MARKER = "Login has completed"
 GATEWAY_READY_TIMEOUT_SEC = 180

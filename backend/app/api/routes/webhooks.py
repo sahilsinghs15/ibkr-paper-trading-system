@@ -56,13 +56,6 @@ _INCOMING_SIGNAL_CSV_FIELDS = (
 )
 
 
-def _save_raw_capture_file(capture_data: dict[str, Any], filename: str) -> None:
-    """Save raw capture JSON payload to disk off the FastAPI event loop."""
-    WEBHOOK_CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
-    file_path = WEBHOOK_CAPTURE_DIR / filename
-    file_path.write_text(json.dumps(capture_data, indent=2), encoding="utf-8")
-
-
 def _csv_cell(value: Any) -> str:
     if value is None:
         return ""
@@ -149,16 +142,24 @@ def _verify_webhook_authentication(request: Request) -> None:
         return
 
     expected_secret = settings.webhook_auth_secret
-    if expected_secret:
-        incoming_secret = request.headers.get("X-Webhook-Secret")
-        if not incoming_secret or not hmac.compare_digest(
-            expected_secret.encode("utf-8"), incoming_secret.encode("utf-8")
-        ):
-            logger.warning("Unauthorized webhook request: missing or invalid X-Webhook-Secret header")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unauthorized: Missing or invalid authentication secret.",
-            )
+    if not expected_secret:
+        logger.warning(
+            "Webhook request rejected: WEBHOOK_AUTH_SECRET is not configured."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: Webhook authentication not configured.",
+        )
+
+    incoming_secret = request.headers.get("X-Webhook-Secret")
+    if not incoming_secret or not hmac.compare_digest(
+        expected_secret.encode("utf-8"), incoming_secret.encode("utf-8")
+    ):
+        logger.warning("Unauthorized webhook request: missing or invalid X-Webhook-Secret header")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: Missing or invalid authentication secret.",
+        )
 
 
 
@@ -246,24 +247,51 @@ async def _process_tradingview_webhook(
         )
 
     try:
+        job_id_str = ""
+        created_any = False
         async with session_factory() as session, session.begin():
-            job, created = await SignalJobRepository(session).create_job_if_not_exists(
-                signal_id=signal_id,
-                strategy_id=strategy_id,
-                trade_id=trade_id,
-                idempotency_key=idempotency_key,
-                raw_payload=payload,
-                capture_data=capture_data,
-                correlation_id=request_id,
-            )
-            job_id_str = str(job.job_id)
-            if not created:
-                logger.info(
-                    "Duplicate webhook received for idempotency_key=%s signal_id=%s (job_id=%s)",
-                    idempotency_key,
-                    signal_id,
-                    job_id_str,
+            from app.accounts.router import DatabaseStrategyAccountRouter
+
+            scopes: list[str | None] = [None]
+            try:
+                contexts = await DatabaseStrategyAccountRouter(session_factory).resolve(
+                    strategy_id, session=session
                 )
+                if contexts:
+                    scopes = [str(ctx.account_id) for ctx in contexts]
+            except Exception:
+                logger.exception(
+                    "Account router failed during ingest; enqueueing unscoped job strategy_id=%s",
+                    strategy_id,
+                )
+
+            for scope in scopes:
+                scoped_key = (
+                    idempotency_key
+                    if scope is None
+                    else f"{idempotency_key}:{scope}"
+                )
+                job, created = await SignalJobRepository(session).create_job_if_not_exists(
+                    signal_id=signal_id,
+                    strategy_id=strategy_id,
+                    trade_id=trade_id,
+                    idempotency_key=scoped_key,
+                    raw_payload=payload,
+                    capture_data=capture_data,
+                    correlation_id=request_id,
+                    account_scope=scope,
+                )
+                job_id_str = str(job.job_id)
+                created_any = created_any or created
+                if not created:
+                    logger.info(
+                        "Duplicate webhook received for idempotency_key=%s signal_id=%s "
+                        "account_scope=%s (job_id=%s)",
+                        scoped_key,
+                        signal_id,
+                        scope,
+                        job_id_str,
+                    )
     except Exception as exc:
         logger.exception("Failed to persist durable signal job into PostgreSQL queue")
         raise HTTPException(

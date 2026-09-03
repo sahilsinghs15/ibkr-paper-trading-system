@@ -10,6 +10,7 @@ import type {
   ExecutionSettings,
   KillSwitchClearResponse,
   KillSwitchStatusResponse,
+  MarginSettings,
   PatchAccountPayload,
   SymbolLimit,
 } from '../types/config'
@@ -116,6 +117,7 @@ export async function patchAllocation(
     alloc_pct?: string
     enabled?: boolean
     max_open_positions?: number
+    pair_max_allocation_pct?: string
   },
 ): Promise<AllocationConfig> {
   const { data } = await axios.patch<AllocationConfig>(
@@ -172,5 +174,17 @@ export async function patchExecutionSettings(
   >,
 ): Promise<ExecutionSettings> {
   const { data } = await axios.patch<ExecutionSettings>(`${base}/execution`, body)
+  return data
+}
+
+export async function fetchMarginSettings(): Promise<MarginSettings> {
+  const { data } = await axios.get<MarginSettings>(`${base}/margin`)
+  return data
+}
+
+export async function patchMarginSettings(
+  body: Partial<MarginSettings>,
+): Promise<MarginSettings> {
+  const { data } = await axios.patch<MarginSettings>(`${base}/margin`, body)
   return data
 }

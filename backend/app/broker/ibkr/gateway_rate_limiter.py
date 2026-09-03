@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import asyncio
 import logging
 import threading
@@ -74,7 +75,12 @@ class GatewayRateLimiter:
             raise ValueError("error100_cooldown_sec must be >= 0")
 
         self.max_msg_per_sec = max_msg_per_sec
-        self.normal_msg_per_sec = normal_msg_per_sec
+        if emergency_reserve_per_sec < max_msg_per_sec:
+            self.normal_msg_per_sec = min(
+                normal_msg_per_sec, max_msg_per_sec - emergency_reserve_per_sec
+            )
+        else:
+            self.normal_msg_per_sec = normal_msg_per_sec
         self.emergency_reserve_per_sec = emergency_reserve_per_sec
         self.max_wait_sec = max_wait_sec
         self.error100_cooldown_sec = error100_cooldown_sec
@@ -88,6 +94,8 @@ class GatewayRateLimiter:
         self._normal_tokens = float(self._normal_burst_cap)
         self._last_refill = time.monotonic()
         self._cooldown_until = 0.0
+        self._wait_seq = 0
+        self._wait_heap: list[tuple[int, int, threading.Event]] = []
 
         self.metrics: dict[str, Any] = {
             "total_acquired": 0,
@@ -142,12 +150,17 @@ class GatewayRateLimiter:
         deadline = time.monotonic() + self.max_wait_sec
         total_waited = 0.0
         delayed = False
+        my_event: threading.Event | None = None
+        my_key: tuple[int, int] | None = None
 
         while True:
-            wait_sec = 0.0
             with self._lock:
-                if self._try_consume_locked(priority):
+                if my_key is not None and not self._is_highest_waiter_locked(my_key):
+                    wait_sec = self._seconds_until_available_locked(priority)
+                elif self._try_consume_locked(priority):
                     self._record_acquire_locked(priority, request_type, delayed=delayed)
+                    if my_key is not None:
+                        self._remove_waiter_locked(my_key)
                     if delayed:
                         logger.info(
                             "IBKR submit paced: gateway_id=%s priority=%d type=%s "
@@ -163,11 +176,19 @@ class GatewayRateLimiter:
                         request_type=request_type,
                         waited_sec=total_waited,
                     )
-                wait_sec = self._seconds_until_available_locked(priority)
+                else:
+                    wait_sec = self._seconds_until_available_locked(priority)
+                if my_event is None:
+                    self._wait_seq += 1
+                    my_key = (priority, self._wait_seq)
+                    my_event = threading.Event()
+                    heapq.heappush(self._wait_heap, (*my_key, my_event))
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 with self._lock:
+                    if my_key is not None:
+                        self._remove_waiter_locked(my_key)
                     self.metrics["timeout_count"] += 1
                 logger.warning(
                     "Gateway pacing timeout: gateway_id=%s priority=%d type=%s "
@@ -183,11 +204,13 @@ class GatewayRateLimiter:
                     f"(priority={priority}, type={request_type})"
                 )
 
-            sleep_for = min(wait_sec, remaining, 0.05)
+            sleep_for = min(wait_sec, remaining, 0.25)
             if sleep_for > 0:
                 delayed = True
-                await asyncio.sleep(sleep_for)
+                assert my_event is not None
+                my_event.wait(timeout=sleep_for)
                 total_waited += sleep_for
+                my_event.clear()
 
     def blocking_acquire(
         self,
@@ -201,31 +224,46 @@ class GatewayRateLimiter:
         deadline = time.monotonic() + max_wait
         total_waited = 0.0
         delayed = False
+        my_event: threading.Event | None = None
+        my_key: tuple[int, int] | None = None
 
         while True:
-            wait_sec = 0.0
             with self._lock:
-                if self._try_consume_locked(priority):
+                if my_key is not None and not self._is_highest_waiter_locked(my_key):
+                    wait_sec = self._seconds_until_available_locked(priority)
+                elif self._try_consume_locked(priority):
                     self._record_acquire_locked(priority, request_type, delayed=delayed)
+                    if my_key is not None:
+                        self._remove_waiter_locked(my_key)
                     return AcquireResult(
                         delayed=delayed,
                         priority=priority,
                         request_type=request_type,
                         waited_sec=total_waited,
                     )
-                wait_sec = self._seconds_until_available_locked(priority)
+                else:
+                    wait_sec = self._seconds_until_available_locked(priority)
+                if my_event is None:
+                    self._wait_seq += 1
+                    my_key = (priority, self._wait_seq)
+                    my_event = threading.Event()
+                    heapq.heappush(self._wait_heap, (*my_key, my_event))
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 with self._lock:
+                    if my_key is not None:
+                        self._remove_waiter_locked(my_key)
                     self.metrics["timeout_count"] += 1
                 return None
 
-            sleep_for = min(wait_sec, remaining, 0.05)
+            sleep_for = min(wait_sec, remaining, 0.25)
             if sleep_for > 0:
                 delayed = True
-                time.sleep(sleep_for)
+                assert my_event is not None
+                my_event.wait(timeout=sleep_for)
                 total_waited += sleep_for
+                my_event.clear()
 
     def _record_acquire_locked(self, priority: int, request_type: str, *, delayed: bool) -> None:
         self.metrics["total_acquired"] += 1
@@ -252,6 +290,42 @@ class GatewayRateLimiter:
             self._normal_burst_cap,
             self._normal_tokens + elapsed * self.normal_msg_per_sec,
         )
+        self._notify_highest_waiter_locked()
+
+    def _is_highest_waiter_locked(self, key: tuple[int, int]) -> bool:
+        return bool(self._wait_heap) and self._wait_heap[0][:2] == key
+
+    def _remove_waiter_locked(self, key: tuple[int, int]) -> None:
+        pri, seq = key
+        self._wait_heap = [
+            item for item in self._wait_heap if not (item[0] == pri and item[1] == seq)
+        ]
+        heapq.heapify(self._wait_heap)
+
+    def _could_grant_locked(self, priority: int) -> bool:
+        now = time.monotonic()
+        if self._in_cooldown_locked(now):
+            return False
+        if self._global_tokens < 1.0:
+            return False
+        if priority == PRIORITY_EMERGENCY_FLATTEN:
+            return True
+        if priority == PRIORITY_ORDER_EXECUTION:
+            remaining_after = self._global_tokens - 1.0
+            return not (
+                remaining_after < self.emergency_reserve_per_sec
+                and self._normal_tokens < 1.0
+            )
+        return self._normal_tokens >= 1.0
+
+    def _notify_highest_waiter_locked(self) -> None:
+        """Wake the highest-priority waiter when a token may be available (M31)."""
+        while self._wait_heap:
+            pri, seq, evt = self._wait_heap[0]
+            if not self._could_grant_locked(pri):
+                break
+            evt.set()
+            break
 
     def _in_cooldown_locked(self, now: float) -> bool:
         return now < self._cooldown_until
@@ -264,8 +338,20 @@ class GatewayRateLimiter:
         if self._global_tokens < 1.0:
             return False
         is_emergency = priority == PRIORITY_EMERGENCY_FLATTEN
+        is_order = priority == PRIORITY_ORDER_EXECUTION
         if is_emergency:
             self._global_tokens -= 1.0
+            return True
+        if is_order:
+            # P1 may proceed without a normal token if it would not consume the reserve.
+            if self._global_tokens < 1.0:
+                return False
+            remaining_after = self._global_tokens - 1.0
+            if remaining_after < self.emergency_reserve_per_sec and self._normal_tokens < 1.0:
+                return False
+            self._global_tokens -= 1.0
+            if self._normal_tokens >= 1.0:
+                self._normal_tokens -= 1.0
             return True
         if self._normal_tokens < 1.0:
             return False

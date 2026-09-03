@@ -3,6 +3,7 @@
 Only fixed services and actions are allowed. No arbitrary systemctl command is ever executed.
 """
 
+import asyncio
 import logging
 import subprocess
 from typing import Annotated, Literal
@@ -52,7 +53,8 @@ async def control_service(
     # For status, we just query, not control
     if action == "status":
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["systemctl", "is-active", unit],
                 capture_output=True,
                 text=True,
@@ -60,7 +62,8 @@ async def control_service(
             )
             is_active = result.stdout.strip()
             # Also get show for more detail
-            show = subprocess.run(
+            show = await asyncio.to_thread(
+                subprocess.run,
                 ["systemctl", "show", unit, "--property=ActiveState", "--property=SubState", "--property=MainPID"],
                 capture_output=True,
                 text=True,
@@ -79,7 +82,8 @@ async def control_service(
     try:
         # Use systemctl directly, no shell, fixed unit/action — safe
         cmd = ["systemctl", action, unit]
-        result = subprocess.run(
+        result = await asyncio.to_thread(
+            subprocess.run,
             cmd,
             capture_output=True,
             text=True,

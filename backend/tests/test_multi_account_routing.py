@@ -84,6 +84,8 @@ def _ctx(
         total_margin=total,
         alloc_pct=pct,
         committed_notional=total * pct,
+        pair_max_allocation_pct=Decimal("1"),
+        pair_budget=total * pct,
         target=Decimal(500),
         stop=Decimal(250),
         time_limit=3600,
@@ -183,8 +185,10 @@ async def test_6_and_7_independent_sizing_different_alloc_pct() -> None:
     xle_a = next(o for o in by_acct[41] if o.symbol == "XLE")
     xle_b = next(o for o in by_acct[42] if o.symbol == "XLE")
     assert xle_a.quantity != xle_b.quantity
-    expected_a = float((Decimal(25000) / _XLE).quantize(Decimal(1), rounding=ROUND_DOWN))
-    expected_b = float((Decimal(20000) / _XLE).quantize(Decimal(1), rounding=ROUND_DOWN))
+    xle_target = Decimal(25000) * Decimal("0.5943")
+    xop_target = Decimal(20000) * Decimal("0.5943")
+    expected_a = float((xle_target / _XLE).quantize(Decimal(1), rounding=ROUND_DOWN))
+    expected_b = float((xop_target / _XLE).quantize(Decimal(1), rounding=ROUND_DOWN))
     assert xle_a.quantity == pytest.approx(expected_a)
     assert xle_b.quantity == pytest.approx(expected_b)
 
@@ -228,7 +232,9 @@ async def test_9_per_symbol_limits_are_account_specific() -> None:
         },
         per_symbol_limits={
             (61, "XLE"): Decimal(50000),
+            (61, "XOP"): Decimal(50000),
             (62, "XLE"): Decimal(100),
+            (62, "XOP"): Decimal(50000),
         },
     )
     manager = _manager([a, b], rms=rms)
@@ -716,6 +722,96 @@ async def test_router_uses_allocation_max_open_not_strategy(
         for row in (
             await session.execute(
                 select(StrategyModel).where(StrategyModel.strategy_id == strategy_id)
+            )
+        ).scalars():
+            await session.delete(row)
+
+
+@pytest.mark.asyncio
+async def test_router_derives_pair_budget_from_percentage(
+    db_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    suffix = uuid4().hex[:8]
+    strategy_id = MODEL_BLUE_STRATEGY_ID
+    async with db_factory() as session, session.begin():
+        existing = (
+            await session.execute(
+                select(StrategyModel).where(StrategyModel.strategy_id == strategy_id)
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(
+                StrategyModel(
+                    strategy_id=strategy_id,
+                    legs=2,
+                    expression="STK",
+                    max_open_positions=10,
+                    weight_source="payload",
+                    enabled=True,
+                )
+            )
+            await session.flush()
+        rich = AccountModel(
+            name=f"pair-rich-{suffix}",
+            ibkr_account=f"DURICH{suffix}",
+            total_margin=Decimal(100000),
+            enabled=True,
+        )
+        lean = AccountModel(
+            name=f"pair-lean-{suffix}",
+            ibkr_account=f"DULEAN{suffix}",
+            total_margin=Decimal(50000),
+            enabled=True,
+        )
+        session.add_all([rich, lean])
+        await session.flush()
+        session.add_all(
+            [
+                AllocationModel(
+                    account_id=rich.id,
+                    strategy_id=strategy_id,
+                    alloc_pct=Decimal("0.50"),
+                    pair_max_allocation_pct=Decimal("0.10"),
+                    target=Decimal(500),
+                    stop=Decimal(250),
+                    time_limit=3600,
+                    max_open_positions=10,
+                    enabled=True,
+                ),
+                AllocationModel(
+                    account_id=lean.id,
+                    strategy_id=strategy_id,
+                    alloc_pct=Decimal("0.50"),
+                    pair_max_allocation_pct=Decimal("0.10"),
+                    target=Decimal(500),
+                    stop=Decimal(250),
+                    time_limit=3600,
+                    max_open_positions=10,
+                    enabled=True,
+                ),
+            ]
+        )
+        rich_id, lean_id = rich.id, lean.id
+
+    router = DatabaseStrategyAccountRouter(db_factory)
+    contexts = await router.resolve(strategy_id)
+    by_id = {c.account_id: c for c in contexts}
+    assert by_id[rich_id].pair_budget == Decimal("5000")
+    assert by_id[lean_id].pair_budget == Decimal("2500")
+    assert by_id[rich_id].committed_notional == Decimal("50000")
+
+    async with db_factory() as session, session.begin():
+        for row in (
+            await session.execute(
+                select(AllocationModel).where(
+                    AllocationModel.account_id.in_([rich_id, lean_id])
+                )
+            )
+        ).scalars():
+            await session.delete(row)
+        for row in (
+            await session.execute(
+                select(AccountModel).where(AccountModel.id.in_([rich_id, lean_id]))
             )
         ).scalars():
             await session.delete(row)

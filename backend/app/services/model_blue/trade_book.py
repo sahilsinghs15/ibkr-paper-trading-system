@@ -1,6 +1,6 @@
 """In-memory and protocol for Model Blue open-trade lookup."""
 
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 from app.models.model_blue_trade import OpenModelBlueTrade, OpenModelBlueTradeLeg
 
@@ -10,6 +10,12 @@ __all__ = [
     "OpenModelBlueTrade",
     "OpenModelBlueTradeLeg",
 ]
+
+
+class TradeBookRow(NamedTuple):
+    """Minimal row shape for duplicate-open checks."""
+
+    risk_state: str
 
 
 class ModelBlueTradeBook(Protocol):
@@ -26,6 +32,10 @@ class ModelBlueTradeBook(Protocol):
     async def close(
         self, trade_id: str, *, account_id: int | None = None
     ) -> OpenModelBlueTrade: ...
+
+    async def get_row(
+        self, trade_id: str, *, account_id: int | None = None
+    ) -> object | None: ...
 
 
 class InMemoryModelBlueTradeBook:
@@ -57,3 +67,11 @@ class InMemoryModelBlueTradeBook:
         if trade is None:
             raise KeyError(trade_id)
         return trade
+
+    async def get_row(
+        self, trade_id: str, *, account_id: int | None = None
+    ) -> TradeBookRow | None:
+        trade = self._trades.get(self._key(trade_id, account_id))
+        if trade is None:
+            return None
+        return TradeBookRow(risk_state="OPEN")

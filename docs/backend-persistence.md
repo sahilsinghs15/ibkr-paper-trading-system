@@ -8,9 +8,9 @@
 |-------|-------|------|
 | `signals` | `SignalModel` | `db/models/signal.py` |
 | `signal_jobs` | `SignalJobModel` | `db/models/signal.py` (not exported in `__init__.py`) |
-| `accounts` | `AccountModel` | `db/models/account.py` | `id`, `name`, `ibkr_account`, `total_margin`, `enabled`. **No** gateway host/port/clientId. |
+| `accounts` | `AccountModel` | `db/models/account.py` | `id`, `name`, `ibkr_account`, `total_margin`, `enabled`. **No** gateway host/port/clientId. `total_margin` is an operator-entered **market-value budget** (trading capital), not IBKR margin available. |
 | `strategies` | `StrategyModel` | `db/models/strategy.py` |
-| `allocations` | `AllocationModel` | `db/models/strategy.py` |
+| `allocations` | `AllocationModel` | `db/models/strategy.py` | Includes `pair_max_allocation_pct` (`Numeric(9,6)`, `(0, 1]`, default 0.10) — fraction of the model allocation used as one pair's market-value budget. |
 | `per_symbol_limits` | `PerSymbolLimitModel` | `db/models/account.py` |
 | `orders` | `OrderModel` | `db/models/order.py` |
 | `positions` | `PositionModel` | `db/models/position.py` |
@@ -19,6 +19,8 @@
 | `baskets` | `BasketModel` | `db/models/basket.py` |
 | `executions` | `ExecutionModel` | `db/models/execution.py` |
 | `execution_settings` | `ExecutionSettingsModel` | `db/models/execution_settings.py` |
+| `margin_rates` | `MarginRateModel` | `db/models/margin_rate.py` | Directional `(symbol, instrument_type, side)` what-if rates |
+| `margin_settings` | `MarginSettingsModel` | `db/models/margin_settings.py` | Singleton (`id = 1`) operator margin-gate policy |
 | `execution_claims` | `ExecutionClaimModel` | `db/models/execution_claim.py` |
 | `kill_switch_operations` | `KillSwitchOperationModel` | `db/models/kill_switch.py` |
 | `broker_positions` | `BrokerPositionModel` | `db/models/broker_position.py` | Latest IBKR inventory snapshot (full replace each sweep) |
@@ -28,7 +30,7 @@ There is **no** `signal_legs` table. Legs live in signal payload / pair columns 
 
 There are **no** `gateways`, `gateway_clients`, or `account_gateway_bindings` tables. Multi-gateway mapping is target-only ([`backend-multi-gateway.md`](backend-multi-gateway.md)).
 
-## Alembic revisions (18 files, HEAD `f4a8c2d1e903`)
+## Alembic revisions (HEAD `k5l6m7n8o9p0`)
 
 | Revision | File | Topic |
 |----------|------|-------|
@@ -50,6 +52,16 @@ There are **no** `gateways`, `gateway_clients`, or `account_gateway_bindings` ta
 | `b6d8f0a2c147` | `b6d8f0a2c147_kill_switch_clear_columns.py` | cleared_at / cleared_by on kill switch |
 | `e9f2a7b4c610` | `e9f2a7b4c610_account_default_symbol_limit.py` | accounts.default_symbol_limit |
 | `f4a8c2d1e903` | `f4a8c2d1e903_broker_positions_reconcile.py` | broker_positions + position_reconcile_runs |
+| `a1b2c3d4e567` | `a1b2c3d4e567_basket_critical_recovery.py` | BASKET_CRITICAL recovery columns |
+| `g1h2i3j4k5l6` | `g1h2i3j4k5l6_create_users_table.py` | users |
+| `m1n2o3p4q5r6` | `m1n2o3p4q5r6_create_margin_rates_table.py` | margin_rates unique (symbol, type, side) |
+| `n2o3p4q5r6s7` | `n2o3p4q5r6s7_create_margin_settings_table.py` | margin_settings singleton |
+| `h2i3j4k5l6m7` | `h2i3j4k5l6m7_allocation_pair_max_allocation_pct.py` | allocations.pair_max_allocation_pct |
+| `i3j4k5l6m7n8` | `i3j4k5l6m7n8_uppercase_position_and_limit_symbols.py` | uppercase `positions` / `per_symbol_limits` symbols |
+| `j4k5l6m7n8o9` | `j4k5l6m7n8o9_unique_armed_kill_switch.py` | partial unique armed kill-switch per account |
+| `k5l6m7n8o9p0` | `k5l6m7n8o9p0_margin_check_enabled_default.py` | `margin_settings.check_enabled` default true |
+
+`users` and `strategies` rows are one-off INSERTs (no create-user / create-strategy HTTP API).
 
 ## Repositories
 
@@ -76,7 +88,7 @@ Under `backend/app/db/repositories/`:
 | Concern | Where |
 |---------|-------|
 | Active OMS order map / submit dedup | `OMSService` in-memory |
-| RMS runtime context (hydrated at startup) | `OrderManager` / `RMSContext` in-memory; symbol limits reload via `reload_rms_limits()` |
+| RMS runtime context (hydrated at startup) | `OrderManager` / `RMSContext` in-memory; symbol limits reload via `reload_rms_limits()`; margin snapshots + commitment tally in-memory; rates/policy reload via `reload_margin_rates()` / `reload_margin_settings()`; `model_value_used` re-seeded on each reconcile sweep via `after_reconcile_sweep()` |
 | Basket CRITICAL set / live basket objects | `BasketCoordinator` in-memory + `baskets` table |
 | Kill-switch armed accounts | `_KILL_SWITCH_ACTIVE_ACCOUNTS` in-memory; **authoritative** in `kill_switch_operations` |
 | Worker domain locks / exposure locks | `ExecutionWorkerPool` / `OrderManager` in-memory |

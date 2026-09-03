@@ -21,6 +21,7 @@ class SafetyGateChecker:
       - kill_switch (any account armed)
       - baskets (any BASKET_CRITICAL)
       - trading_mode (paper vs live — reported, not blocking unless unknown)
+      - margin (any account below floor or stale snapshot)
       - recovery (implicit via baskets)
     """
 
@@ -147,6 +148,47 @@ class SafetyGateChecker:
         except Exception as exc:  # noqa: BLE001
             failures.append(f"trading-mode check error: {exc}")
             gates["trading_mode"] = "UNKNOWN"
+
+        # Gate 5: margin — any account below floor or stale snapshot
+        gates["margin"] = "UNKNOWN"
+        try:
+            async with httpx.AsyncClient(timeout=3.0, headers=auth_headers) as client:
+                resp = await client.get(f"{self._base}/api/v1/margin/accounts")
+                if resp.status_code == 503:
+                    failures.append("margin check: gateway down or snapshot unavailable")
+                    gates["margin"] = "UNKNOWN"
+                elif resp.status_code != 200:
+                    failures.append(f"margin check HTTP {resp.status_code}")
+                    gates["margin"] = "UNKNOWN"
+                else:
+                    data = resp.json()
+                    accounts = data.get("accounts", [])
+                    unsafe: list[str] = []
+                    for row in accounts:
+                        acct = row.get("ibkr_account") or "?"
+                        if row.get("is_stale"):
+                            unsafe.append(f"{acct} STALE")
+                            continue
+                        effective = row.get("effective_free_margin")
+                        floor = row.get("floor")
+                        if effective is None:
+                            unsafe.append(f"{acct} missing effective_free_margin")
+                            continue
+                        try:
+                            if float(effective) <= float(floor or 0):
+                                unsafe.append(
+                                    f"{acct} effective_free={effective} floor={floor}"
+                                )
+                        except (TypeError, ValueError):
+                            unsafe.append(f"{acct} unparsable margin")
+                    if unsafe:
+                        failures.append("margin UNSAFE: " + "; ".join(unsafe))
+                        gates["margin"] = "UNSAFE"
+                    else:
+                        gates["margin"] = "SAFE"
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"margin check failed: {exc}")
+            gates["margin"] = "UNKNOWN"
 
         # Determine overall: any UNSAFE or UNKNOWN → not safe (fail closed)
         unsafe_or_unknown = [k for k, v in gates.items() if v != "SAFE"]

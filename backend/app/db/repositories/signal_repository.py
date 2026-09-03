@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import case, func, literal, not_, select, update
+from sqlalchemy import case, func, literal, not_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -344,26 +344,9 @@ class SignalJobRepository:
             raise RuntimeError(f"Failed to fetch existing job for idempotency key {idempotency_key}")
         return existing, False
 
-    async def claim_next_jobs(
-        self,
-        worker_id: str,
-        *,
-        limit: int = 1,
-        lease_duration_sec: float = 30.0,
-    ) -> list[SignalJobModel]:
-        """Claim up to `limit` queued/expired jobs using FOR UPDATE SKIP LOCKED.
-
-        Jobs sharing a ``trade_id`` are serialized: a candidate is skipped while
-        any sibling on the same trade_id holds a live lease. Combined with the
-        received_at ordering this makes an OPEN always execute before the CLOSE
-        that follows it, instead of both being handed to workers at once and
-        racing for the domain lock.
-        """
-        now = datetime.now(UTC)
-        lease_until = now + timedelta(seconds=lease_duration_sec)
-
+    def _sibling_in_flight_exists(self):
         sibling = aliased(SignalJobModel)
-        sibling_in_flight = (
+        return (
             select(literal(1))
             .select_from(sibling)
             .where(
@@ -374,49 +357,139 @@ class SignalJobRepository:
             .exists()
         )
 
+    def _claim_in_flight_exists(self):
+        from app.db.models.execution_claim import CLAIM_STATE_CLAIMED, ExecutionClaimModel
+
+        return (
+            select(literal(1))
+            .select_from(ExecutionClaimModel)
+            .where(
+                ExecutionClaimModel.strategy_id == SignalJobModel.strategy_id,
+                ExecutionClaimModel.state == CLAIM_STATE_CLAIMED,
+                (
+                    (ExecutionClaimModel.signal_id == SignalJobModel.signal_id)
+                    | (
+                        (SignalJobModel.trade_id.is_not(None))
+                        & (
+                            (ExecutionClaimModel.signal_id == SignalJobModel.trade_id)
+                            | (
+                                ExecutionClaimModel.signal_id
+                                == func.concat(SignalJobModel.trade_id, ":CLOSE")
+                            )
+                        )
+                    )
+                ),
+            )
+            .exists()
+        )
+
+    async def _trade_blocked_after_lock(self, job: SignalJobModel) -> bool:
+        """True if a sibling lease or live CLAIMED barrier is visible after the advisory lock."""
+        sibling = aliased(SignalJobModel)
+        sibling_count = (
+            await self._session.execute(
+                select(func.count())
+                .select_from(sibling)
+                .where(
+                    sibling.trade_id == job.trade_id,
+                    sibling.job_id != job.job_id,
+                    sibling.status.in_(ACTIVE_LEASE_STATUSES),
+                )
+            )
+        ).scalar_one()
+        if int(sibling_count or 0) > 0:
+            return True
+        from app.db.repositories.execution_claim_repository import ExecutionClaimRepository
+
+        claim_repo = ExecutionClaimRepository(self._session)
+        if await claim_repo.has_claimed(job.strategy_id, job.signal_id):
+            return True
+        if job.trade_id:
+            if await claim_repo.has_claimed(job.strategy_id, job.trade_id):
+                return True
+            if await claim_repo.has_claimed(job.strategy_id, f"{job.trade_id}:CLOSE"):
+                return True
+        return False
+
+    async def claim_next_jobs(
+        self,
+        worker_id: str,
+        *,
+        limit: int = 1,
+        lease_duration_sec: float = 30.0,
+    ) -> list[SignalJobModel]:
+        """Claim up to `limit` queued/expired-CLAIMED jobs using FOR UPDATE SKIP LOCKED.
+
+        Expired PROCESSING is never retaken (M23) — the reclaimer quarantines it.
+        Jobs sharing a ``trade_id`` take an advisory xact lock then re-check
+        sibling leases so uncommitted CLAIMED rows serialize OPEN vs CLOSE (M18).
+        """
+        now = datetime.now(UTC)
+        lease_until = now + timedelta(seconds=lease_duration_sec)
+        claimed: list[SignalJobModel] = []
+        skipped: list[Any] = []
+
+        while len(claimed) < limit:
+            candidate_id = await self._select_claim_candidate(now, skipped)
+            if candidate_id is None:
+                break
+            job = await self._session.get(SignalJobModel, candidate_id)
+            if job is None:
+                skipped.append(candidate_id)
+                continue
+            if job.trade_id:
+                await self._session.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext(:tid))"),
+                    {"tid": str(job.trade_id)},
+                )
+                if await self._trade_blocked_after_lock(job):
+                    skipped.append(candidate_id)
+                    continue
+            stmt = (
+                update(SignalJobModel)
+                .where(SignalJobModel.job_id == candidate_id)
+                .values(
+                    status=JOB_STATUS_CLAIMED,
+                    worker_id=worker_id,
+                    claimed_at=now,
+                    lease_expires_at=lease_until,
+                    attempt_count=SignalJobModel.attempt_count + 1,
+                )
+                .execution_options(synchronize_session="fetch")
+            )
+            await self._session.execute(stmt)
+            await self._session.flush()
+            await self._session.refresh(job)
+            claimed.append(job)
+        return claimed
+
+    async def _select_claim_candidate(
+        self, now: datetime, skipped: list[Any]
+    ) -> Any | None:
+        sibling_in_flight = self._sibling_in_flight_exists()
+        claim_in_flight = self._claim_in_flight_exists()
+        predicates = [
+            (
+                (SignalJobModel.status.in_(CLAIMABLE_STATUSES))
+                | (
+                    (SignalJobModel.status == JOB_STATUS_CLAIMED)
+                    & (SignalJobModel.lease_expires_at < now)
+                )
+            ),
+            (SignalJobModel.trade_id.is_(None) | not_(sibling_in_flight)),
+            not_(claim_in_flight),
+        ]
+        if skipped:
+            predicates.append(SignalJobModel.job_id.notin_(skipped))
         subq = (
             select(SignalJobModel.job_id)
-            .where(
-                (
-                    (SignalJobModel.status.in_(CLAIMABLE_STATUSES))
-                    | (
-                        (SignalJobModel.status.in_(ACTIVE_LEASE_STATUSES))
-                        & (SignalJobModel.lease_expires_at < now)
-                    )
-                )
-                & (
-                    SignalJobModel.trade_id.is_(None)
-                    | not_(sibling_in_flight)
-                )
-            )
+            .where(*predicates)
             .order_by(SignalJobModel.received_at.asc())
             .with_for_update(skip_locked=True, of=SignalJobModel)
-            .limit(limit)
+            .limit(1)
         )
         result = await self._session.execute(subq)
-        job_ids = list(result.scalars().all())
-        if not job_ids:
-            return []
-
-        stmt = (
-            update(SignalJobModel)
-            .where(SignalJobModel.job_id.in_(job_ids))
-            .values(
-                status=JOB_STATUS_CLAIMED,
-                worker_id=worker_id,
-                claimed_at=now,
-                lease_expires_at=lease_until,
-                attempt_count=SignalJobModel.attempt_count + 1,
-            )
-            .execution_options(synchronize_session="fetch")
-        )
-        await self._session.execute(stmt)
-        await self._session.flush()
-
-        res = await self._session.execute(
-            select(SignalJobModel).where(SignalJobModel.job_id.in_(job_ids))
-        )
-        return list(res.scalars().all())
+        return result.scalar_one_or_none()
 
     async def update_status(
         self,
@@ -490,25 +563,47 @@ class SignalJobRepository:
         safe to requeue. A job that expired in PROCESSING may have already placed
         orders at the broker -- requeueing it blind would re-execute the signal,
         so it is quarantined as RECOVERY_REQUIRED for explicit reconciliation.
+        Dead-letter only when there is no orders row and no live CLAIMED claim.
         """
         now = datetime.now(UTC)
+        from app.db.repositories.execution_claim_repository import ExecutionClaimRepository
 
-        stmt_dead = (
-            update(SignalJobModel)
-            .where(
-                SignalJobModel.status.in_(ACTIVE_LEASE_STATUSES),
-                SignalJobModel.lease_expires_at < now,
-                SignalJobModel.attempt_count >= max_attempts,
-            )
-            .values(
-                status=JOB_STATUS_DEAD_LETTER,
-                last_error=f"Exceeded max attempts ({max_attempts}) due to worker lease expiry.",
-                completed_at=now,
-                worker_id=None,
-                lease_expires_at=None,
-            )
+        claim_repo = ExecutionClaimRepository(self._session)
+        expired_over_max = list(
+            (
+                await self._session.execute(
+                    select(SignalJobModel).where(
+                        SignalJobModel.status.in_(ACTIVE_LEASE_STATUSES),
+                        SignalJobModel.lease_expires_at < now,
+                        SignalJobModel.attempt_count >= max_attempts,
+                    )
+                )
+            ).scalars().all()
         )
-        res_dead = await self._session.execute(stmt_dead)
+        dead_lettered = 0
+        quarantined = 0
+        for job in expired_over_max:
+            emitted = await self.count_orders_emitted(job.strategy_id, job.signal_id)
+            claimed = await claim_repo.has_claimed(job.strategy_id, job.signal_id)
+            if emitted > 0 or claimed:
+                job.status = JOB_STATUS_RECOVERY_REQUIRED
+                job.last_error = (
+                    f"Lease expired after {max_attempts} attempts with "
+                    f"{emitted} order(s) emitted or CLAIMED barrier live; "
+                    "requires reconciliation."
+                )
+                job.worker_id = None
+                job.lease_expires_at = None
+                quarantined += 1
+            else:
+                job.status = JOB_STATUS_DEAD_LETTER
+                job.last_error = (
+                    f"Exceeded max attempts ({max_attempts}) due to worker lease expiry."
+                )
+                job.completed_at = now
+                job.worker_id = None
+                job.lease_expires_at = None
+                dead_lettered += 1
 
         stmt_quarantine = (
             update(SignalJobModel)
@@ -525,6 +620,7 @@ class SignalJobRepository:
             )
         )
         res_quarantine = await self._session.execute(stmt_quarantine)
+        quarantined += int(res_quarantine.rowcount or 0)
 
         stmt_requeue = (
             update(SignalJobModel)
@@ -542,8 +638,8 @@ class SignalJobRepository:
         res_requeue = await self._session.execute(stmt_requeue)
         await self._session.flush()
         return {
-            "dead_lettered": int(res_dead.rowcount or 0),
-            "quarantined": int(res_quarantine.rowcount or 0),
+            "dead_lettered": dead_lettered,
+            "quarantined": quarantined,
             "requeued": int(res_requeue.rowcount or 0),
         }
 

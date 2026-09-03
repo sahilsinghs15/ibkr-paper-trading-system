@@ -1,10 +1,12 @@
 """Application configuration loaded from environment variables."""
 
 import os
+import sys
 from decimal import Decimal
 from typing import Annotated
 
 from annotated_types import Ge, Gt, Le
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -22,6 +24,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        populate_by_name=True,
     )
 
     # Application
@@ -41,9 +44,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 480
 
-    # IBKR connection
+    # IBKR connection — live Gateway 4001 is the only production port.
     ibkr_host: str = "127.0.0.1"
-    ibkr_port: Annotated[int, Gt(0)] = 7497
+    ibkr_port: Annotated[int, Gt(0)] = 4001
     ibkr_client_id: Annotated[int, Ge(0)] = 1
     ibkr_connection_timeout: Annotated[int, Gt(0)] = 10
 
@@ -53,6 +56,32 @@ class Settings(BaseSettings):
     ibkr_gateway_emergency_reserve_per_sec: Annotated[float, Ge(0)] = 6.0
     ibkr_gateway_max_wait_sec: Annotated[float, Gt(0)] = 8.0
     ibkr_gateway_error100_cooldown_sec: Annotated[float, Ge(0)] = 2.0
+
+    # Sizing gates (pair-budget / whole-share rounding)
+    min_order_notional: Annotated[Decimal, Gt(0)] = Decimal(100)
+    pair_ratio_tolerance: Annotated[Decimal, Gt(0), Le(1)] = Decimal("0.5")
+    pair_min_deployment_pct: Annotated[Decimal, Ge(0), Le(1)] = Decimal(0)
+
+    # RMS check 101 — model market-value cap
+    # Cap defaults to 1.0 because pair_max_allocation_pct is the finer-grained control.
+    market_value_utilisation_cap: Annotated[Decimal, Gt(0), Le(1)] = Decimal("1.0")
+    market_value_check_enabled: bool = False
+
+    # What-if plumbing (infra; operator policy lives in margin_settings)
+    margin_whatif_enabled: bool = False
+    margin_whatif_timeout_sec: Annotated[float, Gt(0)] = 5.0
+
+    # Scanner pacing / scope
+    margin_scan_enabled: bool = False
+    margin_scan_max_per_sec: Annotated[float, Gt(0)] = 5.0
+    margin_scan_startup_budget_sec: Annotated[float, Gt(0)] = 20.0
+    margin_scan_probe_notional: Annotated[Decimal, Gt(0)] = Decimal("1000")
+    margin_scan_signal_lookback_days: Annotated[int, Gt(0)] = 30
+
+    # Rate table freshness
+    margin_rate_max_age_days: Annotated[int, Gt(0)] = 7
+    margin_rate_refresh_sec: Annotated[int, Gt(0)] = 300
+    margin_snapshot_max_age_sec: Annotated[int, Gt(0)] = 300
 
     # IBKR Market Data connection settings
     ibkr_market_data_type: Annotated[int, Ge(1), Le(4)] = 3
@@ -75,10 +104,18 @@ class Settings(BaseSettings):
     # Env: MODEL_BLUE_COMMITTED_NOTIONAL
     model_blue_committed_notional: Decimal | None = None
 
-    # TEMPORARY paper/client-demo: requested STK executes as IBKR CFD.
-    # Raw TradingView / persisted signal instrument_type stays STK.
-    # Disable with PAPER_EXECUTE_STK_AS_CFD=false.
-    paper_execute_stk_as_cfd: bool = True
+    # Production Model Blue: TradingView sends STK; submit maps to IBKR CFD.
+    # Raw / persisted signal instrument_type stays STK; executed secType is CFD.
+    # Legacy env PAPER_EXECUTE_STK_AS_CFD is still accepted.
+    execute_stk_as_cfd: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "EXECUTE_STK_AS_CFD",
+            "PAPER_EXECUTE_STK_AS_CFD",
+            "execute_stk_as_cfd",
+            "paper_execute_stk_as_cfd",
+        ),
+    )
 
     # Webhook Security Settings
     webhook_auth_secret: str | None = None
@@ -106,6 +143,28 @@ class Settings(BaseSettings):
 _PRODUCTION_DATABASE_NAME = "ibkr_trading"
 
 
+def running_under_pytest() -> bool:
+    """True when this process is a pytest run (conftest is the only legit testing setter)."""
+    return os.environ.get("PYTEST_CURRENT_TEST") is not None or "pytest" in sys.modules
+
+
+def refuse_testing_flag_on_order_process() -> None:
+    """Refuse TRADINGAPP_TESTING=1 on any process that can placeOrder outside pytest."""
+    if os.environ.get("TRADINGAPP_TESTING") == "1" and not running_under_pytest():
+        raise RuntimeError(
+            "TRADINGAPP_TESTING=1 is not allowed on a process that can placeOrder. "
+            "pytest/conftest.py is the only legitimate setter."
+        )
+
+
+def assert_webhook_auth_configured(settings: Settings) -> None:
+    """Fail closed when webhook auth is enabled but no secret is configured."""
+    if settings.webhook_auth_enabled and not settings.webhook_auth_secret:
+        raise RuntimeError(
+            "WEBHOOK_AUTH_ENABLED=true requires WEBHOOK_AUTH_SECRET. Refusing to start."
+        )
+
+
 def get_settings() -> Settings:
     """Create and return a Settings instance.
 
@@ -120,4 +179,6 @@ def get_settings() -> Settings:
                 "Refusing production database 'ibkr_trading' while TRADINGAPP_TESTING=1. "
                 "Use ibkr_trading_test (conftest rewrites DATABASE_URL automatically)."
             )
+    if not running_under_pytest():
+        assert_webhook_auth_configured(settings)
     return settings

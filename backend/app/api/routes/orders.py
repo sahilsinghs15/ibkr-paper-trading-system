@@ -27,7 +27,9 @@ async def get_orders(
     orders = oms.get_all_orders()
     if current_user.role == "user":
         user_account = current_user.account.ibkr_account if current_user.account else None
-        orders = [o for o in orders if o.account == user_account]
+        orders = [
+            o for o in orders if getattr(o.intent, "ibkr_account", None) == user_account
+        ]
     return [OrderSchema.model_validate(o) for o in orders]
 
 
@@ -47,7 +49,7 @@ async def get_order_by_id(
         raise HTTPException(status_code=404, detail=f"Order {order_id} not found.")
     if current_user.role == "user":
         user_account = current_user.account.ibkr_account if current_user.account else None
-        if order.account != user_account:
+        if getattr(order.intent, "ibkr_account", None) != user_account:
             raise HTTPException(status_code=404, detail=f"Order {order_id} not found.")
     return OrderSchema.model_validate(order)
 
@@ -69,7 +71,7 @@ async def cancel_order(
         raise HTTPException(status_code=404, detail=f"Order {order_id} not found.")
     if current_user.role == "user":
         user_account = current_user.account.ibkr_account if current_user.account else None
-        if order.account != user_account:
+        if getattr(order.intent, "ibkr_account", None) != user_account:
             raise HTTPException(status_code=404, detail=f"Order {order_id} not found.")
     try:
         canceled_order = await oms.cancel_order(order_id)

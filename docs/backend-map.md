@@ -164,7 +164,7 @@ Lifespan constructs **one** `TWSClient`, **one** `GatewayRateLimiter`, and **one
 
 ## Alembic HEAD
 
-Chain ends at revision **`a1b2c3d4e567`** (`basket_critical_recovery.py`, revises `f4a8c2d1e903`). Full chain in [`backend-persistence.md`](backend-persistence.md).
+Chain ends at revision **`k5l6m7n8o9p0`** (`k5l6m7n8o9p0_margin_check_enabled_default.py`, revises `j4k5l6m7n8o9`). Full chain in [`backend-persistence.md`](backend-persistence.md).
 
 ## Ignore / do not treat as source of truth
 

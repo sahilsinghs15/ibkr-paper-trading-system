@@ -17,6 +17,8 @@ class AccountExecutionContext:
     total_margin: Decimal
     alloc_pct: Decimal
     committed_notional: Decimal
+    pair_max_allocation_pct: Decimal
+    pair_budget: Decimal
     target: Decimal
     stop: Decimal
     time_limit: int

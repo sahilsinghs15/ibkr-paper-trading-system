@@ -141,6 +141,8 @@ def client_with_execution() -> Generator[TestClient, None, None]:
                     total_margin=Decimal(100000),
                     alloc_pct=Decimal(1),
                     committed_notional=_COMMITTED,
+                    pair_max_allocation_pct=Decimal("1"),
+                    pair_budget=_COMMITTED,
                     target=Decimal(500),
                     stop=Decimal(250),
                     time_limit=3600,
@@ -202,10 +204,11 @@ async def test_1_model_blue_open_direction_plus_one(client_with_execution: TestC
     assert set(by_symbol) == {"XLE", "XOP"}
     assert "RELIANCE" not in by_symbol
 
-    xop_target = _COMMITTED * Decimal("0.4057") / Decimal("0.5943")
+    xle_target = _COMMITTED * Decimal("0.5943")
+    xop_target = _COMMITTED * Decimal("0.4057")
     assert by_symbol["XLE"].side == OrderSide.BUY
     assert by_symbol["XOP"].side == OrderSide.SELL
-    assert by_symbol["XLE"].quantity == pytest.approx(_qty(_COMMITTED, Decimal("62.59")))
+    assert by_symbol["XLE"].quantity == pytest.approx(_qty(xle_target, Decimal("62.59")))
     assert by_symbol["XOP"].quantity == pytest.approx(_qty(xop_target, Decimal("183.34")))
     assert by_symbol["XLE"].quantity != 1
     assert by_symbol["XOP"].quantity != 1

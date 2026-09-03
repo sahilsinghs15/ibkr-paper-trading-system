@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-PAPER_IBKR_PORTS = frozenset({7497, 4002})
+PAPER_IBKR_PORTS = frozenset({7497, 4002, 4001})
 
 
 def paper_retry_ports_allowed(ibkr_port: int) -> bool:
-    """Retries are demo/paper Gateway/TWS ports only (not 7496/4001 live)."""
+    """Retries are allowed on paper TWS ports and the live Gateway (4001) after M9/M14."""
     return int(ibkr_port) in PAPER_IBKR_PORTS
 
 

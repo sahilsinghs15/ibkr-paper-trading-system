@@ -38,6 +38,7 @@ def test_ram_critical_produces_unsafe_never_unknown():
                 # Gate 3: baskets
                 MagicMock(status_code=200, json=lambda: {"accounts": [{"ibkr_account": "U123"}]}),
                 MagicMock(status_code=200, json=lambda: {"incidents": []}),
+                MagicMock(status_code=200, json=lambda: {"accounts": []}),
             ])
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -171,6 +172,7 @@ def test_genuine_postgres_critical_system_monitor_alert():
                 MagicMock(status_code=200, json=lambda: {"accounts": []}),
                 MagicMock(status_code=200, json=lambda: {"accounts": []}),
                 MagicMock(status_code=200, json=lambda: {"incidents": []}),
+                MagicMock(status_code=200, json=lambda: {"accounts": []}),
             ])
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -199,6 +201,7 @@ def test_kill_switch_active_blocks():
                 ),
                 MagicMock(status_code=200, json=lambda: {"accounts": [{"ibkr_account": "U123"}]}),
                 MagicMock(status_code=200, json=lambda: {"incidents": []}),
+                MagicMock(status_code=200, json=lambda: {"accounts": []}),
             ])
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -224,6 +227,7 @@ def test_basket_critical_blocks():
                 MagicMock(status_code=200, json=lambda: {"accounts": [{"id": 1, "ibkr_account": "U123", "kill_switch_active": False}]}),
                 MagicMock(status_code=200, json=lambda: {"accounts": [{"ibkr_account": "U123"}]}),
                 MagicMock(status_code=200, json=lambda: {"incidents": [{"basket_id": 99}]}),
+                MagicMock(status_code=200, json=lambda: {"accounts": []}),
             ])
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -249,6 +253,7 @@ def test_trading_mode_unknown_port_blocks():
                 MagicMock(status_code=200, json=lambda: {"accounts": [{"id": 1, "ibkr_account": "U123", "kill_switch_active": False}]}),
                 MagicMock(status_code=200, json=lambda: {"accounts": [{"ibkr_account": "U123"}]}),
                 MagicMock(status_code=200, json=lambda: {"incidents": []}),
+                MagicMock(status_code=200, json=lambda: {"accounts": []}),
             ])
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=None)

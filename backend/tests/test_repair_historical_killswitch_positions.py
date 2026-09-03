@@ -19,13 +19,6 @@ from app.rms.models import OrderSide
 from scripts.repair_historical_killswitch_positions import audit_and_repair_positions
 
 
-@pytest.fixture
-async def session_factory():
-    from app.db.session import AsyncSessionLocal, engine
-    yield AsyncSessionLocal
-    await engine.dispose()
-
-
 @pytest.mark.asyncio
 async def test_repair_dry_run_zero_writes(session_factory: async_sessionmaker[AsyncSession]):
     """Verify dry-run mode performs zero DB writes."""

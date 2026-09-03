@@ -102,7 +102,7 @@ When the queue is empty each worker sleeps `idle_poll_interval_sec` before the n
 
 Per `(account_scope || "default", strategy_id)` — serializes jobs for the same strategy partition so RMS/exposure state does not interleave.
 
-**As-is:** `receive_tradingview_webhook` calls `create_job_if_not_exists` **without** `account_scope`, so the column stays `NULL` and every live job uses `("default", strategy_id)`. Fan-out to multiple `ibkr_account`s happens inside `OrderManager._fanout_accounts` **after** this lock is held. The lock therefore serializes the whole strategy’s signal, not one IB account. Target: optional per-account child jobs / `account_scope` — not built.
+**As-is:** ingest fans out **N jobs** (one per routed account) via `DatabaseStrategyAccountRouter`. Each job sets `account_scope=str(account_id)` and an idempotency key `{hash}:{account_id}`. The domain lock is therefore per `(account_id, strategy_id)`. Same-trade OPEN/CLOSE on one account still share a sibling `EXISTS` plus live `execution_claims` CLAIMED rows so they cannot be claimed in the same poll tick.
 
 ### Exposure lock (separate)
 
@@ -145,7 +145,7 @@ CLOSE intents use `signal_id = trade_id:CLOSE`.
 
 Claim is acquired **after** RMS PASS + CRITICAL gate + instrument resolve, **before** basket/`placeOrder`, in its **own** committed transaction (`OrderManager._acquire_execution_claim`).
 
-Seal (`mark_executed`) on settled OPEN/CLOSED basket. Release only when `count_orders_emitted == 0`.
+Seal (`mark_executed`) on settled OPEN/CLOSED basket. A `CLAIMED` row is treated as emitted even with zero `orders` rows (persist-before-`placeOrder` window). Do not release that row to `ABANDONED`.
 
 ### Exceptions
 
@@ -160,7 +160,9 @@ Seal (`mark_executed`) on settled OPEN/CLOSED basket. Release only when `count_o
 For CLAIMED rows older than cutoff:
 
 - Orders emitted → seal `EXECUTED` (work was done)
-- No orders → release `ABANDONED` (safe to retry)
+- Zero `orders` rows → **leave CLAIMED** (broker state unverified; do not ABANDON)
+
+Covered by `tests/test_execution_claims.py`.
 
 Runs on startup (`stale_after_sec=0`) and periodically from worker reclaimer (300s).
 
@@ -176,7 +178,7 @@ Runs on startup (`stale_after_sec=0`) and periodically from worker reclaimer (30
 ### Per-job decision
 
 1. Reconcile all CLAIMED execution claims (`stale_after_sec=0`)
-2. If `count_orders_emitted(strategy_id, signal_id) > 0` → stay/set `RECOVERY_REQUIRED` (never requeue)
+2. If `count_orders_emitted(...) > 0` **or** a live `CLAIMED` row exists → stay/set `RECOVERY_REQUIRED` (never requeue)
 3. Else if `attempt_count >= max_attempts` → `DEAD_LETTER`
 4. Else → requeue `QUEUED`
 
@@ -215,15 +217,14 @@ Workers drive execution; `SignalRepository` records inbound audit regardless.
 ### In-process worker failures
 
 When `_execute_job` catches an exception after `process_signal_execution`, it counts
-`orders` rows for `(strategy_id, signal_id)`. Any emitted order → `RECOVERY_REQUIRED`, not
-`FAILED` (avoids blind retry that would double-submit). When fan-out returns
-`had_unexpected_error=True` without raising, the worker quarantines the job the same way.
+`orders` rows **and** live `execution_claims` CLAIMED for `(strategy_id, signal_id)`. Any
+emitted order or held claim → `RECOVERY_REQUIRED`, not `FAILED`.
 
 ## Do not break (agent invariants)
 
 1. Never re-send an intent that already has order rows in `orders`.
 2. Never write terminal job status after `lease_lost`.
-3. Never release an execution claim if any order was emitted.
+3. Never release an execution claim that is `CLAIMED` (zero `orders` rows is not proof of no broker submit).
 4. Never requeue a job in `PROCESSING` with expired lease — use `RECOVERY_REQUIRED`.
 5. Keep `ACTIVE_LEASE_STATUSES` consistent everywhere.
 6. Do not construct a second `ExecutionWorkerPool` in a request handler.

@@ -1,7 +1,7 @@
 """CHECK 2 — DUPLICATE check implementation."""
 
 from app.rms.checks.base import BaseRMSCheck
-from app.rms.models import CheckResult, OrderAction, OrderIntent, RMSContext, RMSOutcome
+from app.rms.models import CheckResult, OrderAction, OrderIntent, RMSContext, RMSOutcome, duplicate_lookup_key
 
 
 class DuplicateCheck(BaseRMSCheck):
@@ -24,9 +24,7 @@ class DuplicateCheck(BaseRMSCheck):
                 outcome=RMSOutcome.PASS,
             )
 
-        lookup_key = (intent.strategy_id, intent.signal_id)
-        if intent.account_id is not None:
-            lookup_key = (intent.account_id, intent.strategy_id, intent.signal_id)
+        lookup_key = duplicate_lookup_key(intent)
         if lookup_key in context.processed_signals:
             return CheckResult(
                 check_number=self.check_number,

@@ -16,7 +16,7 @@ from app.rms.models import (
 
 
 def test_engine_runs_all_checks_in_exact_order_and_passes() -> None:
-    """Full check pipeline runs all 5 checks in exact sequence and returns PASS."""
+    """Full check pipeline runs all 7 checks in exact sequence and returns PASS."""
     engine = RMSEngine()
     context = RMSContext(
         strategy_configs={
@@ -38,8 +38,8 @@ def test_engine_runs_all_checks_in_exact_order_and_passes() -> None:
     )
     result = engine.evaluate(intent, context)
     assert result.outcome == RMSOutcome.PASS
-    assert len(result.check_results) == 5
-    assert [c.check_number for c in result.check_results] == [2, 3, 4, 7, 8]
+    assert len(result.check_results) == 7
+    assert [c.check_number for c in result.check_results] == [1, 2, 3, 4, 7, 8, 101]
 
 
 def test_engine_short_circuits_on_rejection() -> None:
@@ -57,9 +57,9 @@ def test_engine_short_circuits_on_rejection() -> None:
     result = engine.evaluate(intent, context)
     assert result.outcome == RMSOutcome.REJECT
     assert result.check_number == 3
-    # Check results should only contain Check 2 (PASS) and Check 3 (REJECT)
-    assert len(result.check_results) == 2
-    assert [c.check_number for c in result.check_results] == [2, 3]
+    # Check results: Check 1 (PASS shadow), Check 2 (PASS), Check 3 (REJECT)
+    assert len(result.check_results) == 3
+    assert [c.check_number for c in result.check_results] == [1, 2, 3]
 
 
 def test_engine_applies_adjust_and_continues() -> None:
@@ -84,7 +84,7 @@ def test_engine_applies_adjust_and_continues() -> None:
     )
     result = engine.evaluate(intent, context)
     assert result.outcome == RMSOutcome.PASS
-    assert len(result.check_results) == 5
+    assert len(result.check_results) == 7
     assert result.original_intent.legs[0].contract_month == "2026-09"
     assert result.intent.legs[0].contract_month == "2026-10"
 
@@ -111,4 +111,4 @@ def test_engine_audit_log_fields() -> None:
     assert result.timestamp is not None
     assert result.original_intent == intent
     assert result.intent == intent
-    assert len(result.check_results) == 5
+    assert len(result.check_results) == 7

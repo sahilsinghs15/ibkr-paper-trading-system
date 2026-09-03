@@ -99,13 +99,13 @@ def test_sizer_direction_plus_one_uses_weight_times_direction() -> None:
     )
     sizer = ModelBlueSizer(TemporarySettingsCommittedCapitalProvider(_COMMITTED))
     xle, xop = sizer.size_open(signal)
-    base_w = Decimal("0.5943")
-    xop_target = _COMMITTED * Decimal("0.4057") / base_w
     assert xle.side == OrderSide.BUY
     assert xop.side == OrderSide.SELL
-    assert xle.quantity == Decimal(399)
-    assert xop.quantity == Decimal(93)
-    assert xle.quantity == _qty(_COMMITTED, Decimal("62.59"))
+    assert xle.quantity == Decimal(237)
+    assert xop.quantity == Decimal(55)
+    xle_target = _COMMITTED * Decimal("0.5943")
+    xop_target = _COMMITTED * Decimal("0.4057")
+    assert xle.quantity == _qty(xle_target, Decimal("62.59"))
     assert xop.quantity == _qty(xop_target, Decimal("183.34"))
     assert xle.quantity != Decimal(1)
     assert xop.quantity != Decimal(1)
@@ -147,7 +147,7 @@ def test_sizer_rejects_unset_committed_capital() -> None:
         ),
     )
     sizer = ModelBlueSizer(TemporarySettingsCommittedCapitalProvider(None))
-    with pytest.raises(ModelBlueValidationError, match="COMMITTED_NOT_CONFIGURED"):
+    with pytest.raises(ModelBlueValidationError, match="PAIR_BUDGET_NOT_CONFIGURED"):
         sizer.size_open(signal)
 
 
@@ -265,8 +265,8 @@ def test_sizer_floors_stk_example_quantities() -> None:
     )
     sizer = ModelBlueSizer(TemporarySettingsCommittedCapitalProvider(Decimal(25000)))
     xle, xop = sizer.size_open(signal)
-    assert xle.quantity == Decimal(399)
-    assert xop.quantity == Decimal(93)
+    assert xle.quantity == Decimal(237)
+    assert xop.quantity == Decimal(55)
 
 
 def test_sizer_does_not_floor_cfd() -> None:
@@ -287,4 +287,4 @@ def test_sizer_does_not_floor_cfd() -> None:
     sil, gdx = sizer.size_open(signal)
     assert sil.quantity != sil.quantity.to_integral_value()
     assert gdx.quantity != gdx.quantity.to_integral_value()
-    assert sil.quantity == (Decimal(25000) / Decimal("90.64")).quantize(Decimal("0.0001"))
+    assert sil.quantity == (Decimal(25000) * Decimal("0.5") / Decimal("90.64")).quantize(Decimal("0.0001"))

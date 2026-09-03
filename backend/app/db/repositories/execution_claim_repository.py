@@ -166,12 +166,22 @@ class ExecutionClaimRepository:
         res = await self._session.execute(stmt)
         return int(res.scalar_one() or 0)
 
+    async def has_claimed(self, strategy_id: str, signal_id: str) -> bool:
+        """True if a live CLAIMED barrier exists for this strategy/signal."""
+        stmt = select(func.count()).select_from(ExecutionClaimModel).where(
+            ExecutionClaimModel.strategy_id == strategy_id,
+            ExecutionClaimModel.signal_id == signal_id,
+            ExecutionClaimModel.state == CLAIM_STATE_CLAIMED,
+        )
+        res = await self._session.execute(stmt)
+        return int(res.scalar_one() or 0) > 0
+
     async def reconcile_stale_claims(self, stale_after_sec: float = 300.0) -> dict[str, int]:
         """Resolve claims left CLAIMED by a crashed attempt.
 
-        No orders emitted -> the attempt never reached the broker, release it.
-        Orders emitted -> promote to EXECUTED; the work was done and must not
-        be repeated even though the process died before recording it.
+        Orders emitted -> promote to EXECUTED.
+        No orders row -> leave CLAIMED. A live CLAIMED claim is evidence of a
+        possible submit; never release to ABANDONED on a zero-row ledger.
         """
         cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_sec)
         res = await self._session.execute(
@@ -196,11 +206,13 @@ class ExecutionClaimRepository:
                     emitted,
                 )
             else:
-                await self.release(
-                    claim.dedupe_key, note="Released by reconciliation: no orders emitted."
+                # A live CLAIMED claim is evidence of a possible submit (M1).
+                # Never release to ABANDONED on zero ledger rows.
+                logger.warning(
+                    "Stale CLAIMED execution claim %s has no orders row; "
+                    "leaving CLAIMED (possible in-flight placeOrder).",
+                    claim.dedupe_key,
                 )
-                released += 1
-                logger.info("Released stale execution claim %s", claim.dedupe_key)
         return {"released": released, "sealed": sealed}
 
 

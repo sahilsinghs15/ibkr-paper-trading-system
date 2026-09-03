@@ -26,10 +26,14 @@ async def get_system_monitor(
     _admin: Annotated[UserModel, Depends(require_admin)],
 ) -> SystemMonitorResponse:
     """Retrieve structured system resource and service health observability data."""
-    tws_client = getattr(request.app.state, "tws_client", None)
+    tws_client = getattr(request.app.state, "client", None) or getattr(
+        request.app.state, "tws_client", None
+    )
     redis_client = getattr(request.app.state, "redis_client", None)
+    account_margin = getattr(request.app.state, "account_margin", None)
     return await collect_system_monitor_data(
         session=db,
         tws_client=tws_client,
         redis_client=redis_client,
+        account_margin=account_margin,
     )

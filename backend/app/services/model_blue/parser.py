@@ -137,7 +137,7 @@ def _parse_open_legs(buckets: Any) -> tuple[SignalLeg, ...]:
                 f"MODEL_BLUE_INVALID_LEG: buckets[{index}].legs[0] must be an object."
             )
 
-        symbol = str(raw_leg.get("underlying") or bucket.get("underlying") or "").strip()
+        symbol = str(raw_leg.get("underlying") or bucket.get("underlying") or "").strip().upper()
         if not symbol:
             raise ModelBlueValidationError(
                 f"MODEL_BLUE_MISSING_SYMBOL: buckets[{index}] has no underlying/symbol."

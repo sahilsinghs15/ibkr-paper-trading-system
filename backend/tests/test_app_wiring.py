@@ -9,6 +9,8 @@ from app.broker.ibkr.tws_client import TWSClient
 from app.main import create_app
 from app.oms.ibkr_adapter import IBKRExecutionAdapter
 from app.oms.oms_service import OMSService
+from app.rms.engine import get_default_checks
+from app.services.account_margin import AccountMarginService
 from app.services.order_manager import OrderManager
 from app.services.position_reconciler import PositionReconciler
 
@@ -41,6 +43,22 @@ def app_client():
             "app.services.order_manager.OrderManager.hydrate_live_pnl",
             new_callable=AsyncMock,
         ),
+        patch(
+            "app.services.order_manager.OrderManager.reload_margin_rates",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.margin_scanner.MarginScanner.start_background",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.margin_scanner.MarginScanner.stop",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "app.services.critical_recovery.CriticalRecoveryService.enqueue_all_critical",
+            new_callable=AsyncMock,
+        ),
     ):
         app = create_app()
         with TestClient(app) as client:
@@ -57,6 +75,9 @@ def test_app_lifespan_wiring(app_client):
     assert isinstance(app.state.oms, OMSService)
     assert isinstance(app.state.order_manager, OrderManager)
     assert isinstance(app.state.position_reconciler, PositionReconciler)
+    assert isinstance(app.state.account_margin, AccountMarginService)
+    assert get_default_checks()[0].check_number == 1
+    assert [c.check_number for c in get_default_checks()] == [1, 2, 3, 4, 7, 8, 101]
 
 
 def test_orders_endpoint_routes_to_oms(app_client):

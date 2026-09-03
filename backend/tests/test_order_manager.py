@@ -1,6 +1,7 @@
 """Tests for OrderManager facade."""
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,7 +9,7 @@ import pytest
 from app.models.signal import Signal, SignalType
 from app.oms.models import ExecutionResult, OMSOrder, OrderStatus
 from app.oms.oms_service import OMSService
-from app.rms.models import OrderIntent
+from app.rms.models import OrderIntent, RMSContext, StrategyConfig
 from app.rms.models import OrderSide as RMSOrderSide
 from app.services.order_manager import OrderManager
 
@@ -55,7 +56,21 @@ def _make_oms_stub() -> AsyncMock:
 @pytest.mark.asyncio
 async def test_buy_signal_submits_intent_to_oms() -> None:
     oms = _make_oms_stub()
-    mgr = OrderManager(oms=oms, symbol=_SYMBOL, quantity=_QUANTITY, order_type=_ORDER_TYPE)
+    mgr = OrderManager(
+        oms=oms,
+        symbol=_SYMBOL,
+        quantity=_QUANTITY,
+        order_type=_ORDER_TYPE,
+        rms_context=RMSContext(
+            strategy_configs={
+                "default_strategy": StrategyConfig(
+                    strategy_id="default_strategy",
+                    max_open_positions=100,
+                    money_limit_per_symbol=Decimal("1000000"),
+                )
+            }
+        ),
+    )
     res = await mgr.process_signal(_signal(SignalType.BUY))
     assert res is not None
     oms.submit_intent.assert_called_once()
@@ -64,7 +79,21 @@ async def test_buy_signal_submits_intent_to_oms() -> None:
 @pytest.mark.asyncio
 async def test_sell_signal_submits_intent_to_oms() -> None:
     oms = _make_oms_stub()
-    mgr = OrderManager(oms=oms, symbol=_SYMBOL, quantity=_QUANTITY, order_type=_ORDER_TYPE)
+    mgr = OrderManager(
+        oms=oms,
+        symbol=_SYMBOL,
+        quantity=_QUANTITY,
+        order_type=_ORDER_TYPE,
+        rms_context=RMSContext(
+            strategy_configs={
+                "default_strategy": StrategyConfig(
+                    strategy_id="default_strategy",
+                    max_open_positions=100,
+                    money_limit_per_symbol=Decimal("1000000"),
+                )
+            }
+        ),
+    )
     res = await mgr.process_signal(_signal(SignalType.SELL))
     assert res is not None
     oms.submit_intent.assert_called_once()
@@ -73,7 +102,21 @@ async def test_sell_signal_submits_intent_to_oms() -> None:
 @pytest.mark.asyncio
 async def test_hold_signal_returns_none() -> None:
     oms = _make_oms_stub()
-    mgr = OrderManager(oms=oms, symbol=_SYMBOL, quantity=_QUANTITY, order_type=_ORDER_TYPE)
+    mgr = OrderManager(
+        oms=oms,
+        symbol=_SYMBOL,
+        quantity=_QUANTITY,
+        order_type=_ORDER_TYPE,
+        rms_context=RMSContext(
+            strategy_configs={
+                "default_strategy": StrategyConfig(
+                    strategy_id="default_strategy",
+                    max_open_positions=100,
+                    money_limit_per_symbol=Decimal("1000000"),
+                )
+            }
+        ),
+    )
     res = await mgr.process_signal(_signal(SignalType.HOLD))
     assert res is None
     oms.submit_intent.assert_not_called()

@@ -25,3 +25,18 @@ def normalize_trade_id(value: object | None) -> str:
     broker-side references, so case is significant and must not be folded.
     """
     return str(value).strip() if value is not None else ""
+
+
+def normalize_symbol(value: object | None) -> str:
+    """Canonical exchange symbol: trimmed and uppercased."""
+    return str(value).strip().upper() if value is not None else ""
+
+
+def normalize_account(value: object | None) -> str:
+    """Canonical IBKR account id: trimmed and uppercased."""
+    return str(value).strip().upper() if value is not None else ""
+
+
+def normalize_signal_id(value: object | None) -> str:
+    """Canonical signal/trade token for duplicate keys: trimmed, case preserved."""
+    return str(value).strip() if value is not None else ""

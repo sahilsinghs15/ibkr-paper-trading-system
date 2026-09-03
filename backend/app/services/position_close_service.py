@@ -5,10 +5,10 @@ without affecting other positions or activating the account-level Kill Switch.
 """
 
 import asyncio
+import inspect
 import logging
 from decimal import Decimal
 from typing import Any
-from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -102,7 +102,6 @@ class SinglePairCloseService:
                         side=side,
                         quantity=qty,
                         price=Decimal(0),
-                        contract_month="",
                         instrument_type=pos.leg_a_instrument_type or "STK",
                         leg_index=0,
                     )
@@ -117,7 +116,6 @@ class SinglePairCloseService:
                         side=side,
                         quantity=qty,
                         price=Decimal(0),
-                        contract_month="",
                         instrument_type=pos.leg_b_instrument_type or "STK",
                         leg_index=1,
                     )
@@ -135,8 +133,43 @@ class SinglePairCloseService:
                 message="No active quantities to close.",
             )
 
+        from app.services import flatten_inflight
+
+        ledger_key = flatten_inflight.ledger_key(account_id, trade_id)
+        if not await flatten_inflight.try_acquire(ledger_key):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Flatten already in progress for account_id={account_id} "
+                    f"trade_id={trade_id}."
+                ),
+            )
+        try:
+            return await self._submit_pair_close(
+                account_id=account_id,
+                ibkr_account=ibkr_account,
+                trade_id=trade_id,
+                strategy_id=strategy_id,
+                leg_a_symbol=leg_a_symbol,
+                leg_b_symbol=leg_b_symbol,
+                legs=legs,
+            )
+        finally:
+            await flatten_inflight.release(ledger_key)
+
+    async def _submit_pair_close(
+        self,
+        *,
+        account_id: int,
+        ibkr_account: str,
+        trade_id: str,
+        strategy_id: str,
+        leg_a_symbol: str,
+        leg_b_symbol: str | None,
+        legs: list[OrderLeg],
+    ) -> ClosePairResponse:
         close_intent = OrderIntent(
-            signal_id=f"CLOSEPAIR-{trade_id}-{uuid4().hex[:6]}",
+            signal_id=f"CLOSEPAIR-{trade_id}",
             strategy_id=strategy_id,
             action=OrderAction.CLOSE,
             legs=legs,
@@ -201,17 +234,23 @@ class SinglePairCloseService:
                     p_repo = PositionRepository(session)
                     p_row = await p_repo.get_open_by_trade_id(trade_id, account_id=account_id)
                     if p_row is not None:
-                        try:
-                            from app.services.model_blue.persistence import (
-                                _commission_from_orders,
-                                _exit_marks_from_orders,
-                            )
+                        from app.services.model_blue.persistence import (
+                            _commission_from_orders,
+                            _exit_marks_from_orders,
+                            _filled_qty_by_symbol,
+                            assert_close_qty_matches_open,
+                        )
 
-                            exit_marks = _exit_marks_from_orders(fill_orders)
-                            comm = _commission_from_orders(fill_orders)
-                        except Exception:  # noqa: BLE001
-                            exit_marks = {}
-                            comm = Decimal(0)
+                        exit_marks = _exit_marks_from_orders(fill_orders)
+                        comm = _commission_from_orders(fill_orders)
+                        assert_close_qty_matches_open(
+                            trade_id=trade_id,
+                            leg_a_symbol=p_row.leg_a_symbol,
+                            leg_a_signed_qty=p_row.leg_a_signed_qty,
+                            leg_b_symbol=p_row.leg_b_symbol,
+                            leg_b_signed_qty=p_row.leg_b_signed_qty,
+                            filled_by_symbol=_filled_qty_by_symbol(fill_orders),
+                        )
 
                         await p_repo.close_trade(
                             trade_id,
@@ -234,6 +273,14 @@ class SinglePairCloseService:
                             account_id,
                             trade_id,
                         )
+                live = getattr(self._order_manager, "_live_pnl", None)
+                if live is not None:
+                    live.unwatch(account_id, trade_id)
+                rebuild = getattr(self._order_manager, "rebuild_rms_from_positions", None)
+                if callable(rebuild):
+                    rebuilt = rebuild()
+                    if inspect.isawaitable(rebuilt):
+                        await rebuilt
 
                 return ClosePairResponse(
                     account_id=account_id,

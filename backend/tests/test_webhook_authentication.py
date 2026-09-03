@@ -7,6 +7,7 @@ execution separation, and concurrent signal burst stress performance.
 import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -62,10 +63,34 @@ async def test_webhook_unauthenticated_request_rejected(
     ) as client:
         resp = await client.post(
             "/api/webhooks/tradingview",
-            json={"strategy": "model_blue", "trade_id": "T-AUTH-1", "action": "OPEN"},
+            json={"strategy": "webhook_auth_test", "trade_id": "T-AUTH-1", "action": "OPEN"},
         )
     assert resp.status_code == 401
     assert "Unauthorized" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_webhook_unconfigured_secret_fails_closed(
+    test_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Enabled auth with no secret must 401 — same shape as emergency kill-switch."""
+    monkeypatch.setattr(
+        "app.api.routes.webhooks.get_settings",
+        lambda: Settings(
+            webhook_auth_secret=None,
+            webhook_auth_enabled=True,
+        ),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://testserver"
+    ) as client:
+        resp = await client.post(
+            "/api/webhooks/tradingview",
+            json={"strategy": "webhook_auth_test", "trade_id": "T-AUTH-UNSET", "action": "OPEN"},
+        )
+    assert resp.status_code == 401
+    assert "not configured" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
@@ -87,7 +112,7 @@ async def test_webhook_invalid_secret_rejected(
         resp = await client.post(
             "/api/webhooks/tradingview",
             headers={"X-Webhook-Secret": "wrong-secret"},
-            json={"strategy": "model_blue", "trade_id": "T-AUTH-2", "action": "OPEN"},
+            json={"strategy": "webhook_auth_test", "trade_id": "T-AUTH-2", "action": "OPEN"},
         )
     assert resp.status_code == 401
     assert "Unauthorized" in resp.json()["detail"]
@@ -108,6 +133,7 @@ async def test_webhook_valid_header_secret_accepted(
     )
 
     session_factory: async_sessionmaker[AsyncSession] = test_app.state.session_factory
+    trade_id = f"T-AUTH-3-{uuid4().hex[:8]}"
 
     async with AsyncClient(
         transport=ASGITransport(app=test_app), base_url="http://testserver"
@@ -115,21 +141,21 @@ async def test_webhook_valid_header_secret_accepted(
         resp = await client.post(
             "/api/webhooks/tradingview",
             headers={"X-Webhook-Secret": "super-secret-token-123"},
-            json={"strategy": "model_blue", "trade_id": "T-AUTH-3", "action": "OPEN"},
+            json={"strategy": "webhook_auth_test", "trade_id": trade_id, "action": "OPEN"},
         )
     assert resp.status_code == 202
     data = resp.json()
     assert data["status"] == "accepted"
-    assert data["signal_id"] == "T-AUTH-3"
+    assert data["signal_id"] == trade_id
     assert data["job_id"] is not None
 
     async with session_factory() as session:
         result = await session.execute(
-            select(SignalJobModel).where(SignalJobModel.signal_id == "T-AUTH-3")
+            select(SignalJobModel).where(SignalJobModel.signal_id == trade_id)
         )
-        job = result.scalar_one_or_none()
-        assert job is not None
-        assert str(job.job_id) == data["job_id"]
+        jobs = list(result.scalars().all())
+        assert len(jobs) == 1
+        assert str(jobs[0].job_id) == data["job_id"]
 
 
 @pytest.mark.asyncio
@@ -150,7 +176,7 @@ async def test_webhook_query_param_secret_rejected_security(
     ) as client:
         resp = await client.post(
             "/api/webhooks/tradingview?secret=super-secret-token-123",
-            json={"strategy": "model_blue", "trade_id": "T-AUTH-4", "action": "OPEN"},
+            json={"strategy": "webhook_auth_test", "trade_id": "T-AUTH-4", "action": "OPEN"},
         )
     assert resp.status_code == 401
     assert "Unauthorized" in resp.json()["detail"]
@@ -170,6 +196,8 @@ async def test_webhook_auth_disabled_accepts_missing_or_wrong_secret(
     )
 
     session_factory: async_sessionmaker[AsyncSession] = test_app.state.session_factory
+    trade_missing = f"T-DISABLED-1-{uuid4().hex[:8]}"
+    trade_wrong = f"T-DISABLED-2-{uuid4().hex[:8]}"
 
     async with AsyncClient(
         transport=ASGITransport(app=test_app), base_url="http://testserver"
@@ -177,7 +205,7 @@ async def test_webhook_auth_disabled_accepts_missing_or_wrong_secret(
         # Request with missing secret header
         resp_missing = await client.post(
             "/api/webhooks/tradingview",
-            json={"strategy": "model_blue", "trade_id": "T-DISABLED-1", "action": "OPEN"},
+            json={"strategy": "webhook_auth_test", "trade_id": trade_missing, "action": "OPEN"},
         )
         assert resp_missing.status_code == 202
 
@@ -185,20 +213,20 @@ async def test_webhook_auth_disabled_accepts_missing_or_wrong_secret(
         resp_wrong = await client.post(
             "/api/webhooks/tradingview",
             headers={"X-Webhook-Secret": "wrong-secret-token"},
-            json={"strategy": "model_blue", "trade_id": "T-DISABLED-2", "action": "OPEN"},
+            json={"strategy": "webhook_auth_test", "trade_id": trade_wrong, "action": "OPEN"},
         )
         assert resp_wrong.status_code == 202
 
     async with session_factory() as session:
         result1 = await session.execute(
-            select(SignalJobModel).where(SignalJobModel.signal_id == "T-DISABLED-1")
+            select(SignalJobModel).where(SignalJobModel.signal_id == trade_missing)
         )
-        assert result1.scalar_one_or_none() is not None
+        assert list(result1.scalars().all())
 
         result2 = await session.execute(
-            select(SignalJobModel).where(SignalJobModel.signal_id == "T-DISABLED-2")
+            select(SignalJobModel).where(SignalJobModel.signal_id == trade_wrong)
         )
-        assert result2.scalar_one_or_none() is not None
+        assert list(result2.scalars().all())
 
 
 
@@ -220,7 +248,7 @@ async def test_webhook_unauthorized_request_zero_db_writes(
         resp = await client.post(
             "/api/webhooks/tradingview",
             headers={"X-Webhook-Secret": "invalid-secret"},
-            json={"strategy": "model_blue", "trade_id": "T-UNAUTH-DB-0", "action": "OPEN"},
+            json={"strategy": "webhook_auth_test", "trade_id": "T-UNAUTH-DB-0", "action": "OPEN"},
         )
     assert resp.status_code == 401
 
@@ -249,7 +277,7 @@ async def test_webhook_database_failure_returns_500(
     ) as client:
         resp = await client.post(
             "/api/webhooks/tradingview",
-            json={"strategy": "model_blue", "trade_id": "T-DB-FAIL-1", "action": "OPEN"},
+            json={"strategy": "webhook_auth_test", "trade_id": "T-DB-FAIL-1", "action": "OPEN"},
         )
     assert resp.status_code == 500
     assert resp.json()["detail"] == "Failed to durably persist signal job."
@@ -259,7 +287,11 @@ async def test_webhook_database_failure_returns_500(
 @pytest.mark.asyncio
 async def test_webhook_duplicate_idempotency_handling(test_app: FastAPI) -> None:
     """Verify duplicate signal submission returns HTTP 202 with original job_id and creates exactly 1 job."""
-    payload = {"strategy": "model_blue", "trade_id": "T-DUP-1", "action": "OPEN"}
+    payload = {
+        "strategy": "webhook_auth_test",
+        "trade_id": f"T-DUP-1-{uuid4().hex[:8]}",
+        "action": "OPEN",
+    }
     session_factory: async_sessionmaker[AsyncSession] = test_app.state.session_factory
 
     async with AsyncClient(
@@ -277,7 +309,7 @@ async def test_webhook_duplicate_idempotency_handling(test_app: FastAPI) -> None
             await session.execute(
                 select(func.count())
                 .select_from(SignalJobModel)
-                .where(SignalJobModel.signal_id == "T-DUP-1")
+                .where(SignalJobModel.signal_id == payload["trade_id"])
             )
         ).scalar_one()
         assert count == 1
@@ -312,7 +344,7 @@ async def test_webhook_execution_separation(
     ) as client:
         resp = await client.post(
             "/api/webhooks/tradingview",
-            json={"strategy": "model_blue", "trade_id": "T-SEP-1", "action": "OPEN"},
+            json={"strategy": "webhook_auth_test", "trade_id": "T-SEP-1", "action": "OPEN"},
         )
 
     assert resp.status_code == 202
@@ -334,7 +366,7 @@ async def test_webhook_concurrent_burst_stress_benchmark(
     async def send_single_request(client: AsyncClient, idx: int) -> tuple[int, str]:
         t0 = time.monotonic()
         payload = {
-            "strategy": "model_blue",
+            "strategy": "webhook_auth_test",
             "trade_id": f"T-BURST-{burst_size}-{idx}",
             "action": "OPEN",
             "direction": 1 if idx % 2 == 0 else -1,
@@ -367,7 +399,7 @@ async def test_webhook_concurrent_burst_stress_benchmark(
             await session.execute(
                 select(func.count())
                 .select_from(SignalJobModel)
-                .where(SignalJobModel.strategy_id == "model_blue")
+                .where(SignalJobModel.strategy_id == "webhook_auth_test")
                 .where(SignalJobModel.signal_id.like(f"T-BURST-{burst_size}-%"))
             )
         ).scalar_one()
@@ -383,3 +415,72 @@ async def test_webhook_concurrent_burst_stress_benchmark(
         f"\n[BENCHMARK {burst_size} BURST] Total: {burst_size} | HTTP 202: {status_codes.count(202)} | "
         f"Persisted: {persisted_count} | p50: {p50:.2f}ms | p95: {p95:.2f}ms | p99: {p99:.2f}ms | max: {max_lat:.2f}ms"
     )
+
+
+@pytest.mark.asyncio
+async def test_webhook_fans_out_one_job_per_routed_account(test_app: FastAPI) -> None:
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from app.db.models.account import AccountModel
+    from app.db.models.strategy import AllocationModel, StrategyModel
+
+    session_factory: async_sessionmaker[AsyncSession] = test_app.state.session_factory
+    strategy_id = f"fanout_{uuid4().hex[:8]}"
+    trade_id = f"T-FANOUT-{uuid4().hex[:8]}"
+    async with session_factory() as session, session.begin():
+        session.add(
+            StrategyModel(
+                strategy_id=strategy_id,
+                legs=2,
+                expression="CFD",
+                max_open_positions=10,
+                weight_source="payload",
+                enabled=True,
+            )
+        )
+        await session.flush()
+        account_ids: list[int] = []
+        for i in range(2):
+            acc = AccountModel(
+                name=f"fanout-{i}-{uuid4().hex[:6]}",
+                ibkr_account=f"DU{uuid4().hex[:8]}",
+                total_margin=Decimal(100000),
+                enabled=True,
+            )
+            session.add(acc)
+            await session.flush()
+            session.add(
+                AllocationModel(
+                    account_id=acc.id,
+                    strategy_id=strategy_id,
+                    alloc_pct=Decimal("0.1"),
+                    enabled=True,
+                    target=Decimal(500),
+                    stop=Decimal(250),
+                    time_limit=3600,
+                    max_open_positions=10,
+                )
+            )
+            account_ids.append(acc.id)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app), base_url="http://testserver"
+    ) as client:
+        resp = await client.post(
+            "/api/webhooks/tradingview",
+            json={"strategy": strategy_id, "trade_id": trade_id, "action": "OPEN"},
+        )
+    assert resp.status_code == 202
+
+    async with session_factory() as session:
+        jobs = list(
+            (
+                await session.execute(
+                    select(SignalJobModel).where(SignalJobModel.signal_id == trade_id)
+                )
+            ).scalars().all()
+        )
+    assert len(jobs) == 2
+    scopes = {job.account_scope for job in jobs}
+    assert scopes == {str(account_ids[0]), str(account_ids[1])}

@@ -10,7 +10,7 @@ It is written from live inspection of host `ip-172-31-5-91` (public `98.81.69.22
 |----------------------------------------|--------------------------------------------------|
 | `BROKER_MODE=ibkr` on EC2 `.env` | **Ignored.** `Settings` has `extra="ignore"` and no `BROKER_MODE` field. |
 | “There is no `DATABASE_URL` on EC2 today. Capital comes from YAML.” | **STALE vs product.** Trading app requires Postgres (`DATABASE_URL`); allocations live in `accounts` / `allocations` tables. YAML is not the runtime router. |
-| One Gateway on `127.0.0.1:4002` | **ACCURATE as-is topology:** the app still opens **one** `TWSClient`. N Gateways are target-only — [`backend-multi-gateway.md`](backend-multi-gateway.md). |
+| One Gateway on `127.0.0.1:4001` | **ACCURATE as-is topology:** the app still opens **one** `TWSClient`. N Gateways are target-only — [`backend-multi-gateway.md`](backend-multi-gateway.md). |
 
 Keep using this file for SSH / IBC / tmux paths on that host. For application behavior, prefer [`backend-config.md`](backend-config.md) and [`backend-execution.md`](backend-execution.md).
 
@@ -23,16 +23,16 @@ There are **two machines** and they must stay separate:
 | Machine | Role | IBKR |
 |---|---|---|
 | **Local Ubuntu** (`dev3-linux`) | Developer laptop / Cursor workspace | Local TWS/Gateway (including any **live** session). **Do not start, stop, log in, or reconfigure it for EC2 paper tests.** |
-| **EC2** (`ubuntu@98.81.69.227`) | Paper execution host | **IB Gateway PAPER** via IBC, API **`127.0.0.1:4002`** |
+| **EC2** (`ubuntu@98.81.69.227`) | Paper execution host | **IB Gateway PAPER** via IBC, API **`127.0.0.1:4001`** |
 
 The backend **does not log into IBKR**. IBC + Gateway authenticate. The backend only opens a TWS API socket to an already-logged-in Gateway.
 
 ```
 TradingView  --HTTPS-->  ngrok  -->  Webhook ingest :8000  -->  Postgres (signal_jobs)
-                                                              -->  Trading app :8001  -->  TWS API  -->  127.0.0.1:4002  -->  IB Gateway PAPER
+                                                              -->  Trading app :8001  -->  TWS API  -->  127.0.0.1:4001  -->  IB Gateway PAPER
 ```
 
-**Do not** expose Gateway port 4002 on the public internet. Only webhook ingest `:8000` is tunneled (ngrok). SSH is `:22`.
+**Do not** expose Gateway port 4001 on the public internet. Only webhook ingest `:8000` is tunneled (ngrok). SSH is `:22`.
 
 ---
 
@@ -135,7 +135,7 @@ From `config.ini` (inspect with `grep`; redact password):
 ```
 BROKER_MODE=ibkr
 IBKR_HOST=127.0.0.1
-IBKR_PORT=4002
+IBKR_PORT=4001
 IBKR_CLIENT_ID=1
 IBKR_CONNECTION_TIMEOUT=10
 IBKR_MARKET_DATA_* ...
@@ -160,203 +160,54 @@ Observed after TWS handshake:
 | **22** | public | SSH |
 | **8000** | `127.0.0.1` only | Webhook ingest (`app.webhook_ingest:app`). Reachable from internet **only via ngrok** |
 | **8001** | `127.0.0.1` only | Trading / execution (`app.main:app`). Local only |
-| **4002** | Gateway API (paper) | Backend must use this. **Do not publish in security group.** |
-| **4001** | Gateway **live** | **NEVER** point the backend here |
+| **4001** | Gateway API | Backend must use this (`Settings.ibkr_port` default). **Do not publish in security group.** |
+| **4002** | Gateway paper (IB default) | Not used on this host; systemd `ibgateway.service` binds **4001** |
 | **7497** | TWS paper | Local TWS paper; **not** the EC2 Gateway paper port |
 | **7496** | TWS **live** | **NEVER** |
 | **4040** | `127.0.0.1` | ngrok local inspector |
 
-If `ss -lntp | grep 4002` is empty, Gateway is down. Do not send webhooks.
+If `ss -lntp | grep 4001` is empty, Gateway is down. Do not send webhooks.
 
 ---
 
-## 5. Process topology (tmux)
+## 5. Process topology (removed)
 
-Two tmux sessions, created as `tradingapp`:
+tmux is **not** the production run path. systemd units own the stack:
+`trading-backend.service`, `webhook-ingest.service`, `ibgateway.service`.
+Do not enable `process-manager.service`. Do not start a second uvicorn or Gateway.
 
-| Session | Pane | What runs | Typical path |
-|---|---|---|---|
-| `tradingapp` | **0.0** | `uv run uvicorn app.webhook_ingest:app … :8000` + trading on `:8001` (or `process_manager`) | `/home/tradingapp/app/backend` |
-| `tradingapp` | **0.1** | `./ngrok http 8000` | `/home/tradingapp` |
-| `ibgateway` | **0.0** | IBC + Gateway (or a shell after Gateway exits) | `/home/tradingapp` or `Jts` |
+## 6. Canonical start procedure (removed)
 
-Useful commands (as `tradingapp`):
-
-```bash
-tmux list-sessions
-tmux list-panes -t tradingapp -F '#{pane_index} #{pane_current_command} PID=#{pane_pid} #{pane_current_path}'
-tmux list-panes -t ibgateway -F '#{pane_index} #{pane_current_command} PID=#{pane_pid}'
-tmux attach -t tradingapp
-tmux attach -t ibgateway
-tmux capture-pane -t tradingapp:0.0 -p -S -100
-tmux capture-pane -t ibgateway:0.0 -p -S -100
-```
-
-Xvfb (headless display for Gateway) is **not** in tmux; it has been started as:
-
-```bash
-Xvfb :99 -screen 0 1024x768x24 >/tmp/xvfb.log 2>&1 &
-export DISPLAY=:99
-```
-
-Check: `ps -ef | grep Xvfb | grep -v grep`
-
----
-
-## 6. Canonical start procedure (`start.txt`)
-
-**Source of truth:** `/home/tradingapp/start.txt`
-
-Do not invent a different Gateway launcher. Contents:
-
-```bash
-cd /home/tradingapp/app/backend && uv run uvicorn app.webhook_ingest:app --host 127.0.0.1 --port 8000
-
-./ngrok http 8000
-
-cd /home/tradingapp/app/backend && uv run uvicorn app.main:app --host 127.0.0.1 --port 8001
-
-Xvfb :99 -screen 0 1024x768x24 >/tmp/xvfb.log 2>&1 &
-export DISPLAY=:99
-
-~/ibc/scripts/ibcstart.sh 1045 --gateway \
-  --tws-path=/home/tradingapp/Jts \
-  --tws-settings-path=/home/tradingapp/Jts \
-  --ibc-path=/home/tradingapp/ibc \
-  --ibc-ini=/home/tradingapp/ibc/config.ini
-```
-
-`1045` is the Gateway/TWS version IBC should start.
-
-### 6.1 If Gateway is already healthy
-
-```bash
-ps -ef | grep -iE 'ibc|ibgateway' | grep -v grep
-ss -lntp | grep -E ':4002|:4003|:7497|:4001'
-```
-
-If Java is up **and** `:4002` is listening **and** IBC recently logged `Login has completed`, **do not restart Gateway**.
-
-### 6.2 If Gateway is down
-
-1. Confirm Xvfb `:99` is running (start it only if missing).
-2. In `ibgateway:0.0` (as `tradingapp`):
-
-```bash
-export DISPLAY=:99
-~/ibc/scripts/ibcstart.sh 1045 --gateway \
-  --tws-path=/home/tradingapp/Jts \
-  --tws-settings-path=/home/tradingapp/Jts \
-  --ibc-path=/home/tradingapp/ibc \
-  --ibc-ini=/home/tradingapp/ibc/config.ini
-```
-
-3. Wait for IBC: `Setting Trading mode = paper`, `Paper Log In`, `Login has completed`.
-4. Confirm `ss -lntp | grep 4002`.
-5. **Then** restart the backend (section 7). Never start uvicorn before Gateway is ready if you just brought Gateway up.
-
-Paper sessions can auto-exit (“Exit Session Setting (Simulated Trading)”). That is normal overnight. Restart Gateway with the same command; do not create a second login while one is healthy.
-
----
+Do not follow `start.txt` or launch a second Gateway/uvicorn from this file.
+Use systemd: `systemctl enable --now trading-backend webhook-ingest ibgateway`.
 
 ## 7. Backend start / restart
 
-Webhook ingest (`:8000`) can run without Gateway. Trading app (`:8001`) needs Gateway on **4002**:
-
 ```bash
-tmux send-keys -t tradingapp:0.0 C-c
-# wait until :8001 is gone
-tmux send-keys -t tradingapp:0.0 \
-  'cd /home/tradingapp/app/backend && uv run uvicorn app.main:app --host 127.0.0.1 --port 8001' \
-  Enter
-tmux capture-pane -t tradingapp:0.0 -p -S -80
+sudo systemctl restart trading-backend.service
+sudo systemctl restart webhook-ingest.service
+curl -s http://127.0.0.1:8001/health
+curl -s http://127.0.0.1:8000/health
 ```
 
-Ready means **all** of:
-
-- `Attempting TWS connection to 127.0.0.1:4002`
-- `TWS nextValidId received` / `Handshake complete`
-- `Active execution pipeline: … TWS 127.0.0.1:4002`
-- `Paper-trading execution application is ready`
-- `curl -s http://127.0.0.1:8001/health` → `{"status":"ok"}`
-
-Uvicorn “Started server process” alone is **not** ready.
-
-Webhook ingest health: `curl -s http://127.0.0.1:8000/health` → `{"status":"ok"}`  
-OpenAPI (trading, on the box): `http://127.0.0.1:8001/docs`  
-Webhook: `POST http://127.0.0.1:8000/api/webhooks/tradingview`
-
----
-
-## 8. What the EC2 backend actually does
-
-EC2 git (Aug 2026): `main` @ `86485a6`.
-
-This **is not** the same tree as a developer laptop that has DB-1/DB-2/DB-3 work. On EC2 today:
-
-- Allocations: **YAML** `config/paper_allocations.yaml` (`$100000 × 0.25 = $25000` committed)
-- Open trades: **in-memory** `PositionBook` — **lost on uvicorn restart**
-- Adapter maps payload `STK` → IBKR **CFD** at `placeOrder`
-- `placeOrder` currently sets OMS status **`SUBMITTED` immediately** (Stage 1 acknowledgement fix lives on the laptop repo, **not** deployed here unless someone ships it)
-- RMS open-position count is in-memory; a restart **resets** it (last incident: 10/10 `OPEN_POSITION_LIMIT` rejected live TradingView OPENs)
-- `app/db` on that commit is incomplete — do not import it on EC2 until that phase is deployed
-
-Local laptop (this git workspace) may have PostgreSQL on Docker `:5433`, Alembic, strategy registry, and PENDING-until-broker-ack. **Do not assume EC2 has those until you compare git SHAs.**
-
----
-
-## 9. Paper allocation (EC2)
-
-File: `/home/tradingapp/app/backend/config/paper_allocations.yaml`
-
-Observed:
-
-- account `paper1`, `total_margin: 100000`, enabled
-- strategy `model_blue`, `max_open_positions: 10`
-- `alloc_pct: 0.25` → **committed = 25000**
-- per-symbol money limits for SIL / GDX in YAML (other symbols may use RMS defaults)
-
-Do **not** raise `max_open_positions` or invent capital just to force a test through.
-
----
+Ready means handshake to `127.0.0.1:4001`. Uvicorn “Started server process” alone is not ready.
 
 ## 10. ngrok / TradingView
 
 - Binary: `/home/tradingapp/ngrok`
 - Config: `/home/tradingapp/.ngrok2/ngrok.yml`
-- Typical: pane `tradingapp:0.1` running `./ngrok http 8000`
 - Local ngrok UI on the instance: `127.0.0.1:4040`
 
-TradingView must POST to the **ngrok HTTPS URL** + `/api/webhooks/tradingview`. If ngrok is down, alerts never hit uvicorn.
+TradingView must POST to the **ngrok HTTPS URL** + `/api/webhooks/tradingview` with `X-Webhook-Secret`. If ngrok is down, alerts never hit uvicorn.
 
-Do not point TradingView at Gateway `:4002`.
-
----
-
-## 11. Health checks before any paper order
-
-Copy this checklist. If any box fails, **STOP**. Do not “fix” by switching to 4001 or touching local live TWS.
-
-- [ ] SSH as `ubuntu`, ops as `tradingapp`
-- [ ] `TradingMode=paper` in IBC; `tradingMode=p` in `jts.ini`
-- [ ] IBC process + Java Gateway process
-- [ ] `:4002` listening; **not** `:4001`
-- [ ] IBC log: login completed / paper
-- [ ] Backend `.env` `IBKR_PORT=4002`
-- [ ] uvicorn handshake to `127.0.0.1:4002`, no **Error 321** (read-only API)
-- [ ] YAML allocation present
-- [ ] Unique `trade_id` (not already in PositionBook / captures)
-- [ ] You are **not** logged into the same IBKR user on another Gateway if you cannot afford `ExistingSessionDetectedAction=primary` kicking that session
-
-Then one webhook through the normal path: webhook → mapper → OrderManager → sizer → RMS → OMS → adapter → Gateway. **Never** `placeOrder` from a shell script.
+Do not point TradingView at the Gateway API port.
 
 ---
 
 ## 12. Hard never-do list
 
-- Live ports **4001 / 7496**
-- Change backend to live
-- Open 4002 in the AWS security group
+- Open Gateway API in the AWS security group
+- Start a second uvicorn or Gateway while one is healthy
 - Edit IBC/Gateway config “to make a test pass”
 - Delete `Jts/` or `ibc/config.ini`
 - `docker compose down -v` on any DB you do not own (EC2 currently has **no** docker Postgres)
@@ -372,8 +223,8 @@ Then one webhook through the normal path: webhook → mapper → OrderManager �
 | | Local workspace | EC2 `tradingapp` |
 |---|---|---|
 | SSH | n/a | PEM + ubuntu |
-| IBKR | Separate; may be live — **hands off** for paper EC2 tests | Paper Gateway **4002** |
-| Backend `.env` | Often `IBKR_PORT=7497`, may have `DATABASE_URL` to Docker `:5433` | `IBKR_PORT=4002`, YAML alloc, no Postgres |
+| IBKR | Separate; may be live — **hands off** for paper EC2 tests | Paper Gateway **4001** |
+| Backend `.env` | Often `IBKR_PORT=7497`, may have `DATABASE_URL` to Docker `:5433` | `IBKR_PORT=4001`, YAML alloc, no Postgres |
 | Code | May be ahead (DB, strategy registry, PENDING ack) | Deployed SHA may lag |
 | Docker Postgres | `ibkr-postgres` `:5433` (`root` / see `docker-compose.yml`) | Not used |
 
@@ -387,7 +238,7 @@ Local `backend/.env` `BROKER_MODE=mock` is ignored by current Settings (`extra=i
 2. `ssh -i … ubuntu@98.81.69.227` then `sudo su tradingapp`.
 3. `cat ~/start.txt` and `cat ~/app/AGENTS.md`.
 4. `tmux list-sessions` and capture both panes.
-5. `ss -lntp | grep -E '8000|8001|4002|4001'`.
+5. `ss -lntp | grep -E '8000|8001|4001'`.
 6. Confirm paper + handshake in backend pane.
 7. Read `~/app/docs/backend-execution.md` and `~/app/docs/safety.md` **before** any webhook.
 8. Compare `git -C ~/app log -1` with the laptop repo before assuming Stage-N behaviour.

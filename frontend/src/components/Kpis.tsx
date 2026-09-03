@@ -1,4 +1,6 @@
 import { useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { fetchAccountMargin } from '../api/marginApi'
 import { groupLegs, usePnlStore } from '../store/pnlStore'
 import { fmtCompactCurrency, fmtPnl, num, pnlClass } from '../utils/format'
 
@@ -133,6 +135,66 @@ export function Kpis({ accountFilter }: { accountFilter?: string }) {
         <div className="kpi-accent-bar red" />
         <div className="kpi-subtext dim">avg {avgR}R / trade</div>
       </article>
+
+      <AccountMarginKpi accountFilter={cleanFilter} />
     </section>
+  )
+}
+
+function AccountMarginKpi({ accountFilter }: { accountFilter: string }) {
+  const {
+    data,
+    isError,
+    error,
+    isFetching,
+  } = useQuery({
+    queryKey: ['margin', 'account', accountFilter],
+    queryFn: () => fetchAccountMargin(accountFilter),
+    enabled: Boolean(accountFilter),
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+    retry: false,
+  })
+
+  const statusCode =
+    typeof error === 'object' && error !== null && 'response' in error
+      ? (error as { response?: { status?: number } }).response?.status
+      : undefined
+  const gatewayDown = statusCode === 503
+  const stale = Boolean(data?.is_stale)
+  const dimmed = !accountFilter || isError || stale || gatewayDown
+  const effective = num(data?.effective_free_margin)
+  const netLiq = num(data?.net_liquidation)
+  const maint = num(data?.full_maint_margin_req)
+  const usedPct = num(data?.utilisation_pct)
+  const lookAhead = data?.look_ahead_next_change
+  const lookAheadFree = num(data?.look_ahead_available_funds)
+  const lookAheadWarn =
+    lookAheadFree !== null && effective !== null && lookAheadFree < effective * 0.9
+
+  let pill: string | null = null
+  if (!accountFilter) pill = 'SELECT ACCOUNT'
+  else if (gatewayDown) pill = 'GATEWAY DOWN'
+  else if (isError) pill = 'UNAVAILABLE'
+  else if (stale) pill = 'STALE'
+
+  return (
+    <article className="kpi factory-kpi">
+      <div className="kpi-h">
+        <label>ACCOUNT MARGIN</label>
+        {pill ? <span className="badge-pill red">{pill}</span> : null}
+        {lookAheadWarn && lookAhead && !pill ? (
+          <span className="badge-pill red">LOOK-AHEAD {new Date(lookAhead).toLocaleTimeString()}</span>
+        ) : null}
+      </div>
+      <div className={`v ${dimmed ? 'dim' : ''}`}>
+        {effective !== null && !dimmed ? fmtCompactCurrency(effective) : isFetching ? '…' : '—'}
+      </div>
+      <div className="kpi-subtext dim">
+        {netLiq !== null
+          ? `Net liq ${fmtCompactCurrency(netLiq)}${maint !== null ? ` · maint req ${fmtCompactCurrency(maint)}` : ''}${usedPct !== null ? ` · ${usedPct.toFixed(0)}% used` : ''}`
+          : 'Live IBKR free margin (net of pending)'}
+      </div>
+    </article>
   )
 }

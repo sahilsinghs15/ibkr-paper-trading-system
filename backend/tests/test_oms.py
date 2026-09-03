@@ -811,3 +811,48 @@ async def test_201_is_rejected_and_202_is_cancelled(
     mock_adapter.on_error(reqId=tws2, errorCode=202, errorString="Order Canceled")
     assert oms.get_order(second.internal_order_id).status == OMSOrderStatus.CANCELLED
 
+
+def test_adopt_renumbers_tws_id_via_perm_id(
+    mock_adapter: IBKRExecutionAdapter,
+    sample_intent: OrderIntent,
+) -> None:
+    """M17: unknown tws_id callbacks match adopted order by permId."""
+    from app.instruments.models import ResolvedInstrument
+
+    order = OMSOrder(
+        internal_order_id="INT-PERM-1",
+        intent=sample_intent,
+        symbol="EWA",
+        side=OrderSide.BUY,
+        quantity=1.0,
+        ibkr_order_id=100,
+        status=OMSOrderStatus.SUBMITTED,
+        perm_id=424242,
+        resolved=ResolvedInstrument(
+            symbol="EWA",
+            requested_instrument_type="STK",
+            sec_type="STK",
+            con_id=123456,
+            exchange="SMART",
+            currency="USD",
+        ),
+    )
+    mock_adapter.adopt_order(order)
+    mock_adapter.on_order_status(
+        orderId=200,
+        status="Submitted",
+        filled=0.0,
+        remaining=1.0,
+        avgFillPrice=0.0,
+        permId=424242,
+        parentId=0,
+        lastFillPrice=0.0,
+        clientId=1,
+        whyHeld="",
+        mktCapPrice=0.0,
+    )
+    rebound = mock_adapter._orders_by_tws_id.get(200)
+    assert rebound is not None
+    assert rebound.internal_order_id == "INT-PERM-1"
+    assert rebound.ibkr_order_id == 200
+

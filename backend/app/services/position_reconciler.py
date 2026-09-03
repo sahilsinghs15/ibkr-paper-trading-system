@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.broker.ibkr.positions import BrokerPositionLine
+from app.core.identifiers import normalize_account
 from app.db.models.account import AccountModel
 from app.db.models.basket import BasketModel
 from app.db.models.instrument import InstrumentModel
@@ -138,7 +138,7 @@ def classify_reconcile_diffs(
     unmapped: list[BrokerPositionLine] = []
 
     for line in broker_lines:
-        account_id = ibkr_to_account.get(line.ibkr_account)
+        account_id = ibkr_to_account.get(normalize_account(line.ibkr_account))
         if account_id is None:
             unmapped.append(line)
             continue
@@ -254,11 +254,13 @@ class PositionReconciler:
         *,
         interval_sec: float = RECONCILE_INTERVAL_SEC,
         request_timeout_sec: float = POSITIONS_REQUEST_TIMEOUT_SEC,
+        after_sweep: Any | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._client = client
         self._interval_sec = interval_sec
         self._request_timeout_sec = request_timeout_sec
+        self._after_sweep = after_sweep
         self._task: asyncio.Task | None = None
         self._running = False
         self._sweep_lock = asyncio.Lock()
@@ -332,6 +334,11 @@ class PositionReconciler:
                 timed_out=timed_out,
                 error=error,
             )
+            if callable(self._after_sweep):
+                try:
+                    await self._after_sweep()
+                except Exception:
+                    logger.exception("Position reconcile after_sweep failed")
 
     async def _persist_and_diff(
         self,
@@ -344,13 +351,13 @@ class PositionReconciler:
         finished_at = datetime.now(UTC)
         async with self._session_factory() as session, session.begin():
             accounts = list((await session.execute(select(AccountModel))).scalars().all())
-            ibkr_to_account = {acc.ibkr_account: acc.id for acc in accounts}
+            ibkr_to_account = {normalize_account(acc.ibkr_account): acc.id for acc in accounts}
 
             snapshot_rows = [
                 {
                     "ibkr_account": line.ibkr_account,
                     "con_id": line.con_id,
-                    "account_id": ibkr_to_account.get(line.ibkr_account),
+                    "account_id": ibkr_to_account.get(normalize_account(line.ibkr_account)),
                     "symbol": _norm_symbol(line.symbol),
                     "sec_type": _norm_sec_type(line.sec_type),
                     "currency": line.currency,

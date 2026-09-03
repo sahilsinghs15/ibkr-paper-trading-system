@@ -29,7 +29,7 @@ Mounted at `POST /api/v1/emergency-kill-switch`:
 
 ### Square-off response
 
-Returns `SquareOffResponse` with `operation_id`, `status`, `squared_off_count` (= initial open position count). Idempotent: duplicate activation returns existing in-flight operation.
+Returns `SquareOffResponse` with `operation_id`, `status`, `squared_off_count` (= initial open position count). Duplicate square-off **while armed** (including `COMPLETE` / `UNRESOLVED`) is refuse — HTTP returns the existing operation with `created_new=False`. Only after Start Again (`CLEARED`) may a new flatten start. Partial unique index `uq_kill_switch_operations_armed_account` enforces one armed row per account.
 
 ## Armed vs cleared
 
@@ -96,7 +96,11 @@ CLOSE signals and kill-switch flatten itself are **not** blocked by the armed ca
 3. Reconcile: auto-close stale OPEN rows whose close orders filled in DB
 4. Finalize operation → `COMPLETE` or `UNRESOLVED`
 
-On full fill: persist `POSITION_CLOSE` via `PositionRepository.close_trade` + `EventRepository.append`.
+On full fill: persist `POSITION_CLOSE` via `PositionRepository.close_trade` + `EventRepository.append`. Incomplete `exit_marks` or close-qty ≠ open signed qty refuses the close (row stays OPEN).
+
+Flatten paths **deliberately skip `execution_claims`**. Mutual exclusion is `flatten_inflight` keys (`ledger_key` / `broker_key`) shared by kill-switch, pair-close, and broker leftover flatten. A second producer gets 409 / already-flattening rather than a second `placeOrder`. Compensation close orders are not counted as flatten fills.
+
+Flatten tasks are stored (`KillSwitchService._in_flight`) and resumed on hydrate for `ACTIVATING` / `FLATTENING` / `RECONCILING`.
 
 ### RMS bypass
 

@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
+from app.core.config import running_under_pytest
 from app.core.security import decode_access_token, decode_sse_token
 from app.db.models.user import UserModel
 from demo_streaming.snapshot import (
@@ -66,7 +67,7 @@ async def _get_authenticated_user_from_request(
         except jwt.PyJWTError:
             return None
     else:
-        if os.environ.get("TRADINGAPP_TESTING") == "1":
+        if os.environ.get("TRADINGAPP_TESTING") == "1" and running_under_pytest():
             return UserModel(
                 id=999999,
                 email="test_admin@example.com",
@@ -111,6 +112,9 @@ def create_demo_app(
     trading_api_url: str = "http://127.0.0.1:8001",
     shutdown: asyncio.Event | None = None,
 ) -> FastAPI:
+    from app.core.config import refuse_testing_flag_on_order_process
+
+    refuse_testing_flag_on_order_process()
     stream = PositionStream(redis, stream_name)
     stop = shutdown or asyncio.Event()
 

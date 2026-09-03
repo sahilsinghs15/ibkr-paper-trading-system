@@ -1,3 +1,5 @@
+> **STALE — do not follow.** Competing ceiling (40 vs 30/50) and a deleted scheduler class. Live pacing is `GatewayRateLimiter` in `backend/app/broker/ibkr/gateway_rate_limiter.py`. See [`backend-rms-oms.md`](../backend-rms-oms.md).
+
 # Production MFT IBKR Execution Scheduler & Pacing Specification
 
 This document details the centralized IBKR execution scheduling layer, token bucket request rate limiting, and connection health management.

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -39,7 +39,18 @@ async def test_backend_health_checker_healthy(watchdog_settings: WatchdogSetting
             return True, "HTTP 200", 1.5
         return False, "HTTP 404", None
 
-    with patch("app.services.watchdog.health._http_get", side_effect=mock_http_get):
+    with (
+        patch("app.services.watchdog.health._http_get", side_effect=mock_http_get),
+        patch("app.services.watchdog.health.httpx.AsyncClient") as mock_client_cls,
+    ):
+        mock_resp = AsyncMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={"status": "ok"})
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client_cls.return_value = mock_client
         result = await checker.check()
         assert result.status == HealthStatus.HEALTHY
         assert result.liveness == HealthStatus.HEALTHY

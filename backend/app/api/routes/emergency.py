@@ -113,9 +113,10 @@ async def emergency_kill_switch_endpoint(
     # 3. Arm EXISTING account Kill Switch state (no IBKR order execution)
     session_factory = getattr(request.app.state, "session_factory", None)
     if session_factory is None:
-        from app.db.session import AsyncSessionLocal
-
-        session_factory = AsyncSessionLocal
+        raise HTTPException(
+            status_code=503,
+            detail="Session factory is unavailable.",
+        )
 
     order_manager = getattr(request.app.state, "order_manager", None)
     kill_switch_svc = KillSwitchService(

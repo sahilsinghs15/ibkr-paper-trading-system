@@ -52,6 +52,12 @@ class AllocationModel(Base):
     target: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     stop: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     time_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    pair_max_allocation_pct: Mapped[Decimal] = mapped_column(
+        Numeric(9, 6),
+        nullable=False,
+        default=Decimal("0.100000"),
+        server_default="0.100000",
+    )
     max_open_positions: Mapped[int] = mapped_column(Integer, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
@@ -65,5 +71,9 @@ class AllocationModel(Base):
         CheckConstraint(
             "alloc_pct >= 0 AND alloc_pct <= 1",
             name="ck_allocations_alloc_pct_range",
+        ),
+        CheckConstraint(
+            "pair_max_allocation_pct > 0 AND pair_max_allocation_pct <= 1",
+            name="ck_allocations_pair_max_allocation_pct_range",
         ),
     )

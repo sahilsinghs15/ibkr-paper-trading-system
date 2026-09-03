@@ -80,6 +80,8 @@ def _ctx(account_id: int, ibkr: str) -> AccountExecutionContext:
         total_margin=Decimal(100000),
         alloc_pct=Decimal("0.25"),
         committed_notional=Decimal(25000),
+        pair_max_allocation_pct=Decimal("1"),
+        pair_budget=Decimal(25000),
         target=Decimal(500),
         stop=Decimal(250),
         time_limit=3600,

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_authenticated_user
+from app.core.identifiers import normalize_account
 from app.db.models.user import UserModel
 from app.db.session import get_db_session
 from app.schemas.reconcile_schemas import (
@@ -41,7 +42,7 @@ async def get_reconcile_positions(
     """Return reconcile dashboard payload for one account or all accounts."""
     if current_user.role == "user":
         user_account = current_user.account.ibkr_account if current_user.account else None
-        if ibkr_account and ibkr_account.strip() != user_account:
+        if ibkr_account and normalize_account(ibkr_account) != normalize_account(user_account):
             from fastapi import HTTPException
             raise HTTPException(status_code=403, detail="Forbidden: Cannot access another account")
         ibkr_account = user_account
@@ -66,16 +67,17 @@ async def flatten_broker_position_line(
     """Flatten one broker snapshot net line."""
     if current_user.role == "user":
         user_account = current_user.account.ibkr_account if current_user.account else None
-        if body.ibkr_account.strip() != user_account:
+        if normalize_account(body.ibkr_account) != normalize_account(user_account):
             from fastapi import HTTPException
             raise HTTPException(status_code=403, detail="Forbidden: Cannot access another account")
 
     order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
     session_factory = getattr(request.app.state, "session_factory", None)
     if session_factory is None:
-        from app.db.session import AsyncSessionLocal
-
-        session_factory = AsyncSessionLocal
+        raise HTTPException(
+            status_code=503,
+            detail="Session factory is unavailable.",
+        )
 
     svc = BrokerFlattenService(session_factory=session_factory, order_manager=order_manager)
     return await svc.flatten_line(

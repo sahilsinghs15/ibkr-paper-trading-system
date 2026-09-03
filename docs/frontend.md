@@ -26,7 +26,10 @@ Main FastAPI (`app.main`) does **not** serve any frontend. The dashboard is serv
 - `api/reconcileApi.ts` — axios client for `/api/v1/reconcile/positions`
 - `types/reconcile.ts` — reconcile API types
 - `types/position.ts` — demo stream payload types
-- `types/config.ts` — config API types
+- `pages/AccountSettingsPage.tsx` — **routed** Settings UI (`/account/:ibkrAccount/settings`; `/settings` redirects). `SettingsPage.tsx` exists but is **not mounted**.
+- `api/marginApi.ts` — axios client for `/api/v1/margin/accounts*`
+- `types/margin.ts` — live snapshot + `MarginSettings` types
+- `types/config.ts` — config API types (includes margin policy schemas)
 - `store/pnlStore.ts` — Zustand active/closed leg maps + stream state
 - `hooks/usePnlStream.ts` — `GET /demo/positions` + `EventSource("/demo/stream")` (positions route only)
 - `utils/format.ts` — USD/PnL/time/instrument helpers
@@ -40,16 +43,19 @@ Main FastAPI (`app.main`) does **not** serve any frontend. The dashboard is serv
 1. `GET /demo/positions` — snapshot; keep OPEN legs
 2. `EventSource("/demo/stream")` — SSE updates
 3. On SSE error: mark reconnecting, wait 1s, reload snapshot, reconnect
-4. KPIs + open/closed tables; group by `(account_id, trade_id)`; use **one** pair `unrealized_pnl` per trade (do not sum both legs)
+4. KPIs + open/closed tables; group by `(account_id, trade_id)`; use **one** pair `unrealized_pnl` per trade (do not sum both legs). Fifth KPI card **ACCOUNT MARGIN** polls `GET /api/v1/margin/accounts/{ibkr}` every 15s (`Kpis.tsx`). Stale or HTTP 503 renders a dimmed value with a `STALE` / `GATEWAY DOWN` pill — never show a stale figure as live. Grid is five columns (`.factory-kpis`).
 5. Poll `GET /api/v1/baskets/critical?ibkr_account=` every 5s — banner + incident table when any CRITICAL basket exists; empty list means OPEN trading resumed for that account
 6. NY vs IST timezone in `localStorage` key `modelBlue.displayTimezone`
 7. Display maps instrument `STK` → label `CFD`
 
-### Settings page (`/settings`)
+### Settings page (`/account/:ibkrAccount/settings`)
+
+Routed component is `AccountSettingsPage.tsx`, not `SettingsPage.tsx`.
 
 - `GET /api/v1/config/accounts` — load nested config
-- Per account: edit `total_margin`, `enabled`, allocation `alloc_pct` (with enabled-sum ≤ 100% guard), per-account `max_open_positions`, and `per_symbol_limits` CRUD
+- Per account: edit **Trading capital** (`accounts.total_margin`; market-value budget, not IBKR margin), `enabled`, allocation `alloc_pct` (with enabled-sum ≤ 100% guard), **per-pair allocation** (`pair_max_allocation_pct`, with a derived `$X per pair · room for N pairs` hint), per-account `max_open_positions`, and `per_symbol_limits` CRUD. Broker free-margin from `GET /api/v1/margin/accounts/{ibkr}` is shown beside that input so the two figures are not confused. New allocations are created from `AccountsPage` `AddAllocationModal` (includes the per-pair field).
 - Auto square-off & retry: `GET/PATCH /api/v1/config/execution`
+- **Margin gate policy:** `GET/PATCH /api/v1/config/margin` (`MarginSettingsCard`) — `check_enabled` defaults true (**Margin check enabled**); uncheck for shadow mode. Comfort ratio, floors, look-ahead; no TWS restart
 - Saves via PATCH/PUT/DELETE on `/api/v1/config/*` (proxied to trading app `:8001`)
 - **No** Gateway host/port/clientId binding. `ibkr_account` is the IB account id tagged on orders, not a socket. Target UI: [`backend-multi-gateway.md`](backend-multi-gateway.md).
 

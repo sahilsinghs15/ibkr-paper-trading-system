@@ -1,6 +1,7 @@
 """Tests for application configuration."""
 
 import os
+from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -18,7 +19,7 @@ class TestConfig:
             assert settings.environment == "development"
             assert settings.log_level == "INFO"
             assert settings.ibkr_host == "127.0.0.1"
-            assert settings.ibkr_port == 7497
+            assert settings.ibkr_port == 4001
             assert settings.ibkr_client_id == 1
             assert settings.ibkr_connection_timeout == 10
             assert settings.ibkr_market_data_type == 3
@@ -36,6 +37,16 @@ class TestConfig:
             assert settings.database_url == (
                 "postgresql+asyncpg://root:root123@localhost:5433/ibkr_trading"
             )
+            assert settings.margin_whatif_enabled is False
+            assert settings.margin_scan_enabled is False
+            assert settings.margin_whatif_timeout_sec == 5.0
+            assert settings.margin_scan_max_per_sec == 5.0
+            assert settings.margin_snapshot_max_age_sec == 300
+            assert settings.min_order_notional == Decimal("100")
+            assert settings.pair_ratio_tolerance == Decimal("0.5")
+            assert settings.pair_min_deployment_pct == Decimal("0")
+            assert settings.market_value_utilisation_cap == Decimal("1.0")
+            assert settings.market_value_check_enabled is False
 
     def test_environment_override(self) -> None:
         """Environment variables should override defaults."""
