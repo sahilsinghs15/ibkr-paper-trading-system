@@ -272,11 +272,10 @@ class RealIBKRClient:
         order.action = "BUY"
         order.orderType = "MKT"
         order.totalQuantity = 1
-        order.whatIf = True  # CRITICAL: margin estimation only
-        order.transmit = False  # extra defense (irrelevant when whatIf=True but safe)
-        # Ensure whatIf compliance
+        order.whatIf = True  # CRITICAL: margin estimation only (prevents execution even with transmit=True)
+        order.transmit = True  # Required by IBKR for whatIf to be validated (321 error if False)
+        # Ensure whatIf compliance — transmit may be True but whatIf=True guarantees no execution
         assert order.whatIf is True, "SAFETY: whatIf must be True — refusing to send executable order"
-        assert order.transmit is False or order.whatIf is True, "SAFETY: executable order blocked"
 
         if order.whatIf is not True:
             raise RuntimeError("SAFETY ABORT: Order.whatIf is not True — refusing to place order")
