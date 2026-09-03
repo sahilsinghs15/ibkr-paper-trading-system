@@ -1,0 +1,17 @@
+{
+  "etf_candidates": 650,
+  "etf_verified": 0,
+  "cfd_candidates": 521,
+  "cfd_verified": 0,
+  "arca_etfs_verified": 0,
+  "amex_etfs_verified": 0,
+  "total_verified": 0,
+  "synthetic_instruments": 0,
+  "failures": 1171,
+  "candidates_file": "/home/dev3/Documents/ibkr-paper-trading-system/prototype/margin_cache_benchmark/data/instruments_candidates.csv",
+  "verified_file": "/home/dev3/Documents/ibkr-paper-trading-system/prototype/margin_cache_benchmark/data/instruments_verified.csv",
+  "full_validation_file": "/home/dev3/Documents/ibkr-paper-trading-system/prototype/margin_cache_benchmark/data/instruments_validation_full.csv",
+  "gateway": "127.0.0.1:4002",
+  "client_id": 99,
+  "note": "Local validation attempted but Paper Gateway :4002 not reachable (expected \u2014 EC2 phase required for real verification)"
+}

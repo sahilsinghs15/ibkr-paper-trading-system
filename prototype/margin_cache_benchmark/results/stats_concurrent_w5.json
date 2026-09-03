@@ -1,0 +1,19 @@
+{
+  "approach": "Concurrent",
+  "instruments": 100,
+  "workers": 5,
+  "rate_limit": 10.0,
+  "total_time_sec": 18.859,
+  "successes": 98,
+  "failures": 2,
+  "avg_latency_ms": 940.61,
+  "median_latency_ms": 836.58,
+  "p95_latency_ms": 1815.14,
+  "total_requests": 200,
+  "pacing_errors": 1,
+  "retries": 0,
+  "contract_resolve_avg_ms": 478.15,
+  "margin_avg_ms": 462.43,
+  "actual_rate_per_sec": 10.6,
+  "label": "MOCK RESULT"
+}

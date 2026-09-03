@@ -1,0 +1,50 @@
+{
+  "etf_candidates": 650,
+  "cfd_candidates": 521,
+  "total_candidates": 1171,
+  "etf_sample": [
+    [
+      "IWM",
+      "AMEX"
+    ],
+    [
+      "DIA",
+      "AMEX"
+    ],
+    [
+      "SPY",
+      "AMEX"
+    ],
+    [
+      "QQQ",
+      "AMEX"
+    ],
+    [
+      "XLF",
+      "AMEX"
+    ]
+  ],
+  "cfd_sample": [
+    [
+      "AAPL",
+      "SMART"
+    ],
+    [
+      "MSFT",
+      "SMART"
+    ],
+    [
+      "NVDA",
+      "SMART"
+    ],
+    [
+      "GOOGL",
+      "SMART"
+    ],
+    [
+      "GOOG",
+      "SMART"
+    ]
+  ],
+  "note": "Real symbols only; no ETF001/CFD001 synthetic; CFD verification pending IBKR CFD eligibility"
+}

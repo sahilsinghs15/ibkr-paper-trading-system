@@ -1,0 +1,19 @@
+{
+  "approach": "Synchronous",
+  "instruments": 20,
+  "workers": 1,
+  "rate_limit": 20.0,
+  "total_time_sec": 2.493,
+  "successes": 19,
+  "failures": 1,
+  "avg_latency_ms": 127.54,
+  "median_latency_ms": 137.59,
+  "p95_latency_ms": 188.73,
+  "total_requests": 40,
+  "pacing_errors": 1,
+  "retries": 0,
+  "contract_resolve_avg_ms": 53.36,
+  "margin_avg_ms": 74.95,
+  "actual_rate_per_sec": 16.05,
+  "label": "MOCK RESULT"
+}
