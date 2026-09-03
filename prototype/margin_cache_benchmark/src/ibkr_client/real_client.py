@@ -70,8 +70,9 @@ class _WhatIfClient(EWrapper, EClient):
         logger.info("RealClient managedAccounts %s", codes)
 
     def error(self, reqId: int, errorCode: int, errorString: str, advancedOrderRejectJson: str = "") -> None:
-        if errorCode >= 2000 and errorCode < 3000:
-            logger.debug("IBKR info reqId=%d code=%d %s", reqId, errorCode, errorString)
+        if (2000 <= errorCode < 3000) or (10000 <= errorCode < 11000) or errorCode in (399, 2109, 10349):
+            logger.info("IBKR info (non-terminal) reqId=%d code=%d %s", reqId, errorCode, errorString)
+            return
         else:
             logger.warning("IBKR error reqId=%d code=%d %s", reqId, errorCode, errorString)
             with self._whatif_lock:
