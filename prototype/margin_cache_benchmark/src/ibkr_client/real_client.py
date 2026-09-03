@@ -57,11 +57,6 @@ class _WhatIfClient(EWrapper, EClient):
         self._whatif_results: dict[int, dict[str, str]] = {}
         self._whatif_errors: dict[int, str] = {}
 
-    # Expose self as wrapper for RealIBKRClient compatibility
-    @property
-    def wrapper(self) -> _WhatIfClient:
-        return self
-
     def nextValidId(self, orderId: int) -> None:
         super().nextValidId(orderId)
         self.next_order_id = orderId
