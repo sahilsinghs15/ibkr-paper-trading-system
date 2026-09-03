@@ -32,11 +32,16 @@ except ImportError:
     IBOrder = object  # type: ignore
 
 
-class _WhatIfWrapper(EWrapper):
-    """Wrapper that captures contractDetails and whatIf openOrder/orderState."""
+class _WhatIfClient(EWrapper, EClient):
+    """Single IBKR client capturing both contractDetails and whatIf openOrder/orderState.
+
+    Uses one wrapper (self) to avoid ibapi EClient.wrapper property setter bug
+    (wrapper is read-only property in 9.81.1). All state lives on self.
+    """
 
     def __init__(self) -> None:
         EWrapper.__init__(self)
+        EClient.__init__(self, wrapper=self)
         self.next_order_id: int | None = None
         self._connected = threading.Event()
         self._managed_accounts: frozenset[str] = frozenset()
@@ -47,11 +52,15 @@ class _WhatIfWrapper(EWrapper):
         self._cd_results: dict[int, list[Any]] = {}
         self._next_cd_req = 70000
 
-        # whatIf capture
         self._whatif_lock = threading.Lock()
         self._whatif_events: dict[int, threading.Event] = {}
         self._whatif_results: dict[int, dict[str, str]] = {}
         self._whatif_errors: dict[int, str] = {}
+
+    # Expose self as wrapper for RealIBKRClient compatibility
+    @property
+    def wrapper(self) -> _WhatIfClient:
+        return self
 
     def nextValidId(self, orderId: int) -> None:
         super().nextValidId(orderId)
@@ -79,26 +88,26 @@ class _WhatIfWrapper(EWrapper):
                     self._cd_events[reqId].set()
 
     def contractDetails(self, reqId: int, contractDetails: Any) -> None:
+        super().contractDetails(reqId, contractDetails)
         with self._cd_lock:
             if reqId in self._cd_results:
                 self._cd_results[reqId].append(contractDetails)
 
     def contractDetailsEnd(self, reqId: int) -> None:
+        super().contractDetailsEnd(reqId)
         with self._cd_lock:
             evt = self._cd_events.get(reqId)
             if evt:
                 evt.set()
 
     def openOrder(self, orderId: int, contract: Any, order: Any, orderState: Any) -> None:
-        # Captures whatIf margin from orderState
+        super().openOrder(orderId, contract, order, orderState)
         with self._whatif_lock:
             if orderId in self._whatif_events:
-                # Extract margins from orderState
                 init_after = getattr(orderState, "initMarginAfter", "") or ""
                 maint_after = getattr(orderState, "maintMarginAfter", "") or ""
                 init_change = getattr(orderState, "initMarginChange", "") or ""
                 maint_change = getattr(orderState, "maintMarginChange", "") or ""
-                # Prefer After if available, else Change
                 init = init_after.strip() or init_change.strip()
                 maint = maint_after.strip() or maint_change.strip()
                 self._whatif_results[orderId] = {
@@ -109,32 +118,10 @@ class _WhatIfWrapper(EWrapper):
                 self._whatif_events[orderId].set()
 
     def orderStatus(self, orderId: int, status: str, filled: float, remaining: float, avgFillPrice: float, permId: int, parentId: int, lastFillPrice: float, clientId: int, whyHeld: str, mktCapPrice: float) -> None:
-        # Fallback trigger for whatIf
+        super().orderStatus(orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)
         with self._whatif_lock:
             if orderId in self._whatif_events and not self._whatif_events[orderId].is_set():
-                # If openOrder hasn't fired, we still unblock on orderStatus to avoid hang
-                # but keep waiting briefly if needed
                 pass
-
-
-class _WhatIfClient(EWrapper, EClient):
-    def __init__(self) -> None:
-        EWrapper.__init__(self)
-        EClient.__init__(self, wrapper=self)
-        self._wrapper = _WhatIfWrapper()
-        # delegate wrapper methods
-        self.nextValidId = self._wrapper.nextValidId
-        self.managedAccounts = self._wrapper.managedAccounts
-        self.error = self._wrapper.error
-        self.contractDetails = self._wrapper.contractDetails
-        self.contractDetailsEnd = self._wrapper.contractDetailsEnd
-        self.openOrder = self._wrapper.openOrder
-        self.orderStatus = self._wrapper.orderStatus
-        self._wrapper_ref = self._wrapper
-
-    @property
-    def wrapper(self) -> _WhatIfWrapper:
-        return self._wrapper_ref
 
 
 class RealIBKRClient:
