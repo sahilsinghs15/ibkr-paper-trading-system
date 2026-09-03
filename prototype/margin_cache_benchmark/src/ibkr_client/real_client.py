@@ -274,6 +274,8 @@ class RealIBKRClient:
         order.totalQuantity = 1
         order.whatIf = True  # CRITICAL: margin estimation only (prevents execution even with transmit=True)
         order.transmit = True  # Required by IBKR for whatIf to be validated (321 error if False)
+        order.eTradeOnly = False
+        order.firmQuoteOnly = False
         # Ensure whatIf compliance — transmit may be True but whatIf=True guarantees no execution
         assert order.whatIf is True, "SAFETY: whatIf must be True — refusing to send executable order"
 
