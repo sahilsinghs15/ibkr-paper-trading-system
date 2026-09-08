@@ -352,7 +352,9 @@ class ExecutionWorkerPool:
             return
 
         try:
-            execution = await self._order_manager.process_signal_execution(domain_signal)
+            execution = await self._order_manager.process_signal_execution(
+                domain_signal, account_scope=job.account_scope
+            )
 
             if lease_lost.is_set():
                 # Orders may have gone out under a lease another worker now owns.

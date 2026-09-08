@@ -231,7 +231,12 @@ class BasketCoordinator:
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
         try:
-            intent = attach_resolved(intent)
+            from app.instruments.execution_override import apply_stk_to_cfd_for_strategy
+
+            intent = attach_resolved(
+                intent,
+                apply_stk_to_cfd=apply_stk_to_cfd_for_strategy(intent.strategy_id),
+            )
         except InstrumentResolutionError as exc:
             raise ValueError(str(exc)) from exc
         trade_id = intent.signal_id

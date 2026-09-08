@@ -81,6 +81,7 @@ class FlattenBrokerPositionRequest(BaseModel):
     symbol: str = Field(..., min_length=1)
     sec_type: str = Field(..., min_length=1)
     con_id: int = Field(..., gt=0)
+    quantity: float = Field(..., gt=0, description="Shares to close; capped by snapshot qty")
 
 
 class FlattenBrokerPositionResponse(BaseModel):
@@ -96,3 +97,15 @@ class FlattenBrokerPositionResponse(BaseModel):
     status: str
     success: bool
     message: str | None = None
+
+
+class AlignBrokerPositionRequest(BaseModel):
+    """Target one symbol net for MARKET align (server computes side/qty from ledger)."""
+
+    ibkr_account: str = Field(..., min_length=1)
+    symbol: str = Field(..., min_length=1)
+    sec_type: str = Field(..., min_length=1)
+    con_id: int = Field(..., gt=0)
+
+
+AlignBrokerPositionResponse = FlattenBrokerPositionResponse

@@ -135,3 +135,10 @@ async def test_fanout_survives_sibling_runtime_error() -> None:
     assert by_id[10].error is not None
     assert "dictionary changed size" in by_id[10].error
     assert by_id[20].success is True
+
+
+def test_contexts_for_scope_keeps_only_job_account() -> None:
+    scoped = OrderManager._contexts_for_scope([_ctx(7, "DUR919062"), _ctx(452, "U7211090")], "7")
+    assert [c.account_id for c in scoped] == [7]
+    unscoped = OrderManager._contexts_for_scope([_ctx(7, "DUR919062"), _ctx(452, "U7211090")], None)
+    assert [c.account_id for c in unscoped] == [7, 452]

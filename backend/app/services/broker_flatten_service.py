@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models.account import AccountModel
+from app.db.models.instrument import InstrumentModel
 from app.db.repositories.broker_position_repository import BrokerPositionRepository
 from app.oms.models import OMSOrderStatus
 from app.rms.models import (
@@ -26,7 +27,7 @@ from app.rms.models import (
     OrderSide as RMSOrderSide,
 )
 from app.schemas.reconcile_schemas import FlattenBrokerPositionResponse
-from app.services.position_reconciler import QTY_EPSILON
+from app.services.position_reconciler import QTY_EPSILON, ledger_net_qty_for_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class BrokerFlattenService:
         symbol: str,
         sec_type: str,
         con_id: int,
+        quantity: float,
     ) -> FlattenBrokerPositionResponse:
         key = (ibkr_account, con_id)
         if key in _IN_FLIGHT_BROKER_FLATTENS:
@@ -67,6 +69,7 @@ class BrokerFlattenService:
                 symbol=symbol,
                 sec_type=sec_type,
                 con_id=con_id,
+                quantity=quantity,
             )
         )
         _IN_FLIGHT_BROKER_FLATTENS[key] = task
@@ -82,6 +85,7 @@ class BrokerFlattenService:
         symbol: str,
         sec_type: str,
         con_id: int,
+        quantity: float,
     ) -> FlattenBrokerPositionResponse:
         async with self._session_factory() as session:
             repo = BrokerPositionRepository(session)
@@ -121,6 +125,16 @@ class BrokerFlattenService:
                     detail="Broker snapshot quantity is zero; nothing to flatten.",
                 )
 
+            max_qty = abs(signed_qty)
+            if quantity > max_qty + QTY_EPSILON:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Requested quantity {quantity} exceeds broker snapshot "
+                        f"quantity {max_qty}."
+                    ),
+                )
+
             account_id = snapshot.account_id
             if account_id is None:
                 account_row = (
@@ -130,18 +144,51 @@ class BrokerFlattenService:
                 ).scalar_one_or_none()
                 account_id = account_row
 
+            min_qty = 0.0
+            if account_id is not None:
+                from app.db.repositories.position_repository import PositionRepository
+
+                open_rows = await PositionRepository(session).list_open()
+                instruments = list(
+                    (await session.execute(select(InstrumentModel))).scalars().all()
+                )
+                ledger_net = ledger_net_qty_for_symbol(
+                    open_rows,
+                    instruments,
+                    account_id=account_id,
+                    symbol=norm_symbol,
+                    sec_type=norm_sec_type,
+                )
+                if ledger_net is not None:
+                    min_qty = abs(ledger_net)
+
+            if min_qty > max_qty + QTY_EPSILON:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Ledger quantity exceeds broker snapshot quantity; "
+                        "cannot square off this line."
+                    ),
+                )
+            if min_qty > QTY_EPSILON and quantity < min_qty - QTY_EPSILON:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Requested quantity {quantity} is below ledger net "
+                        f"quantity {min_qty}."
+                    ),
+                )
+
             close_side = RMSOrderSide.SELL if signed_qty > 0 else RMSOrderSide.BUY
-            close_qty = abs(signed_qty)
+            close_qty = quantity
             side_label = close_side.value
             snapshot_exchange = snapshot.exchange or None
             snapshot_currency = snapshot.currency or None
 
-            from app.db.repositories.position_repository import PositionRepository
             from app.services import flatten_inflight
 
             flatten_keys: list = [flatten_inflight.broker_key(ibkr_account, con_id)]
             if account_id is not None:
-                open_rows = await PositionRepository(session).list_open()
                 for pos in open_rows:
                     if pos.account_id != account_id:
                         continue

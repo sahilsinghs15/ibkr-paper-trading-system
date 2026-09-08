@@ -130,7 +130,7 @@ XVFB_SETTLE_SEC = 2
 
 # Paper Gateway API socket (must match IBC / backend IBKR_PORT on this host)
 GATEWAY_API_HOST = "127.0.0.1"
-GATEWAY_API_PORT = 4001
+GATEWAY_API_PORT = 4002
 # IBC writes this after a successful paper/live logon (see ib_gateway.log)
 GATEWAY_LOGIN_MARKER = "Login has completed"
 GATEWAY_READY_TIMEOUT_SEC = 180

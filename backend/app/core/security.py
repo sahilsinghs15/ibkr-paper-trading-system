@@ -77,7 +77,7 @@ def decode_access_token(token: str) -> dict:
     return payload
 
 
-def create_sse_token(user_id: int, expires_minutes: int = 5) -> str:
+def create_sse_token(user_id: int, expires_minutes: int = 480) -> str:
     """Create a short-lived, purpose-specific JWT token for SSE streaming."""
     settings = get_settings()
     now = datetime.now(UTC)

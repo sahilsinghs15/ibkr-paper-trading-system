@@ -36,7 +36,7 @@ export function AppNav() {
         to={effectiveAccount ? `${accountHome}/reconcile` : '/accounts'}
         className={({ isActive }) => (effectiveAccount && isActive ? 'on' : undefined)}
       >
-        Reconcile
+        Inventory
       </NavLink>
       {user?.role === 'admin' && (
         <NavLink

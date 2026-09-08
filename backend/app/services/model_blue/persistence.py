@@ -75,16 +75,21 @@ def _commission_from_orders(orders: list[OMSOrder]) -> Decimal | None:
 _CLOSE_QTY_EPS = Decimal("0.0001")
 
 
+def _order_filled_qty(order: object) -> Decimal | None:
+    """Broker-reported fill qty for one order; never intended order quantity."""
+    if hasattr(order, "filled_quantity"):
+        qty = _decimal_or_none(getattr(order, "filled_quantity", None))
+        if qty is not None:
+            return qty
+    return _decimal_or_none(getattr(order, "fill_qty", None))
+
+
 def _filled_qty_by_symbol(orders: list[OMSOrder]) -> dict[str, Decimal]:
     filled: dict[str, Decimal] = defaultdict(lambda: Decimal(0))
     for order in orders:
         if getattr(order, "is_compensation", False):
             continue
-        qty = _decimal_or_none(
-            getattr(order, "filled_quantity", None)
-            or getattr(order, "fill_qty", None)
-            or getattr(order, "quantity", None)
-        )
+        qty = _order_filled_qty(order)
         if qty is None or qty <= 0 or not order.symbol:
             continue
         filled[order.symbol] += qty
@@ -114,6 +119,30 @@ def assert_close_qty_matches_open(
                 f"CLOSE_QTY_MISMATCH: trade_id={trade_id} symbol={symbol} "
                 f"close_filled={close_qty} open_qty={open_qty}"
             )
+
+
+def close_fills_match_open(
+    *,
+    trade_id: str,
+    leg_a_symbol: str | None,
+    leg_a_signed_qty: Decimal | None,
+    leg_b_symbol: str | None,
+    leg_b_signed_qty: Decimal | None,
+    orders: list[OMSOrder],
+) -> bool:
+    """True when summed broker fills per symbol match the open pair size."""
+    try:
+        assert_close_qty_matches_open(
+            trade_id=trade_id,
+            leg_a_symbol=leg_a_symbol,
+            leg_a_signed_qty=leg_a_signed_qty,
+            leg_b_symbol=leg_b_symbol,
+            leg_b_signed_qty=leg_b_signed_qty,
+            filled_by_symbol=_filled_qty_by_symbol(orders),
+        )
+        return True
+    except ModelBlueValidationError:
+        return False
 
 
 def _open_trade_from_fills(

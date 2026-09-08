@@ -61,21 +61,6 @@ export interface SignalItem {
 }
 
 export function getCanonicalStatus(sig: SignalItem): 'PROCESSING' | 'ACCEPTED' | 'REJECTED' | 'SQUARE-OFF' {
-  if (sig.canonical_status) {
-    const s = String(sig.canonical_status).toUpperCase()
-    if (s === 'PROCESSING' || s === 'ACCEPTED' || s === 'REJECTED' || s === 'SQUARE-OFF') {
-      return s as 'PROCESSING' | 'ACCEPTED' | 'REJECTED' | 'SQUARE-OFF'
-    }
-    if (s === 'EXPIRED' || s === 'UNRECONCILED') {
-      return 'REJECTED'
-    }
-  }
-
-  // Client-side fallback reconciliation
-  if (sig.reject_reason || String(sig.status).toUpperCase() === 'REJECTED') {
-    return 'REJECTED'
-  }
-
   const orders = sig.orders || []
   const compOrders = orders.filter((o) => o.is_compensation)
   const primaryOrders = orders.filter((o) => !o.is_compensation)
@@ -90,6 +75,20 @@ export function getCanonicalStatus(sig: SignalItem): 'PROCESSING' | 'ACCEPTED' |
 
     const isWorking = primaryOrders.some((o) => ['SUBMITTED', 'PRESUBMITTED', 'PENDING', 'PARTIALLY_FILLED', 'RETRYING'].includes(String(o.status).toUpperCase()))
     if (isWorking) return 'PROCESSING'
+  }
+
+  if (sig.canonical_status) {
+    const s = String(sig.canonical_status).toUpperCase()
+    if (s === 'PROCESSING' || s === 'ACCEPTED' || s === 'REJECTED' || s === 'SQUARE-OFF') {
+      return s as 'PROCESSING' | 'ACCEPTED' | 'REJECTED' | 'SQUARE-OFF'
+    }
+    if (s === 'EXPIRED' || s === 'UNRECONCILED') {
+      return 'REJECTED'
+    }
+  }
+
+  if (sig.reject_reason || String(sig.status).toUpperCase() === 'REJECTED') {
+    return 'REJECTED'
   }
 
   const raw = String(sig.status).toUpperCase()

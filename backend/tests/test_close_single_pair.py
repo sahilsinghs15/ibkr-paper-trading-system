@@ -487,14 +487,18 @@ async def test_partial_fill_handling(
         )
 
     mock_basket = AsyncMock()
-    mock_order1 = MagicMock()
-    mock_order1.status = OMSOrderStatus.FILLED
-    mock_order1.filled_quantity = 100.0
-    mock_order1.is_compensation = False
+    mock_order1 = _filled_close_order("EWP", 100, fill_price=Decimal("31.00"))
     mock_order2 = MagicMock()
-    mock_order2.status = OMSOrderStatus.CANCELLED  # Leg B cancelled/unfilled
-    mock_order2.filled_quantity = 0.0
+    mock_order2.status = OMSOrderStatus.CANCELLED
     mock_order2.is_compensation = False
+    mock_order2.symbol = "EWU"
+    mock_order2.filled_quantity = 0.0
+    mock_order2.fill_qty = 0.0
+    mock_order2.quantity = 100.0
+    mock_order2.average_fill_price = None
+    mock_order2.last_fill_price = None
+    mock_order2.commission = None
+    mock_order2.executions = {}
 
     mock_basket.execute.return_value = BasketExecutionResult(
         basket=MagicMock(), intent=MagicMock(), orders=[mock_order1, mock_order2]
@@ -515,6 +519,76 @@ async def test_partial_fill_handling(
         p_row = await PositionRepository(session).get_by_trade_id(trade_id, account_id=acc_id)
         assert p_row is not None
         assert p_row.risk_state == "OPEN"
+
+
+@pytest.mark.asyncio
+async def test_cancel_retry_close_persists_ledger(
+    session_factory: async_sessionmaker[AsyncSession],
+):
+    """Cancel+retry: zero-fill cancelled leg must not block ledger close."""
+    suffix = uuid4().hex[:6]
+    trade_id = f"MBLUE-RETRY-{suffix}"
+
+    async with session_factory() as session, session.begin():
+        acc = AccountModel(name=f"Acc-{suffix}", ibkr_account=f"DU{suffix}", total_margin=Decimal("100000.00"))
+        session.add(acc)
+        await session.flush()
+        acc_id = acc.id
+
+        pos_repo = PositionRepository(session)
+        await pos_repo._session.execute(
+            PositionModel.__table__.insert().values(
+                account_id=acc_id,
+                trade_id=trade_id,
+                strategy_id="model_blue",
+                leg_a_symbol="ARKQ",
+                leg_a_signed_qty=Decimal(9),
+                leg_a_entry_mark=Decimal("122.00"),
+                leg_b_symbol="BLOK",
+                leg_b_signed_qty=Decimal(-20),
+                leg_b_entry_mark=Decimal("65.00"),
+                target=Decimal(500),
+                stop=Decimal(250),
+                time_limit=3600,
+                risk_state="OPEN",
+            )
+        )
+
+    mock_basket = AsyncMock()
+    mock_order1 = _filled_close_order("ARKQ", 9, fill_price=Decimal("122.06"))
+    mock_order2 = MagicMock()
+    mock_order2.status = OMSOrderStatus.CANCELLED
+    mock_order2.is_compensation = False
+    mock_order2.symbol = "BLOK"
+    mock_order2.filled_quantity = 0.0
+    mock_order2.fill_qty = 0.0
+    mock_order2.quantity = 20.0
+    mock_order2.average_fill_price = None
+    mock_order2.last_fill_price = None
+    mock_order2.commission = None
+    mock_order2.executions = {}
+    mock_order3 = _filled_close_order("BLOK", 20, fill_price=Decimal("64.95"))
+
+    mock_basket.execute.return_value = BasketExecutionResult(
+        basket=MagicMock(), intent=MagicMock(), orders=[mock_order1, mock_order2, mock_order3]
+    )
+
+    mock_om = MagicMock()
+    mock_om._baskets = mock_basket
+    mock_om._resolve_instruments = AsyncMock(side_effect=lambda x: x)
+    mock_om._live_pnl = MagicMock()
+    mock_om.rebuild_rms_from_positions = MagicMock(return_value=None)
+
+    svc = SinglePairCloseService(session_factory=session_factory, order_manager=mock_om)
+    res = await svc.close_pair(acc_id, trade_id)
+
+    assert res.success is True
+    assert res.status == "CLOSED"
+
+    async with session_factory() as session:
+        p_row = await PositionRepository(session).get_by_trade_id(trade_id, account_id=acc_id)
+        assert p_row is not None
+        assert p_row.risk_state == "CLOSED"
 
 
 @pytest.mark.asyncio

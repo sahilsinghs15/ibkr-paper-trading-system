@@ -59,7 +59,8 @@ Mounted in `create_app()`:
 | `GET` | `/api/v1/margin/accounts/{ibkr_account}` | `get_account_margin` | path | `AccountMarginResponse` | Authz via `_check_account_authorization`; 503 if no snapshot |
 | `GET` | `/api/v1/system-monitor` | `get_system_monitor` | — | `SystemMonitorResponse` | Read-only EC2/service observability |
 | `GET` | `/api/v1/reconcile/positions` | `get_reconcile_positions` | query `ibkr_account` (optional) | `ReconcilePositionsResponse` | Latest `broker_positions` snapshot, OPEN ledger rows, fresh diffs (no live `reqPositions`) |
-| `POST` | `/api/v1/reconcile/positions/flatten` | `flatten_broker_position_line` | `FlattenBrokerPositionRequest` | `FlattenBrokerPositionResponse` | MARKET flatten one broker snapshot line (qty from DB); no kill switch, no ledger close |
+| `POST` | `/api/v1/reconcile/positions/flatten` | `flatten_broker_position_line` | `FlattenBrokerPositionRequest` | `FlattenBrokerPositionResponse` | MARKET flatten one broker snapshot line (request qty min = ledger net when present, max = snapshot); no kill switch, no ledger close |
+| `POST` | `/api/v1/reconcile/positions/align` | `align_broker_position_line` | `AlignBrokerPositionRequest` | `AlignBrokerPositionResponse` | MARKET align broker net to OPEN ledger (server computes side/qty from delta); no kill switch, no ledger close |
 | `GET` | `/api/v1/baskets/critical` | `list_critical_baskets` | query `ibkr_account` (required) | `CriticalBasketsResponse` | CRITICAL baskets with recovery status and leg fill summary; empty list = OPEN latch cleared |
 
 `OrderSchema` fields: `order_id`, `symbol`, `side`, `quantity`, `order_type`, `status`, `timestamp`, `price`, `filled_quantity`, `average_fill_price`.

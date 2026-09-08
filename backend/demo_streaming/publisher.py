@@ -7,8 +7,10 @@ import json
 import logging
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.db.models.account import AccountModel
 from demo_streaming.snapshot import (
     classify_event,
     load_baskets,
@@ -28,6 +30,13 @@ _MIN_POLL_SLEEP_SEC = 0.25
 
 def _signal_fp(sig: dict) -> tuple:
     return (json.dumps(sig, sort_keys=True, default=str),)
+
+
+def _signal_watch_key(sig: dict) -> tuple[int, str]:
+    """Fingerprint key: shared signal row × account attribution."""
+    sig_id = int(sig.get("id") or 0)
+    acct = str(sig.get("ibkr_account") or sig.get("account_id") or "").strip().upper()
+    return (sig_id, acct)
 
 
 class PositionBridge:
@@ -51,31 +60,59 @@ class PositionBridge:
         self._pnl_fingerprints: dict[tuple[int, str, str], tuple] = {}
         self._status: dict[tuple[int, str, str], str] = {}
         self._last_payload: dict[tuple[int, str, str], dict] = {}
-        self._signal_fingerprints: dict[int, tuple] = {}
+        self._signal_fingerprints: dict[tuple[int, str], tuple] = {}
         self._last_signal_id = 0
         self._last_pnl_emit: dict[tuple[int, str], float] = {}
         self._baseline_ready = False
 
-    async def restore_baseline(self) -> None:
-        """Load current rows so a bridge restart does not re-emit OPEN for existing trades."""
-        async with self._session_factory() as session:
-            payloads = await self._collect(session)
+    async def _load_account_scoped_signals(self, session: AsyncSession) -> list[dict]:
+        """Load watch signals once per IBKR account so reject reasons stay scoped."""
+        acc_rows = (await session.execute(select(AccountModel))).scalars().all()
+        enabled = [a for a in acc_rows if a.enabled and a.ibkr_account]
+        if not enabled:
+            # Fallback: unscoped watch (tests / empty account table).
             sig_res = await load_signals(
                 session,
                 page_size=self._signal_watch_limit,
                 return_dict=True,
                 for_watch=True,
             )
-            sigs = sig_res.get("signals", []) if isinstance(sig_res, dict) else sig_res
-            watch_ids = {int(s.get("id") or 0) for s in sigs if int(s.get("id") or 0) > 0}
+            return list(sig_res.get("signals", []) if isinstance(sig_res, dict) else sig_res)
+
+        seen: set[tuple[int, str]] = set()
+        merged: list[dict] = []
+        for acc in enabled:
+            sig_res = await load_signals(
+                session,
+                page_size=self._signal_watch_limit,
+                return_dict=True,
+                for_watch=True,
+                ibkr_account=acc.ibkr_account,
+                account_id=acc.id,
+            )
+            rows = sig_res.get("signals", []) if isinstance(sig_res, dict) else sig_res
+            for sig in rows:
+                key = _signal_watch_key(sig)
+                if key[0] <= 0 or key in seen:
+                    continue
+                seen.add(key)
+                merged.append(sig)
+        return merged
+
+    async def restore_baseline(self) -> None:
+        """Load current rows so a bridge restart does not re-emit OPEN for existing trades."""
+        async with self._session_factory() as session:
+            payloads = await self._collect(session)
+            sigs = await self._load_account_scoped_signals(session)
+            watch_keys = {_signal_watch_key(s) for s in sigs if int(s.get("id") or 0) > 0}
             self._signal_fingerprints = {
-                sid: fp for sid, fp in self._signal_fingerprints.items() if sid in watch_ids
+                key: fp for key, fp in self._signal_fingerprints.items() if key in watch_keys
             }
             for s in sigs:
-                s_id = int(s.get("id") or 0)
-                if s_id > 0:
-                    self._signal_fingerprints[s_id] = _signal_fp(s)
-                    self._last_signal_id = max(self._last_signal_id, s_id)
+                key = _signal_watch_key(s)
+                if key[0] > 0:
+                    self._signal_fingerprints[key] = _signal_fp(s)
+                    self._last_signal_id = max(self._last_signal_id, key[0])
         for payload in payloads:
             key = _key(payload)
             self._structural_fingerprints[key] = structural_fingerprint(payload)
@@ -92,35 +129,31 @@ class PositionBridge:
     async def poll_once(self) -> list[dict]:
         async with self._session_factory() as session:
             payloads = await self._collect(session)
-            sig_res = await load_signals(
-                session,
-                page_size=self._signal_watch_limit,
-                return_dict=True,
-                for_watch=True,
-            )
-            sigs = sig_res.get("signals", []) if isinstance(sig_res, dict) else sig_res
-        watch_ids = {int(s.get("id") or 0) for s in sigs if int(s.get("id") or 0) > 0}
+            sigs = await self._load_account_scoped_signals(session)
+        watch_keys = {_signal_watch_key(s) for s in sigs if int(s.get("id") or 0) > 0}
         self._signal_fingerprints = {
-            sid: fp for sid, fp in self._signal_fingerprints.items() if sid in watch_ids
+            key: fp for key, fp in self._signal_fingerprints.items() if key in watch_keys
         }
         emitted: list[dict] = []
         for sig in reversed(sigs):
-            sig_id = int(sig.get("id") or 0)
-            if sig_id <= 0:
+            key = _signal_watch_key(sig)
+            if key[0] <= 0:
                 continue
             cur_fp = _signal_fp(sig)
-            prev_fp = self._signal_fingerprints.get(sig_id)
-            if sig_id > self._last_signal_id or prev_fp != cur_fp:
+            prev_fp = self._signal_fingerprints.get(key)
+            if key[0] > self._last_signal_id or prev_fp != cur_fp:
                 record = {"event": "SIGNAL_RECEIVED", **sig}
                 await self._stream.xadd(record)
-                self._last_signal_id = max(self._last_signal_id, sig_id)
-                self._signal_fingerprints[sig_id] = cur_fp
+                self._last_signal_id = max(self._last_signal_id, key[0])
+                self._signal_fingerprints[key] = cur_fp
                 emitted.append(record)
                 logger.info(
-                    "Demo stream published signal event: signal_id=%s status=%s pair=%s orders=%d",
+                    "Demo stream published signal event: signal_id=%s status=%s pair=%s "
+                    "account=%s orders=%d",
                     sig.get("signal_id"),
                     sig.get("status"),
                     sig.get("pair"),
+                    sig.get("ibkr_account"),
                     len(sig.get("orders") or []),
                 )
         seen: set[tuple[int, str, str]] = set()

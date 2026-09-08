@@ -262,8 +262,24 @@ class SignalRepository:
                     ),
                     else_=stmt.excluded.raw_payload,
                 ),
-                "reject_reason": stmt.excluded.reject_reason,
+                "reject_reason": case(
+                    (
+                        SignalModel.status == SIGNAL_STATUS_PROCESSED,
+                        SignalModel.reject_reason,
+                    ),
+                    # Re-upserting NEW must not wipe a sibling account's reject text.
+                    (
+                        (stmt.excluded.reject_reason.is_(None))
+                        | (stmt.excluded.reject_reason == ""),
+                        SignalModel.reject_reason,
+                    ),
+                    else_=stmt.excluded.reject_reason,
+                ),
                 "status": case(
+                    (
+                        SignalModel.status == SIGNAL_STATUS_PROCESSED,
+                        SignalModel.status,
+                    ),
                     (
                         (stmt.excluded.status == SIGNAL_STATUS_PROCESSED)
                         | (stmt.excluded.status == SIGNAL_STATUS_REJECTED),

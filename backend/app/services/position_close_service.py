@@ -213,34 +213,39 @@ class SinglePairCloseService:
             res = await baskets_coord.execute(close_intent, rms_pass, order_type="MARKET")
             orders = getattr(res, "orders", [])
 
-            from app.oms.models import OMSOrderStatus
-
-            def _is_filled(o: Any) -> bool:
-                st = getattr(o, "status", None)
-                if st == OMSOrderStatus.FILLED or st == "FILLED":
-                    return True
-                return bool(hasattr(st, "value") and st.value == "FILLED")
-
             fill_orders = [o for o in orders if not getattr(o, "is_compensation", False)]
-            is_fully_filled = bool(fill_orders) and all(_is_filled(o) for o in fill_orders)
-            any_filled = any(_is_filled(o) for o in fill_orders) or any(
-                (getattr(o, "filled_quantity", 0) or 0) > 0 for o in fill_orders
+            from app.services.model_blue.persistence import (
+                _commission_from_orders,
+                _exit_marks_from_orders,
+                _filled_qty_by_symbol,
+                assert_close_qty_matches_open,
+                close_fills_match_open,
             )
 
-            basket_success = getattr(res, "success", False) or is_fully_filled
+            filled_by_symbol = _filled_qty_by_symbol(fill_orders)
+            any_filled = bool(filled_by_symbol)
 
-            if basket_success and is_fully_filled:
+            async with self._session_factory() as session:
+                p_repo = PositionRepository(session)
+                p_row = await p_repo.get_open_by_trade_id(trade_id, account_id=account_id)
+
+            close_qty_ok = (
+                p_row is not None
+                and close_fills_match_open(
+                    trade_id=trade_id,
+                    leg_a_symbol=p_row.leg_a_symbol,
+                    leg_a_signed_qty=p_row.leg_a_signed_qty,
+                    leg_b_symbol=p_row.leg_b_symbol,
+                    leg_b_signed_qty=p_row.leg_b_signed_qty,
+                    orders=fill_orders,
+                )
+            )
+
+            if close_qty_ok:
                 async with self._session_factory() as session, session.begin():
                     p_repo = PositionRepository(session)
                     p_row = await p_repo.get_open_by_trade_id(trade_id, account_id=account_id)
                     if p_row is not None:
-                        from app.services.model_blue.persistence import (
-                            _commission_from_orders,
-                            _exit_marks_from_orders,
-                            _filled_qty_by_symbol,
-                            assert_close_qty_matches_open,
-                        )
-
                         exit_marks = _exit_marks_from_orders(fill_orders)
                         comm = _commission_from_orders(fill_orders)
                         assert_close_qty_matches_open(
@@ -249,7 +254,7 @@ class SinglePairCloseService:
                             leg_a_signed_qty=p_row.leg_a_signed_qty,
                             leg_b_symbol=p_row.leg_b_symbol,
                             leg_b_signed_qty=p_row.leg_b_signed_qty,
-                            filled_by_symbol=_filled_qty_by_symbol(fill_orders),
+                            filled_by_symbol=filled_by_symbol,
                         )
 
                         await p_repo.close_trade(

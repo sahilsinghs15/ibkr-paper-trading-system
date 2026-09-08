@@ -10,6 +10,7 @@ from app.core.identifiers import normalize_account
 from app.broker.ibkr.positions import BrokerPositionLine
 from app.db.models.account import AccountModel
 from app.db.models.instrument import InstrumentModel
+from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
 from app.db.repositories.broker_position_repository import BrokerPositionRepository
 from app.schemas.reconcile_schemas import (
@@ -21,6 +22,7 @@ from app.schemas.reconcile_schemas import (
 )
 from app.services.position_reconciler import (
     build_ledger_net_lines,
+    build_order_con_id_map,
     classify_reconcile_diffs,
     fetch_in_flight_accounts,
 )
@@ -91,11 +93,27 @@ async def collect_reconcile_positions(
     instruments = list((await session.execute(select(InstrumentModel))).scalars().all())
     in_flight_accounts = await fetch_in_flight_accounts(session)
 
+    account_ids = {row.account_id for row in open_rows}
+    order_rows: list[OrderModel] = []
+    if account_ids:
+        order_rows = list(
+            (
+                await session.execute(
+                    select(OrderModel)
+                    .where(OrderModel.account_id.in_(account_ids))
+                    .order_by(OrderModel.id)
+                )
+            ).scalars().all()
+        )
+    order_con_id_map = build_order_con_id_map(order_rows)
+
     ledger_lines = build_ledger_net_lines(open_rows, instruments)
     diffs = classify_reconcile_diffs(
         broker_lines=broker_lines,
         ledger_lines=ledger_lines,
         ibkr_to_account=ibkr_to_account,
+        account_to_ibkr=account_to_ibkr,
+        order_con_id_map=order_con_id_map,
         timed_out=timed_out,
         in_flight_accounts=in_flight_accounts,
     )
