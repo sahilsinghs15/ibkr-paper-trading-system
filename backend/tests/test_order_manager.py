@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -120,3 +120,20 @@ async def test_hold_signal_returns_none() -> None:
     res = await mgr.process_signal(_signal(SignalType.HOLD))
     assert res is None
     oms.submit_intent.assert_not_called()
+
+
+def test_tws_client_returns_adapter_client_from_oms_service() -> None:
+    """CFD discovery must read oms._adapter._client, not the nonexistent oms.adapter."""
+    sentinel = MagicMock(name="tws_client")
+    adapter = MagicMock()
+    adapter._client = sentinel
+    oms = OMSService(adapter=adapter)
+    assert getattr(oms, "adapter", None) is None
+
+    mgr = OrderManager(oms=oms)
+    assert mgr._tws_client() is sentinel
+
+
+def test_tws_client_returns_none_when_oms_is_none() -> None:
+    mgr = OrderManager(oms=None)
+    assert mgr._tws_client() is None

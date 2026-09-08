@@ -1798,7 +1798,7 @@ class OrderManager:
 
     def _tws_client(self):
         oms = self._oms
-        adapter = getattr(oms, "adapter", None) if oms is not None else None
+        adapter = getattr(oms, "_adapter", None) if oms is not None else None
         return getattr(adapter, "_client", None)
 
     async def _instrument_snapshot_for_legs(

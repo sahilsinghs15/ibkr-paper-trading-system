@@ -207,7 +207,7 @@ def test_early_close_no_market_closed(tmp_path, monkeypatch):
 
 
 def test_helper_no_systemctl():
-    content = Path("scripts/notify-telegram.py").read_text()
+    content = (Path(__file__).resolve().parents[2] / "scripts" / "notify-telegram.py").read_text()
     # ensure no actual systemctl call (ignore comment mentioning it)
     assert "systemctl start" not in content
     assert "systemctl stop" not in content
