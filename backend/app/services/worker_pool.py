@@ -413,7 +413,9 @@ class ExecutionWorkerPool:
             logger.exception("Red Zone worker gate failed for job %s", job.job_id)
 
         try:
-            execution = await self._order_manager.process_signal_execution(domain_signal)
+            execution = await self._order_manager.process_signal_execution(
+                domain_signal, account_scope=job.account_scope
+            )
 
             # Deferred red zone handling: preserve parked state, do not mark terminal
             if execution is not None and getattr(execution, "deferred_red_zone", False):

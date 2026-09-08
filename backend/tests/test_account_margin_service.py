@@ -34,7 +34,7 @@ def test_parse_ibkr_number_rejects_inf_and_double_max() -> None:
 
 def test_two_accounts_from_all_subscription() -> None:
     tws = _client()
-    svc = AccountMarginService(tws, max_age_sec=300)
+    svc = AccountMarginService(tws, max_age_sec=300, refresh_sec=0)
     req_id = _req_id(svc, tws)
     group, tags = tws.reqAccountSummary.call_args.args[1], tws.reqAccountSummary.call_args.args[2]
     assert group == "All"
@@ -62,7 +62,7 @@ def test_two_accounts_from_all_subscription() -> None:
 
 def test_inf_and_double_max_become_none() -> None:
     tws = _client()
-    svc = AccountMarginService(tws, max_age_sec=300)
+    svc = AccountMarginService(tws, max_age_sec=300, refresh_sec=0)
     req_id = _req_id(svc, tws)
     svc.on_account_summary(req_id, "DU1", "AvailableFunds", "inf", "USD")
     svc.on_account_summary(req_id, "DU1", "ExcessLiquidity", "-inf", "USD")
@@ -79,7 +79,7 @@ def test_inf_and_double_max_become_none() -> None:
 
 def test_connection_closed_clears_cache() -> None:
     tws = _client()
-    svc = AccountMarginService(tws, max_age_sec=300)
+    svc = AccountMarginService(tws, max_age_sec=300, refresh_sec=0)
     req_id = _req_id(svc, tws)
     svc.on_account_summary(req_id, "DU1", "AvailableFunds", "10", "USD")
     svc.on_account_summary_end(req_id)
@@ -110,7 +110,7 @@ def test_is_stale_flips_at_max_age() -> None:
 
 def test_snapshot_listener_fires_per_account() -> None:
     tws = _client()
-    svc = AccountMarginService(tws, max_age_sec=300)
+    svc = AccountMarginService(tws, max_age_sec=300, refresh_sec=0)
     seen: list[str] = []
     svc.add_snapshot_listener(lambda snap: seen.append(snap.ibkr_account))
     req_id = _req_id(svc, tws)
@@ -118,3 +118,61 @@ def test_snapshot_listener_fires_per_account() -> None:
     svc.on_account_summary(req_id, "B", "AvailableFunds", "2", "USD")
     svc.on_account_summary_end(req_id)
     assert seen == ["A", "B"]
+
+
+def test_incremental_tag_merges_and_bumps_as_of() -> None:
+    tws = _client()
+    svc = AccountMarginService(tws, max_age_sec=300, refresh_sec=0)
+    seen: list[Decimal | None] = []
+    svc.add_snapshot_listener(lambda snap: seen.append(snap.available_funds))
+    req_id = _req_id(svc, tws)
+    svc.on_account_summary(req_id, "DU1", "AvailableFunds", "100", "USD")
+    svc.on_account_summary(req_id, "DU1", "NetLiquidation", "50000", "USD")
+    svc.on_account_summary_end(req_id)
+    snap = svc.snapshot_for("DU1")
+    assert snap is not None
+    first_as_of = snap.as_of
+    assert snap.available_funds == Decimal(100)
+
+    svc.on_account_summary(req_id, "DU1", "AvailableFunds", "200", "USD")
+    updated = svc.snapshot_for("DU1")
+    assert updated is not None
+    assert updated.available_funds == Decimal(200)
+    assert updated.as_of is not None
+    assert first_as_of is not None
+    assert updated.as_of >= first_as_of
+    assert seen == [Decimal(100), Decimal(200)]
+
+
+def test_tags_before_first_end_do_not_create_snapshot() -> None:
+    tws = _client()
+    svc = AccountMarginService(tws, max_age_sec=300, refresh_sec=0)
+    req_id = _req_id(svc, tws)
+    svc.on_account_summary(req_id, "DU1", "AvailableFunds", "100", "USD")
+    assert svc.snapshot_for("DU1") is None
+
+
+def test_connection_restored_resubscribes() -> None:
+    tws = _client()
+    svc = AccountMarginService(tws, max_age_sec=300, refresh_sec=0)
+    req_id = _req_id(svc, tws)
+    svc.on_account_summary(req_id, "DU1", "AvailableFunds", "10", "USD")
+    svc.on_account_summary_end(req_id)
+    svc.on_connection_closed()
+    tws.reqAccountSummary.reset_mock()
+    svc.on_connection_restored()
+    tws.reqAccountSummary.assert_called_once()
+
+
+def test_refresh_once_cancels_and_rerequests() -> None:
+    tws = _client()
+    tws.cancelAccountSummary = MagicMock()
+    svc = AccountMarginService(tws, max_age_sec=300, refresh_sec=0)
+    req_id = _req_id(svc, tws)
+    svc.on_account_summary(req_id, "DU1", "AvailableFunds", "10", "USD")
+    svc.on_account_summary_end(req_id)
+    tws.reqAccountSummary.reset_mock()
+    tws.cancelAccountSummary.reset_mock()
+    svc._refresh_once()
+    tws.cancelAccountSummary.assert_called_once_with(req_id)
+    tws.reqAccountSummary.assert_called_once()

@@ -3,24 +3,7 @@ import { usePnlStore } from '../store/pnlStore'
 import { getCanonicalStatus, type SignalItem, useSignalStore, accountMatches } from '../store/signalStore'
 import { isSoundEnabled, toggleSoundEnabled, unlockAudioContext } from '../utils/audioNotification'
 import { displayStrategy, fmtTime } from '../utils/format'
-
-function cleanRejectReason(raw: string | null | undefined): string {
-  if (!raw) return 'Signal declined by execution pipeline'
-  const s = String(raw).trim()
-  if (s.includes('NO_OPEN_POSITION')) {
-    return 'Cannot close: No active open position found'
-  }
-  if (s.includes('ambiguous') || s.includes('code=200')) {
-    return 'Broker Error: IBKR contract description ambiguous'
-  }
-  if (s.includes('RMS') || s.includes('CHECK')) {
-    return 'Blocked by RMS: Risk limit exceeded'
-  }
-  if (s.includes('COMMITTED_NOT_CONFIGURED')) {
-    return 'Allocation Error: Account capital not configured'
-  }
-  return s.replace(/^[A-Z_]+:\s*/, '').trim()
-}
+import { formatRejectReason } from '../utils/rejectReason'
 
 export function isRejectedSig(sig: SignalItem): boolean {
   const c = getCanonicalStatus(sig)
@@ -152,6 +135,9 @@ export function SignalWidget({
             const act = String(sig.action || 'OPEN').toUpperCase()
             const isRejected = isRejectedSig(sig)
             const isAccepted = isAcceptedSig(sig)
+            const rejectDisplay = isRejected
+              ? formatRejectReason(sig.reject_reason, sig.ibkr_account || cleanFilter)
+              : null
 
             return (
               <div
@@ -192,8 +178,11 @@ export function SignalWidget({
 
                   return (
                     <div className={`signal-outcome-banner ${isRejected ? 'error' : isAccepted ? 'success' : 'info'}`}>
-                      {isRejected ? (
-                        <span>✕ REJECTED: {cleanRejectReason(sig.reject_reason)}</span>
+                      {rejectDisplay ? (
+                        <span className="signal-reject-display">
+                          <span className="reject-category-pill">{rejectDisplay.category}</span>
+                          <span className="reject-summary">✕ {rejectDisplay.summary}</span>
+                        </span>
                       ) : hasComp ? (
                         <span>⚠ SQUARE-OFF — {fillsText || 'Protection activated'}</span>
                       ) : fillsText ? (

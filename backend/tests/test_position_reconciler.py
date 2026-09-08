@@ -28,6 +28,7 @@ from app.services.position_reconciler import (
     LedgerNetLine,
     PositionReconciler,
     build_ledger_net_lines,
+    build_order_con_id_map,
     classify_reconcile_diffs,
 )
 from app.services.reconcile_service import collect_reconcile_positions
@@ -59,14 +60,22 @@ def _ledger_line(
     symbol: str = "AAPL",
     sec_type: str = "CFD",
     qty: float = 100.0,
+    con_ids: frozenset[int] | None = None,
 ) -> LedgerNetLine:
     return LedgerNetLine(
         account_id=account_id,
         symbol=symbol.upper(),
         sec_type=sec_type.upper(),
         signed_qty=Decimal(str(qty)),
-        con_ids=frozenset({111}),
+        con_ids=con_ids if con_ids is not None else frozenset({111}),
     )
+
+
+class _FakeOrder:
+    def __init__(self, account_id: int, ibkr_contract: str, order_id: int = 1) -> None:
+        self.account_id = account_id
+        self.ibkr_contract = ibkr_contract
+        self.id = order_id
 
 
 def test_classify_match() -> None:
@@ -86,11 +95,63 @@ def test_classify_ghost_when_broker_flat() -> None:
         broker_lines=[],
         ledger_lines=[_ledger_line(qty=50.0)],
         ibkr_to_account={"DU123": 1},
+        account_to_ibkr={1: "DU123"},
         timed_out=False,
         in_flight_accounts=set(),
     )
     assert len(diffs) == 1
     assert diffs[0].kind == MISMATCH_LEDGER_GHOST
+    assert diffs[0].ibkr_account == "DU123"
+    assert diffs[0].con_id == 111
+
+
+def test_classify_ghost_ibkr_from_ibkr_to_account_when_no_broker() -> None:
+    """LEDGER_GHOST rows resolve ibkr_account from account_id when broker is flat."""
+    diffs = classify_reconcile_diffs(
+        broker_lines=[],
+        ledger_lines=[_ledger_line(qty=50.0)],
+        ibkr_to_account={"DU123": 1},
+        timed_out=False,
+        in_flight_accounts=set(),
+    )
+    assert len(diffs) == 1
+    assert diffs[0].kind == MISMATCH_LEDGER_GHOST
+    assert diffs[0].ibkr_account == "DU123"
+
+
+def test_build_order_con_id_map_uses_latest_order_per_key() -> None:
+    order_map = build_order_con_id_map(
+        [
+            _FakeOrder(1, "ARKQ-CFD-SMART-USD:111", order_id=1),
+            _FakeOrder(1, "ARKQ-CFD-SMART-USD:451394740", order_id=2),
+        ]
+    )
+    assert order_map[(1, "ARKQ", "CFD")] == 451394740
+
+
+def test_classify_ghost_resolves_con_id_from_orders() -> None:
+    order_map = build_order_con_id_map(
+        [_FakeOrder(1, "ARKQ-CFD-SMART-USD:451394740", order_id=10)]
+    )
+    diffs = classify_reconcile_diffs(
+        broker_lines=[],
+        ledger_lines=[
+            _ledger_line(
+                symbol="ARKQ",
+                sec_type="CFD",
+                qty=9.0,
+                con_ids=frozenset(),
+            )
+        ],
+        ibkr_to_account={"DU123": 1},
+        account_to_ibkr={1: "DU123"},
+        order_con_id_map=order_map,
+        timed_out=False,
+        in_flight_accounts=set(),
+    )
+    assert len(diffs) == 1
+    assert diffs[0].kind == MISMATCH_LEDGER_GHOST
+    assert diffs[0].con_id == 451394740
 
 
 def test_classify_no_ghost_on_timeout() -> None:
@@ -187,6 +248,7 @@ def test_build_ledger_net_lines_from_pair_row() -> None:
     by_symbol = {(n.account_id, n.symbol): n for n in nets}
     assert float(by_symbol[(7, "AAPL")].signed_qty) == 100.0
     assert float(by_symbol[(7, "MSFT")].signed_qty) == -50.0
+    assert 111 in by_symbol[(7, "AAPL")].con_ids
 
 
 def test_position_snapshot_collector_skips_zero_qty() -> None:

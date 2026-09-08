@@ -41,6 +41,7 @@ Use `get_settings()`; do not construct `Settings()` ad hoc in new code.
 | `margin_rate_max_age_days` | `MARGIN_RATE_MAX_AGE_DAYS` | `7` | Stale `margin_rates` rows ignored |
 | `margin_rate_refresh_sec` | `MARGIN_RATE_REFRESH_SEC` | `300` | Background scan interval |
 | `margin_snapshot_max_age_sec` | `MARGIN_SNAPSHOT_MAX_AGE_SEC` | `300` | Snapshot staleness |
+| `margin_snapshot_refresh_sec` | `MARGIN_SNAPSHOT_REFRESH_SEC` | `60` | Periodic `reqAccountSummary` re-subscribe; `0` disables |
 | `ibkr_market_data_type` | `IBKR_MARKET_DATA_TYPE` | `3` | IBKR market data type (1–4) |
 | `ibkr_market_data_symbol` | `IBKR_MARKET_DATA_SYMBOL` | `"AAPL"` | |
 | `ibkr_market_data_sec_type` | `IBKR_MARKET_DATA_SEC_TYPE` | `"STK"` | |

@@ -1,8 +1,9 @@
 """Live IBKR account-margin snapshots via reqAccountSummary.
 
-Registers on the existing TWSClient. Issues reqAccountSummary once after
-connect; IBKR re-pushes changed tags roughly every three minutes. Inf and
-Double.MAX_VALUE parse to None. A snapshot from a dead socket is never used.
+Registers on the existing TWSClient. Issues reqAccountSummary after connect
+and on a periodic refresh loop. Incremental accountSummary tag callbacks merge
+into the cached snapshot and bump as_of (heartbeat). Inf and Double.MAX_VALUE
+parse to None. A snapshot from a dead socket is never used.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import logging
 import math
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -47,6 +48,7 @@ MARGIN_TAGS = ",".join(
 _DOUBLE_MAX = Decimal("1.7976931348623157E+308")
 _ACCOUNT_SUMMARY_REQ_START = 70000
 _GROUP_ALL = "All"
+_REFRESH_THREAD_JOIN_SEC = 2.0
 
 _NUMERIC_TAGS = frozenset(
     {
@@ -170,6 +172,7 @@ class AccountMarginService:
         *,
         rate_limiter: GatewayRateLimiter | None = None,
         max_age_sec: int | None = None,
+        refresh_sec: int | None = None,
     ) -> None:
         settings = get_settings()
         self._client = client
@@ -179,6 +182,11 @@ class AccountMarginService:
             if max_age_sec is not None
             else int(settings.margin_snapshot_max_age_sec)
         )
+        self._refresh_sec = (
+            int(refresh_sec)
+            if refresh_sec is not None
+            else int(settings.margin_snapshot_refresh_sec)
+        )
         self._lock = threading.Lock()
         self._next_req_id = _ACCOUNT_SUMMARY_REQ_START
         self._active_req_id: int | None = None
@@ -186,6 +194,8 @@ class AccountMarginService:
         self._snapshots: dict[str, AccountMarginSnapshot] = {}
         self._on_snapshot: list[Callable[[AccountMarginSnapshot], None]] = []
         self._started = False
+        self._refresh_stop = threading.Event()
+        self._refresh_thread: threading.Thread | None = None
         client.register_listener(self)
 
     def add_snapshot_listener(
@@ -194,32 +204,27 @@ class AccountMarginService:
         self._on_snapshot.append(callback)
 
     def start(self) -> None:
-        """Issue reqAccountSummary once. IBKR re-pushes thereafter."""
+        """Issue reqAccountSummary and start the periodic refresh loop."""
         if self._started:
             return
         if not self._client.is_connected():
             logger.warning("AccountMarginService.start skipped: TWS not connected")
             return
         self._started = True
+        self._refresh_stop.clear()
         self._request_summary(_GROUP_ALL)
+        self._start_refresh_loop()
         logger.info("AccountMarginService subscribed: group=%s tags=%s", _GROUP_ALL, MARGIN_TAGS)
 
     def stop(self) -> None:
+        self._stop_refresh_loop()
         req_id = None
         with self._lock:
             req_id = self._active_req_id
             self._active_req_id = None
             self._started = False
         if req_id is not None:
-            cancel = getattr(self._client, "cancelAccountSummary", None)
-            if callable(cancel):
-                try:
-                    cancel(req_id)
-                except Exception:
-                    logger.exception("cancelAccountSummary failed req_id=%s", req_id)
-            unregister = getattr(self._client, "unregister_request_id", None)
-            if callable(unregister):
-                unregister(req_id)
+            self._cancel_summary(req_id)
 
     def snapshot_for(self, ibkr_account: str | None) -> AccountMarginSnapshot | None:
         if not ibkr_account or not str(ibkr_account).strip():
@@ -238,6 +243,7 @@ class AccountMarginService:
         key = str(account or "").strip().upper()
         if not key:
             return
+        published: AccountMarginSnapshot | None = None
         with self._lock:
             if self._active_req_id is not None and reqId != self._active_req_id:
                 return
@@ -247,6 +253,14 @@ class AccountMarginService:
             if currency:
                 row["currency"] = currency
             row["tags"][str(tag)] = value
+            existing = self._snapshots.get(key)
+            if existing is not None:
+                now = datetime.now(UTC)
+                merged = self._merge_tag(existing, str(tag), value, currency, now)
+                self._snapshots[key] = merged
+                published = merged
+        if published is not None:
+            self._notify_listeners([published], log_end=False)
 
     def on_account_summary_end(self, reqId: int) -> None:
         now = datetime.now(UTC)
@@ -260,31 +274,23 @@ class AccountMarginService:
                 snap = self._row_to_snapshot(account, row, now)
                 self._snapshots[account] = snap
                 published.append(snap)
-        for snap in published:
-            logger.info(
-                "Account margin snapshot: account=%s net_liq=%s available=%s excess=%s stale=%s",
-                snap.ibkr_account,
-                snap.net_liquidation,
-                snap.available_funds,
-                snap.excess_liquidity,
-                snap.is_stale,
-            )
-            for callback in list(self._on_snapshot):
-                try:
-                    callback(snap)
-                except Exception:
-                    logger.exception(
-                        "Account margin snapshot listener failed account=%s",
-                        snap.ibkr_account,
-                    )
+        self._notify_listeners(published, log_end=True)
 
     def on_connection_closed(self) -> None:
+        self._stop_refresh_loop()
         with self._lock:
             self._snapshots.clear()
             self._pending.clear()
             self._active_req_id = None
             self._started = False
         logger.warning("AccountMarginService cache cleared: TWS connection closed")
+
+    def on_connection_restored(self) -> None:
+        """Re-subscribe after TWS reconnect (connectionClosed clears _started)."""
+        with self._lock:
+            self._started = False
+        logger.info("AccountMarginService resubscribing after reconnect")
+        self.start()
 
     def on_error(self, reqId: int, errorCode: int, errorString: str) -> None:
         with self._lock:
@@ -296,6 +302,95 @@ class AccountMarginService:
                 errorCode,
                 errorString,
             )
+
+    def _refresh_once(self) -> None:
+        """Cancel the active subscription and re-issue reqAccountSummary."""
+        if not self._started or not self._client.is_connected():
+            return
+        req_id = None
+        with self._lock:
+            req_id = self._active_req_id
+        if req_id is not None:
+            self._cancel_summary(req_id)
+        self._request_summary(_GROUP_ALL)
+
+    def _start_refresh_loop(self) -> None:
+        if self._refresh_sec <= 0:
+            return
+        if self._refresh_thread is not None and self._refresh_thread.is_alive():
+            return
+        self._refresh_stop.clear()
+        self._refresh_thread = threading.Thread(
+            target=self._refresh_loop,
+            name="AccountMarginRefresh",
+            daemon=True,
+        )
+        self._refresh_thread.start()
+
+    def _stop_refresh_loop(self) -> None:
+        self._refresh_stop.set()
+        thread = self._refresh_thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=_REFRESH_THREAD_JOIN_SEC)
+        self._refresh_thread = None
+
+    def _refresh_loop(self) -> None:
+        while not self._refresh_stop.wait(self._refresh_sec):
+            try:
+                self._refresh_once()
+            except Exception:
+                logger.exception("AccountMarginService periodic refresh failed")
+
+    def _cancel_summary(self, req_id: int) -> None:
+        cancel = getattr(self._client, "cancelAccountSummary", None)
+        if callable(cancel):
+            try:
+                cancel(req_id)
+            except Exception:
+                logger.exception("cancelAccountSummary failed req_id=%s", req_id)
+        unregister = getattr(self._client, "unregister_request_id", None)
+        if callable(unregister):
+            unregister(req_id)
+
+    def _merge_tag(
+        self,
+        existing: AccountMarginSnapshot,
+        tag: str,
+        value: str,
+        currency: str,
+        as_of: datetime,
+    ) -> AccountMarginSnapshot:
+        updates: dict[str, Any] = {"as_of": as_of}
+        if currency:
+            updates["currency"] = currency
+        field_name = _FIELD_BY_TAG.get(tag)
+        if field_name is not None:
+            updates[field_name] = parse_ibkr_number(value)
+        elif tag == "LookAheadNextChange":
+            updates["look_ahead_next_change"] = parse_look_ahead_next_change(value)
+        return replace(existing, **updates)
+
+    def _notify_listeners(
+        self, snapshots: list[AccountMarginSnapshot], *, log_end: bool
+    ) -> None:
+        for snap in snapshots:
+            if log_end:
+                logger.info(
+                    "Account margin snapshot: account=%s net_liq=%s available=%s excess=%s stale=%s",
+                    snap.ibkr_account,
+                    snap.net_liquidation,
+                    snap.available_funds,
+                    snap.excess_liquidity,
+                    snap.is_stale,
+                )
+            for callback in list(self._on_snapshot):
+                try:
+                    callback(snap)
+                except Exception:
+                    logger.exception(
+                        "Account margin snapshot listener failed account=%s",
+                        snap.ibkr_account,
+                    )
 
     def _request_summary(self, group: str) -> None:
         if self._rate_limiter is not None:

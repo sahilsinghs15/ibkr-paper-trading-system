@@ -15,9 +15,26 @@ from app.db.models.execution import ExecutionModel
 from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
 from app.db.models.signal import SignalJobModel, SignalModel
+from app.services.account_reject_reason import (
+    format_account_reject_reason,
+    has_account_prefixed_segments,
+    scope_reject_reason_for_account,
+)
 
 RISK_OPEN = "OPEN"
 RISK_CLOSED = "CLOSED"
+
+
+class _SignalRejectView:
+    """Lightweight SignalModel view with an overridden reject_reason."""
+
+    def __init__(self, base: SignalModel, reject_reason: str | None) -> None:
+        self._base = base
+        self.reject_reason = reject_reason
+
+    def __getattr__(self, name: str):
+        return getattr(self._base, name)
+
 
 
 def _norm_ibkr(value: str | None) -> str | None:
@@ -400,6 +417,23 @@ async def load_signals(
 
     stmt = select(SignalModel)
     job_scopes_by_sig: dict[str, list[str]] = {}
+    job_error_by_sig_scope: dict[tuple[str, str], str] = {}
+
+    job_stmt = select(
+        SignalJobModel.signal_id,
+        SignalJobModel.account_scope,
+        SignalJobModel.last_error,
+    )
+    job_res = (await session.execute(job_stmt)).all()
+    for sig_str_id, acc_scope, last_error in job_res:
+        if not acc_scope:
+            continue
+        scope_str = str(acc_scope).strip()
+        job_scopes_by_sig.setdefault(str(sig_str_id), []).append(scope_str)
+        if last_error and str(last_error).strip():
+            job_error_by_sig_scope[(str(sig_str_id), scope_str)] = str(last_error).strip()
+            job_error_by_sig_scope[(str(sig_str_id), scope_str.upper())] = str(last_error).strip()
+
     if target_acc_id is not None or target_ibkr_acc:
         matched_sig_ids: set[int] = set()
 
@@ -413,19 +447,15 @@ async def load_signals(
                 matched_sig_ids.add(s_id)
 
         # b) SignalJobModel matching
-        job_stmt = select(SignalJobModel.signal_id, SignalJobModel.account_scope)
-        job_res = (await session.execute(job_stmt)).all()
-        for sig_str_id, acc_scope in job_res:
-            if not acc_scope:
-                continue
-            scope_str = str(acc_scope).strip()
-            job_scopes_by_sig.setdefault(str(sig_str_id), []).append(scope_str)
-            if (target_acc_id and scope_str == str(target_acc_id)) or (
-                target_ibkr_acc and scope_str.upper() == target_ibkr_acc.upper()
-            ):
-                s_stmt = select(SignalModel.id).where(SignalModel.signal_id == sig_str_id)
-                s_res = (await session.execute(s_stmt)).scalars().all()
-                matched_sig_ids.update(s_res)
+        for sig_str_id, scopes in job_scopes_by_sig.items():
+            for scope_str in scopes:
+                if (target_acc_id and scope_str == str(target_acc_id)) or (
+                    target_ibkr_acc and scope_str.upper() == target_ibkr_acc.upper()
+                ):
+                    s_stmt = select(SignalModel.id).where(SignalModel.signal_id == sig_str_id)
+                    s_res = (await session.execute(s_stmt)).scalars().all()
+                    matched_sig_ids.update(s_res)
+                    break
 
         # c) PositionModel matching by trade_id
         if target_acc_id is not None:
@@ -609,8 +639,59 @@ async def load_signals(
             for ev in matched_events
         ]
 
+        job_reject: str | None = None
+        if sig.signal_id:
+            sid = str(sig.signal_id)
+            for key in (
+                str(sig_acc_id) if sig_acc_id is not None else None,
+                str(target_acc_id) if target_acc_id is not None else None,
+                (sig_ibkr_acc or "").strip().upper() or None,
+                (target_ibkr_canonical or "").strip().upper() if target_ibkr_canonical else None,
+            ):
+                if not key:
+                    continue
+                job_reject = job_error_by_sig_scope.get((sid, key)) or job_error_by_sig_scope.get(
+                    (sid, str(key))
+                )
+                if job_reject:
+                    break
+
+        raw_reject_for_scope = sig.reject_reason
+        if job_reject:
+            # Prefer durable per-account job error over the shared (often overwritten) signal row.
+            raw_reject_for_scope = format_account_reject_reason(
+                sig_ibkr_acc or target_ibkr_canonical,
+                job_reject,
+                account_id=sig_acc_id if sig_acc_id is not None else target_acc_id,
+            )
+
+        scoped_reject = scope_reject_reason_for_account(
+            raw_reject_for_scope,
+            ibkr_account=sig_ibkr_acc or target_ibkr_canonical,
+            account_id=sig_acc_id if sig_acc_id is not None else target_acc_id,
+        )
+        # Sibling-only fan-out rejection: this account is not mentioned and has
+        # no local orders / job error — do not surface it on this account's dashboard.
+        if (
+            (target_acc_id is not None or target_ibkr_acc)
+            and not matched_orders
+            and not job_reject
+            and has_account_prefixed_segments(sig.reject_reason)
+            and scoped_reject is None
+        ):
+            continue
+
+        sig_for_reconcile: SignalModel | _SignalRejectView = sig
+        if (
+            target_acc_id is not None
+            or target_ibkr_acc
+            or scoped_reject != sig.reject_reason
+            or job_reject
+        ):
+            sig_for_reconcile = _SignalRejectView(sig, scoped_reject)
+
         c_status, is_active, rec_reason, calc_proc_at, duration_sec = reconcile_signal_status(
-            sig, orders_payload, events_payload
+            sig_for_reconcile, orders_payload, events_payload  # type: ignore[arg-type]
         )
 
         if not sig_ibkr_acc and matched_orders:
@@ -649,10 +730,47 @@ async def load_signals(
                     if acc_obj:
                         sig_acc_id = acc_obj.id
 
+        # Re-scope after late account resolution (unfiltered / for_watch path).
+        if sig_ibkr_acc or sig_acc_id is not None:
+            if not job_reject and sig.signal_id:
+                sid = str(sig.signal_id)
+                for key in (
+                    str(sig_acc_id) if sig_acc_id is not None else None,
+                    (sig_ibkr_acc or "").strip().upper() or None,
+                ):
+                    if not key:
+                        continue
+                    job_reject = job_error_by_sig_scope.get((sid, key))
+                    if job_reject:
+                        break
+            raw_reject_for_scope = sig.reject_reason
+            if job_reject:
+                raw_reject_for_scope = format_account_reject_reason(
+                    sig_ibkr_acc, job_reject, account_id=sig_acc_id
+                )
+            scoped_reject = scope_reject_reason_for_account(
+                raw_reject_for_scope,
+                ibkr_account=sig_ibkr_acc,
+                account_id=sig_acc_id,
+            )
+            if scoped_reject != getattr(sig_for_reconcile, "reject_reason", None):
+                sig_for_reconcile = _SignalRejectView(sig, scoped_reject)
+                c_status, is_active, rec_reason, calc_proc_at, duration_sec = (
+                    reconcile_signal_status(
+                        sig_for_reconcile, orders_payload, events_payload  # type: ignore[arg-type]
+                    )
+                )
+
         if target_ibkr_acc and sig_ibkr_acc and _norm_ibkr(sig_ibkr_acc) != target_ibkr_acc:
             continue
         if target_acc_id is not None and sig_acc_id is not None and sig_acc_id != target_acc_id:
             continue
+
+        display_reject = scoped_reject if scoped_reject is not None else (
+            None if has_account_prefixed_segments(sig.reject_reason) else sig.reject_reason
+        )
+        if display_reject is None and rec_reason and not has_account_prefixed_segments(rec_reason):
+            display_reject = rec_reason
 
         if not for_watch:
             if c_status == "PROCESSING":
@@ -678,7 +796,7 @@ async def load_signals(
                 "canonical_status": c_status,
                 "is_active_processing": is_active,
                 "reconciled_reason": rec_reason,
-                "reject_reason": sig.reject_reason or rec_reason,
+                "reject_reason": display_reject or rec_reason,
                 "received_at": sig.received_at.isoformat() if sig.received_at else None,
                 "processed_at": calc_proc_at,
                 "processing_duration_sec": duration_sec,
@@ -771,24 +889,6 @@ def reconcile_signal_status(
     reject_reason = sig.reject_reason
     db_processed = sig.processed_at.isoformat() if sig.processed_at else None
 
-    # 1. RMS / OMS Rejections
-    reject_event = next(
-        (
-            e
-            for e in events
-            if e.get("kind") in ("RMS_REJECTED", "OMS_REJECTED", "SIGNAL_REJECTED", "EXECUTION_ERROR")
-        ),
-        None,
-    )
-    has_reject_event = reject_event is not None
-    if reject_reason or has_reject_event or raw_status in ("REJECTED", "ERROR", "FAILED"):
-        reject_event_ts = reject_event.get("ts") if reject_event else None
-        proc_at = db_processed or reject_event_ts
-        rec_reason = reject_reason or "Declined by RMS/OMS execution pipeline"
-        duration = _duration_sec(sig.received_at, proc_at)
-        return ("REJECTED", False, rec_reason, proc_at, duration)
-
-    # 2. Compensation / Unwinding Orders
     primary_orders = [o for o in orders if not o.get("is_compensation")]
     comp_orders = [o for o in orders if o.get("is_compensation")]
 
@@ -806,7 +906,7 @@ def reconcile_signal_status(
         duration = _duration_sec(sig.received_at, proc_at)
         return ("SQUARE-OFF", False, "Incomplete leg timeout reached — Exposure automatically squared off", proc_at, duration)
 
-    # 3. Primary Orders Full Fill (Cumulative Leg Reconciliation)
+    # Account-scoped fills beat a shared signal-row REJECTED from a sibling account.
     if primary_orders:
         legs_map: dict[str, dict[str, Any]] = {}
         for o in primary_orders:
@@ -843,7 +943,6 @@ def reconcile_signal_status(
             duration = _duration_sec(sig.received_at, proc_at)
             return ("ACCEPTED", False, None, proc_at, duration)
 
-        # Active Working Orders
         has_working = any(
             o.get("status") in ("SUBMITTED", "PRESUBMITTED", "PENDING", "PARTIALLY_FILLED", "RETRYING")
             for o in primary_orders
@@ -855,6 +954,22 @@ def reconcile_signal_status(
             proc_at = db_processed
             duration = _duration_sec(sig.received_at, proc_at)
             return ("REJECTED", False, "Broker leg order rejected or cancelled", proc_at, duration)
+
+    reject_event = next(
+        (
+            e
+            for e in events
+            if e.get("kind") in ("RMS_REJECTED", "OMS_REJECTED", "SIGNAL_REJECTED", "EXECUTION_ERROR")
+        ),
+        None,
+    )
+    has_reject_event = reject_event is not None
+    if reject_reason or has_reject_event or raw_status in ("REJECTED", "ERROR", "FAILED"):
+        reject_event_ts = reject_event.get("ts") if reject_event else None
+        proc_at = db_processed or reject_event_ts
+        rec_reason = reject_reason or "Declined by RMS/OMS execution pipeline"
+        duration = _duration_sec(sig.received_at, proc_at)
+        return ("REJECTED", False, rec_reason, proc_at, duration)
 
     # 4. Explicit PROCESSED status in DB
     if raw_status in ("PROCESSED", "FILLED", "SUCCESS"):

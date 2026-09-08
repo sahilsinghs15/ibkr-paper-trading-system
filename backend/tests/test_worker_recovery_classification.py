@@ -35,6 +35,7 @@ def _job(**overrides) -> SignalJobModel:
         "action": "OPEN",
     }
     job.capture_data = {}
+    job.account_scope = overrides.get("account_scope")
     return job
 
 

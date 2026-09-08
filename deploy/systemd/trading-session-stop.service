@@ -1,10 +1,8 @@
 [Unit]
-Description=Trading session stop — stop IB Gateway, Webhook Ingest, and ngrok (16:00 ET)
+Description=Trading session stop — stop IB Gateway (16:00 ET)
 After=network.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/systemctl stop ibgateway.service
-ExecStart=/usr/bin/systemctl stop webhook-ingest.service
-ExecStart=/usr/bin/sudo -u tradingapp /bin/bash /home/tradingapp/app/scripts/ngrok-control.sh stop
-# Backend and Demo intentionally remain running (Backend 24/7, Demo independent)
+# Webhook Ingest, Backend, and Demo intentionally remain running 24/7

@@ -81,7 +81,8 @@ class Settings(BaseSettings):
     # Rate table freshness
     margin_rate_max_age_days: Annotated[int, Gt(0)] = 7
     margin_rate_refresh_sec: Annotated[int, Gt(0)] = 300
-    margin_snapshot_max_age_sec: Annotated[int, Gt(0)] = 300
+    margin_snapshot_max_age_sec: Annotated[int, Gt(0)] = 3600
+    margin_snapshot_refresh_sec: Annotated[int, Ge(0)] = 600
 
     # IBKR Market Data connection settings
     ibkr_market_data_type: Annotated[int, Ge(1), Le(4)] = 3
