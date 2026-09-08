@@ -338,6 +338,7 @@ def create_demo_app(
         )
 
     @app.get("/")
+    @app.get("/login")
     @app.get("/accounts")
     @app.get("/settings")
     @app.get("/system-monitor")

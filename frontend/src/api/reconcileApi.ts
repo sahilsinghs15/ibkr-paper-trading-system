@@ -1,5 +1,7 @@
 import axios from 'axios'
 import type {
+  AlignBrokerPositionRequest,
+  AlignBrokerPositionResponse,
   FlattenBrokerPositionRequest,
   FlattenBrokerPositionResponse,
   ReconcilePositionsResponse,
@@ -22,5 +24,12 @@ export async function flattenBrokerPositionLine(
     `${base}/flatten`,
     payload,
   )
+  return data
+}
+
+export async function alignBrokerPositionLine(
+  payload: AlignBrokerPositionRequest,
+): Promise<AlignBrokerPositionResponse> {
+  const { data } = await axios.post<AlignBrokerPositionResponse>(`${base}/align`, payload)
   return data
 }

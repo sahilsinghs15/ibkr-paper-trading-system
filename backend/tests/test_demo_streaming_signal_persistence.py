@@ -219,3 +219,78 @@ async def test_load_signals_scopes_fanout_orders_and_counts_to_requested_account
     assert all(
         str(s.get("ibkr_account") or "").upper() == ibkr_b.upper() for s in res_b["signals"]
     )
+
+
+@pytest.mark.asyncio
+async def test_load_signals_scopes_combined_reject_reason_to_requested_account(
+    session_factory: async_sessionmaker[AsyncSession],
+):
+    """Combined fan-out reject_reason must not leak sibling text onto an account dashboard."""
+    test_id = uuid4().hex[:6]
+    ibkr_a = f"DUA{test_id}"
+    ibkr_b = f"DUB{test_id}"
+    sig_id = f"SIG-REJ-SCOPE-{test_id}"
+
+    async with session_factory() as session, session.begin():
+        acc_a = AccountModel(name="ScopeA", ibkr_account=ibkr_a, total_margin=Decimal("100000.00"))
+        acc_b = AccountModel(name="ScopeB", ibkr_account=ibkr_b, total_margin=Decimal("100000.00"))
+        session.add_all([acc_a, acc_b])
+        await session.flush()
+
+        sig = SignalModel(
+            signal_id=sig_id,
+            strategy_id="model_blue",
+            action="OPEN",
+            pair="JETS / KRE",
+            side="BUY",
+            ref_price_a=Decimal("28.0"),
+            ref_price_b=Decimal("70.0"),
+            status="REJECTED",
+            reject_reason=(
+                f"Account {ibkr_a}: MARGIN_SNAPSHOT_STALE: snapshot older than 300s.; "
+                f"Account {ibkr_b}: MODEL_BLUE_MIN_NOTIONAL: JETS notional 28.47 is below minimum 100."
+            ),
+            raw_payload={},
+        )
+        session.add(sig)
+        await session.flush()
+
+        session.add_all(
+            [
+                SignalJobModel(
+                    signal_id=sig_id,
+                    strategy_id="model_blue",
+                    status="REJECTED",
+                    idempotency_key=f"idem-a-{test_id}",
+                    account_scope=str(acc_a.id),
+                    raw_payload={},
+                    correlation_id=f"corr-a-{test_id}",
+                ),
+                SignalJobModel(
+                    signal_id=sig_id,
+                    strategy_id="model_blue",
+                    status="REJECTED",
+                    idempotency_key=f"idem-b-{test_id}",
+                    account_scope=str(acc_b.id),
+                    raw_payload={},
+                    correlation_id=f"corr-b-{test_id}",
+                ),
+            ]
+        )
+
+    async with session_factory() as session:
+        res_a = await load_signals(session, ibkr_account=ibkr_a, return_dict=True)
+        res_b = await load_signals(session, ibkr_account=ibkr_b, return_dict=True)
+
+    row_a = next(s for s in res_a["signals"] if s["signal_id"] == sig_id)
+    row_b = next(s for s in res_b["signals"] if s["signal_id"] == sig_id)
+
+    assert row_a["ibkr_account"] == ibkr_a
+    assert "MARGIN_SNAPSHOT_STALE" in (row_a["reject_reason"] or "")
+    assert ibkr_b not in (row_a["reject_reason"] or "")
+    assert "MODEL_BLUE_MIN_NOTIONAL" not in (row_a["reject_reason"] or "")
+
+    assert row_b["ibkr_account"] == ibkr_b
+    assert "MODEL_BLUE_MIN_NOTIONAL" in (row_b["reject_reason"] or "")
+    assert ibkr_a not in (row_b["reject_reason"] or "")
+    assert "MARGIN_SNAPSHOT_STALE" not in (row_b["reject_reason"] or "")

@@ -86,11 +86,11 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
           <thead>
             <tr>
               <th style={{ width: '4%' }}>SNO</th>
-              <th style={{ width: '13%' }}>ENTRY</th>
-              <th style={{ width: '13%' }}>CLOSED TIME</th>
+              <th style={{ width: '12%' }}>ENTRY</th>
+              <th style={{ width: '12%' }}>CLOSED TIME</th>
               <th style={{ width: '6%' }}>AGE</th>
-              <th style={{ width: '14%' }}>PAIR</th>
-              <th style={{ width: '30%' }}>EXPOSURE BALANCE</th>
+              <th style={{ width: '11%' }}>PAIR</th>
+              <th style={{ width: '35%' }}>EXPOSURE BALANCE</th>
               <th style={{ width: '10%', textAlign: 'right' }}>REALIZED PL</th>
               <th style={{ width: '10%', textAlign: 'right' }}>PROGRESS</th>
             </tr>

@@ -89,7 +89,7 @@ export function CriticalIncidentsBanner({
       </table>
       <p className="critical-incidents-footer">
         Broker orphans may appear on{' '}
-        <Link to={`/account/${ibkrAccount}/reconcile`}>Reconcile</Link> until the snapshot is
+        <Link to={`/account/${ibkrAccount}/reconcile`}>Inventory</Link> until the snapshot is
         flat.
       </p>
     </div>

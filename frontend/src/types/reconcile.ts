@@ -69,6 +69,14 @@ export type FlattenBrokerPositionRequest = {
   symbol: string
   sec_type: string
   con_id: number
+  quantity: number
+}
+
+export type AlignBrokerPositionRequest = {
+  ibkr_account: string
+  symbol: string
+  sec_type: string
+  con_id: number
 }
 
 export type FlattenBrokerPositionResponse = {
@@ -83,3 +91,5 @@ export type FlattenBrokerPositionResponse = {
   success: boolean
   message: string | null
 }
+
+export type AlignBrokerPositionResponse = FlattenBrokerPositionResponse

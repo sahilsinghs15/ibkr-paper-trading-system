@@ -1,13 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { fetchReconcilePositions } from '../api/reconcileApi'
-import {
-  FlattenDiffModal,
-  canSquareOffDiff,
-  squareOffTooltip,
-} from '../components/FlattenDiffModal'
+import { canFixDiff, FixDiffModal, fixTooltip } from '../components/FixDiffModal'
 import type { FlattenBrokerPositionResponse, ReconcileDiffRow, ReconcilePositionsResponse } from '../types/reconcile'
 import { normalizeIbkrAccount } from '../utils/activeAccount'
+import { fmtCompactCurrency, fmtQty } from '../utils/format'
 
 const DIFF_KIND_LABELS: Record<string, string> = {
   MATCH: 'Match',
@@ -34,15 +31,42 @@ function diffBadgeClass(kind: string): string {
   }
 }
 
-function fmtQty(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '—'
-  return Number.isInteger(value) ? String(value) : value.toFixed(4)
-}
-
 function fmtTime(iso: string | null | undefined): string {
   if (!iso) return 'Never'
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString()
+}
+
+function brokerPriceKey(
+  ibkrAccount: string | null | undefined,
+  symbol: string,
+  secType: string,
+): string {
+  return `${(ibkrAccount ?? '').trim().toUpperCase()}|${symbol.trim().toUpperCase()}|${secType.trim().toUpperCase()}`
+}
+
+function buildBrokerAvgCostMap(
+  brokerPositions: ReconcilePositionsResponse['broker_positions'],
+): Map<string, number> {
+  const map = new Map<string, number>()
+  for (const row of brokerPositions) {
+    const key = brokerPriceKey(row.ibkr_account, row.symbol, row.sec_type)
+    if (!map.has(key)) {
+      map.set(key, row.avg_cost)
+    }
+  }
+  return map
+}
+
+function fmtQtyWithNotional(
+  qty: number | null | undefined,
+  unitPrice: number | undefined,
+): string {
+  if (qty === null || qty === undefined) return '—'
+  const qtyText = fmtQty(qty)
+  if (unitPrice === undefined || unitPrice <= 0) return qtyText
+  const notional = Math.abs(qty) * unitPrice
+  return `${qtyText} / ${fmtCompactCurrency(notional)}`
 }
 
 export function ReconcilePage() {
@@ -52,8 +76,8 @@ export function ReconcilePage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null)
-  const [flattenMessage, setFlattenMessage] = useState<string | null>(null)
-  const [diffToFlatten, setDiffToFlatten] = useState<ReconcileDiffRow | null>(null)
+  const [fixMessage, setFixMessage] = useState<string | null>(null)
+  const [diffToFix, setDiffToFix] = useState<ReconcileDiffRow | null>(null)
 
   const loadData = useCallback(async () => {
     try {
@@ -81,12 +105,17 @@ export function ReconcilePage() {
     [data?.diffs],
   )
 
-  const handleFlattenSuccess = useCallback(
+  const brokerAvgCostByKey = useMemo(
+    () => buildBrokerAvgCostMap(data?.broker_positions ?? []),
+    [data?.broker_positions],
+  )
+
+  const handleFixSuccess = useCallback(
     (res: FlattenBrokerPositionResponse) => {
-      setFlattenMessage(
+      setFixMessage(
         res.success
-          ? `Square off ${res.symbol}: ${res.status} (${res.side} ${res.quantity})`
-          : `Square off ${res.symbol}: ${res.status} — ${res.message ?? 'Incomplete'}`,
+          ? `Fix ${res.symbol}: ${res.status} (${res.side} ${res.quantity})`
+          : `Fix ${res.symbol}: ${res.status} — ${res.message ?? 'Incomplete'}`,
       )
       void loadData()
     },
@@ -121,7 +150,7 @@ export function ReconcilePage() {
     <main className="page reconcile-page">
       <header className="reconcile-header">
         <div className="reconcile-title-block">
-          <h1>Position Reconcile</h1>
+          <h1>Inventory</h1>
           <span className="reconcile-subtitle">Account {cleanAccount || 'ALL'}</span>
         </div>
         <div className="reconcile-meta">
@@ -133,8 +162,8 @@ export function ReconcilePage() {
         </div>
       </header>
 
-      {flattenMessage ? (
-        <div className="status-badge on reconcile-alert">{flattenMessage}</div>
+      {fixMessage ? (
+        <div className="status-badge on reconcile-alert">{fixMessage}</div>
       ) : null}
 
       {run?.timed_out ? (
@@ -155,7 +184,7 @@ export function ReconcilePage() {
             Differences ({diffs.length} total · {mismatchDiffs.length} mismatches)
           </h2>
           <span className="reconcile-panel-hint">
-            Per-row square off flattens IBKR broker line only
+            Per-row Fix aligns IBKR broker qty to the signal ledger
           </span>
         </div>
         <div className="reconcile-table-wrap">
@@ -168,7 +197,7 @@ export function ReconcilePage() {
                 <th>Broker qty</th>
                 <th>Ledger qty</th>
                 <th>In flight</th>
-                <th>Square off</th>
+                <th>Fix</th>
               </tr>
             </thead>
             <tbody>
@@ -180,7 +209,9 @@ export function ReconcilePage() {
                 </tr>
               ) : (
                 diffs.map((row, idx) => {
-                  const enabled = canSquareOffDiff(row)
+                  const enabled = canFixDiff(row, cleanAccount)
+                  const priceKey = brokerPriceKey(row.ibkr_account, row.symbol, row.sec_type)
+                  const unitPrice = brokerAvgCostByKey.get(priceKey)
                   return (
                     <tr key={`${row.kind}-${row.symbol}-${row.sec_type}-${idx}`}>
                       <td>
@@ -190,18 +221,18 @@ export function ReconcilePage() {
                       </td>
                       <td>{row.symbol}</td>
                       <td>{row.sec_type}</td>
-                      <td className="mono">{fmtQty(row.broker_qty)}</td>
-                      <td className="mono">{fmtQty(row.ledger_qty)}</td>
+                      <td className="mono">{fmtQtyWithNotional(row.broker_qty, unitPrice)}</td>
+                      <td className="mono">{fmtQtyWithNotional(row.ledger_qty, unitPrice)}</td>
                       <td>{row.in_flight ? 'Yes' : '—'}</td>
                       <td>
                         <button
                           type="button"
                           className="reconcile-squareoff-btn"
                           disabled={!enabled}
-                          title={squareOffTooltip(row)}
-                          onClick={() => setDiffToFlatten(row)}
+                          title={fixTooltip(row, cleanAccount)}
+                          onClick={() => setDiffToFix(row)}
                         >
-                          Square off
+                          Fix
                         </button>
                       </td>
                     </tr>
@@ -213,13 +244,14 @@ export function ReconcilePage() {
         </div>
       </section>
 
-      {diffToFlatten ? (
-        <FlattenDiffModal
+      {diffToFix ? (
+        <FixDiffModal
           isOpen
-          diff={diffToFlatten}
-          ibkrAccount={(diffToFlatten.ibkr_account ?? cleanAccount).trim().toUpperCase()}
-          onClose={() => setDiffToFlatten(null)}
-          onSuccess={handleFlattenSuccess}
+          diff={diffToFix}
+          ibkrAccount={(diffToFix.ibkr_account ?? cleanAccount).trim().toUpperCase()}
+          ledgerPositions={data?.ledger_positions ?? []}
+          onClose={() => setDiffToFix(null)}
+          onSuccess={handleFixSuccess}
         />
       ) : null}
     </main>

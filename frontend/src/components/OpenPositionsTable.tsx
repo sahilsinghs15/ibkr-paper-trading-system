@@ -8,6 +8,7 @@ import {
   fmtCompactCurrency,
   fmtFactoryDate,
   fmtPnl,
+  fmtQty,
   num,
   pnlClass,
   streamHint,
@@ -109,11 +110,11 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
           <thead>
             <tr>
               <th style={{ width: '4%' }}>SNO</th>
-              <th style={{ width: '13%' }}>ENTRY</th>
-              <th style={{ width: '7%' }}>AGE</th>
-              <th style={{ width: '14%' }}>PAIR</th>
-              <th style={{ width: '32%' }}>EXPOSURE BALANCE</th>
-              <th style={{ width: '11%', textAlign: 'right' }}>PL</th>
+              <th style={{ width: '12%' }}>ENTRY</th>
+              <th style={{ width: '6%' }}>AGE</th>
+              <th style={{ width: '11%' }}>PAIR</th>
+              <th style={{ width: '38%' }}>EXPOSURE BALANCE</th>
+              <th style={{ width: '10%', textAlign: 'right' }}>PL</th>
               <th style={{ width: '10%', textAlign: 'right' }}>PROGRESS</th>
               <th style={{ width: '9%', textAlign: 'right' }}>ACTION</th>
             </tr>
@@ -193,14 +194,18 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                             <div className="track">
                               <div className="fill" style={{ width: `${Math.max(15, legAPct)}%` }} />
                             </div>
-                            <span className="val">{fmtCompactCurrency(legANotional)}</span>
+                            <span className="val">
+                              {fmtQty(legAQty)} / {fmtCompactCurrency(legANotional)}
+                            </span>
                           </div>
                           <div className="exp-leg leg-b">
                             <span className="sym">{legB.symbol}</span>
                             <div className="track">
                               <div className="fill" style={{ width: `${Math.max(15, legBPct)}%` }} />
                             </div>
-                            <span className="val">{fmtCompactCurrency(legBNotional)}</span>
+                            <span className="val">
+                              {fmtQty(legBQty)} / {fmtCompactCurrency(legBNotional)}
+                            </span>
                           </div>
                         </div>
                         <span className="imbalance-pill">{imbalanceText}</span>

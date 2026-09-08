@@ -17,6 +17,7 @@ from app.core.identifiers import normalize_account
 from app.db.models.account import AccountModel
 from app.db.models.basket import BasketModel
 from app.db.models.instrument import InstrumentModel
+from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
 from app.db.models.signal import JOB_STATUS_PROCESSING, SignalJobModel
 from app.db.repositories.broker_position_repository import BrokerPositionRepository
@@ -84,6 +85,72 @@ def _norm_sec_type(sec_type: str) -> str:
     return sec_type.strip().upper()
 
 
+def _con_ids_for_symbol(
+    symbol_to_conids: dict[tuple[str, str], set[int]],
+    symbol: str,
+    sec_type: str,
+) -> set[int]:
+    """Instrument catalog lookup with STK/CFD fallback for Model Blue legs."""
+    con_ids = symbol_to_conids.get((symbol, sec_type), set())
+    if con_ids:
+        return con_ids
+    if sec_type == "STK":
+        return symbol_to_conids.get((symbol, "CFD"), set())
+    if sec_type == "CFD":
+        return symbol_to_conids.get((symbol, "STK"), set())
+    return set()
+
+
+def _resolve_ibkr_account(
+    account_id: int | None,
+    broker_group: list[Any],
+    account_to_ibkr: dict[int, str],
+) -> str | None:
+    if broker_group:
+        return broker_group[0].ibkr_account
+    if account_id is not None:
+        return account_to_ibkr.get(account_id)
+    return None
+
+
+def build_order_con_id_map(
+    order_rows: list[Any],
+) -> dict[tuple[int, str, str], int]:
+    """Latest con_id per (account_id, symbol, sec_type) from persisted order contracts."""
+    from app.services.critical_recovery import parse_ibkr_contract
+
+    result: dict[tuple[int, str, str], int] = {}
+    for order in order_rows:
+        sym, sec, _, _, con_id = parse_ibkr_contract(order.ibkr_contract)
+        if con_id is None:
+            continue
+        key = (order.account_id, _norm_symbol(sym), _norm_sec_type(sec))
+        result[key] = con_id
+    return result
+
+
+def _resolve_diff_con_id(
+    *,
+    account_id: int,
+    symbol: str,
+    sec_type: str,
+    broker_group: list[Any],
+    ledger: LedgerNetLine | None,
+    order_con_id_map: dict[tuple[int, str, str], int],
+) -> int | None:
+    if broker_group:
+        return int(broker_group[0].con_id)
+    if ledger is not None and ledger.con_ids:
+        return next(iter(ledger.con_ids))
+    con_id = order_con_id_map.get((account_id, symbol, sec_type))
+    if con_id is not None:
+        return con_id
+    alt_sec = "CFD" if sec_type == "STK" else "STK" if sec_type == "CFD" else None
+    if alt_sec is not None:
+        return order_con_id_map.get((account_id, symbol, alt_sec))
+    return None
+
+
 def build_ledger_net_lines(
     open_rows: list[PositionModel],
     instruments: list[InstrumentModel],
@@ -112,7 +179,7 @@ def build_ledger_net_lines(
     for (account_id, symbol, sec_type), qty in nets.items():
         if abs(float(qty)) <= QTY_EPSILON:
             continue
-        con_ids = symbol_to_conids.get((symbol, sec_type), set())
+        con_ids = _con_ids_for_symbol(symbol_to_conids, symbol, sec_type)
         result.append(
             LedgerNetLine(
                 account_id=account_id,
@@ -125,15 +192,43 @@ def build_ledger_net_lines(
     return result
 
 
+def ledger_net_qty_for_symbol(
+    open_rows: list[PositionModel],
+    instruments: list[InstrumentModel],
+    *,
+    account_id: int,
+    symbol: str,
+    sec_type: str,
+) -> float | None:
+    """Signed ledger net for one account/symbol, or None when no OPEN net."""
+    norm_symbol = _norm_symbol(symbol)
+    norm_sec_type = _norm_sec_type(sec_type)
+    for line in build_ledger_net_lines(open_rows, instruments):
+        if (
+            line.account_id == account_id
+            and line.symbol == norm_symbol
+            and line.sec_type == norm_sec_type
+        ):
+            return float(line.signed_qty)
+    return None
+
+
 def classify_reconcile_diffs(
     *,
     broker_lines: list[BrokerPositionLine],
     ledger_lines: list[LedgerNetLine],
     ibkr_to_account: dict[str, int],
+    account_to_ibkr: dict[int, str] | None = None,
+    order_con_id_map: dict[tuple[int, str, str], int] | None = None,
     timed_out: bool,
     in_flight_accounts: set[int],
 ) -> list[ReconcileDiff]:
     """Compare broker snapshot to OPEN ledger nets. Read-only classification."""
+    if account_to_ibkr is None:
+        account_to_ibkr = {v: k for k, v in ibkr_to_account.items()}
+    if order_con_id_map is None:
+        order_con_id_map = {}
+
     broker_by_key: dict[tuple[int, str, str], list[BrokerPositionLine]] = defaultdict(list)
     unmapped: list[BrokerPositionLine] = []
 
@@ -173,12 +268,14 @@ def classify_reconcile_diffs(
         broker_qty = sum(line.quantity for line in broker_group) if broker_group else None
         ledger_qty = float(ledger.signed_qty) if ledger is not None else None
         in_flight = account_id in in_flight_accounts
-        ibkr_account = next(
-            (line.ibkr_account for line in broker_group),
-            None,
-        )
-        con_id = broker_group[0].con_id if broker_group else (
-            next(iter(ledger.con_ids), None) if ledger is not None else None
+        ibkr_account = _resolve_ibkr_account(account_id, broker_group, account_to_ibkr)
+        con_id = _resolve_diff_con_id(
+            account_id=account_id,
+            symbol=symbol,
+            sec_type=sec_type,
+            broker_group=broker_group,
+            ledger=ledger,
+            order_con_id_map=order_con_id_map,
         )
 
         if broker_qty is not None and ledger_qty is not None:
@@ -352,6 +449,7 @@ class PositionReconciler:
         async with self._session_factory() as session, session.begin():
             accounts = list((await session.execute(select(AccountModel))).scalars().all())
             ibkr_to_account = {normalize_account(acc.ibkr_account): acc.id for acc in accounts}
+            account_to_ibkr = {acc.id: acc.ibkr_account for acc in accounts}
 
             snapshot_rows = [
                 {
@@ -383,11 +481,27 @@ class PositionReconciler:
             )
             in_flight_accounts = await fetch_in_flight_accounts(session)
 
+            account_ids = {row.account_id for row in open_rows}
+            order_rows: list[OrderModel] = []
+            if account_ids:
+                order_rows = list(
+                    (
+                        await session.execute(
+                            select(OrderModel)
+                            .where(OrderModel.account_id.in_(account_ids))
+                            .order_by(OrderModel.id)
+                        )
+                    ).scalars().all()
+                )
+            order_con_id_map = build_order_con_id_map(order_rows)
+
             ledger_lines = build_ledger_net_lines(open_rows, instruments)
             diffs = classify_reconcile_diffs(
                 broker_lines=broker_lines,
                 ledger_lines=ledger_lines,
                 ibkr_to_account=ibkr_to_account,
+                account_to_ibkr=account_to_ibkr,
+                order_con_id_map=order_con_id_map,
                 timed_out=timed_out,
                 in_flight_accounts=in_flight_accounts,
             )

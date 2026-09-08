@@ -18,11 +18,23 @@ logger = logging.getLogger(__name__)
 STK_TO_CFD = "STK_TO_CFD"
 
 
+MODEL_BLUE_STRATEGY_ID = "model_blue"
+
+
 def execute_stk_as_cfd_enabled() -> bool:
     from app.core.config import get_settings
 
     settings = get_settings()
     return bool(getattr(settings, "execute_stk_as_cfd", True))
+
+
+def apply_stk_to_cfd_for_strategy(strategy_id: str | None) -> bool:
+    """Model Blue always executes IBKR CFD; other strategies follow the global flag."""
+    from app.core.identifiers import normalize_strategy_id
+
+    if normalize_strategy_id(strategy_id) == MODEL_BLUE_STRATEGY_ID:
+        return True
+    return execute_stk_as_cfd_enabled()
 
 
 def execution_instrument_type(

@@ -394,6 +394,7 @@ class CriticalRecoveryService:
                     symbol=leg.symbol,
                     sec_type=leg.sec_type,
                     con_id=leg.con_id,
+                    quantity=abs(float(snap.signed_qty)),
                 )
                 messages.append(
                     f"con_id={leg.con_id}: {result.status} — {result.message}"

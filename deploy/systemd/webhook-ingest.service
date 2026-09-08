@@ -1,5 +1,5 @@
 [Unit]
-Description=IBKR Webhook Ingest (FastAPI :8000) — trading-hours controlled
+Description=IBKR Webhook Ingest (FastAPI :8000) — 24/7 durable ingest
 After=network.target postgresql.service
 Wants=postgresql.service
 Requires=network.target
@@ -12,7 +12,7 @@ EnvironmentFile=/home/tradingapp/app/backend/.env
 ExecStart=/bin/bash /home/tradingapp/app/scripts/webhook-ingest-wrapper.sh
 ExecStartPost=-/home/tradingapp/app/backend/.venv/bin/python /home/tradingapp/app/scripts/notify-telegram.py start webhook-ingest
 ExecStopPost=-/home/tradingapp/app/backend/.venv/bin/python /home/tradingapp/app/scripts/notify-telegram.py stop webhook-ingest
-Restart=on-failure
+Restart=always
 RestartSec=10
 KillMode=mixed
 KillSignal=SIGTERM
@@ -25,4 +25,4 @@ NoNewPrivileges=true
 PrivateTmp=true
 
 [Install]
-# Intentionally disabled in multi-user.target; lifecycle controlled by trading-session-start/stop timers
+WantedBy=multi-user.target

@@ -448,6 +448,43 @@ def test_processed_at_prefers_db_value_then_last_fill() -> None:
     assert without_db[3] != received.isoformat()
 
 
+def test_filled_orders_are_accepted_despite_sibling_reject_reason() -> None:
+    orders = [
+        {
+            "basket_id": 1,
+            "leg": "0",
+            "symbol": "NOBL",
+            "buy_sell": "BUY",
+            "quantity": 18.0,
+            "fill_qty": 18.0,
+            "status": "FILLED",
+            "filled_at": "2026-09-03T12:20:02+00:00",
+            "is_compensation": False,
+        },
+        {
+            "basket_id": 1,
+            "leg": "1",
+            "symbol": "SPYG",
+            "buy_sell": "SELL",
+            "quantity": 7.0,
+            "fill_qty": 7.0,
+            "status": "FILLED",
+            "filled_at": "2026-09-03T12:20:03+00:00",
+            "is_compensation": False,
+        },
+    ]
+    result = reconcile_signal_status(
+        _SigStub(
+            status="REJECTED",
+            reject_reason="Account U7211090: MODEL_BLUE_MIN_SHARE",
+        ),
+        orders,
+        [],
+    )
+    assert result[0] == "ACCEPTED"
+    assert result[2] is None
+
+
 def test_reconcile_is_deterministic() -> None:
     orders = [
         {

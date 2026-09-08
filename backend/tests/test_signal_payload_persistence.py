@@ -166,6 +166,32 @@ async def test_processed_status_not_downgraded_to_new(
 
 
 @pytest.mark.asyncio
+async def test_processed_status_not_overwritten_by_rejected(
+    db_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from app.db.repositories.signal_repository import SIGNAL_STATUS_REJECTED
+
+    trade_id = f"MBG-AUDIT-{uuid4().hex[:8]}"
+    payload = {**SIL_GDX_PAYLOAD, "trade_id": trade_id}
+    capture = {"parsed_json": payload, "raw_body": "{}", "metadata": {}}
+    signal = parse_tradingview_payload(
+        payload, timestamp=_TS, request_id="req-3", capture_data=capture
+    )
+    async with db_factory() as session, session.begin():
+        await SignalRepository(session).record_processed(signal, persist_signal_id=trade_id)
+
+    async with db_factory() as session, session.begin():
+        row = await SignalRepository(session).record_inbound(
+            signal,
+            persist_signal_id=trade_id,
+            status=SIGNAL_STATUS_REJECTED,
+            reject_reason="Account other: MODEL_BLUE_MIN_SHARE",
+        )
+        assert row.status == SIGNAL_STATUS_PROCESSED
+        assert row.reject_reason is None
+
+
+@pytest.mark.asyncio
 async def test_rejected_parse_stores_original_json(
     db_factory: async_sessionmaker[AsyncSession],
 ) -> None:

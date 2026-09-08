@@ -20,6 +20,10 @@ from app.accounts.router import DatabaseStrategyAccountRouter, StrategyAccountRo
 from app.core.config import get_settings
 from app.core.identifiers import normalize_symbol
 from app.core.logger import bind_log_context, get_log_context
+from app.services.account_reject_reason import (
+    format_account_reject_reason,
+    merge_account_reject_reasons,
+)
 from app.db.models.account import AccountModel, PerSymbolLimitModel
 from app.db.repositories.event_repository import EventRepository
 from app.db.repositories.execution_claim_repository import (
@@ -719,9 +723,13 @@ class OrderManager:
         return False
 
     async def process_signal_execution(
-        self, signal: Signal
+        self, signal: Signal, *, account_scope: str | None = None
     ) -> FanoutExecutionResult | ExecutionResult | None:
-        """Process a signal: strategy -> eligible accounts -> per-account size/RMS/OMS."""
+        """Process a signal: strategy -> eligible accounts -> per-account size/RMS/OMS.
+
+        When ``account_scope`` is set (ingest job per routed account_id), only that
+        account is executed. Unscoped calls still fan out to every routed account.
+        """
         if signal.signal_type == SignalType.HOLD:
             logger.info("HOLD signal received — no order submitted")
             return None
@@ -798,7 +806,9 @@ class OrderManager:
 
         inbound_row = await self._persist_inbound_signal(signal, status=SIGNAL_STATUS_NEW)
         try:
-            res = await self._process_signal_execution_inner(signal, inbound_row)
+            res = await self._process_signal_execution_inner(
+                signal, inbound_row, account_scope=account_scope
+            )
             if res is not None and getattr(res, "all_rejected", False):
                 reasons = []
                 outcomes = getattr(res, "outcomes", [])
@@ -810,18 +820,86 @@ class OrderManager:
                         if getattr(r_res, "reason", None):
                             reasons.append(f"Account {o.ibkr_account}: {r_res.reason}")
                 rej_msg = "; ".join(reasons) if reasons else "Execution rejected by RMS/OMS policy"
+                existing_reason = getattr(inbound_row, "reject_reason", None) if inbound_row else None
+                if existing_reason is None and self._session_factory is not None:
+                    persist_id = persist_signal_id_for(signal)
+                    if persist_id:
+                        try:
+                            async with self._session_factory() as session:
+                                prior = await SignalRepository(session).get_by_strategy_signal(
+                                    signal.strategy_id or self._strategy_id,
+                                    persist_id,
+                                )
+                                if prior is not None:
+                                    existing_reason = prior.reject_reason
+                        except Exception:
+                            logger.exception(
+                                "Failed reading prior reject_reason for merge signal_id=%s",
+                                persist_id,
+                            )
                 await self._persist_inbound_signal(
-                    signal, status=SIGNAL_STATUS_REJECTED, reject_reason=rej_msg
+                    signal,
+                    status=SIGNAL_STATUS_REJECTED,
+                    reject_reason=merge_account_reject_reasons(existing_reason, rej_msg),
                 )
             return res
         except Exception as exc:
+            scoped_reason = format_account_reject_reason(
+                None,
+                str(exc),
+                account_id=int(account_scope)
+                if account_scope and str(account_scope).strip().isdigit()
+                else None,
+            )
+            # Prefer IBKR account label when scope is a numeric account_id.
+            if (
+                account_scope
+                and str(account_scope).strip().isdigit()
+                and self._session_factory is not None
+            ):
+                try:
+                    async with self._session_factory() as session:
+                        acc = (
+                            await session.execute(
+                                select(AccountModel).where(
+                                    AccountModel.id == int(str(account_scope).strip())
+                                )
+                            )
+                        ).scalar_one_or_none()
+                        if acc is not None:
+                            scoped_reason = format_account_reject_reason(
+                                acc.ibkr_account, str(exc), account_id=acc.id
+                            )
+                except Exception:
+                    logger.exception(
+                        "Failed resolving account_scope=%s for reject_reason tag",
+                        account_scope,
+                    )
+            existing_reason = None
+            persist_id = persist_signal_id_for(signal)
+            if persist_id and self._session_factory is not None:
+                try:
+                    async with self._session_factory() as session:
+                        prior = await SignalRepository(session).get_by_strategy_signal(
+                            signal.strategy_id or self._strategy_id,
+                            persist_id,
+                        )
+                        if prior is not None:
+                            existing_reason = prior.reject_reason
+                except Exception:
+                    logger.exception(
+                        "Failed reading prior reject_reason on exception path signal_id=%s",
+                        persist_id,
+                    )
             await self._persist_inbound_signal(
-                signal, status=SIGNAL_STATUS_REJECTED, reject_reason=str(exc)
+                signal,
+                status=SIGNAL_STATUS_REJECTED,
+                reject_reason=merge_account_reject_reasons(existing_reason, scoped_reason),
             )
             raise
 
     async def _process_signal_execution_inner(
-        self, signal: Signal, inbound_row
+        self, signal: Signal, inbound_row, *, account_scope: str | None = None
     ):
         strat_id = signal.strategy_id or self._strategy_id
         handler = self.registry.get(strat_id)
@@ -842,7 +920,18 @@ class OrderManager:
             return FanoutExecutionResult.from_single(result)
 
         contexts = await self._account_router.resolve(strat_id)
+        contexts = self._contexts_for_scope(contexts, account_scope)
         if not contexts:
+            if account_scope:
+                logger.warning(
+                    "NO_ELIGIBLE_ACCOUNTS: strategy '%s' has no enabled account for scope=%s",
+                    strat_id,
+                    account_scope,
+                )
+                raise ValueError(
+                    f"NO_ELIGIBLE_ACCOUNTS: strategy '{strat_id}' has no enabled "
+                    f"account for scope '{account_scope}'."
+                )
             logger.warning(
                 "NO_ELIGIBLE_ACCOUNTS: strategy '%s' has no enabled account subscriptions",
                 strat_id,
@@ -854,6 +943,28 @@ class OrderManager:
         return await self._fanout_accounts(
             signal, handler, contexts, inbound_pk=_row_pk(inbound_row)
         )
+
+    @staticmethod
+    def _contexts_for_scope(
+        contexts: list[AccountExecutionContext],
+        account_scope: str | None,
+    ) -> list[AccountExecutionContext]:
+        wanted = (account_scope or "").strip()
+        if not wanted:
+            return contexts
+        matched = [
+            ctx
+            for ctx in contexts
+            if str(ctx.account_id) == wanted
+            or (ctx.ibkr_account or "").strip().upper() == wanted.upper()
+        ]
+        if not matched:
+            logger.warning(
+                "NO_ELIGIBLE_ACCOUNTS: account_scope=%s matched none of %s",
+                wanted,
+                [(ctx.account_id, ctx.ibkr_account) for ctx in contexts],
+            )
+        return matched
 
     async def _fanout_single_account(
         self,
@@ -1633,17 +1744,22 @@ class OrderManager:
         self, intent: OrderIntent, *, signal_pk: int | None = None
     ) -> OrderIntent:
         from app.instruments.cfd_discover import ensure_cfd_instruments_for_symbols
-        from app.instruments.execution_override import execution_instrument_type
+        from app.instruments.execution_override import (
+            apply_stk_to_cfd_for_strategy,
+            execution_instrument_type,
+        )
         from app.instruments.models import InstrumentResolutionError
         from app.instruments.resolver import attach_resolved, ibkr_sec_type
 
+        apply_stk_to_cfd = apply_stk_to_cfd_for_strategy(intent.strategy_id)
         catalog = getattr(self, "_instrument_catalog", None)
         if catalog is not None and self._session_factory is not None:
             cfd_symbols: list[str] = []
             for leg in intent.legs:
                 try:
                     execution_type, _override = execution_instrument_type(
-                        leg.instrument_type
+                        leg.instrument_type,
+                        enabled=apply_stk_to_cfd,
                     )
                     if ibkr_sec_type(execution_type) != "CFD":
                         continue
@@ -1660,10 +1776,15 @@ class OrderManager:
                 )
 
         snapshot = await self._instrument_snapshot_for_legs(
-            [(leg.symbol, leg.instrument_type) for leg in intent.legs]
+            [(leg.symbol, leg.instrument_type) for leg in intent.legs],
+            apply_stk_to_cfd=apply_stk_to_cfd,
         )
         try:
-            resolved_intent = attach_resolved(intent, catalog=snapshot)
+            resolved_intent = attach_resolved(
+                intent,
+                catalog=snapshot,
+                apply_stk_to_cfd=apply_stk_to_cfd,
+            )
         except InstrumentResolutionError as exc:
             raise ValueError(str(exc)) from exc
         for leg in resolved_intent.legs:
@@ -1681,7 +1802,10 @@ class OrderManager:
         return getattr(adapter, "_client", None)
 
     async def _instrument_snapshot_for_legs(
-        self, leg_specs: list[tuple[str | None, str | None]]
+        self,
+        leg_specs: list[tuple[str | None, str | None]],
+        *,
+        apply_stk_to_cfd: bool | None = None,
     ):
         from app.db.repositories.instrument_repository import (
             DatabaseInstrumentCatalog,
@@ -1699,7 +1823,10 @@ class OrderManager:
             if not symbol:
                 continue
             try:
-                execution_type, _override = execution_instrument_type(raw_type)
+                execution_type, _override = execution_instrument_type(
+                    raw_type,
+                    enabled=apply_stk_to_cfd,
+                )
                 sec = ibkr_sec_type(execution_type)
             except InstrumentResolutionError:
                 continue
