@@ -248,6 +248,14 @@ class IBKRExecutionAdapter:
         ib_order.transmit = True
         ib_order.eTradeOnly = False
         ib_order.firmQuoteOnly = False
+        # Red Zone safety: normal orders must not trade outside RTH
+        is_emergency = order.intent.intent_mode == ExecutionIntentMode.EMERGENCY_FLATTEN
+        ib_order.outsideRth = False if not is_emergency else False
+        # Explicitly enforce outsideRth False for normal orders
+        if not is_emergency:
+            ib_order.outsideRth = False
+            if getattr(ib_order, "outsideRth", False) is True:
+                raise ValueError("RED_ZONE_OUTSIDE_RTH_TRUE: refusing outsideRth order")
         if order.intent.ibkr_account:
             ib_order.account = order.intent.ibkr_account
         return ib_order
@@ -416,6 +424,11 @@ class IBKRExecutionAdapter:
 
         contract = self._build_ibkr_contract(order)
         ib_order = self._build_ibkr_order(order)
+        # Fail closed if outsideRth is unexpectedly True for normal orders
+        if ib_order.outsideRth and order.intent.intent_mode != ExecutionIntentMode.EMERGENCY_FLATTEN:
+            order.status = OMSOrderStatus.ERROR
+            order.error_message = "RED_ZONE_OUTSIDERTH_TRUE: fail closed"
+            raise ValueError("RED_ZONE_OUTSIDERTH_TRUE: outsideRth must be False")
 
         order.timestamps.ibkr_submit_started_at = datetime.now(UTC)
 

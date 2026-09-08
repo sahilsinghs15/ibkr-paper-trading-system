@@ -181,6 +181,7 @@ class ExecutionResult:
     success: bool
     error_message: str | None = None
     orders: list[OMSOrder] = field(default_factory=list)
+    deferred_red_zone: bool = False
 
     def __post_init__(self) -> None:
         if not self.orders:
@@ -211,6 +212,7 @@ class FanoutExecutionResult:
 
     outcomes: list[AccountExecutionOutcome] = field(default_factory=list)
     had_unexpected_error: bool = False
+    deferred_red_zone: bool = False
 
     @property
     def order(self) -> OMSOrder | None:

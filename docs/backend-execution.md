@@ -158,6 +158,10 @@ Rules in `services/model_blue/sizer.py`:
 
 Production OPEN always passes `pair_budget`. The no-account fallback treats committed capital as a pair budget and exists for tests only.
 
+## Red Zone safety gate (exchange/session-level)
+
+- **Global signal-level gate** before account fan-out and before execution claim. `SessionClock` (America/New_York, 09:30–16:00 ET, NYSE holidays/half-days, DST) computes `in_red_zone` and `projected_in_red_zone` (adds `ibkr_gateway_max_wait_sec`). `DEFERRED_RED_ZONE` parks signal+job (clears lease, persists `deferred_at`, `resolved_session_close`, `applied_buffer_seconds`, `reference_price`). Worker preserves `DEFERRED_RED_ZONE` (no COMPLETED/REJECTED). `EMERGENCY_FLATTEN` bypasses. `outsideRth=False` explicitly enforced on IBKR adapter (fail closed). Release service `DEFERRED_RED_ZONE → QUEUED` only when session open + post-open delay elapsed + gateway connected + breaker clear; released jobs reuse normal worker→OMS→IBKR path via `GatewayRateLimiter`.
+
 ## Not on this path
 
 - No automatic target / stop / time_limit exit loop (columns may exist on allocations; no exit-trigger process).

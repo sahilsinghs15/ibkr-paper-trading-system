@@ -514,6 +514,17 @@ def _sanitize_for_telegram(text: str) -> str:
     return t.replace("<", "&lt;").replace(">", "&gt;") if "<code>" not in t else t
 
 
+def format_red_zone_alert(kind: str, detail: dict) -> str:
+    """Format Red Zone event for Telegram."""
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+    now = datetime.now(UTC).astimezone(ZoneInfo("America/New_York")).strftime("%H:%M:%S ET") if True else ""
+    lines = [f"<b>🛡️ RED ZONE {kind}</b>", "━━━━━━━━━━━━━━━━━━━", f"<b>TIME</b> <code>{now}</code>"]
+    for k, v in detail.items():
+        lines.append(f"<b>{k.upper()}</b> <code>{v}</code>")
+    lines.append("━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines)
+
 def _default_action(event: NotificationEvent, service: ServiceName) -> str:
     if event == NotificationEvent.MARKET_CLOSED:
         return "No action required. Service will start automatically when the next trading session begins."

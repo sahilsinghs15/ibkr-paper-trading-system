@@ -34,6 +34,7 @@ from app.db.repositories.signal_repository import (
     SignalRepository,
     persist_signal_id_for,
 )
+from app.rms.models import ExecutionIntentMode
 from app.models.signal import Signal, SignalType
 from app.oms.basket import BasketState
 from app.oms.coordinator import BasketCoordinator
@@ -708,6 +709,15 @@ class OrderManager:
             return None
         return result.order
 
+    def _is_emergency_flatten(self, signal: Signal) -> bool:
+        # Emergency flatten intents bypass red zone; signals that map to emergency mode
+        # are identified via intent_mode if available via raw payload hint; default false for normal signals
+        # Actual emergency flatten path sets intent_mode explicitly; check signal raw payload marker
+        if getattr(signal, "raw_payload", None) and isinstance(signal.raw_payload, dict):
+            if signal.raw_payload.get("intent_mode") == ExecutionIntentMode.EMERGENCY_FLATTEN.value:
+                return True
+        return False
+
     async def process_signal_execution(
         self, signal: Signal
     ) -> FanoutExecutionResult | ExecutionResult | None:
@@ -720,6 +730,72 @@ class OrderManager:
             signal_id=signal.signal_id,
             trade_id=signal.trade_id or signal.signal_id,
         )
+        # Global Red Zone gate BEFORE account fan-out and BEFORE claim
+        if not self._is_emergency_flatten(signal):
+            try:
+                from app.services.session_clock import get_session_clock
+
+                clock = get_session_clock()
+                now = datetime.now(UTC)
+                if clock.projected_in_red_zone(now):
+                    logger.warning(
+                        "RED_ZONE_BLOCKED signal %s deferred (projected red zone) buffer=%d",
+                        signal.signal_id,
+                        clock.buffer_seconds,
+                    )
+                    # return deferred result; worker will park durably
+                    from app.oms.models import ExecutionResult as ER
+                    from app.rms.models import RMSResult as RR, RMSOutcome
+
+                    dummy_rms = RR(
+                        outcome=RMSOutcome.REJECT,
+                        intent=None,  # type: ignore
+                        original_intent=None,  # type: ignore
+                        check_number=0,
+                        reason="RED_ZONE_DEFERRED",
+                        check_results=[],
+                    )
+                    # Build minimal order for result wrapper
+                    from app.oms.models import OMSOrder as OO, OMSOrderStatus
+                    from app.rms.models import OrderIntent as OI, OrderAction, OrderLeg, OrderSide
+
+                    dummy_intent = OI(
+                        signal_id=signal.signal_id,
+                        strategy_id=signal.strategy_id or self._strategy_id,
+                        action=OrderAction.OPEN,
+                        legs=[OrderLeg(symbol="DEFERRED", side=OrderSide.BUY, quantity=0, price=Decimal(0))],
+                    )
+                    dummy_order = OO(
+                        internal_order_id=f"DEFERRED-{signal.signal_id}",
+                        intent=dummy_intent,
+                        symbol="DEFERRED",
+                        side=OrderSide.BUY,
+                        quantity=0,
+                        status=OMSOrderStatus.ERROR,
+                        error_message="DEFERRED_RED_ZONE",
+                    )
+                    er = ER(
+                        order=dummy_order,
+                        rms_result=dummy_rms,
+                        success=False,
+                        error_message="DEFERRED_RED_ZONE",
+                        deferred_red_zone=True,
+                    )
+                    # For fanout path, wrap similarly
+                    from app.oms.models import FanoutExecutionResult as FER
+
+                    fer = FER(outcomes=[], deferred_red_zone=True)
+                    # attach single deferred outcome for introspection
+                    fer.outcomes = []  # type: ignore
+                    # return fer with deferred flag; worker treats any deferred
+                    # We return ExecutionResult-style deferred via Fanout
+                    # Add attribute for worker to detect
+                    return fer  # type: ignore
+            except Exception:
+                logger.exception("Red Zone gate check failed; failing closed")
+                # fail closed: treat as deferred? Better to reject
+                raise
+
         inbound_row = await self._persist_inbound_signal(signal, status=SIGNAL_STATUS_NEW)
         try:
             res = await self._process_signal_execution_inner(signal, inbound_row)
@@ -1145,6 +1221,20 @@ class OrderManager:
                 f"KILL_SWITCH_ACTIVE: Account {evaluated_intent.account_id} is in "
                 "active emergency kill-switch mode."
             )
+
+        # Red Zone second gate before claim (defense-in-depth)
+        if evaluated_intent.intent_mode != ExecutionIntentMode.EMERGENCY_FLATTEN:
+            try:
+                from app.services.session_clock import get_session_clock
+
+                clock2 = get_session_clock()
+                if clock2.projected_in_red_zone(datetime.now(UTC)):
+                    raise ValueError("RED_ZONE_DEFERRED: projected in red zone, refusing claim")
+            except ValueError:
+                raise
+            except Exception:
+                logger.exception("Red Zone pre-claim check failed; failing closed")
+                raise ValueError("RED_ZONE_DEFERRED")
 
         # Barrier goes up here: after every gate has passed, immediately before
         # anything can reach the broker.

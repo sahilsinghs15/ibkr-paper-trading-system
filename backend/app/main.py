@@ -182,6 +182,13 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         await position_reconciler.start()
     fastapi_app.state.position_reconciler = position_reconciler
 
+    from app.services.red_zone_release import RedZoneReleaseService
+
+    red_zone_release = RedZoneReleaseService(AsyncSessionLocal, client=client, order_manager=order_manager)
+    if not testing:
+        await red_zone_release.start()
+    fastapi_app.state.red_zone_release = red_zone_release
+
     if not testing:
         try:
             await critical_recovery.enqueue_all_critical()
@@ -211,6 +218,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     yield
 
     logger.info("Shutting down paper-trading application...")
+    if hasattr(fastapi_app.state, "red_zone_release"):
+        await fastapi_app.state.red_zone_release.stop()
     if hasattr(fastapi_app.state, "margin_scanner"):
         await fastapi_app.state.margin_scanner.stop()
     if hasattr(fastapi_app.state, "account_margin"):

@@ -49,6 +49,9 @@ JOB_STATUS_REJECTED = "REJECTED"
 JOB_STATUS_FAILED = "FAILED"
 JOB_STATUS_RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
 JOB_STATUS_DEAD_LETTER = "DEAD_LETTER"
+JOB_STATUS_DEFERRED_RED_ZONE = "DEFERRED_RED_ZONE"
+
+SIGNAL_STATUS_DEFERRED_RED_ZONE = "DEFERRED_RED_ZONE"
 
 # Statuses where a worker holds a live lease on the job. Every lease predicate
 # (claim, heartbeat, reclaim) MUST use this tuple -- if PROCESSING is omitted
@@ -91,4 +94,10 @@ class SignalJobModel(Base):
         DateTime(timezone=True), nullable=True
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deferred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deferral_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    reference_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    resolved_session_close: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    applied_buffer_seconds: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    deferred_session_count: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
 

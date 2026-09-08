@@ -36,7 +36,7 @@ HTTP **202 `accepted`** means the job was enqueued — **not** that it filled. C
 
 Duplicate webhooks with the same key return the existing job (no second row). Changing normalization requires a data backfill (migration `a4c7e2f10938`).
 
-The key is **not** account-scoped. One TradingView alert is one job even when the router later fans out to N accounts. Splitting jobs per account is target-state (see [`backend-multi-gateway.md`](backend-multi-gateway.md)); doing it now would rotate hashes.
+The key is account-scoped in current ingest: `idempotency_key = sha256(...) + ":" + account_id` when allocations exist, so one TradingView alert fans out to **N `signal_jobs` rows** (one per enabled `account_scope`). All N rows share the same `SessionClock` decision, so the global Red Zone outcome is consistent across accounts (all deferred or all not). See Red Zone section below.
 
 ### Job status machine
 
@@ -58,6 +58,7 @@ RECEIVED / QUEUED
 | `REJECTED` | Parse failure or RMS/OMS policy rejection |
 | `FAILED` | Execution incomplete or unhandled exception |
 | `RECOVERY_REQUIRED` | Quarantined — orders may exist; needs reconciliation (lease expiry **or** post-submit exception) |
+| `DEFERRED_RED_ZONE` | Parked — exchange/session Red Zone, not claimable, not a lease, survives recovery; both `signals.status` and `signal_jobs.status` set; per-account N rows when ingest fans out |
 | `DEAD_LETTER` | Exceeded `max_attempts` (default 3) |
 
 **Invariant:** `ACTIVE_LEASE_STATUSES = (CLAIMED, PROCESSING)` must be used consistently in claim, heartbeat, reclaim, and fenced status writes. Omitting `PROCESSING` from any predicate silently breaks lease maintenance.

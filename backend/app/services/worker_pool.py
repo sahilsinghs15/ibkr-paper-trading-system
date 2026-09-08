@@ -13,6 +13,7 @@ from app.core.identifiers import normalize_strategy_id, normalize_trade_id
 from app.core.logger import bind_log_context, clear_log_context
 from app.db.models.signal import (
     JOB_STATUS_COMPLETED,
+    JOB_STATUS_DEFERRED_RED_ZONE,
     JOB_STATUS_FAILED,
     JOB_STATUS_PROCESSING,
     JOB_STATUS_RECOVERY_REQUIRED,
@@ -351,8 +352,103 @@ class ExecutionWorkerPool:
             )
             return
 
+        # Global Red Zone gate BEFORE process_signal_execution would do fan-out/claim
+        # Ensure no claim is taken for deferred signals
+        try:
+            from app.services.session_clock import get_session_clock
+
+            clock = get_session_clock()
+            now = datetime.now(UTC)
+            # emergency flatten signals bypass; check raw payload marker
+            is_emergency = False
+            if isinstance(job.raw_payload, dict) and job.raw_payload.get("intent_mode") == "EMERGENCY_FLATTEN":
+                is_emergency = True
+            if not is_emergency and clock.projected_in_red_zone(now):
+                # park durably as DEFERRED_RED_ZONE
+                from decimal import Decimal
+
+                # extract reference price
+                ref_price = None
+                try:
+                    buckets = job.raw_payload.get("buckets") if isinstance(job.raw_payload, dict) else None
+                    if isinstance(buckets, list) and buckets:
+                        leg = (buckets[0].get("legs") or [{}])[0]
+                        ref_price = Decimal(str(leg.get("price") or 0))
+                except Exception:
+                    ref_price = None
+                resolved_close = clock.resolved_session_close(now)
+                async with self._session_factory() as session, session.begin():
+                    repo = SignalJobRepository(session)
+                    # use park_red_zone fencing
+                    await repo.park_red_zone(
+                        job.job_id,
+                        worker_id,
+                        deferral_reason="RED_ZONE_DEFERRED",
+                        reference_price=ref_price,
+                        resolved_session_close=resolved_close,
+                        applied_buffer_seconds=clock.buffer_seconds,
+                        deferred_session_count=0,
+                    )
+                    # event log
+                    try:
+                        from app.db.repositories.event_repository import EventRepository
+
+                        await EventRepository(session).append(
+                            process="worker",
+                            kind="RED_ZONE_BLOCKED",
+                            detail={
+                                "strategy_id": job.strategy_id,
+                                "job_id": str(job.job_id),
+                                "signal_id": job.signal_id,
+                                "applied_buffer_seconds": clock.buffer_seconds,
+                                "resolved_session_close": resolved_close.isoformat() if resolved_close else None,
+                                "deferred_session_count": 0,
+                            },
+                        )
+                    except Exception:
+                        pass
+                logger.warning("Worker %s parked job %s in DEFERRED_RED_ZONE", worker_id, job.job_id)
+                return
+        except Exception:
+            logger.exception("Red Zone worker gate failed for job %s", job.job_id)
+
         try:
             execution = await self._order_manager.process_signal_execution(domain_signal)
+
+            # Deferred red zone handling: preserve parked state, do not mark terminal
+            if execution is not None and getattr(execution, "deferred_red_zone", False):
+                # If worker-level gate already parked, this is no-op; else park now
+                try:
+                    from decimal import Decimal
+                    from app.services.session_clock import get_session_clock
+
+                    clock2 = get_session_clock()
+                    now2 = datetime.now(UTC)
+                    ref_price2 = None
+                    try:
+                        buckets = job.raw_payload.get("buckets") if isinstance(job.raw_payload, dict) else None
+                        if isinstance(buckets, list) and buckets:
+                            leg = (buckets[0].get("legs") or [{}])[0]
+                            ref_price2 = Decimal(str(leg.get("price") or 0))
+                    except Exception:
+                        ref_price2 = None
+                    resolved_close2 = clock2.resolved_session_close(now2)
+                    async with self._session_factory() as session, session.begin():
+                        repo2 = SignalJobRepository(session)
+                        existing = await session.get(SignalJobModel, job.job_id)
+                        if existing and existing.status != JOB_STATUS_DEFERRED_RED_ZONE:
+                            await repo2.park_red_zone(
+                                job.job_id,
+                                worker_id,
+                                deferral_reason="RED_ZONE_DEFERRED",
+                                reference_price=ref_price2,
+                                resolved_session_close=resolved_close2,
+                                applied_buffer_seconds=clock2.buffer_seconds,
+                            )
+                except Exception:
+                    logger.exception("Failed to park deferred job %s", job.job_id)
+                logger.info("Worker %s deferred job %s (RED_ZONE)", worker_id, job.job_id)
+                return
 
             if lease_lost.is_set():
                 # Orders may have gone out under a lease another worker now owns.
@@ -415,6 +511,36 @@ class ExecutionWorkerPool:
                 job.job_id, JOB_STATUS_COMPLETED, worker_id, lease_lost
             )
         except Exception as exc:
+            # Red zone deferral via exception (pre-claim gate)
+            if "RED_ZONE_DEFERRED" in str(exc):
+                try:
+                    from decimal import Decimal
+                    from app.services.session_clock import get_session_clock
+
+                    clock_e = get_session_clock()
+                    now_e = datetime.now(UTC)
+                    ref_price_e = None
+                    try:
+                        buckets = job.raw_payload.get("buckets") if isinstance(job.raw_payload, dict) else None
+                        if isinstance(buckets, list) and buckets:
+                            leg = (buckets[0].get("legs") or [{}])[0]
+                            ref_price_e = Decimal(str(leg.get("price") or 0))
+                    except Exception:
+                        ref_price_e = None
+                    resolved_close_e = clock_e.resolved_session_close(now_e)
+                    async with self._session_factory() as session, session.begin():
+                        await SignalJobRepository(session).park_red_zone(
+                            job.job_id,
+                            worker_id,
+                            deferral_reason="RED_ZONE_DEFERRED",
+                            reference_price=ref_price_e,
+                            resolved_session_close=resolved_close_e,
+                            applied_buffer_seconds=clock_e.buffer_seconds,
+                        )
+                    logger.info("Worker %s deferred job %s via exception RED_ZONE", worker_id, job.job_id)
+                    return
+                except Exception:
+                    logger.exception("Failed to park deferred job on exception %s", job.job_id)
             logger.exception("Worker %s failed executing job %s", worker_id, job.job_id)
             terminal_status = JOB_STATUS_FAILED
             error_msg = str(exc)

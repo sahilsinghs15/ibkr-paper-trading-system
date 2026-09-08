@@ -125,6 +125,17 @@ class Settings(BaseSettings):
     emergency_killswitch_auth_secret: str | None = None
     emergency_killswitch_auth_enabled: bool = True
 
+    # Red Zone safety gate (exchange/session-level, signal-global)
+    red_zone_buffer_seconds: Annotated[int, Ge(0), Le(300)] = 45
+    post_open_delay_seconds: Annotated[int, Ge(0)] = 120
+    max_deferred_sessions: Annotated[int, Ge(0)] = 1
+    max_auto_release_count: Annotated[int, Ge(0)] = 50
+    max_auto_release_notional: Decimal | None = Field(default=None)
+
+    def _validate_red_zone(self) -> None:
+        if self.max_auto_release_notional is not None and self.max_auto_release_notional < 0:
+            raise ValueError("max_auto_release_notional must be >= 0 or None")
+
 
 
     @property
@@ -172,6 +183,9 @@ def get_settings() -> Settings:
     that the creation point is easy to find and override in tests.
     """
     settings = Settings()
+    # Pydantic validation for max_auto_release_notional is not expressed via
+    # Annotated constraints because it is nullable; enforce manually.
+    settings._validate_red_zone()
     if os.environ.get("TRADINGAPP_TESTING") == "1":
         db_name = make_url(settings.database_url).database
         if db_name == _PRODUCTION_DATABASE_NAME:

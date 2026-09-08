@@ -15,11 +15,13 @@ from app.db.models.signal import (
     JOB_STATUS_CLAIMED,
     JOB_STATUS_COMPLETED,
     JOB_STATUS_DEAD_LETTER,
+    JOB_STATUS_DEFERRED_RED_ZONE,
     JOB_STATUS_FAILED,
     JOB_STATUS_PROCESSING,
     JOB_STATUS_QUEUED,
     JOB_STATUS_RECOVERY_REQUIRED,
     JOB_STATUS_REJECTED,
+    SIGNAL_STATUS_DEFERRED_RED_ZONE,
     SignalJobModel,
     SignalModel,
 )
@@ -663,4 +665,117 @@ class SignalJobRepository:
         )
         res = await self._session.execute(stmt)
         return int(res.scalar_one() or 0)
+
+    # --- Red Zone deferral ---
+
+    async def park_red_zone(
+        self,
+        job_id: Any,
+        worker_id: str,
+        *,
+        deferral_reason: str,
+        reference_price: Decimal | None,
+        resolved_session_close: datetime | None,
+        applied_buffer_seconds: int,
+        deferred_session_count: int = 0,
+    ) -> int:
+        """Durably park a job in DEFERRED_RED_ZONE, clearing lease. Fenced.
+
+        Also updates ``signals`` status to DEFERRED_RED_ZONE for same (strategy_id, signal_id).
+        Returns rowcount (0 if fence lost).
+        """
+        now = datetime.now(UTC)
+        # fetch job to get strategy/signal for signals update
+        job = await self._session.get(SignalJobModel, job_id)
+        if job is None:
+            return 0
+        # fence check
+        if job.worker_id != worker_id or job.status not in ACTIVE_LEASE_STATUSES:
+            return 0
+        # update job
+        job.status = JOB_STATUS_DEFERRED_RED_ZONE
+        job.deferred_at = now
+        job.deferral_reason = deferral_reason
+        job.reference_price = reference_price
+        job.resolved_session_close = resolved_session_close
+        job.applied_buffer_seconds = applied_buffer_seconds
+        job.deferred_session_count = deferred_session_count
+        job.worker_id = None
+        job.lease_expires_at = None
+        job.last_error = deferral_reason
+        # update signals status
+        stmt_sig = (
+            update(SignalModel)
+            .where(
+                SignalModel.strategy_id == job.strategy_id,
+                SignalModel.signal_id == job.signal_id,
+            )
+            .values(status=SIGNAL_STATUS_DEFERRED_RED_ZONE)
+        )
+        await self._session.execute(stmt_sig)
+        await self._session.flush()
+        return 1
+
+    async def claim_deferred_for_release(self, limit: int = 50) -> list[SignalJobModel]:
+        """Claim deferred jobs for release using FOR UPDATE SKIP LOCKED.
+
+        Caller must hold outer transaction; this executes SELECT ... FOR UPDATE SKIP LOCKED
+        and updates to QUEUED atomically per row.
+        """
+        # SELECT candidates
+        now = datetime.now(UTC)
+        stmt = (
+            select(SignalJobModel.job_id)
+            .where(SignalJobModel.status == JOB_STATUS_DEFERRED_RED_ZONE)
+            .order_by(SignalJobModel.deferred_at.asc().nulls_first(), SignalJobModel.received_at.asc())
+            .with_for_update(skip_locked=True)
+            .limit(limit)
+        )
+        res = await self._session.execute(stmt)
+        ids = list(res.scalars().all())
+        claimed: list[SignalJobModel] = []
+        for jid in ids:
+            upd = (
+                update(SignalJobModel)
+                .where(SignalJobModel.job_id == jid, SignalJobModel.status == JOB_STATUS_DEFERRED_RED_ZONE)
+                .values(
+                    status=JOB_STATUS_QUEUED,
+                    queued_at=now,
+                    last_error=None,
+                )
+            )
+            r = await self._session.execute(upd)
+            if r.rowcount:
+                job = await self._session.get(SignalJobModel, jid)
+                if job is not None:
+                    claimed.append(job)
+        await self._session.flush()
+        return claimed
+
+    async def get_deferred_notional(self, jobs: list[SignalJobModel]) -> Decimal:
+        total = Decimal(0)
+        for j in jobs:
+            if j.reference_price is not None and j.capture_data:
+                # estimate notional via reference_price * qty if available else price
+                total += abs(j.reference_price)
+        return total
+
+    async def void_deferred_job(self, job_id: Any, reason: str) -> int:
+        job = await self._session.get(SignalJobModel, job_id)
+        if job is None or job.status != JOB_STATUS_DEFERRED_RED_ZONE:
+            return 0
+        job.status = JOB_STATUS_REJECTED
+        job.last_error = reason
+        job.completed_at = datetime.now(UTC)
+        job.worker_id = None
+        job.lease_expires_at = None
+        # also update signals
+        stmt_sig = (
+            update(SignalModel)
+            .where(SignalModel.strategy_id == job.strategy_id, SignalModel.signal_id == job.signal_id)
+            .values(status="REJECTED", reject_reason=reason)
+        )
+        await self._session.execute(stmt_sig)
+        await self._session.flush()
+        return 1
 

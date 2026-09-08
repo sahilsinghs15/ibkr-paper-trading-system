@@ -57,6 +57,11 @@ Use `get_settings()`; do not construct `Settings()` ad hoc in new code.
 | `webhook_auth_enabled` | `WEBHOOK_AUTH_ENABLED` | `True` | Fail-closed: enabled + unset secret → 401 / refuse boot |
 | `emergency_killswitch_auth_secret` | `EMERGENCY_KILLSWITCH_AUTH_SECRET` | `None` | Bearer secret for `POST /api/v1/emergency-kill-switch` |
 | `emergency_killswitch_auth_enabled` | `EMERGENCY_KILLSWITCH_AUTH_ENABLED` | `True` | Toggle emergency kill-switch auth |
+| `red_zone_buffer_seconds` | `RED_ZONE_BUFFER_SECONDS` | `45` | Pre-close buffer; 0-300 sec |
+| `post_open_delay_seconds` | `POST_OPEN_DELAY_SECONDS` | `120` | Delay after 09:30 ET open before release |
+| `max_deferred_sessions` | `MAX_DEFERRED_SESSIONS` | `1` | Max sessions a job may stay deferred before void |
+| `max_auto_release_count` | `MAX_AUTO_RELEASE_COUNT` | `50` | Circuit breaker max jobs per release batch |
+| `max_auto_release_notional` | `MAX_AUTO_RELEASE_NOTIONAL` | `None` | Optional notional cap for breaker |
 
 Property: `candle_timeframe_minutes` — parses `candle_timeframe` (defaults to 5).
 
