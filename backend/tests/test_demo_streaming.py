@@ -59,6 +59,7 @@ def test_cfd_instrument_type_is_preserved() -> None:
         "GDX": "CFD",
     }
     assert rows[0]["market_data_status"] == "UNAVAILABLE"
+    assert rows[0]["unrealized_pnl"] is None
     assert rows[0]["side"] == "BUY"
     assert rows[1]["side"] == "SELL"
 

@@ -96,9 +96,11 @@ CLOSE signals and kill-switch flatten itself are **not** blocked by the armed ca
 3. Reconcile: auto-close stale OPEN rows whose close orders filled in DB
 4. Finalize operation → `COMPLETE` or `UNRESOLVED`
 
-On full fill: persist `POSITION_CLOSE` via `PositionRepository.close_trade` + `EventRepository.append`. Incomplete `exit_marks` or close-qty ≠ open signed qty refuses the close (row stays OPEN).
+On full fill: persist `POSITION_CLOSE` via `PositionRepository.close_trade` + `EventRepository.append`. Close qty is summed per symbol (same as pair-close): remainder-retry fills count; an `ERROR` / `REJECTED` original child does **not** block the ledger close if retry fills match open size and both legs have exit marks. Incomplete `exit_marks` or close-qty ≠ open signed qty refuses the close (row stays OPEN).
 
-Flatten paths **deliberately skip `execution_claims`**. Mutual exclusion is `flatten_inflight` keys (`ledger_key` / `broker_key`) shared by kill-switch, pair-close, and broker leftover flatten. A second producer gets 409 / already-flattening rather than a second `placeOrder`. Compensation close orders are not counted as flatten fills.
+Reconcile loads close orders from both `positions.trade_id` and `KILLSWITCH-{trade_id}` (flatten baskets persist the latter). Compensation / `:UNWIND:` children are not counted as flatten fills.
+
+Flatten paths **deliberately skip `execution_claims`**. Mutual exclusion is `flatten_inflight` keys (`ledger_key` / `broker_key`) shared by kill-switch, pair-close, and broker leftover flatten. A second producer gets 409 / already-flattening rather than a second `placeOrder`.
 
 Flatten tasks are stored (`KillSwitchService._in_flight`) and resumed on hydrate for `ACTIVATING` / `FLATTENING` / `RECONCILING`.
 

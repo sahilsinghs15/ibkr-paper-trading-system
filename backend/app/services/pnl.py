@@ -212,6 +212,9 @@ class LivePnlService:
                     legs=intent_legs,
                 )
             )
+            trade_key = (row.account_id, row.trade_id)
+            with self._persist_lock:
+                self._last_persisted_pnl[trade_key] = Decimal(str(row.live_pnl))
 
     def unwatch(self, account_id: int, trade_id: str) -> None:
         trade_key = (account_id, trade_id)
@@ -262,9 +265,15 @@ class LivePnlService:
             if pnl is None:
                 pnl = self._last_persisted_pnl.get(trade_key)
             updated = self._pnl_updated_at.get(trade_key)
-        if pnl is None or updated is None:
+        if pnl is None:
             return PairPnlSnapshot(
                 pnl=Decimal(0),
+                updated_at_mono=0.0,
+                all_legs_marked=False,
+            )
+        if updated is None:
+            return PairPnlSnapshot(
+                pnl=pnl,
                 updated_at_mono=0.0,
                 all_legs_marked=False,
             )
@@ -453,6 +462,40 @@ class LivePnlService:
             reqId, symbol, marketDataType, _type_names.get(marketDataType, "UNKNOWN")
         )
 
+    def _attach_listeners(
+        self,
+        req_id: int,
+        listeners: set[tuple[int, str, str]],
+    ) -> None:
+        """Register trade/symbol listeners on an existing market-data reqId."""
+        if not listeners:
+            return
+        bucket = self._listeners_by_req.setdefault(req_id, set())
+        bucket.update(listeners)
+        self._copy_peer_marks_and_recompute(listeners)
+
+    def _copy_peer_marks_and_recompute(
+        self,
+        listeners: set[tuple[int, str, str]],
+    ) -> None:
+        """Seed marks from peers on the same symbol and recompute affected trades."""
+        trades_to_recompute: set[tuple[int, str]] = set()
+        for account_id, trade_id, symbol in listeners:
+            key = (account_id, trade_id, symbol)
+            if self._marks.get(key) is not None:
+                continue
+            peer_mark = None
+            for (aid, tid, sym), mark in self._marks.items():
+                if sym == symbol and mark is not None:
+                    peer_mark = mark
+                    break
+            if peer_mark is None:
+                continue
+            self._marks[key] = peer_mark
+            trades_to_recompute.add((account_id, trade_id))
+        for account_id, trade_id in trades_to_recompute:
+            self._recompute(account_id, trade_id)
+
     def on_reroute_mkt_data(self, reqId: int, conId: int, exchange: str) -> None:
         c_key = self._req_to_contract.get(reqId)
         if not c_key:
@@ -471,27 +514,39 @@ class LivePnlService:
         underlying.currency = "USD"
 
         new_c_key = ("STK", symbol, underlying.exchange, "USD", conId)
-        if new_c_key not in self._contract_reqs:
-            with self._req_lock:
-                new_req_id = self._next_req
-                self._next_req += 1
-            listeners = self._listeners_by_req.get(reqId, set())
-            mapped = self._by_req.get(reqId)
-            if mapped:
-                self._by_req[new_req_id] = mapped
-            self._contract_reqs[new_c_key] = new_req_id
-            self._req_to_contract[new_req_id] = new_c_key
-            self._listeners_by_req[new_req_id] = set(listeners)
+        listeners = set(self._listeners_by_req.get(reqId, set()))
+        if new_c_key in self._contract_reqs:
+            existing_req_id = self._contract_reqs[new_c_key]
+            self._attach_listeners(existing_req_id, listeners)
+            logger.info(
+                "LivePnl reroute reuse subscription: req_id=%s symbol=%s "
+                "underlying_conId=%d listeners=%d",
+                existing_req_id,
+                symbol,
+                conId,
+                len(listeners),
+            )
+            return
 
-            req_mkt = getattr(self._client, "reqMktData", None)
-            if callable(req_mkt):
-                def _send() -> None:
-                    req_mkt(new_req_id, underlying, "221", False, False, [])
+        with self._req_lock:
+            new_req_id = self._next_req
+            self._next_req += 1
+        mapped = self._by_req.get(reqId)
+        if mapped:
+            self._by_req[new_req_id] = mapped
+        self._contract_reqs[new_c_key] = new_req_id
+        self._req_to_contract[new_req_id] = new_c_key
+        self._listeners_by_req[new_req_id] = set(listeners)
 
-                def _retry() -> None:
-                    self._issue_reroute_mkt_data(new_req_id, underlying)
+        req_mkt = getattr(self._client, "reqMktData", None)
+        if callable(req_mkt):
+            def _send() -> None:
+                req_mkt(new_req_id, underlying, "221", False, False, [])
 
-                self._try_paced_call("reqMktData", _send, retry_callback=_retry)
+            def _retry() -> None:
+                self._issue_reroute_mkt_data(new_req_id, underlying)
+
+            self._try_paced_call("reqMktData", _send, retry_callback=_retry)
 
     def _issue_reroute_mkt_data(self, req_id: int, contract) -> None:
         req_mkt = getattr(self._client, "reqMktData", None)
@@ -583,48 +638,32 @@ class LivePnlService:
                 leg.symbol,
             )
             return
-        from app.instruments.models import InstrumentResolutionError
         from app.instruments.resolver import (
-            ibkr_market_data_contract_from_resolved,
-            resolve_leg,
+            ibkr_stk_mark_contract,
+            stk_mark_con_id_from_catalog,
+            stk_mark_con_id_from_resolved,
         )
 
         resolved = getattr(leg, "resolved", None)
-        if resolved is None or getattr(resolved, "sec_type", "").upper() == "CFD":
-            try:
-                md_inst_type = "STK" if getattr(leg, "instrument_type", "").upper() in ("CFD", "STK", "ETF") else getattr(leg, "instrument_type", "STK")
-                resolved = resolve_leg(
-                    symbol=leg.symbol,
-                    instrument_type=md_inst_type,
-                    market=getattr(leg, "exchange", "SMART"),
-                    currency=getattr(leg, "currency", "USD"),
-                    con_id=getattr(resolved, "market_data_con_id", None),
-                    catalog=self._catalog,
-                    apply_stk_to_cfd=False,  # Market data uses STK for equities/ETFs
-                )
-            except InstrumentResolutionError as exc:
-                logger.warning(
-                    "LivePnl skip ticks: account_id=%s trade_id=%s symbol=%s reason=%s",
-                    account_id,
-                    trade_id,
-                    leg.symbol,
-                    exc,
-                )
-                c_key = ("UNRESOLVED", leg.symbol, "SMART", "USD", 0)
-                self._contract_health[c_key] = {
-                    "symbol": leg.symbol,
-                    "sec_type": "UNRESOLVED",
-                    "status": "UNRESOLVED_CONTRACT_SPEC",
-                    "ibkr_error_code": 200,
-                    "ibkr_error_string": str(exc),
-                    "last_tick_at": None,
-                    "last_mark": None,
-                }
-                return
-        contract = ibkr_market_data_contract_from_resolved(resolved)
-        if getattr(contract, "secType", "").upper() == "CFD":
-            contract.secType = "STK"
-            contract.conId = getattr(resolved, "market_data_con_id", None) or 0
+        stk_con_id = stk_mark_con_id_from_resolved(resolved)
+        if stk_con_id is None:
+            stk_con_id = stk_mark_con_id_from_catalog(leg.symbol, self._catalog)
+        exchange = (
+            getattr(leg, "exchange", None)
+            or getattr(resolved, "exchange", None)
+            or "SMART"
+        )
+        currency = (
+            getattr(leg, "currency", None)
+            or getattr(resolved, "currency", None)
+            or "USD"
+        )
+        contract = ibkr_stk_mark_contract(
+            leg.symbol,
+            con_id=stk_con_id,
+            exchange=exchange,
+            currency=currency,
+        )
         stashed = self._qualified_md.pop(
             (account_id, trade_id, getattr(leg, "symbol", "")), None
         )
@@ -692,8 +731,10 @@ class LivePnlService:
         # Check if contract is already subscribed
         if c_key in self._contract_reqs:
             existing_req_id = self._contract_reqs[c_key]
-            self._by_req[existing_req_id] = (account_id, trade_id, leg.symbol)
-            self._listeners_by_req.setdefault(existing_req_id, set()).add((account_id, trade_id, leg.symbol))
+            self._attach_listeners(
+                existing_req_id,
+                {(account_id, trade_id, leg.symbol)},
+            )
             logger.info(
                 "LivePnl reuse subscription: req_id=%s account_id=%s trade_id=%s symbol=%s",
                 existing_req_id,

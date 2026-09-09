@@ -13,7 +13,9 @@ from app.instruments.resolver import (
     apply_size_increment,
     attach_resolved,
     ibkr_contract_from_resolved,
+    ibkr_stk_mark_contract,
     resolve_leg,
+    stk_mark_con_id_from_catalog,
 )
 from app.oms.coordinator import BasketCoordinator
 from app.oms.ibkr_adapter import IBKRExecutionAdapter
@@ -347,6 +349,46 @@ def test_demo_cfd_uses_catalog_conid_when_present(monkeypatch: pytest.MonkeyPatc
     assert contract.conId == 888888
 
 
+def test_stk_mark_con_id_from_catalog_uses_distinct_cfd_market_data_conid() -> None:
+    catalog = InMemoryInstrumentCatalog(
+        [
+            InstrumentRecord(
+                symbol="PAVE",
+                sec_type="CFD",
+                trade_conid=481698423,
+                market_data_conid=268960148,
+                exchange="SMART",
+                currency="USD",
+                multiplier=Decimal(1),
+            )
+        ]
+    )
+    assert stk_mark_con_id_from_catalog("PAVE", catalog) == 268960148
+
+
+def test_stk_mark_con_id_from_catalog_ignores_cfd_when_mark_equals_trade() -> None:
+    catalog = InMemoryInstrumentCatalog(
+        [
+            InstrumentRecord(
+                symbol="XLE",
+                sec_type="CFD",
+                trade_conid=777777,
+                market_data_conid=777777,
+                exchange="SMART",
+                currency="USD",
+                multiplier=Decimal(1),
+            )
+        ]
+    )
+    assert stk_mark_con_id_from_catalog("XLE", catalog) is None
+
+
+def test_ibkr_stk_mark_contract_never_sets_cfd_conid() -> None:
+    contract = ibkr_stk_mark_contract("PAVE", con_id=None)
+    assert contract.secType == "STK"
+    assert getattr(contract, "conId", 0) in (0, None)
+
+
 def test_ibkr_market_data_contract_prefers_market_data_conid() -> None:
     from app.instruments.models import ResolvedInstrument
     from app.instruments.resolver import ibkr_market_data_contract_from_resolved
@@ -409,6 +451,8 @@ def test_pnl_subscribes_cfd_with_conid_from_catalog(monkeypatch: pytest.MonkeyPa
     contract = client.reqMktData.call_args.args[1]
     assert contract.secType == "STK"
     assert contract.symbol == "XLE"
+    assert getattr(contract, "conId", 0) in (0, None)
+    assert getattr(contract, "conId", 0) != 777777
 
 
 def test_pnl_subscribes_cfd_under_demo_override(monkeypatch: pytest.MonkeyPatch) -> None:

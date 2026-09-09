@@ -39,6 +39,20 @@ from app.rms.models import OrderSide as RMSOrderSide
 
 logger = logging.getLogger(__name__)
 
+
+def _kill_switch_order_trade_ids(trade_id: str) -> tuple[str, ...]:
+    """Order rows for a flatten basket use ``KILLSWITCH-{trade_id}`` as trade_id."""
+    if trade_id.startswith("KILLSWITCH-"):
+        return (trade_id,)
+    return (trade_id, f"KILLSWITCH-{trade_id}")
+
+
+def _is_kill_switch_close_order(order: Any) -> bool:
+    internal_id = order.internal_order_id or ""
+    if getattr(order, "is_compensation", False) or ":UNWIND:" in internal_id:
+        return False
+    return "KILLSWITCH-" in internal_id or ":CLOSE" in internal_id
+
 # In-memory cache of accounts blocked from opening new positions. This is a
 # read cache only -- kill_switch_operations is authoritative, and the cache is
 # rebuilt from it on startup. Never mutate this set directly: use
@@ -485,67 +499,94 @@ class KillSwitchService:
                     res = await baskets_coord.execute(close_intent, rms_pass, order_type="MARKET")
                     success = getattr(res, "success", False)
                     orders = getattr(res, "orders", [])
-
-                    if success and orders:
-                        from app.oms.models import OMSOrderStatus
-                        fill_orders = [o for o in orders if not getattr(o, "is_compensation", False)]
-                        is_fully_filled = bool(fill_orders) and all(
-                            getattr(o, "status", None) == OMSOrderStatus.FILLED for o in fill_orders
+                    if orders:
+                        await self._persist_flatten_close_if_filled(
+                            account_id, pos.trade_id, orders
                         )
-
-                        if is_fully_filled:
-                            async with self._session_factory() as session, session.begin():
-                                pos_repo = PositionRepository(session)
-                                p_row = await pos_repo.get_open_by_trade_id(pos.trade_id, account_id=account_id)
-                                if p_row is not None:
-                                    from app.services.model_blue.persistence import (
-                                        _commission_from_orders,
-                                        _exit_marks_from_orders,
-                                        _filled_qty_by_symbol,
-                                        assert_close_qty_matches_open,
-                                    )
-                                    exit_marks = _exit_marks_from_orders(fill_orders)
-                                    comm = _commission_from_orders(fill_orders)
-                                    assert_close_qty_matches_open(
-                                        trade_id=pos.trade_id,
-                                        leg_a_symbol=p_row.leg_a_symbol,
-                                        leg_a_signed_qty=p_row.leg_a_signed_qty,
-                                        leg_b_symbol=p_row.leg_b_symbol,
-                                        leg_b_signed_qty=p_row.leg_b_signed_qty,
-                                        filled_by_symbol=_filled_qty_by_symbol(fill_orders),
-                                    )
-                                    await pos_repo.close_trade(
-                                        pos.trade_id,
-                                        account_id=account_id,
-                                        exit_marks=exit_marks,
-                                        commission=comm,
-                                    )
-                                    from app.db.repositories.event_repository import (
-                                        EventRepository,
-                                    )
-                                    await EventRepository(session).append(
-                                        process="position",
-                                        kind="POSITION_CLOSE",
-                                        detail={
-                                            "account_id": account_id,
-                                            "trade_id": pos.trade_id,
-                                            "source": "KILL_SWITCH",
-                                        },
-                                        idempotency_key=f"position_close:kill_switch:{account_id}:{pos.trade_id}",
-                                    )
-                                    logger.info(
-                                        "Kill Switch persisted position close: account_id=%d trade_id=%s",
-                                        account_id,
-                                        pos.trade_id,
-                                    )
-                                    live = getattr(self._order_manager, "_live_pnl", None)
-                                    if live is not None:
-                                        live.unwatch(account_id, pos.trade_id)
                     return success
                 except Exception:
                     logger.exception("Failed to execute position reduction for trade_id=%s", pos.trade_id)
                     return False
             return True
+
+    async def _persist_flatten_close_if_filled(
+        self,
+        account_id: int,
+        trade_id: str,
+        orders: list[Any],
+    ) -> bool:
+        """Close the ledger when summed remainder-retry fills match open size.
+
+        An ERROR/REJECTED original child does not block POSITION_CLOSE if retry
+        fills cover both legs. Compensation / UNWIND children are ignored.
+        """
+        from app.db.repositories.event_repository import EventRepository
+        from app.services.model_blue.persistence import (
+            _commission_from_orders,
+            _exit_marks_from_orders,
+            close_fills_match_open,
+        )
+
+        fill_orders = [o for o in orders if not getattr(o, "is_compensation", False)]
+        if not fill_orders:
+            return False
+
+        async with self._session_factory() as session, session.begin():
+            pos_repo = PositionRepository(session)
+            p_row = await pos_repo.get_open_by_trade_id(trade_id, account_id=account_id)
+            if p_row is None:
+                return False
+            if not close_fills_match_open(
+                trade_id=trade_id,
+                leg_a_symbol=p_row.leg_a_symbol,
+                leg_a_signed_qty=p_row.leg_a_signed_qty,
+                leg_b_symbol=p_row.leg_b_symbol,
+                leg_b_signed_qty=p_row.leg_b_signed_qty,
+                orders=fill_orders,
+            ):
+                logger.warning(
+                    "Kill Switch skip persist close: fill qty does not match open "
+                    "account_id=%s trade_id=%s",
+                    account_id,
+                    trade_id,
+                )
+                return False
+            exit_marks = _exit_marks_from_orders(fill_orders)
+            needed = [s for s in (p_row.leg_a_symbol, p_row.leg_b_symbol) if s]
+            if any(symbol not in exit_marks for symbol in needed):
+                logger.warning(
+                    "INCOMPLETE_EXIT_MARKS: skip KS persist close trade_id=%s missing=%s",
+                    trade_id,
+                    [s for s in needed if s not in exit_marks],
+                )
+                return False
+            comm = _commission_from_orders(fill_orders)
+            await pos_repo.close_trade(
+                trade_id,
+                account_id=account_id,
+                exit_marks=exit_marks,
+                commission=comm,
+            )
+            await EventRepository(session).append(
+                process="position",
+                kind="POSITION_CLOSE",
+                detail={
+                    "account_id": account_id,
+                    "trade_id": trade_id,
+                    "source": "KILL_SWITCH",
+                },
+                idempotency_key=f"position_close:kill_switch:{account_id}:{trade_id}",
+            )
+            logger.info(
+                "Kill Switch persisted position close: account_id=%d trade_id=%s",
+                account_id,
+                trade_id,
+            )
+
+        live = getattr(self._order_manager, "_live_pnl", None)
+        if live is not None:
+            live.unwatch(account_id, trade_id)
+        return True
 
     async def _reconcile_and_finalize(
         self, operation_id: UUID, account_id: int, results: list[Any]
@@ -560,16 +601,16 @@ class KillSwitchService:
             account_open = [p for p in open_positions if p.account_id == account_id]
 
             for pos in account_open:
-                pos_orders = await order_repo.list_by_trade_id(pos.trade_id)
-                close_orders = [
-                    o for o in pos_orders
-                    if (
-                        "KILLSWITCH-" in (o.internal_order_id or "")
-                        or ":CLOSE" in (o.internal_order_id or "")
-                    )
-                    and not getattr(o, "is_compensation", False)
-                    and ":UNWIND:" not in (o.internal_order_id or "")
-                ]
+                pos_orders: list[Any] = []
+                seen_oids: set[str] = set()
+                for tid in _kill_switch_order_trade_ids(pos.trade_id):
+                    for row in await order_repo.list_by_trade_id(tid):
+                        key = row.internal_order_id or str(row.id)
+                        if key in seen_oids:
+                            continue
+                        seen_oids.add(key)
+                        pos_orders.append(row)
+                close_orders = [o for o in pos_orders if _is_kill_switch_close_order(o)]
                 if close_orders:
                     filled_close = [o for o in close_orders if o.status == "FILLED"]
                     req_legs = 2 if pos.leg_b_symbol else 1

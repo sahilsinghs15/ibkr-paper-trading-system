@@ -107,6 +107,7 @@ This list is an inventory of test modules, not a claim about line coverage.
 ```bash
 .venv/bin/python scripts/load_test_mft_burst.py --count 150 --audit
 .venv/bin/python scripts/prune_webhook_captures.py --days 14 --apply
+.venv/bin/python scripts/repair_historical_killswitch_positions.py --account-id 7
 ```
 
 The load-test script replaces the earlier `scratch/stress_webhook_150.py` and `scratch/stress_webhook_300.py`, both of which were deleted. The pytest burst-stress modules above cover the same ground in-process.

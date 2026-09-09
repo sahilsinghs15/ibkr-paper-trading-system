@@ -160,7 +160,8 @@ There is **no** MockBroker class and **no** `BROKER_MODE` switch in `Settings`. 
 
 `LivePnlService` (`services/pnl.py`):
 
-- Subscribes IBKR market data for open legs via `TWSClient.reqMktData`
+- Subscribes IBKR **STK** market data for open legs via `TWSClient.reqMktData` (execution stays CFD; marks never use the CFD `trade_conid`)
+- Deduplicates by underlying STK contract; `on_reroute_mkt_data` attaches listeners when IBKR reroutes onto an already-watched underlying
 - Mark = last → mid(bid/ask) → close; never uses entry as mark
 - Persists `positions.live_pnl` with coalescing: at most one in-flight write per trade, minimum 1s between successful persists for the same `(account_id, trade_id)`, skips DB write when pnl is unchanged; first mark may persist immediately after hydrate
 - Hydrate on startup after TWS connect
@@ -172,9 +173,9 @@ There is **no** MockBroker class and **no** `BROKER_MODE` switch in `Settings`. 
 `RiskExitMonitor` (`services/risk_exit_monitor.py`) — 2s asyncio loop, same start/stop pattern as `PositionReconciler`. Wired in `main.py` lifespan as `app.state.risk_exit_monitor`.
 
 - Pair: `positions.target` / `stop` / `time_limit` / units vs `LivePnlService` PnL (editable in-flight). Requires `positions.exit_automation_enabled`. Actuator: `SinglePairCloseService.close_pair`.
-- Account: session PnL = `SUM(realised_pnl)` of pairs closed since current RTH open + fresh unrealized. Requires `accounts.account_risk_enabled`. Actuator: `KillSwitchService.initiate_square_off(requested_by="auto_risk")` (stays armed until operator clear).
+- Account: session PnL = `SUM(realised_pnl)` of pairs closed since current RTH open + open unrealized (fresh in-memory tick when available, else last-known `positions.live_pnl`). Requires `accounts.account_risk_enabled`. Actuator: `KillSwitchService.initiate_square_off(requested_by="auto_risk")` (stays armed until operator clear).
 - Units: `ABSOLUTE` (signed PnL level) or `PERCENT` (signed fraction of pair entry gross notional / `accounts.total_margin`). Stop fires at `pnl <= stop` (e.g. −100). Target fires at `pnl >= target` (e.g. −10 or 0). NULL disables that side.
-- Gates: `RISK_EXIT_MONITOR_ENABLED`, RTH, TWS connected, PnL freshness, in-flight dedupe, bounded retries. `RISK_EXIT_SHADOW_MODE` logs `PAIR_EXIT_TRIGGERED` / `ACCOUNT_RISK_BREACH` without orders.
+- Gates: `RISK_EXIT_MONITOR_ENABLED`, RTH, TWS connected, in-flight dedupe, bounded retries. Pair stop/target require fresh marks (time-limit may still fire on stale). Account daily stop uses last-known unrealized with persisted fallback. `RISK_EXIT_SHADOW_MODE` logs `PAIR_EXIT_TRIGGERED` / `ACCOUNT_RISK_BREACH` without orders.
 
 ## Hard invariants for agents
 

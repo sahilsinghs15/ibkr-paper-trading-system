@@ -1,5 +1,6 @@
 """RiskExitMonitor gates, precedence, shadow mode, retries, and session PnL."""
 
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -145,6 +146,7 @@ def _position(**overrides):
         "leg_b_signed_qty": Decimal(-10),
         "leg_b_entry_mark": Decimal(100),
         "exit_automation_enabled": True,
+        "live_pnl": Decimal(0),
     }
     data.update(overrides)
     return SimpleNamespace(**data)
@@ -285,6 +287,32 @@ async def test_stale_pnl_skips_pair_stop(repo_patches) -> None:
     )
     await mon.run_once()
     assert closer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_account_stop_fires_with_stale_pair_fallback(
+    repo_patches, caplog
+) -> None:
+    pos_fresh = _position(trade_id="T1", live_pnl=Decimal("-50"))
+    pos_stale = _position(trade_id="T2", live_pnl=Decimal("-50"))
+    repo_patches["open_rows"] = [pos_fresh, pos_stale]
+    repo_patches["realised"] = {1: Decimal(0)}
+    closer = FakeCloser()
+    ks = FakeKillSwitch()
+    mon = _monitor(
+        accounts=[_account(account_risk_enabled=True, daily_stop=Decimal(0))],
+        allocations=[],
+        live=FakeLive({(1, "T1"): _fresh_snap(Decimal("-80"))}),
+        closer=closer,
+        ks=ks,
+    )
+    with caplog.at_level(logging.WARNING):
+        await mon.run_once()
+    assert ks.initiated == [(1, "auto_risk")]
+    assert ks.flattened == ["op-1"]
+    assert any(e["kind"] == "ACCOUNT_RISK_BREACH" for e in repo_patches["events"])
+    assert "persisted live_pnl fallbacks" in caplog.text
+    assert "T2=-50" in caplog.text
 
 
 @pytest.mark.asyncio

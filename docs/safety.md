@@ -29,7 +29,7 @@ HTTP 202 `accepted` is **not** a fill confirmation. Check `signal_jobs.status` f
 
 `execute_stk_as_cfd` defaults to `True`. TradingView sends STK; submit maps to IBKR CFD. The raw / persisted signal instrument type stays STK; executed `secType` is logged at resolve time. Disable with `EXECUTE_STK_AS_CFD=false` (legacy env `PAPER_EXECUTE_STK_AS_CFD` is still accepted). This is production Model Blue, not a paper/demo map.
 
-When a symbol has no row in `instruments`, the trading app **best-effort** discovers IBKR CFD `conId` via `reqContractDetails` on the same TWS socket (before OPEN resolve and on startup `hydrate_live_pnl`). Unique matches are upserted; ambiguous or missing matches keep the no-conId path. Live PnL subscribes **CFD** market data with `conId` when available (no STK mark fallback).
+When a symbol has no row in `instruments`, the trading app **best-effort** discovers IBKR CFD `conId` via `reqContractDetails` on the same TWS socket (before OPEN resolve and on startup `hydrate_live_pnl`). Unique matches are upserted; ambiguous or missing matches keep the no-conId path. Live PnL marks use **STK** underlying quotes (`ibkr_stk_mark_contract`); execution remains CFD.
 
 Offline operator CLI (use client id **99** so it does not clash with uvicorn):
 

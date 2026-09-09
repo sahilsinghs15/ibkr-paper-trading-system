@@ -248,11 +248,9 @@ def _leg_payload(
         filled = _dec(entry_order.fill_qty)
     else:
         filled = _qty(signed_qty)
-    live_pnl = (
-        _dec(_quantize_pnl(position.live_pnl))
-        if position.risk_state == RISK_OPEN
-        else None
-    )
+    live_pnl = None
+    if position.risk_state == RISK_OPEN and position.live_pnl != Decimal(0):
+        live_pnl = _dec(_quantize_pnl(position.live_pnl))
     realized_pnl = (
         _dec(position.realised_pnl)
         if (position.risk_state == RISK_CLOSED or position.realised_pnl != Decimal(0))

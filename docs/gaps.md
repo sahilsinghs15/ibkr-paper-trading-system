@@ -17,7 +17,7 @@ This file lists things agents must **not** claim are implemented. Items appear h
 | Dashboard config API (accounts / allocations / limits CRUD) | **Implemented** at `/api/v1/config/*` on trading app; proxied from `:8010`. Does **not** bind accounts to Gateways |
 | Kill switch / flatten-all | **Partial** — HTTP API exists (`POST .../square-off`, clear, status); see [`backend-kill-switch.md`](backend-kill-switch.md). Dashboard UX may not expose all controls — verify frontend before claiming UI. |
 | `IBKRExecutionScheduler` / `OrderSubmitPacer` | **Removed** — replaced by `GatewayRateLimiter` |
-| Risk-engine auto exit on target / stop / time_limit | **Implemented** — `RiskExitMonitor` 2s loop. Pair stop/target/time_limit from `positions` (editable in-flight); arm flag is `positions.exit_automation_enabled`. Account daily stop/target from `accounts` vs session PnL (realized since RTH open + fresh unrealized). Off by default (`RISK_EXIT_MONITOR_ENABLED`, per-row flags). Open Positions popup can set/change a pair's stop/target. See [`backend-execution.md`](backend-execution.md) |
+| Risk-engine auto exit on target / stop / time_limit | **Implemented** — `RiskExitMonitor` 2s loop. Pair stop/target/time_limit from `positions` (editable in-flight); arm flag is `positions.exit_automation_enabled`. Account daily stop/target from `accounts` vs session PnL (realized since RTH open + open unrealized: fresh tick or last-known `positions.live_pnl`). Off by default (`RISK_EXIT_MONITOR_ENABLED`, per-row flags). Open Positions popup can set/change a pair's stop/target. See [`backend-execution.md`](backend-execution.md) |
 | Redis hot margin / locks / health for trading | Redis only in `demo_streaming`. Live headroom is an in-process snapshot + running tally on `RMSContext` (same property as `symbol_exposures`); `margin_rates` / `margin_settings` are durable |
 | `signal_legs` table | Not created |
 | Dedicated IBKR reconciler engine as described | **Partial** — in-process `PositionReconciler` snapshots IBKR lines to `broker_positions`, diffs vs OPEN `positions`, logs to `event_log` / `position_reconcile_runs`. Dashboard at `/account/:ibkrAccount/reconcile` via `GET /api/v1/reconcile/positions`; per-row broker flatten via `POST /api/v1/reconcile/positions/flatten` (no ledger repair, no kill switch) |
@@ -46,8 +46,10 @@ This file lists things agents must **not** claim are implemented. Items appear h
 
 ## Live PnL / market data (residual)
 
-- CFD `conId` discovery and upsert are implemented; Live PnL subscribes CFD contracts with `conId` when known.
-- IBKR paper may still not stream CFD ticks even with a valid `conId`; there is **no** STK-underlying mark fallback in code.
+- Execution stays CFD; Live PnL marks subscribe **STK** underlying quotes via `ibkr_stk_mark_contract` (never the CFD `trade_conid`).
+- Shared-symbol pairs reuse one STK subscription; `on_reroute_mkt_data` attaches listeners when the underlying is already watched.
+- Unmarked OPEN rows still show `NO MARK` in the dashboard (`live_pnl == 0` is not treated as a real figure).
+- IBKR entitlement / delayed-data gaps may still block ticks for some symbols.
 
 ## Multi-gateway / rate limiting (target, not as-is)
 

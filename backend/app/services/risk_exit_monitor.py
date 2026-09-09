@@ -225,15 +225,7 @@ class RiskExitMonitor:
             if not getattr(account, "account_risk_enabled", False):
                 continue
             positions = by_account.get(account_id, [])
-            session_pnl, stale = self._session_pnl(
-                account_id, positions, now_mono
-            )
-            if stale:
-                logger.debug(
-                    "Risk-exit skip account_id=%s: stale pair marks",
-                    account_id,
-                )
-                continue
+            session_pnl = self._session_pnl(account_id, positions, now_mono)
             async with self._session_factory() as session:
                 realised = await PositionRepository(session).sum_realised_closed_since(
                     account_id=account_id, since=session_open_utc
@@ -309,21 +301,33 @@ class RiskExitMonitor:
 
     def _session_pnl(
         self, account_id: int, positions: list, now_mono: float
-    ) -> tuple[Decimal, bool]:
-        """Sum fresh unrealized PnL. Returns (sum, any_stale)."""
+    ) -> Decimal:
+        """Sum unrealized PnL: fresh ticks when available, else positions.live_pnl."""
         total = ZERO
         if not positions:
-            return total, False
+            return total
+        fallbacks: list[tuple[str, Decimal]] = []
         for pos in positions:
             snapshot = None
             if self._live_pnl is not None:
                 getter = getattr(self._live_pnl, "get_pair_pnl", None)
                 if callable(getter):
                     snapshot = getter(account_id, pos.trade_id)
-            if not self._snapshot_fresh(snapshot, now_mono):
-                return ZERO, True
-            total += snapshot.pnl
-        return total, False
+            if self._snapshot_fresh(snapshot, now_mono):
+                total += snapshot.pnl
+                continue
+            live_pnl = getattr(pos, "live_pnl", None)
+            pnl = ZERO if live_pnl is None else Decimal(str(live_pnl))
+            total += pnl
+            fallbacks.append((pos.trade_id, pnl))
+        if fallbacks:
+            logger.warning(
+                "Risk-exit account_id=%s session PnL using persisted live_pnl "
+                "fallbacks: %s",
+                account_id,
+                ", ".join(f"{trade_id}={pnl}" for trade_id, pnl in fallbacks),
+            )
+        return total
 
     async def _handle_account_breach(
         self,
