@@ -426,6 +426,53 @@ def test_13_reroute_mkt_data_req_subscribes_underlying() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Test 13b — Reroute attaches listeners when underlying STK already subscribed
+# ---------------------------------------------------------------------------
+def test_13b_reroute_reuses_existing_underlying_subscription() -> None:
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+    client.reqMarketDataType = MagicMock()
+
+    factory = MagicMock()
+    svc = LivePnlService(factory, client)
+
+    underlying_con_id = 268960148
+    existing_req = 50001
+    trade_a = "MBG-AMEX:FDN-CBOE:PAVE-20260904T1520"
+    trade_b = "MBG-CBOE:PAVE-NASDAQ:SMH-20260909T1240"
+    c_key = ("STK", "PAVE", "SMART", "USD", underlying_con_id)
+    svc._contract_reqs[c_key] = existing_req
+    svc._req_to_contract[existing_req] = c_key
+    listener_a = (7, trade_a, "PAVE")
+    svc._listeners_by_req[existing_req] = {listener_a}
+    svc._legs[(7, trade_a)] = {
+        "PAVE": (Decimal(26), Decimal("54.67")),
+        "FDN": (Decimal(-100), Decimal("10")),
+    }
+    svc._marks[(7, trade_a, "PAVE")] = Decimal("54.50")
+
+    intent_b = _make_intent(trade_b, account_id=7, symbols=["PAVE", "SMH"])
+    svc.watch_open(intent_b)
+
+    b_pave_req = next(
+        rid
+        for rid, mapped in svc._by_req.items()
+        if mapped == (7, trade_b, "PAVE")
+    )
+    calls_before_reroute = client.reqMktData.call_count
+
+    svc.on_reroute_mkt_data(b_pave_req, underlying_con_id, "SMART")
+
+    assert client.reqMktData.call_count == calls_before_reroute
+    listener_b = (7, trade_b, "PAVE")
+    assert listener_b in svc._listeners_by_req[existing_req]
+    assert svc._marks.get((7, trade_b, "PAVE")) == Decimal("54.50")
+
+    svc.on_tick_price(existing_req, 4, 54.55)
+    assert svc._marks.get((7, trade_b, "PAVE")) == Decimal("54.55")
+
+
+# ---------------------------------------------------------------------------
 # Test 14 — Pre-resolved CFD leg overrides to STK for market-data subscription
 # ---------------------------------------------------------------------------
 def test_14_preresolved_cfd_leg_overrides_to_stk_for_market_data() -> None:
@@ -576,3 +623,38 @@ async def test_persist_follow_up_after_min_interval_on_new_pnl() -> None:
 def test_worker_pool_idle_poll_interval_default() -> None:
     pool = ExecutionWorkerPool(MagicMock(), MagicMock())
     assert pool._idle_poll_interval_sec == 0.5
+
+
+def test_hydrate_seeds_last_persisted_pnl_not_fresh() -> None:
+    """Hydrate seeds DB live_pnl without marking the pair fresh for pair stop."""
+    from types import SimpleNamespace
+
+    from app.services.risk_exit_monitor import RiskExitMonitor
+
+    client = MagicMock()
+    client.reqMktData = MagicMock()
+    svc = LivePnlService(MagicMock(), client)
+    row = SimpleNamespace(
+        account_id=7,
+        trade_id="T-HYD-1",
+        strategy_id="model_blue",
+        leg_a_symbol="PAVE",
+        leg_a_signed_qty=Decimal(26),
+        leg_a_entry_mark=Decimal("54.67"),
+        leg_b_symbol="SMH",
+        leg_b_signed_qty=Decimal(-10),
+        leg_b_entry_mark=Decimal("300"),
+        leg_a_instrument_type="STK",
+        leg_b_instrument_type="STK",
+        live_pnl=Decimal("-42.50"),
+    )
+    svc.hydrate_from_position_rows([row])
+    trade_key = (7, "T-HYD-1")
+    assert svc._last_persisted_pnl[trade_key] == Decimal("-42.50")
+    snap = svc.get_pair_pnl(7, "T-HYD-1")
+    assert snap is not None
+    assert snap.pnl == Decimal("-42.50")
+    assert snap.updated_at_mono == 0.0
+    assert snap.all_legs_marked is False
+    mon = RiskExitMonitor(MagicMock(), enabled=False)
+    assert mon._snapshot_fresh(snap, 1_000_000.0) is False

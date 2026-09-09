@@ -250,3 +250,239 @@ async def test_kill_switch_rejected_close_leaves_position_open(
         assert op_row is not None
         assert op_row.status == KILL_SWITCH_STATUS_UNRESOLVED
         assert op_row.unresolved_count == 1
+
+
+@pytest.mark.asyncio
+async def test_kill_switch_remainder_retry_fills_close_ledger(
+    session_factory: async_sessionmaker[AsyncSession],
+):
+    """ERROR original child + FILLED remainder retries must persist POSITION_CLOSE."""
+    test_id = uuid4().hex[:6]
+    ibkr_acc = f"DU{test_id}"
+    trade_id = f"MBG-IYR-PBW-RETRY-{test_id}"
+
+    async with session_factory() as session, session.begin():
+        acc = AccountModel(name="KSRetryAcc", ibkr_account=ibkr_acc, total_margin=Decimal("100000.00"))
+        session.add(acc)
+        await session.flush()
+        acc_id = acc.id
+
+        trade = OpenModelBlueTrade(
+            trade_id=trade_id,
+            strategy_id="model_blue",
+            direction=1,
+            legs=(
+                OpenModelBlueTradeLeg(
+                    symbol="IYR",
+                    instrument_type="STK",
+                    side=OrderSide.BUY,
+                    quantity=Decimal("10.00"),
+                    price=Decimal("101.02"),
+                ),
+                OpenModelBlueTradeLeg(
+                    symbol="PBW",
+                    instrument_type="STK",
+                    side=OrderSide.SELL,
+                    quantity=Decimal("45.00"),
+                    price=Decimal("31.64"),
+                ),
+            ),
+        )
+        await PositionRepository(session).open_trade(
+            trade, account_id=acc_id, target=Decimal("0.05"), stop=Decimal("0.02"), time_limit=60
+        )
+
+    close_intent = OrderIntent(
+        signal_id=f"KILLSWITCH-{trade_id}",
+        strategy_id="model_blue",
+        action=OrderAction.CLOSE,
+        legs=[
+            OrderLeg(symbol="IYR", side=RMSOrderSide.SELL, quantity=10.0, price=Decimal(0), leg_index=0),
+            OrderLeg(symbol="PBW", side=RMSOrderSide.BUY, quantity=45.0, price=Decimal(0), leg_index=1),
+        ],
+        account_id=acc_id,
+    )
+    failed = OMSOrder(
+        internal_order_id=f"ORD-7-KILLSWITCH-{trade_id}-L0",
+        intent=close_intent,
+        leg_index=0,
+        symbol="IYR",
+        side=RMSOrderSide.SELL,
+        quantity=10.0,
+        status=OMSOrderStatus.ERROR,
+        filled_quantity=0.0,
+    )
+    retry_iyr = OMSOrder(
+        internal_order_id=f"ORD-7-KILLSWITCH-{trade_id}:RETRY:L0:1",
+        intent=close_intent,
+        leg_index=0,
+        symbol="IYR",
+        side=RMSOrderSide.SELL,
+        quantity=10.0,
+        status=OMSOrderStatus.FILLED,
+        filled_quantity=10.0,
+        average_fill_price=Decimal("101.04"),
+    )
+    retry_pbw = OMSOrder(
+        internal_order_id=f"ORD-7-KILLSWITCH-{trade_id}:RETRY:L1:1",
+        intent=close_intent,
+        leg_index=1,
+        symbol="PBW",
+        side=RMSOrderSide.BUY,
+        quantity=45.0,
+        status=OMSOrderStatus.FILLED,
+        filled_quantity=45.0,
+        average_fill_price=Decimal("31.64"),
+    )
+
+    mock_baskets = MagicMock()
+    mock_baskets.execute = AsyncMock(
+        return_value=ExecutionResult(
+            order=failed,
+            orders=[failed, retry_iyr, retry_pbw],
+            rms_result=MagicMock(),
+            success=True,
+        )
+    )
+    mock_baskets._event = AsyncMock()
+
+    mock_om = MagicMock()
+    mock_om._baskets = mock_baskets
+    mock_om._resolve_instruments = AsyncMock(side_effect=lambda intent: intent)
+    mock_om._live_pnl = MagicMock()
+    mock_om._live_pnl.unwatch = MagicMock()
+
+    svc = KillSwitchService(session_factory=session_factory, order_manager=mock_om)
+    op, created = await svc.initiate_square_off(account_id=acc_id)
+    assert created is True
+    await svc._execute_flatten_operation(op.operation_id)
+
+    async with session_factory() as session:
+        pos = await PositionRepository(session).get_by_trade_id(trade_id, account_id=acc_id)
+        assert pos is not None
+        assert pos.risk_state == RISK_STATE_CLOSED
+        assert pos.closed_at is not None
+        assert pos.realised_pnl == Decimal("0.20")
+
+        op_row = await session.get(KillSwitchOperationModel, op.operation_id)
+        assert op_row is not None
+        assert op_row.status == KILL_SWITCH_STATUS_COMPLETE
+        assert op_row.unresolved_count == 0
+
+    mock_om._live_pnl.unwatch.assert_called_once_with(acc_id, trade_id)
+
+
+@pytest.mark.asyncio
+async def test_kill_switch_reconcile_finds_killswitch_prefixed_trade_id(
+    session_factory: async_sessionmaker[AsyncSession],
+):
+    """Tier-2 reconcile must load close orders stored as KILLSWITCH-{trade_id}."""
+    test_id = uuid4().hex[:6]
+    ibkr_acc = f"DU{test_id}"
+    trade_id = f"MBG-IYR-PBW-KSID-{test_id}"
+    ks_trade_id = f"KILLSWITCH-{trade_id}"
+
+    async with session_factory() as session, session.begin():
+        acc = AccountModel(name="KSIdAcc", ibkr_account=ibkr_acc, total_margin=Decimal("100000.00"))
+        session.add(acc)
+        await session.flush()
+        acc_id = acc.id
+
+        sig = SignalModel(
+            signal_id=ks_trade_id,
+            strategy_id="model_blue",
+            action="CLOSE",
+            pair="IYR-PBW",
+            side="SELL",
+            ref_price_a=Decimal("101.02"),
+            ref_price_b=Decimal("31.64"),
+            status="ACCEPTED",
+            raw_payload={"trade_id": trade_id},
+        )
+        session.add(sig)
+        await session.flush()
+
+        session.add(
+            PositionModel(
+                trade_id=trade_id,
+                strategy_id="model_blue",
+                account_id=acc_id,
+                leg_a_symbol="IYR",
+                leg_a_signed_qty=Decimal("10.00"),
+                leg_a_entry_mark=Decimal("101.02"),
+                leg_b_symbol="PBW",
+                leg_b_signed_qty=Decimal("-45.00"),
+                leg_b_entry_mark=Decimal("31.65"),
+                target=Decimal("0.05"),
+                stop=Decimal("0.02"),
+                time_limit=60,
+                risk_state=RISK_STATE_OPEN,
+                closed_at=None,
+            )
+        )
+        session.add_all(
+            [
+                OrderModel(
+                    signal_id=sig.id,
+                    account_id=acc_id,
+                    strategy_id="model_blue",
+                    leg="L0",
+                    symbol="IYR",
+                    ibkr_contract="CFD",
+                    buy_sell="SELL",
+                    quantity=Decimal("10.00"),
+                    limit_price=Decimal(0),
+                    status="ERROR",
+                    trade_id=ks_trade_id,
+                    internal_order_id=f"ORD-7-{ks_trade_id}-L0",
+                    fill_qty=Decimal(0),
+                ),
+                OrderModel(
+                    signal_id=sig.id,
+                    account_id=acc_id,
+                    strategy_id="model_blue",
+                    leg="L0",
+                    symbol="IYR",
+                    ibkr_contract="CFD",
+                    buy_sell="SELL",
+                    quantity=Decimal("10.00"),
+                    limit_price=Decimal(0),
+                    status="FILLED",
+                    trade_id=ks_trade_id,
+                    internal_order_id=f"ORD-7-{ks_trade_id}:RETRY:L0:1",
+                    fill_price=Decimal("101.04"),
+                    fill_qty=Decimal("10.00"),
+                ),
+                OrderModel(
+                    signal_id=sig.id,
+                    account_id=acc_id,
+                    strategy_id="model_blue",
+                    leg="L1",
+                    symbol="PBW",
+                    ibkr_contract="CFD",
+                    buy_sell="BUY",
+                    quantity=Decimal("45.00"),
+                    limit_price=Decimal(0),
+                    status="FILLED",
+                    trade_id=ks_trade_id,
+                    internal_order_id=f"ORD-7-{ks_trade_id}:RETRY:L1:1",
+                    fill_price=Decimal("31.64"),
+                    fill_qty=Decimal("45.00"),
+                ),
+            ]
+        )
+
+    svc = KillSwitchService(session_factory=session_factory)
+    op, _created = await svc.initiate_square_off(account_id=acc_id)
+    await svc._execute_flatten_operation(op.operation_id)
+
+    async with session_factory() as session:
+        pos = await PositionRepository(session).get_by_trade_id(trade_id, account_id=acc_id)
+        assert pos is not None
+        assert pos.risk_state == RISK_STATE_CLOSED
+        assert pos.closed_at is not None
+
+        op_row = await session.get(KillSwitchOperationModel, op.operation_id)
+        assert op_row is not None
+        assert op_row.status == KILL_SWITCH_STATUS_COMPLETE
+        assert op_row.unresolved_count == 0

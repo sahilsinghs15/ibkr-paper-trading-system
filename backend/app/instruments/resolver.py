@@ -82,6 +82,64 @@ def ibkr_market_data_contract_from_resolved(resolved: ResolvedInstrument):
     return contract
 
 
+def ibkr_stk_mark_contract(
+    symbol: str,
+    *,
+    con_id: int | None = None,
+    exchange: str = _DEFAULT_STK_EXCHANGE,
+    currency: str = _DEFAULT_STK_CURRENCY,
+):
+    """Build an ibapi STK contract for Live PnL marks. Never applies STK→CFD."""
+    from ibapi.contract import Contract  # type: ignore[import-untyped]
+
+    contract = Contract()
+    contract.symbol = symbol.strip().upper()
+    contract.secType = "STK"
+    contract.exchange = exchange or _DEFAULT_STK_EXCHANGE
+    contract.currency = currency or _DEFAULT_STK_CURRENCY
+    resolved_con = _optional_con_id(con_id)
+    if resolved_con is not None:
+        contract.conId = resolved_con
+    return contract
+
+
+def stk_mark_con_id_from_catalog(
+    symbol: str,
+    catalog: InstrumentCatalog | None,
+) -> int | None:
+    """Return STK underlying conId for Live PnL, or None for symbol-only STK.
+
+    Prefer a catalog STK row. For CFD rows, use market_data_conid only when it
+    differs from trade_conid (otherwise it is the CFD id, not the STK underlying).
+    """
+    if catalog is None:
+        return None
+    symbol_clean = symbol.strip().upper()
+    stk_rows = list(catalog.find_all(symbol_clean, "STK"))
+    if len(stk_rows) == 1:
+        row = stk_rows[0]
+        return _optional_con_id(row.market_data_conid) or _optional_con_id(row.trade_conid)
+    cfd_rows = list(catalog.find_all(symbol_clean, "CFD"))
+    if len(cfd_rows) == 1:
+        row = cfd_rows[0]
+        md = _optional_con_id(row.market_data_conid)
+        trade = _optional_con_id(row.trade_conid)
+        if md is not None and md != trade:
+            return md
+    return None
+
+
+def stk_mark_con_id_from_resolved(resolved: object | None) -> int | None:
+    """STK conId from a pre-resolved leg when distinct from the CFD trade conId."""
+    if resolved is None:
+        return None
+    md = _optional_con_id(getattr(resolved, "market_data_con_id", None))
+    trade = _optional_con_id(getattr(resolved, "con_id", None))
+    if md is not None and md != trade:
+        return md
+    return None
+
+
 class InstrumentCatalog(Protocol):
     """Lookup instruments by symbol and IBKR sec_type. Does not invent rows."""
 

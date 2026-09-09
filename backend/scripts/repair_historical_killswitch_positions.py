@@ -1,10 +1,18 @@
 """One-time administrative repair script for historical Kill Switch stale positions."""
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import logging
+import sys
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
+
+_backend_dir = str(Path(__file__).resolve().parents[1])
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
