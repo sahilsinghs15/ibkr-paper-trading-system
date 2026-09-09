@@ -86,10 +86,12 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
         params.append('ibkr_account', cleanFilter)
       }
       const url = `/demo/closed-positions/csv${params.toString() ? `?${params.toString()}` : ''}`
+      const token = localStorage.getItem('ibkr_trading_jwt_token')
       const response = await fetch(url, {
         method: 'GET',
         headers: {
           Accept: 'text/csv',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       })
       if (!response.ok) {
