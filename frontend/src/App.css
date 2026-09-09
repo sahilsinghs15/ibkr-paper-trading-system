@@ -2257,6 +2257,26 @@ thead th {
   color: #d4a017;
 }
 
+.settings-page-feedback {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-page-feedback.ok {
+  color: var(--green);
+  background: rgba(62, 207, 142, 0.12);
+  border: 1px solid rgba(62, 207, 142, 0.35);
+}
+
+.settings-page-feedback.err {
+  color: var(--red);
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
 .settings-card tbody td {
   padding: 6px 8px;
   vertical-align: middle;

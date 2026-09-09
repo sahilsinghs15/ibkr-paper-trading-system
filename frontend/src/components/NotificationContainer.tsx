@@ -26,11 +26,11 @@ function NotificationToastCard({
   onClose: () => void
 }) {
   const typeClass =
-    toast.kind === 'SERVICE_STARTED'
+    toast.kind === 'SERVICE_STARTED' || toast.kind === 'SUCCESS'
       ? 'toast-start'
-      : toast.kind === 'SERVICE_STOPPED'
-      ? 'toast-stop'
-      : 'toast-holiday'
+      : toast.kind === 'SERVICE_STOPPED' || toast.kind === 'ERROR'
+        ? 'toast-stop'
+        : 'toast-holiday'
 
   return (
     <div className={`toast-card ${typeClass}`} role="alert">

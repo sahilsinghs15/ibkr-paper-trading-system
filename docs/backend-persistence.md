@@ -8,7 +8,7 @@
 |-------|-------|------|
 | `signals` | `SignalModel` | `db/models/signal.py` |
 | `signal_jobs` | `SignalJobModel` | `db/models/signal.py` (not exported in `__init__.py`) |
-| `accounts` | `AccountModel` | `db/models/account.py` | `id`, `name`, `ibkr_account`, `total_margin`, `enabled`. **No** gateway host/port/clientId. `total_margin` is an operator-entered **market-value budget** (trading capital), not IBKR margin available. Daily risk: `daily_target` / `daily_stop` (nullable, 0 disables), `daily_target_unit` / `daily_stop_unit` (`ABSOLUTE` \| `PERCENT`), `account_risk_enabled` (default false). |
+| `accounts` | `AccountModel` | `db/models/account.py` | `id`, `name`, `ibkr_account`, `total_margin`, `enabled`. **No** gateway host/port/clientId. `total_margin` is an operator-entered **market-value budget** (trading capital), not IBKR margin available. Daily risk: `daily_target` / `daily_stop` (nullable disables that side; 0 is breakeven), `daily_target_unit` / `daily_stop_unit` (`ABSOLUTE` \| `PERCENT`), `account_risk_enabled` (default false) is the on/off switch. |
 | `strategies` | `StrategyModel` | `db/models/strategy.py` |
 | `allocations` | `AllocationModel` | `db/models/strategy.py` | Includes `pair_max_allocation_pct` (`Numeric(9,6)`, `(0, 1]`, default 0.10) — fraction of the model allocation used as one pair's market-value budget. Exit knobs: `target` / `stop` / `time_limit`, `target_unit` / `stop_unit` (`ABSOLUTE` \| `PERCENT`), `exit_automation_enabled` (default false). Copied onto `positions` at OPEN (units + automation flag included). Allocation flag edits also propagate to currently OPEN rows of that account+strategy. |
 | `per_symbol_limits` | `PerSymbolLimitModel` | `db/models/account.py` |

@@ -171,3 +171,19 @@ def test_account_null_thresholds_disabled() -> None:
     params = _account(daily_target=None, daily_stop=None)
     assert evaluate_account_risk(params, session_pnl=Decimal(-99999)) is None
     assert evaluate_account_risk(params, session_pnl=Decimal(99999)) is None
+
+
+def test_account_zero_is_breakeven_not_disabled() -> None:
+    stop_only = _account(daily_stop=Decimal(0), daily_target=None)
+    hit = evaluate_account_risk(stop_only, session_pnl=Decimal(0))
+    assert hit is not None
+    assert hit.reason == REASON_ACCOUNT_STOP
+    assert hit.threshold == Decimal(0)
+    assert evaluate_account_risk(stop_only, session_pnl=Decimal("0.01")) is None
+
+    target_only = _account(daily_stop=None, daily_target=Decimal(0))
+    hit = evaluate_account_risk(target_only, session_pnl=Decimal(0))
+    assert hit is not None
+    assert hit.reason == REASON_ACCOUNT_TARGET
+    assert hit.threshold == Decimal(0)
+    assert evaluate_account_risk(target_only, session_pnl=Decimal("-0.01")) is None

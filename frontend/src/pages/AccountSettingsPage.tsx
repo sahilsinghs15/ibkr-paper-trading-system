@@ -20,6 +20,7 @@ import { StartAgainModal } from '../components/StartAgainModal'
 import { usePnlStore } from '../store/pnlStore'
 import type { ExecutionSettings, MarginSettings } from '../types/config'
 import { normalizeIbkrAccount } from '../utils/activeAccount'
+import { showFeedbackToast } from '../utils/feedbackToast'
 import {
   cleanNumberInput,
   displayStrategy,
@@ -125,11 +126,14 @@ function ExecutionSettingsCard() {
       setDraft(saved)
       setMessage('Auto square-off settings saved.')
       setLocalError(null)
+      showFeedbackToast('success', 'Settings saved', 'Auto square-off settings saved.')
       void queryClient.invalidateQueries({ queryKey: ['config', 'execution'] })
     },
     onError: (err: unknown) => {
-      setLocalError(extractError(err))
+      const text = extractError(err)
+      setLocalError(text)
       setMessage(null)
+      showFeedbackToast('error', 'Save failed', text)
     },
   })
 
@@ -242,7 +246,7 @@ function ExecutionSettingsCard() {
                 disabled={mutation.isPending}
                 onClick={() => mutation.mutate()}
               >
-                Save
+                {mutation.isPending ? 'Saving…' : 'Save'}
               </button>
             </div>
             <p className="field-hint" style={{ marginTop: 8 }}>
@@ -295,11 +299,14 @@ function MarginSettingsCard() {
       setDraft(saved)
       setMessage('Margin policy saved.')
       setLocalError(null)
+      showFeedbackToast('success', 'Settings saved', 'Margin policy saved.')
       void queryClient.invalidateQueries({ queryKey: ['config', 'margin'] })
     },
     onError: (err) => {
-      setLocalError(extractError(err))
+      const text = extractError(err)
+      setLocalError(text)
       setMessage(null)
+      showFeedbackToast('error', 'Save failed', text)
     },
   })
 
@@ -415,7 +422,7 @@ function MarginSettingsCard() {
                 disabled={mutation.isPending}
                 onClick={() => mutation.mutate()}
               >
-                Save
+                {mutation.isPending ? 'Saving…' : 'Save'}
               </button>
             </div>
           </>
@@ -537,12 +544,15 @@ export function AccountSettingsPage() {
     onSuccess: () => {
       setMessage('Account configuration saved.')
       setLocalError(null)
+      showFeedbackToast('success', 'Settings saved', 'Account configuration saved.')
       void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
       void queryClient.invalidateQueries({ queryKey: ['config', 'accounts'] })
     },
     onError: (err: unknown) => {
-      setLocalError(extractError(err))
+      const text = extractError(err)
+      setLocalError(text)
       setMessage(null)
+      showFeedbackToast('error', 'Save failed', text)
     },
   })
 
@@ -563,12 +573,15 @@ export function AccountSettingsPage() {
     onSuccess: () => {
       setMessage('Strategy allocation saved.')
       setLocalError(null)
+      showFeedbackToast('success', 'Settings saved', 'Strategy allocation saved.')
       void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
       void queryClient.invalidateQueries({ queryKey: ['config', 'accounts'] })
     },
     onError: (err: unknown) => {
-      setLocalError(extractError(err))
+      const text = extractError(err)
+      setLocalError(text)
       setMessage(null)
+      showFeedbackToast('error', 'Save failed', text)
     },
   })
 
@@ -582,11 +595,14 @@ export function AccountSettingsPage() {
       setNewLimit('')
       setMessage('Symbol limit saved.')
       setLocalError(null)
+      showFeedbackToast('success', 'Settings saved', 'Symbol limit saved.')
       void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
     },
     onError: (err: unknown) => {
-      setLocalError(extractError(err))
+      const text = extractError(err)
+      setLocalError(text)
       setMessage(null)
+      showFeedbackToast('error', 'Save failed', text)
     },
   })
 
@@ -598,11 +614,14 @@ export function AccountSettingsPage() {
     onSuccess: () => {
       setMessage('Symbol limit removed.')
       setLocalError(null)
+      showFeedbackToast('success', 'Settings saved', 'Symbol limit removed.')
       void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
     },
     onError: (err: unknown) => {
-      setLocalError(extractError(err))
+      const text = extractError(err)
+      setLocalError(text)
       setMessage(null)
+      showFeedbackToast('error', 'Save failed', text)
     },
   })
 
@@ -618,12 +637,15 @@ export function AccountSettingsPage() {
     onSuccess: () => {
       setMessage('Default symbol limit saved.')
       setLocalError(null)
+      showFeedbackToast('success', 'Settings saved', 'Default symbol limit saved.')
       void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
       void queryClient.invalidateQueries({ queryKey: ['config', 'accounts'] })
     },
     onError: (err: unknown) => {
-      setLocalError(extractError(err))
+      const text = extractError(err)
+      setLocalError(text)
       setMessage(null)
+      showFeedbackToast('error', 'Save failed', text)
     },
   })
 
@@ -685,6 +707,17 @@ export function AccountSettingsPage() {
           </Link>
         </div>
       </header>
+
+      {message ? (
+        <p className="settings-page-feedback ok" role="status">
+          {message}
+        </p>
+      ) : null}
+      {localError ? (
+        <p className="settings-page-feedback err" role="alert">
+          {localError}
+        </p>
+      ) : null}
 
       {isLoading ? <p className="empty">Loading configuration for {cleanAccount}…</p> : null}
       {isError ? (
@@ -756,6 +789,8 @@ export function AccountSettingsPage() {
                 <p className="field-hint">
                   Session PnL (realized today + open unrealized) vs daily target / stop.
                   Breach arms the kill switch and blocks new opens until cleared.
+                  0 is breakeven (stop at ≤ $0, target at ≥ $0). Use the switch
+                  above to turn this off — 0 does not disable a threshold.
                 </p>
                 <div className="settings-grid">
                   <label className="field">
@@ -803,7 +838,6 @@ export function AccountSettingsPage() {
                         <option value="PERCENT">% of capital</option>
                       </select>
                     </div>
-                    <span className="field-hint">0 disables that threshold</span>
                   </label>
                 </div>
 
@@ -814,7 +848,7 @@ export function AccountSettingsPage() {
                     disabled={accountMutation.isPending}
                     onClick={() => accountMutation.mutate()}
                   >
-                    Save Changes
+                    {accountMutation.isPending ? 'Saving…' : 'Save Changes'}
                   </button>
                 </div>
               </div>
@@ -1037,7 +1071,7 @@ export function AccountSettingsPage() {
                           disabled={allocationMutation.isPending}
                           onClick={() => allocationMutation.mutate({ id: a.id, draft })}
                         >
-                          Save Allocation
+                          {allocationMutation.isPending ? 'Saving…' : 'Save Allocation'}
                         </button>
                       </div>
                     </div>
@@ -1240,9 +1274,6 @@ export function AccountSettingsPage() {
         </div>
       ) : null}
 
-      {message ? <p className="settings-msg ok">{message}</p> : null}
-      {localError ? <p className="settings-msg err">{localError}</p> : null}
-
       {account ? (
         <>
           <KillSwitchModal
@@ -1252,8 +1283,10 @@ export function AccountSettingsPage() {
             openCount={accountOpenPositionsCount}
             onClose={() => setIsKillSwitchOpen(false)}
             onSuccess={(closedCount) => {
-              setMessage(`Kill Switch executed: squared off ${closedCount} position(s).`)
+              const text = `Kill Switch executed: squared off ${closedCount} position(s).`
+              setMessage(text)
               setLocalError(null)
+              showFeedbackToast('success', 'Kill switch executed', text)
               void queryClient.invalidateQueries({ queryKey: ['config', 'kill-switch', account.id] })
               void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
             }}
@@ -1264,8 +1297,11 @@ export function AccountSettingsPage() {
             ibkrAccount={account.ibkr_account}
             onClose={() => setIsStartAgainOpen(false)}
             onSuccess={() => {
-              setMessage(`Account execution state changed back to ACTIVE. Account is allowed to receive trading signals again.`)
+              const text =
+                'Account execution state changed back to ACTIVE. Account is allowed to receive trading signals again.'
+              setMessage(text)
               setLocalError(null)
+              showFeedbackToast('success', 'Account restarted', text)
               void queryClient.invalidateQueries({ queryKey: ['config', 'kill-switch', account.id] })
               void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
               void queryClient.invalidateQueries({ queryKey: ['config', 'accounts'] })

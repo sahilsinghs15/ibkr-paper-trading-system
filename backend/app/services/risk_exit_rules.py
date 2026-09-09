@@ -71,16 +71,21 @@ def resolve_threshold(
     unit: str,
     *,
     basis: Decimal,
+    zero_disables: bool = True,
 ) -> Decimal | None:
-    """Convert a stored magnitude into a positive currency amount.
+    """Convert a stored magnitude into a currency amount.
 
-    NULL or 0 disables. PERCENT is a fraction of ``basis`` in (0, 1].
+    NULL disables. Negative values are rejected. When ``zero_disables`` is
+    true (pair thresholds), 0 also disables. Account daily stop/target keep
+    0 as breakeven. PERCENT is a fraction of ``basis`` in [0, 1].
     Returns None when the threshold is disabled or cannot be resolved.
     """
     if magnitude is None:
         return None
     value = Decimal(str(magnitude))
-    if value <= ZERO:
+    if value < ZERO:
+        return None
+    if value == ZERO and zero_disables:
         return None
     normalized = (unit or EXIT_UNIT_ABSOLUTE).upper()
     if normalized == EXIT_UNIT_ABSOLUTE:
@@ -135,9 +140,16 @@ def evaluate_account_risk(
     *,
     session_pnl: Decimal,
 ) -> ExitDecision | None:
-    """Return ACCOUNT_STOP / ACCOUNT_TARGET, or None. Stop is checked first."""
+    """Return ACCOUNT_STOP / ACCOUNT_TARGET, or None. Stop is checked first.
+
+    NULL disables a side. 0 is breakeven (stop at ``pnl <= 0``, target at
+    ``pnl >= 0``). The account_risk_enabled flag is the on/off switch.
+    """
     stop_amt = resolve_threshold(
-        params.daily_stop, params.daily_stop_unit, basis=params.total_margin
+        params.daily_stop,
+        params.daily_stop_unit,
+        basis=params.total_margin,
+        zero_disables=False,
     )
     if stop_amt is not None and session_pnl <= -stop_amt:
         return ExitDecision(
@@ -145,7 +157,10 @@ def evaluate_account_risk(
         )
 
     target_amt = resolve_threshold(
-        params.daily_target, params.daily_target_unit, basis=params.total_margin
+        params.daily_target,
+        params.daily_target_unit,
+        basis=params.total_margin,
+        zero_disables=False,
     )
     if target_amt is not None and session_pnl >= target_amt:
         return ExitDecision(

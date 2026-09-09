@@ -1,5 +1,6 @@
 export type AllowedService = 'ibgateway' | 'trading-backend' | 'webhook-ingest' | 'demo-streaming'
 export type SystemEventKind = 'SERVICE_STARTED' | 'SERVICE_STOPPED' | 'MARKET_CLOSED'
+export type ToastKind = SystemEventKind | 'SUCCESS' | 'ERROR'
 
 export interface SystemEventDetail {
   service?: string
@@ -50,7 +51,7 @@ export interface NotificationFeedResponse {
 export interface ToastNotification {
   id: string
   eventId: number
-  kind: SystemEventKind
+  kind: ToastKind
   icon: string
   title: string
   message: string
