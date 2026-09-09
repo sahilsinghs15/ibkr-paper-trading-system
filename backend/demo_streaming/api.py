@@ -252,6 +252,8 @@ def create_demo_app(
         pnl_svc = getattr(app.state, "live_pnl_service", None)
         if pnl_svc is not None and hasattr(pnl_svc, "get_market_data_health"):
             return JSONResponse(pnl_svc.get_market_data_health())
+        return JSONResponse({"status": "unavailable", "detail": "LivePnlService not initialized"})
+
     @app.get("/demo/system-events")
     async def get_system_events(
         request: Request,

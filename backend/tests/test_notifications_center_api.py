@@ -119,6 +119,13 @@ async def test_notifications_api_flow(monkeypatch):
         )
         await session.commit()
 
+    assert ev1 is not None and ev2 is not None and ev3 is not None and ev4 is not None and ev5 is not None
+    ev1_id: int = int(ev1.id)
+    ev2_id: int = int(ev2.id)
+    ev3_id: int = int(ev3.id)
+    ev4_id: int = int(ev4.id)
+    ev5_id: int = int(ev5.id)
+
     token = create_access_token({"sub": str(user.id)})
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -132,37 +139,37 @@ async def test_notifications_api_flow(monkeypatch):
         item_ids = [it["id"] for it in items]
 
         # Verify filtering: approved ev1, ev2, ev3 present; ev4 and ev5 excluded
-        assert ev1.id in item_ids
-        assert ev2.id in item_ids
-        assert ev3.id in item_ids
-        assert ev4.id not in item_ids
-        assert ev5.id not in item_ids
+        assert ev1_id in item_ids
+        assert ev2_id in item_ids
+        assert ev3_id in item_ids
+        assert ev4_id not in item_ids
+        assert ev5_id not in item_ids
 
         # Verify canonical mapping and fields
-        item_ev1 = next(it for it in items if it["id"] == ev1.id)
+        item_ev1 = next(it for it in items if it["id"] == ev1_id)
         assert item_ev1["title"] == "Broker connection started"
         assert item_ev1["icon"] == "🟢"
         assert item_ev1["is_read"] is False
 
-        item_ev2 = next(it for it in items if it["id"] == ev2.id)
+        item_ev2 = next(it for it in items if it["id"] == ev2_id)
         assert item_ev2["title"] == "Market data display stopped"
         assert item_ev2["icon"] == "🔴"
         assert item_ev2["is_read"] is False
 
-        item_ev3 = next(it for it in items if it["id"] == ev3.id)
+        item_ev3 = next(it for it in items if it["id"] == ev3_id)
         assert item_ev3["title"] == "Market closed — New Year's Day"
         assert item_ev3["icon"] == "📅"
         assert item_ev3["is_read"] is False
 
         # Step 2: Mark single notification read (ev2)
-        res_read = await client.post(f"/demo/notifications/{ev2.id}/read", headers=headers)
+        res_read = await client.post(f"/demo/notifications/{ev2_id}/read", headers=headers)
         assert res_read.status_code == 200
         assert res_read.json()["ok"] is True
 
         # Verify read status
         res_after = await client.get("/demo/notifications", headers=headers)
         data_after = res_after.json()
-        item_ev2_after = next(it for it in data_after["items"] if it["id"] == ev2.id)
+        item_ev2_after = next(it for it in data_after["items"] if it["id"] == ev2_id)
         assert item_ev2_after["is_read"] is True
 
         # Step 3: Mark all as read
@@ -174,22 +181,22 @@ async def test_notifications_api_flow(monkeypatch):
         data_final = res_final.json()
         assert data_final["unread_count"] == 0
         for it in data_final["items"]:
-            if it["id"] in (ev1.id, ev2.id, ev3.id):
+            if it["id"] in (ev1_id, ev2_id, ev3_id):
                 assert it["is_read"] is True
 
         # Step 4: GET /demo/system-events returns canonical titles
-        res_sys = await client.get(f"/demo/system-events?since_id={ev1.id - 1}", headers=headers)
+        res_sys = await client.get(f"/demo/system-events?since_id={ev1_id - 1}", headers=headers)
         assert res_sys.status_code == 200
         sys_data = res_sys.json()
         sys_ids = [e["id"] for e in sys_data]
-        assert ev1.id in sys_ids
-        assert ev4.id not in sys_ids  # unauthorized service filtered out
-        assert ev5.id not in sys_ids  # non-lifecycle kind filtered out
+        assert ev1_id in sys_ids
+        assert ev4_id not in sys_ids  # unauthorized service filtered out
+        assert ev5_id not in sys_ids  # non-lifecycle kind filtered out
 
     # Cleanup test data
     async with AsyncSessionLocal() as session:
-        for ev in (ev1, ev2, ev3, ev4, ev5):
-            row = await session.get(EventLogModel, ev.id)
+        for eid in (ev1_id, ev2_id, ev3_id, ev4_id, ev5_id):
+            row = await session.get(EventLogModel, eid)
             if row:
                 await session.delete(row)
         u_row = await session.get(UserModel, user.id)
