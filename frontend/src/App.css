@@ -2668,6 +2668,71 @@ thead th {
   font-size: 12px;
 }
 
+.reconcile-rogue-filter-btn {
+  padding: 5px 12px;
+  background: rgba(220, 80, 60, 0.12);
+  color: #ff6b6b;
+  border: 1px solid rgba(220, 80, 60, 0.4);
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  transition: all 0.15s ease;
+}
+
+.reconcile-rogue-filter-btn:hover {
+  background: rgba(220, 80, 60, 0.22);
+  border-color: rgba(220, 80, 60, 0.6);
+}
+
+.reconcile-rogue-filter-btn.active {
+  background: #dc3545;
+  color: #fff;
+  border-color: #dc3545;
+  box-shadow: 0 0 10px rgba(220, 53, 69, 0.4);
+}
+
+.factory-row.factory-row-rogue {
+  background: rgba(245, 158, 11, 0.08) !important;
+  border-left: 3px solid #f59e0b !important;
+}
+
+.rogue-badges-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.rogue-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 3px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.rogue-badge.qty-diff {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.rogue-badge.ledger-ghost {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.rogue-badge.broker-ghost {
+  background: rgba(168, 85, 247, 0.2);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.4);
+}
+
 .reconcile-loading {
   color: var(--muted);
   padding: 24px 0;

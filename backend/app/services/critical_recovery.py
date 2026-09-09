@@ -11,6 +11,7 @@ from typing import Any, Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.broker.ibkr.positions import BrokerPositionLine
 from app.core.identifiers import normalize_account
 from app.db.models.account import AccountModel
 from app.db.repositories.basket_repository import BasketRepository
@@ -276,7 +277,9 @@ class CriticalRecoveryService:
             )
             return "done"
 
-        detail = "; ".join(flatten_messages) if flatten_messages else "Broker still has qty."
+        detail = (
+            "; ".join(flatten_messages) if flatten_messages else "Broker still has qty."
+        )
         await self._mark_failed(
             account_id=account_id,
             trade_id=trade_id,
@@ -321,11 +324,10 @@ class CriticalRecoveryService:
         timed_out = False
         error: str | None = None
         try:
-            request_async = getattr(self._client, "request_positions_async", None)
+            request_async: Any = getattr(self._client, "request_positions_async", None)
             if callable(request_async):
-                broker_lines, timed_out = await request_async(
-                    timeout=POSITIONS_REQUEST_TIMEOUT_SEC
-                )
+                coro: Any = request_async(timeout=POSITIONS_REQUEST_TIMEOUT_SEC)
+                broker_lines, timed_out = await coro
             else:
                 error = "TWSClient.request_positions_async unavailable"
         except Exception as exc:
@@ -345,12 +347,16 @@ class CriticalRecoveryService:
             accounts = list(
                 (await session.execute(select(AccountModel))).scalars().all()
             )
-            ibkr_to_account = {normalize_account(acc.ibkr_account): acc.id for acc in accounts}
+            ibkr_to_account = {
+                normalize_account(acc.ibkr_account): acc.id for acc in accounts
+            }
             snapshot_rows = [
                 {
                     "ibkr_account": line.ibkr_account,
                     "con_id": line.con_id,
-                    "account_id": ibkr_to_account.get(normalize_account(line.ibkr_account)),
+                    "account_id": ibkr_to_account.get(
+                        normalize_account(line.ibkr_account)
+                    ),
                     "symbol": _norm_symbol(line.symbol),
                     "sec_type": _norm_sec_type(line.sec_type),
                     "currency": line.currency,
@@ -399,7 +405,7 @@ class CriticalRecoveryService:
                 messages.append(
                     f"con_id={leg.con_id}: {result.status} — {result.message}"
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 messages.append(f"con_id={leg.con_id}: flatten error — {exc}")
         return messages
 
@@ -428,7 +434,9 @@ class CriticalRecoveryService:
         recovery_detail: str,
     ) -> None:
         if self._coordinator is None:
-            logger.error("Critical recovery cannot clear latch: coordinator unavailable")
+            logger.error(
+                "Critical recovery cannot clear latch: coordinator unavailable"
+            )
             return
         await self._coordinator.clear_critical(
             account_id=account_id,

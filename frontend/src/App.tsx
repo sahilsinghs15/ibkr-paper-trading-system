@@ -9,6 +9,7 @@ import { PositionsPage } from './pages/PositionsPage'
 import { AccountSettingsPage } from './pages/AccountSettingsPage'
 import { SystemMonitorPage } from './pages/SystemMonitorPage'
 import { ReconcilePage } from './pages/ReconcilePage'
+import { AuditLogsPage } from './pages/AuditLogsPage'
 import { NotificationContainer } from './components/NotificationContainer'
 import { usePnlStream } from './hooks/usePnlStream'
 import { useSystemEvents } from './hooks/useSystemEvents'
@@ -70,6 +71,16 @@ function App() {
           }
         />
         <Route
+          path="/account/:ibkrAccount/audit-logs"
+          element={
+            <ProtectedRoute requireAdmin>
+              <AccountScoped>
+                <AuditLogsPage />
+              </AccountScoped>
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/account/:ibkrAccount/reconcile"
           element={
             <ProtectedRoute>
@@ -92,6 +103,14 @@ function App() {
           element={
             <ProtectedRoute requireAdmin>
               <RedirectToAccount suffix="/system-monitor" />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/audit-logs"
+          element={
+            <ProtectedRoute requireAdmin>
+              <RedirectToAccount suffix="/audit-logs" />
             </ProtectedRoute>
           }
         />

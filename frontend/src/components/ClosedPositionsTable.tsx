@@ -75,7 +75,49 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
   const [historyOrder, setHistoryOrder] = useState<'RECENT' | 'OLDER'>('RECENT')
+  const [downloadingCsv, setDownloadingCsv] = useState(false)
   const { sortKey, sortDir, handleSort } = useTableSortState()
+
+  const handleDownloadCsv = useCallback(async () => {
+    try {
+      setDownloadingCsv(true)
+      const params = new URLSearchParams()
+      if (cleanFilter) {
+        params.append('ibkr_account', cleanFilter)
+      }
+      const url = `/demo/closed-positions/csv${params.toString() ? `?${params.toString()}` : ''}`
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Accept: 'text/csv',
+        },
+      })
+      if (!response.ok) {
+        throw new Error(`CSV export failed: ${response.statusText}`)
+      }
+      const blob = await response.blob()
+      let filename = 'closed_trades.csv'
+      const disposition = response.headers.get('Content-Disposition')
+      if (disposition && disposition.includes('filename=')) {
+        const match = disposition.match(/filename="?([^"]+)"?/)
+        if (match && match[1]) {
+          filename = match[1]
+        }
+      }
+      const downloadUrl = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = downloadUrl
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.URL.revokeObjectURL(downloadUrl)
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Failed to download CSV')
+    } finally {
+      setDownloadingCsv(false)
+    }
+  }, [cleanFilter])
 
   const filteredClosed = useMemo(() => {
     if (!cleanFilter) return closed
@@ -116,24 +158,37 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
           <span className="factory-subtitle">MODEL BLUE X-SERIES · HISTORICAL TRADES</span>
         </div>
 
-        {/* Recent vs Older Filter Toggle */}
-        <div className="history-filter-toggle">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <button
             type="button"
-            className={`history-filter-btn ${historyOrder === 'RECENT' ? 'active' : ''}`}
-            onClick={() => setHistoryOrder('RECENT')}
-            title="Show most recent closed trades first (Closed Time DESC)"
+            className="history-filter-btn"
+            onClick={handleDownloadCsv}
+            disabled={downloadingCsv}
+            title="Download full closed trades dataset as CSV (all matching records)"
+            style={{ color: 'var(--ink)', fontWeight: 600 }}
           >
-            RECENT (NEWEST FIRST)
+            {downloadingCsv ? 'Downloading…' : '⬇ Download CSV'}
           </button>
-          <button
-            type="button"
-            className={`history-filter-btn ${historyOrder === 'OLDER' ? 'active' : ''}`}
-            onClick={() => setHistoryOrder('OLDER')}
-            title="Show older historical trades chronologically (Closed Time ASC)"
-          >
-            OLDER (CHRONOLOGICAL)
-          </button>
+
+          {/* Recent vs Older Filter Toggle */}
+          <div className="history-filter-toggle">
+            <button
+              type="button"
+              className={`history-filter-btn ${historyOrder === 'RECENT' ? 'active' : ''}`}
+              onClick={() => setHistoryOrder('RECENT')}
+              title="Show most recent closed trades first (Closed Time DESC)"
+            >
+              RECENT (NEWEST FIRST)
+            </button>
+            <button
+              type="button"
+              className={`history-filter-btn ${historyOrder === 'OLDER' ? 'active' : ''}`}
+              onClick={() => setHistoryOrder('OLDER')}
+              title="Show older historical trades chronologically (Closed Time ASC)"
+            >
+              OLDER (CHRONOLOGICAL)
+            </button>
+          </div>
         </div>
       </div>
 

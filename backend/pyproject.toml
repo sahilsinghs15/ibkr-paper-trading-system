@@ -41,7 +41,7 @@ include = ["app*", "demo_streaming*"]
 demo_streaming = ["static/*"]
 
 [tool.ruff.lint]
-ignore = ["B008"]
+ignore = ["B008", "UP017"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,10 +1,12 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { fetchReconcilePositions } from '../api/reconcileApi'
 import { ClosePairModal } from './ClosePairModal'
 import { PairDetailModal } from './PairDetailModal'
 import { SortableTh } from './SortableTh'
 import { groupLegs, usePnlStore } from '../store/pnlStore'
 import type { ClosePairResponse } from '../types/config'
 import type { PositionLeg } from '../types/position'
+import type { ReconcileDiffRow } from '../types/reconcile'
 import {
   calcAgeDays,
   calcRMultiple,
@@ -92,7 +94,65 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
   const [pairToClose, setPairToClose] = useState<PairToClose | null>(null)
   const [pairToInspect, setPairToInspect] = useState<PairToInspect | null>(null)
   const [closeMessage, setCloseMessage] = useState<string | null>(null)
+  const [reconcileDiffs, setReconcileDiffs] = useState<ReconcileDiffRow[]>([])
   const { sortKey, sortDir, handleSort } = useTableSortState()
+
+  useEffect(() => {
+    let mounted = true
+    const poll = async () => {
+      try {
+        const res = await fetchReconcilePositions(cleanFilter || undefined)
+        if (mounted && res?.diffs) {
+          setReconcileDiffs(res.diffs)
+        }
+      } catch {
+        // Suppress background poll errors
+      }
+    }
+    void poll()
+    const timer = setInterval(() => {
+      void poll()
+    }, 30000)
+    return () => {
+      mounted = false
+      clearInterval(timer)
+    }
+  }, [cleanFilter])
+
+  const getPairRogueTypes = useCallback(
+    (legs: PositionLeg[]): string[] => {
+      if (!legs.length || !reconcileDiffs.length) return []
+      const head = legs[0]
+      const pairAcc = (head.ibkr_account || cleanFilter || '').trim().toUpperCase()
+      const pairSymbols = new Set(
+        legs.map((l) => (l.symbol || '').trim().toUpperCase()).filter(Boolean)
+      )
+
+      const types = new Set<string>()
+      for (const diff of reconcileDiffs) {
+        if (!['QTY_DRIFT', 'LEDGER_GHOST', 'BROKER_ORPHAN'].includes(diff.kind)) {
+          continue
+        }
+        const diffAcc = (diff.ibkr_account || '').trim().toUpperCase()
+        if (diffAcc && pairAcc && diffAcc !== pairAcc) {
+          continue
+        }
+        if (diff.account_id !== null && head.account_id !== undefined && head.account_id !== null) {
+          if (Number(diff.account_id) !== Number(head.account_id)) {
+            continue
+          }
+        }
+        const diffSym = (diff.symbol || '').trim().toUpperCase()
+        if (pairSymbols.has(diffSym)) {
+          if (diff.kind === 'QTY_DRIFT') types.add('QTY DIFF')
+          else if (diff.kind === 'LEDGER_GHOST') types.add('LEDGER GHOST')
+          else if (diff.kind === 'BROKER_ORPHAN') types.add('BROKER GHOST')
+        }
+      }
+      return Array.from(types)
+    },
+    [reconcileDiffs, cleanFilter],
+  )
 
   const filteredActive = useMemo(() => {
     if (!cleanFilter) return active
@@ -221,10 +281,13 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                   })
                 }
 
+                const rogueTypes = getPairRogueTypes(legs)
+                const isRogue = rogueTypes.length > 0
+
                 return (
                   <tr
                     key={tk}
-                    className="factory-row factory-row-clickable"
+                    className={`factory-row factory-row-clickable ${isRogue ? 'factory-row-rogue' : ''}`}
                     role="button"
                     tabIndex={0}
                     onClick={openDetail}
@@ -262,6 +325,27 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                         <span className="badge-pair leg-a">{legA.symbol || '—'}</span>
                         <span className="badge-pair leg-b">{legB.symbol || '—'}</span>
                       </div>
+                      {isRogue && (
+                        <div className="rogue-badges-box">
+                          {rogueTypes.map((t) => {
+                            const badgeCls =
+                              t === 'QTY DIFF'
+                                ? 'qty-diff'
+                                : t === 'LEDGER GHOST'
+                                ? 'ledger-ghost'
+                                : 'broker-ghost'
+                            return (
+                              <span
+                                key={t}
+                                className={`rogue-badge ${badgeCls}`}
+                                title={`Rogue trade condition: ${t}`}
+                              >
+                                {t}
+                              </span>
+                            )
+                          })}
+                        </div>
+                      )}
                     </td>
 
                     {/* 5. EXPOSURE BALANCE */}

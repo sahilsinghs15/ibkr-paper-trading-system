@@ -5,7 +5,11 @@ Shared across Telegram notifications and Frontend Notification Center.
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 CANONICAL_SERVICES: dict[str, dict[str, Any]] = {
     "ibgateway": {
@@ -35,7 +39,15 @@ CANONICAL_SERVICES: dict[str, dict[str, Any]] = {
 }
 
 ALLOWED_SERVICES = frozenset(CANONICAL_SERVICES.keys())
-ALLOWED_KINDS = frozenset({"SERVICE_STARTED", "SERVICE_STOPPED", "MARKET_CLOSED"})
+ALLOWED_KINDS = frozenset(
+    {
+        "SERVICE_STARTED",
+        "SERVICE_STOPPED",
+        "MARKET_CLOSED",
+        "ROGUE_TRADE_DETECTED",
+        "ROGUE_TRADE_RESOLVED",
+    }
+)
 
 
 def format_canonical_notification(
@@ -82,6 +94,58 @@ def format_canonical_notification(
             "unit": None,
         }
 
+    if kind == "ROGUE_TRADE_DETECTED":
+        rogue_type = detail.get("rogue_type") or "QTY_DRIFT"
+        symbol = detail.get("symbol") or "Unknown"
+        acc = detail.get("ibkr_account") or detail.get("account_id")
+        acc_str = f" ({acc})" if acc else ""
+        type_label = {
+            "QTY_DRIFT": "Quantity Difference",
+            "BROKER_ORPHAN": "Broker Ghost",
+            "LEDGER_GHOST": "Ledger Ghost",
+        }.get(str(rogue_type), str(rogue_type))
+        title = f"Rogue trade: {type_label} on {symbol}{acc_str}"
+        # Prefer canonical message from reconciler (includes broker/ledger qty)
+        _rogue_msg: Any = detail.get("message")
+        if not _rogue_msg:
+            broker_qty = detail.get("broker_qty")
+            ledger_qty = detail.get("ledger_qty")
+            _rogue_msg = f"{title}. Broker qty: {broker_qty}, Ledger qty: {ledger_qty}"
+        rogue_msg: str = str(_rogue_msg)
+        return {
+            "icon": "🚨",
+            "title": title,
+            "message": rogue_msg,
+            "friendly_name": "Rogue trade detection",
+            "service": "reconcile",
+            "unit": "trading-backend.service",
+        }
+
+    if kind == "ROGUE_TRADE_RESOLVED":
+        symbol = detail.get("symbol") or "Unknown"
+        acc = detail.get("ibkr_account") or detail.get("account_id")
+        acc_str = f" ({acc})" if acc else ""
+        rogue_type = detail.get("rogue_type") or ""
+        title = f"Rogue trade resolved: {symbol}{acc_str}"
+        _msg2: Any = detail.get("message")
+        if _msg2:
+            msg2: str = str(_msg2)
+        else:
+            msg2 = (
+                f"🟢 ROGUE TRADE RESOLVED: {rogue_type} on {symbol} ({acc}). "
+                f"Discrepancy cleared."
+                if rogue_type
+                else f"Discrepancy for {symbol}{acc_str} has been resolved."
+            )
+        return {
+            "icon": "🟢",
+            "title": title,
+            "message": msg2,
+            "friendly_name": "Rogue trade detection",
+            "service": "reconcile",
+            "unit": "trading-backend.service",
+        }
+
     # Generic fallback
     return {
         "icon": str(detail.get("icon") or "ℹ️"),
@@ -91,3 +155,56 @@ def format_canonical_notification(
         "service": service,
         "unit": detail.get("unit"),
     }
+
+
+async def send_canonical_telegram(
+    kind: str,
+    detail: dict[str, Any] | None,
+) -> bool:
+    """Send canonical notification message to Telegram using configured bot."""
+    try:
+        token = os.environ.get("TELEGRAM_BOT_TOKEN")
+        chat = os.environ.get("TELEGRAM_CHAT_ID")
+        enabled = os.environ.get("TELEGRAM_ENABLED", "").lower() in ("true", "1", "yes")
+
+        if not (token and chat and enabled):
+            try:
+                from app.services.watchdog.config import get_watchdog_settings
+
+                settings = get_watchdog_settings()
+                if settings is not None and getattr(
+                    settings, "telegram_enabled", False
+                ):
+                    token = getattr(settings, "telegram_bot_token", token)
+                    chat = getattr(settings, "telegram_chat_id", chat)
+                    enabled = True
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Failed loading watchdog settings for telegram: %s", exc)
+
+        if not (enabled and token and chat):
+            return False
+
+        formatted = format_canonical_notification(kind, detail)
+        title = formatted.get("title") or kind
+        msg = formatted.get("message")
+        icon = formatted.get("icon", "ℹ️")
+
+        if msg and msg != title:
+            text = f"{icon} <b>{title}</b>\n{msg}"
+        else:
+            text = f"{icon} <b>{title}</b>"
+
+        from app.services.watchdog.telegram import TelegramClient
+
+        client = TelegramClient(
+            bot_token=token,
+            chat_id=chat,
+            timeout=5.0,
+            max_retries=1,
+            rate_limit_per_sec=1.0,
+            enabled=True,
+        )
+        return await client.send_message(text)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("send_canonical_telegram failed: %s", exc)
+        return False

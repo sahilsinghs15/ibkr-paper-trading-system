@@ -1,6 +1,7 @@
 """Integration tests for GET /api/v1/reconcile/positions."""
 
 from collections.abc import Generator
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -22,8 +23,12 @@ def client() -> Generator[TestClient, None, None]:
             "app.broker.ibkr.tws_client.TWSClient.is_connected",
             return_value=False,
         ),
-        patch("app.services.worker_pool.ExecutionWorkerPool.start", new_callable=AsyncMock),
-        patch("app.services.worker_pool.ExecutionWorkerPool.stop", new_callable=AsyncMock),
+        patch(
+            "app.services.worker_pool.ExecutionWorkerPool.start", new_callable=AsyncMock
+        ),
+        patch(
+            "app.services.worker_pool.ExecutionWorkerPool.stop", new_callable=AsyncMock
+        ),
         patch(
             "app.services.position_reconciler.PositionReconciler.start",
             new_callable=AsyncMock,
@@ -62,7 +67,8 @@ def test_reconcile_positions_unfiltered_returns_schema(client: TestClient) -> No
 
 
 def test_reconcile_positions_refresh_triggers_run_once(client: TestClient) -> None:
-    reconciler = client.app.state.position_reconciler
+    app_obj: Any = client.app
+    reconciler = app_obj.state.position_reconciler
     with patch.object(reconciler, "run_once", new_callable=AsyncMock) as run_once:
         response = client.get("/api/v1/reconcile/positions", params={"refresh": "true"})
         assert response.status_code == 200, response.text
@@ -70,8 +76,11 @@ def test_reconcile_positions_refresh_triggers_run_once(client: TestClient) -> No
         run_once.assert_awaited_once()
 
 
-def test_reconcile_positions_default_does_not_trigger_run_once(client: TestClient) -> None:
-    reconciler = client.app.state.position_reconciler
+def test_reconcile_positions_default_does_not_trigger_run_once(
+    client: TestClient,
+) -> None:
+    app_obj: Any = client.app
+    reconciler = app_obj.state.position_reconciler
     with patch.object(reconciler, "run_once", new_callable=AsyncMock) as run_once:
         response = client.get("/api/v1/reconcile/positions")
         assert response.status_code == 200, response.text

@@ -46,6 +46,14 @@ export function AppNav() {
           System Monitor
         </NavLink>
       )}
+      {user?.role === 'admin' && (
+        <NavLink
+          to={effectiveAccount ? `${accountHome}/audit-logs` : '/accounts'}
+          className={({ isActive }) => (effectiveAccount && isActive ? 'on' : undefined)}
+        >
+          Audit Logs
+        </NavLink>
+      )}
     </nav>
   )
 }

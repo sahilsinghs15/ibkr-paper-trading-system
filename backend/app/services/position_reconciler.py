@@ -6,13 +6,19 @@ import asyncio
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
+
+try:
+    from datetime import UTC  # Python 3.11+
+except ImportError:  # pragma: no cover
+    UTC = timezone.utc  # type: ignore[assignment]
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.broker.ibkr.positions import BrokerPositionLine
 from app.core.identifiers import normalize_account
 from app.db.models.account import AccountModel
 from app.db.models.basket import BasketModel
@@ -22,6 +28,7 @@ from app.db.models.position import PositionModel
 from app.db.models.signal import JOB_STATUS_PROCESSING, SignalJobModel
 from app.db.repositories.broker_position_repository import BrokerPositionRepository
 from app.db.repositories.event_repository import EventRepository
+from app.services.notification_canonical import send_canonical_telegram
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +41,9 @@ MISMATCH_LEDGER_GHOST = "LEDGER_GHOST"
 MISMATCH_BROKER_ORPHAN = "BROKER_ORPHAN"
 MISMATCH_QTY_DRIFT = "QTY_DRIFT"
 MISMATCH_UNMAPPED_ACCOUNT = "UNMAPPED_ACCOUNT"
+
+# Rogue tracking key: (ibkr_account_or_id, symbol, sec_type, kind)
+RogueKey = tuple[str, str, str, str]
 
 
 @dataclass(frozen=True)
@@ -159,21 +169,29 @@ def build_ledger_net_lines(
     symbol_to_conids: dict[tuple[str, str], set[int]] = defaultdict(set)
     for inst in instruments:
         key = (_norm_symbol(inst.symbol), _norm_sec_type(inst.sec_type))
-        symbol_to_conids[key].add(int(inst.trade_conid))
+        symbol_to_conids[key].add(inst.trade_conid)
 
     nets: dict[tuple[int, str, str], Decimal] = defaultdict(lambda: Decimal(0))
 
     for row in open_rows:
         legs = [
-            (row.leg_a_symbol, getattr(row, "leg_a_instrument_type", "STK"), row.leg_a_signed_qty),
-            (row.leg_b_symbol, getattr(row, "leg_b_instrument_type", None), row.leg_b_signed_qty),
+            (
+                row.leg_a_symbol,
+                getattr(row, "leg_a_instrument_type", "STK"),
+                row.leg_a_signed_qty,
+            ),
+            (
+                row.leg_b_symbol,
+                getattr(row, "leg_b_instrument_type", None),
+                row.leg_b_signed_qty,
+            ),
         ]
         for symbol, inst_type, signed_qty in legs:
             if not symbol or signed_qty is None:
                 continue
             sec_type = _norm_sec_type(inst_type or "STK")
-            key = (row.account_id, _norm_symbol(symbol), sec_type)
-            nets[key] += Decimal(str(signed_qty))
+            net_key = (row.account_id, _norm_symbol(symbol), sec_type)
+            nets[net_key] += Decimal(str(signed_qty))
 
     result: list[LedgerNetLine] = []
     for (account_id, symbol, sec_type), qty in nets.items():
@@ -229,7 +247,9 @@ def classify_reconcile_diffs(
     if order_con_id_map is None:
         order_con_id_map = {}
 
-    broker_by_key: dict[tuple[int, str, str], list[BrokerPositionLine]] = defaultdict(list)
+    broker_by_key: dict[tuple[int, str, str], list[BrokerPositionLine]] = defaultdict(
+        list
+    )
     unmapped: list[BrokerPositionLine] = []
 
     for line in broker_lines:
@@ -265,7 +285,9 @@ def classify_reconcile_diffs(
         account_id, symbol, sec_type = key
         broker_group = broker_by_key.get(key, [])
         ledger = ledger_by_key.get(key)
-        broker_qty = sum(line.quantity for line in broker_group) if broker_group else None
+        broker_qty = (
+            sum(line.quantity for line in broker_group) if broker_group else None
+        )
         ledger_qty = float(ledger.signed_qty) if ledger is not None else None
         in_flight = account_id in in_flight_accounts
         ibkr_account = _resolve_ibkr_account(account_id, broker_group, account_to_ibkr)
@@ -361,6 +383,45 @@ class PositionReconciler:
         self._task: asyncio.Task | None = None
         self._running = False
         self._sweep_lock = asyncio.Lock()
+        self._active_rogue_keys: dict[RogueKey, dict[str, Any]] | None = None
+
+    async def _ensure_active_rogue_keys(self, repo: BrokerPositionRepository) -> None:
+        if self._active_rogue_keys is not None:
+            return
+        self._active_rogue_keys = {}
+        try:
+            latest_run = await repo.get_latest_run()
+            if latest_run and latest_run.mismatches:
+                # mismatches is list[dict] persisted from previous run
+                for m in latest_run.mismatches:  # type: ignore[attr-defined]
+                    if not isinstance(m, dict):
+                        continue
+                    kind = m.get("kind")
+                    if kind in (
+                        MISMATCH_QTY_DRIFT,
+                        MISMATCH_BROKER_ORPHAN,
+                        MISMATCH_LEDGER_GHOST,
+                    ):
+                        acc = str(m.get("ibkr_account") or m.get("account_id") or "")
+                        sym = str(m.get("symbol") or "")
+                        sec = str(m.get("sec_type") or "")
+                        key = (acc, sym, sec, str(kind))
+                        self._active_rogue_keys[key] = {
+                            "rogue_type": kind,
+                            "symbol": sym,
+                            "sec_type": sec,
+                            "con_id": m.get("con_id"),
+                            "account_id": m.get("account_id"),
+                            "ibkr_account": m.get("ibkr_account"),
+                            "broker_qty": m.get("broker_qty"),
+                            "ledger_qty": m.get("ledger_qty"),
+                            "in_flight": m.get("in_flight", False),
+                            "run_id": latest_run.id,
+                        }
+        except Exception:
+            logger.exception(
+                "Failed loading previous reconcile mismatches for active rogue tracking"
+            )
 
     async def start(self) -> None:
         if self._running:
@@ -402,7 +463,9 @@ class PositionReconciler:
     async def run_once(self) -> None:
         """Execute one reconcile sweep (skips if already running or TWS disconnected)."""
         if self._sweep_lock.locked():
-            logger.debug("Position reconcile sweep skipped: previous sweep still running")
+            logger.debug(
+                "Position reconcile sweep skipped: previous sweep still running"
+            )
             return
         async with self._sweep_lock:
             started_at = datetime.now(UTC)
@@ -414,11 +477,12 @@ class PositionReconciler:
             error: str | None = None
             broker_lines: list[BrokerPositionLine] = []
             try:
-                request_async = getattr(self._client, "request_positions_async", None)
+                request_async: Any = getattr(
+                    self._client, "request_positions_async", None
+                )
                 if callable(request_async):
-                    broker_lines, timed_out = await request_async(
-                        timeout=self._request_timeout_sec
-                    )
+                    coro: Any = request_async(timeout=self._request_timeout_sec)
+                    broker_lines, timed_out = await coro
                 else:
                     error = "TWSClient.request_positions_async unavailable"
             except Exception as exc:
@@ -431,9 +495,11 @@ class PositionReconciler:
                 timed_out=timed_out,
                 error=error,
             )
-            if callable(self._after_sweep):
+            sweep_cb: Any = self._after_sweep
+            if callable(sweep_cb):
                 try:
-                    await self._after_sweep()
+                    sweep_coro: Any = sweep_cb()
+                    await sweep_coro
                 except Exception:
                     logger.exception("Position reconcile after_sweep failed")
 
@@ -447,15 +513,21 @@ class PositionReconciler:
     ) -> None:
         finished_at = datetime.now(UTC)
         async with self._session_factory() as session, session.begin():
-            accounts = list((await session.execute(select(AccountModel))).scalars().all())
-            ibkr_to_account = {normalize_account(acc.ibkr_account): acc.id for acc in accounts}
+            accounts = list(
+                (await session.execute(select(AccountModel))).scalars().all()
+            )
+            ibkr_to_account = {
+                normalize_account(acc.ibkr_account): acc.id for acc in accounts
+            }
             account_to_ibkr = {acc.id: acc.ibkr_account for acc in accounts}
 
             snapshot_rows = [
                 {
                     "ibkr_account": line.ibkr_account,
                     "con_id": line.con_id,
-                    "account_id": ibkr_to_account.get(normalize_account(line.ibkr_account)),
+                    "account_id": ibkr_to_account.get(
+                        normalize_account(line.ibkr_account)
+                    ),
                     "symbol": _norm_symbol(line.symbol),
                     "sec_type": _norm_sec_type(line.sec_type),
                     "currency": line.currency,
@@ -474,7 +546,9 @@ class PositionReconciler:
                     await session.execute(
                         select(PositionModel).where(PositionModel.risk_state == "OPEN")
                     )
-                ).scalars().all()
+                )
+                .scalars()
+                .all()
             )
             instruments = list(
                 (await session.execute(select(InstrumentModel))).scalars().all()
@@ -491,7 +565,9 @@ class PositionReconciler:
                             .where(OrderModel.account_id.in_(account_ids))
                             .order_by(OrderModel.id)
                         )
-                    ).scalars().all()
+                    )
+                    .scalars()
+                    .all()
                 )
             order_con_id_map = build_order_con_id_map(order_rows)
 
@@ -510,8 +586,12 @@ class PositionReconciler:
             ghost_count = sum(1 for d in diffs if d.kind == MISMATCH_LEDGER_GHOST)
             orphan_count = sum(1 for d in diffs if d.kind == MISMATCH_BROKER_ORPHAN)
             drift_count = sum(1 for d in diffs if d.kind == MISMATCH_QTY_DRIFT)
-            unmapped_count = sum(1 for d in diffs if d.kind == MISMATCH_UNMAPPED_ACCOUNT)
+            unmapped_count = sum(
+                1 for d in diffs if d.kind == MISMATCH_UNMAPPED_ACCOUNT
+            )
             mismatch_payload = [d.to_dict() for d in diffs if d.kind != MISMATCH_MATCH]
+
+            await self._ensure_active_rogue_keys(repo)
 
             run_row = await repo.insert_run(
                 started_at=started_at,
@@ -527,7 +607,9 @@ class PositionReconciler:
                 mismatches=mismatch_payload,
             )
 
-            await EventRepository(session).append(
+            event_repo = EventRepository(session)
+
+            await event_repo.append(
                 process="reconcile",
                 kind="POSITION_RECONCILE",
                 detail={
@@ -544,6 +626,111 @@ class PositionReconciler:
                 },
                 idempotency_key=f"reconcile:{run_row.id}",
             )
+
+            # Authoritative active rogue trades tracking (transition-based)
+            current_rogues: dict[RogueKey, ReconcileDiff] = {}
+            for d in diffs:
+                if d.kind in (
+                    MISMATCH_QTY_DRIFT,
+                    MISMATCH_BROKER_ORPHAN,
+                    MISMATCH_LEDGER_GHOST,
+                ):
+                    acc = str(d.ibkr_account or d.account_id or "")
+                    rogue_key: RogueKey = (acc, d.symbol, d.sec_type, d.kind)
+                    current_rogues[rogue_key] = d
+
+            active_keys: dict[RogueKey, dict[str, Any]] = (
+                self._active_rogue_keys if self._active_rogue_keys is not None else {}
+            )
+            new_keys: set[RogueKey] = set(current_rogues.keys()) - set(
+                active_keys.keys()
+            )
+            resolved_keys: set[RogueKey] = set(active_keys.keys()) - set(
+                current_rogues.keys()
+            )
+
+            for key in sorted(new_keys):
+                diff = current_rogues[key]
+                # Include canonical message for notification center / Telegram
+                det_msg = (
+                    f"🚨 ROGUE TRADE DETECTED: {diff.kind} on {diff.symbol} "
+                    f"({diff.ibkr_account or diff.account_id}). "
+                    f"Broker qty: {diff.broker_qty}, Ledger qty: {diff.ledger_qty}"
+                )
+                det_payload: dict[str, Any] = {
+                    "rogue_type": diff.kind,
+                    "symbol": diff.symbol,
+                    "sec_type": diff.sec_type,
+                    "con_id": diff.con_id,
+                    "account_id": diff.account_id,
+                    "ibkr_account": diff.ibkr_account,
+                    "broker_qty": diff.broker_qty,
+                    "ledger_qty": diff.ledger_qty,
+                    "in_flight": diff.in_flight,
+                    "run_id": run_row.id,
+                    "message": det_msg,
+                }
+                idempotency_key = (
+                    f"rogue_det:{run_row.id}:{key[0]}:{key[1]}:{key[2]}:{key[3]}"
+                )
+                await event_repo.append(
+                    process="reconcile",
+                    kind="ROGUE_TRADE_DETECTED",
+                    detail=det_payload,
+                    idempotency_key=idempotency_key,
+                )
+                # Non-blocking Telegram dispatch — log failures via done callback
+                _task = asyncio.create_task(
+                    send_canonical_telegram("ROGUE_TRADE_DETECTED", det_payload)
+                )
+                _task.add_done_callback(
+                    lambda t: logger.debug(
+                        "ROGUE_TRADE_DETECTED telegram done: %s", t.exception()
+                    )
+                    if t.exception()
+                    else None
+                )
+                active_keys[key] = det_payload
+
+            for key in sorted(resolved_keys):
+                prev_payload = active_keys[key]
+                res_symbol = str(prev_payload.get("symbol", key[1]))
+                res_account = prev_payload.get("ibkr_account") or prev_payload.get(
+                    "account_id"
+                )
+                res_msg = f"🟢 ROGUE TRADE RESOLVED: {prev_payload.get('rogue_type', key[3])} on {res_symbol} ({res_account})"
+                res_payload: dict[str, Any] = {
+                    "rogue_type": prev_payload.get("rogue_type", key[3]),
+                    "symbol": prev_payload.get("symbol", key[1]),
+                    "sec_type": prev_payload.get("sec_type", key[2]),
+                    "con_id": prev_payload.get("con_id"),
+                    "account_id": prev_payload.get("account_id"),
+                    "ibkr_account": prev_payload.get("ibkr_account"),
+                    "run_id": run_row.id,
+                    "message": res_msg,
+                }
+                idempotency_key = (
+                    f"rogue_res:{run_row.id}:{key[0]}:{key[1]}:{key[2]}:{key[3]}"
+                )
+                await event_repo.append(
+                    process="reconcile",
+                    kind="ROGUE_TRADE_RESOLVED",
+                    detail=res_payload,
+                    idempotency_key=idempotency_key,
+                )
+                _task = asyncio.create_task(
+                    send_canonical_telegram("ROGUE_TRADE_RESOLVED", res_payload)
+                )
+                _task.add_done_callback(
+                    lambda t: logger.debug(
+                        "ROGUE_TRADE_RESOLVED telegram done: %s", t.exception()
+                    )
+                    if t.exception()
+                    else None
+                )
+                del active_keys[key]
+
+            self._active_rogue_keys = active_keys
 
         if mismatch_payload or timed_out or error:
             logger.warning(
@@ -569,19 +756,27 @@ class PositionReconciler:
 async def fetch_in_flight_accounts(session: AsyncSession) -> set[int]:
     """Accounts with active baskets or processing signal jobs."""
     basket_rows = (
-        await session.execute(
-            select(BasketModel.account_id).where(
-                BasketModel.state.in_(["EXECUTING", "UNWINDING"])
+        (
+            await session.execute(
+                select(BasketModel.account_id).where(
+                    BasketModel.state.in_(["EXECUTING", "UNWINDING"])
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     job_rows = (
-        await session.execute(
-            select(SignalJobModel.account_scope).where(
-                SignalJobModel.status == JOB_STATUS_PROCESSING
+        (
+            await session.execute(
+                select(SignalJobModel.account_scope).where(
+                    SignalJobModel.status == JOB_STATUS_PROCESSING
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     accounts: set[int] = set(basket_rows)
     for scope in job_rows:
         if scope is None:

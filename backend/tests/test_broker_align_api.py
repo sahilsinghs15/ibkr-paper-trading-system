@@ -3,6 +3,7 @@
 from collections.abc import Generator
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -37,8 +38,12 @@ def client() -> Generator[TestClient, None, None]:
             "app.broker.ibkr.tws_client.TWSClient.is_connected",
             return_value=False,
         ),
-        patch("app.services.worker_pool.ExecutionWorkerPool.start", new_callable=AsyncMock),
-        patch("app.services.worker_pool.ExecutionWorkerPool.stop", new_callable=AsyncMock),
+        patch(
+            "app.services.worker_pool.ExecutionWorkerPool.start", new_callable=AsyncMock
+        ),
+        patch(
+            "app.services.worker_pool.ExecutionWorkerPool.stop", new_callable=AsyncMock
+        ),
         patch(
             "app.services.position_reconciler.PositionReconciler.start",
             new_callable=AsyncMock,
@@ -73,7 +78,7 @@ def _filled_order(side: OrderSide, qty: float, symbol: str) -> MagicMock:
     return order
 
 
-def _mock_order_manager(captured: dict[str, object]) -> MagicMock:
+def _mock_order_manager(captured: dict[str, Any]) -> MagicMock:
     mock_baskets = MagicMock()
 
     async def fake_execute(intent, rms_pass, order_type="LIMIT"):
@@ -94,7 +99,9 @@ def _mock_order_manager(captured: dict[str, object]) -> MagicMock:
     mock_baskets.execute = AsyncMock(side_effect=fake_execute)
     mock_order_manager = MagicMock()
     mock_order_manager._baskets = mock_baskets
-    mock_order_manager._resolve_instruments = AsyncMock(side_effect=lambda intent: intent)
+    mock_order_manager._resolve_instruments = AsyncMock(
+        side_effect=lambda intent: intent
+    )
     return mock_order_manager
 
 
@@ -166,7 +173,7 @@ async def test_broker_align_qty_drift_sells_excess(
             as_of=datetime.now(UTC),
         )
 
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
     svc = BrokerAlignService(
         session_factory=session_factory,
         order_manager=_mock_order_manager(captured),
@@ -228,7 +235,7 @@ async def test_broker_align_orphan_flattens_to_zero(
             as_of=datetime.now(UTC),
         )
 
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
     svc = BrokerAlignService(
         session_factory=session_factory,
         order_manager=_mock_order_manager(captured),
@@ -298,7 +305,7 @@ async def test_broker_align_ghost_buys_open(
             )
         )
 
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
     svc = BrokerAlignService(
         session_factory=session_factory,
         order_manager=_mock_order_manager(captured),
@@ -389,7 +396,10 @@ async def test_broker_align_rejects_already_aligned(
 
     svc = BrokerAlignService(
         session_factory=session_factory,
-        order_manager=MagicMock(_baskets=MagicMock(), _resolve_instruments=AsyncMock(side_effect=lambda i: i)),
+        order_manager=MagicMock(
+            _baskets=MagicMock(),
+            _resolve_instruments=AsyncMock(side_effect=lambda i: i),
+        ),
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -400,7 +410,7 @@ async def test_broker_align_rejects_already_aligned(
             con_id=con_id,
         )
 
-    assert "already matches ledger" in str(exc_info.value.detail)
+    assert "already matches ledger" in exc_info.value.detail  # type: ignore[operator]
 
 
 @pytest.mark.asyncio
@@ -452,7 +462,10 @@ async def test_broker_align_rejects_in_flight(
 
     svc = BrokerAlignService(
         session_factory=session_factory,
-        order_manager=MagicMock(_baskets=MagicMock(), _resolve_instruments=AsyncMock(side_effect=lambda i: i)),
+        order_manager=MagicMock(
+            _baskets=MagicMock(),
+            _resolve_instruments=AsyncMock(side_effect=lambda i: i),
+        ),
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -463,7 +476,7 @@ async def test_broker_align_rejects_in_flight(
             con_id=con_id,
         )
 
-    assert "in-flight" in str(exc_info.value.detail)
+    assert "in-flight" in exc_info.value.detail  # type: ignore[operator]
 
 
 @pytest.mark.asyncio
@@ -504,7 +517,7 @@ async def test_broker_align_ghost_without_catalog_uses_con_id(
             )
         )
 
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
     svc = BrokerAlignService(
         session_factory=session_factory,
         order_manager=_mock_order_manager(captured),

@@ -89,6 +89,7 @@ export function ReconcilePage() {
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null)
   const [fixMessage, setFixMessage] = useState<string | null>(null)
   const [diffToFix, setDiffToFix] = useState<ReconcileDiffRow | null>(null)
+  const [filterRogueOnly, setFilterRogueOnly] = useState(false)
   const { sortKey, sortDir, handleSort } = useTableSortState()
 
   const loadData = useCallback(async (options?: { refresh?: boolean }) => {
@@ -106,16 +107,43 @@ export function ReconcilePage() {
   }, [cleanAccount])
 
   useEffect(() => {
-    loadData()
+    let mounted = true
+    void fetchReconcilePositions(cleanAccount || undefined).then(
+      (res) => {
+        if (mounted) {
+          setData(res)
+          setLastRefreshed(new Date())
+          setLoading(false)
+        }
+      },
+      (err: unknown) => {
+        if (mounted) {
+          setError(err instanceof Error ? err.message : 'Failed to load reconcile data')
+          setLoading(false)
+        }
+      },
+    )
     const timer = setInterval(() => {
       void loadData()
     }, 30000)
-    return () => clearInterval(timer)
-  }, [loadData])
+    return () => {
+      mounted = false
+      clearInterval(timer)
+    }
+  }, [cleanAccount, loadData])
+
+  const isRogueDiff = useCallback((d: ReconcileDiffRow) => {
+    return d.kind === 'QTY_DRIFT' || d.kind === 'BROKER_ORPHAN' || d.kind === 'LEDGER_GHOST'
+  }, [])
 
   const mismatchDiffs = useMemo(
     () => (data?.diffs ?? []).filter((d) => d.kind !== 'MATCH'),
     [data?.diffs],
+  )
+
+  const rogueDiffs = useMemo(
+    () => (data?.diffs ?? []).filter(isRogueDiff),
+    [data?.diffs, isRogueDiff],
   )
 
   const brokerAvgCostByKey = useMemo(
@@ -123,7 +151,11 @@ export function ReconcilePage() {
     [data?.broker_positions],
   )
 
-  const rawDiffs = useMemo(() => data?.diffs ?? [], [data?.diffs])
+  const rawDiffs = useMemo(() => {
+    const list = data?.diffs ?? []
+    return filterRogueOnly ? list.filter(isRogueDiff) : list
+  }, [data?.diffs, filterRogueOnly, isRogueDiff])
+
   const diffs = useMemo(() => {
     return sortRows(rawDiffs, sortKey, sortDir, DIFF_SORT_EXTRACTORS)
   }, [rawDiffs, sortKey, sortDir])
@@ -205,9 +237,19 @@ export function ReconcilePage() {
 
       <section className="reconcile-panel">
         <div className="reconcile-panel-head">
-          <h2>
-            Differences ({diffs.length} total · {mismatchDiffs.length} mismatches)
-          </h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+            <h2>
+              Differences ({diffs.length} total · {mismatchDiffs.length} mismatches)
+            </h2>
+            <button
+              type="button"
+              className={`reconcile-rogue-filter-btn ${filterRogueOnly ? 'active' : ''}`}
+              onClick={() => setFilterRogueOnly((v) => !v)}
+              title="Focus and filter active rogue trades (Qty Drift, Broker Orphan, Ledger Ghost)"
+            >
+              {filterRogueOnly ? 'Show All Discrepancies' : `Rogue Trades (${rogueDiffs.length})`}
+            </button>
+          </div>
           <span className="reconcile-panel-hint">
             Per-row Fix aligns IBKR broker qty to the signal ledger
           </span>

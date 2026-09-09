@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -23,7 +24,9 @@ from app.services.critical_recovery import CriticalRecoveryService, parse_ibkr_c
 @pytest.mark.asyncio
 async def test_clear_critical_unblocks_only_when_no_other_critical() -> None:
     engine = create_engine_from_settings()
-    factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+    factory = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
     try:
         async with factory() as session, session.begin():
             account = AccountModel(
@@ -84,10 +87,14 @@ async def test_clear_critical_unblocks_only_when_no_other_critical() -> None:
 
         async with factory() as session:
             rows = (
-                await session.execute(
-                    select(BasketModel).where(BasketModel.account_id == account_id)
+                (
+                    await session.execute(
+                        select(BasketModel).where(BasketModel.account_id == account_id)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert all(r.state == BasketState.RECOVERED.value for r in rows)
             assert all(r.recovery_status == "CLEARED" for r in rows)
     finally:
@@ -131,7 +138,9 @@ def test_parse_ibkr_contract_with_con_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recovery_clears_when_broker_flat(session_factory: async_sessionmaker[AsyncSession]) -> None:
+async def test_recovery_clears_when_broker_flat(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     test_id = uuid4().hex[:8]
     ibkr_account = f"DU-REC-{test_id}"
     con_id = 800000 + int(test_id[:4], 16) % 10000
@@ -222,17 +231,21 @@ async def test_recovery_clears_when_broker_flat(session_factory: async_sessionma
         coordinator=coord,
     )
 
-    with patch.object(svc, "_flatten_leftovers", new_callable=AsyncMock) as mock_flatten:
+    with patch.object(
+        svc, "_flatten_leftovers", new_callable=AsyncMock
+    ) as mock_flatten:
         mock_flatten.return_value = ["con_id already flat"]
-        with patch.object(svc, "_fetch_and_persist_snapshot", new_callable=AsyncMock) as mock_snap:
+        with patch.object(
+            svc, "_fetch_and_persist_snapshot", new_callable=AsyncMock
+        ) as mock_snap:
             mock_snap.return_value = True
             await svc._recover_once(
-            account_id=account_id,
-            trade_id=f"T-REC-{test_id}",
-            action="OPEN",
-            strategy_id="synthetic_n_leg",
-            attempt=1,
-        )
+                account_id=account_id,
+                trade_id=f"T-REC-{test_id}",
+                action="OPEN",
+                strategy_id="synthetic_n_leg",
+                attempt=1,
+            )
 
     assert coord.is_open_blocked(account_id, "synthetic_n_leg") is False
     async with session_factory() as session:
@@ -337,17 +350,21 @@ async def test_recovery_failed_leaves_critical_latched(
         coordinator=coord,
     )
 
-    with patch.object(svc, "_flatten_leftovers", new_callable=AsyncMock) as mock_flatten:
+    with patch.object(
+        svc, "_flatten_leftovers", new_callable=AsyncMock
+    ) as mock_flatten:
         mock_flatten.return_value = ["con_id=810: FAILED"]
-        with patch.object(svc, "_fetch_and_persist_snapshot", new_callable=AsyncMock) as mock_snap:
+        with patch.object(
+            svc, "_fetch_and_persist_snapshot", new_callable=AsyncMock
+        ) as mock_snap:
             mock_snap.return_value = True
             await svc._recover_once(
-            account_id=account_id,
-            trade_id=f"T-FAIL-{test_id}",
-            action="OPEN",
-            strategy_id="synthetic_n_leg",
-            attempt=2,
-        )
+                account_id=account_id,
+                trade_id=f"T-FAIL-{test_id}",
+                action="OPEN",
+                strategy_id="synthetic_n_leg",
+                attempt=2,
+            )
 
     assert coord.is_open_blocked(account_id, "synthetic_n_leg") is True
     async with session_factory() as session:
@@ -370,7 +387,7 @@ async def test_recovery_retries_inside_same_in_flight_task(
     )
     attempts: list[int] = []
 
-    async def fake_recover_once(**kwargs: object) -> str:
+    async def fake_recover_once(**kwargs: Any) -> str:
         attempts.append(int(kwargs["attempt"]))
         return "retry" if len(attempts) == 1 else "done"
 
@@ -490,4 +507,3 @@ async def test_connected_partial_fill_recovery_marks_critical(
             )
         ).scalar_one()
         assert row.state == BasketState.CRITICAL.value
-

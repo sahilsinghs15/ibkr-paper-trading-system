@@ -3,6 +3,7 @@
 from collections.abc import Generator
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -15,7 +16,7 @@ from app.db.models.account import AccountModel
 from app.db.models.instrument import InstrumentModel
 from app.db.models.position import PositionModel
 from app.db.repositories.broker_position_repository import BrokerPositionRepository
-from app.db.repositories.position_repository import PositionRepository, RISK_STATE_OPEN
+from app.db.repositories.position_repository import RISK_STATE_OPEN, PositionRepository
 from app.main import app
 from app.oms.basket import BasketExecutionResult, BasketState
 from app.oms.models import OMSOrderStatus
@@ -36,8 +37,12 @@ def client() -> Generator[TestClient, None, None]:
             "app.broker.ibkr.tws_client.TWSClient.is_connected",
             return_value=False,
         ),
-        patch("app.services.worker_pool.ExecutionWorkerPool.start", new_callable=AsyncMock),
-        patch("app.services.worker_pool.ExecutionWorkerPool.stop", new_callable=AsyncMock),
+        patch(
+            "app.services.worker_pool.ExecutionWorkerPool.start", new_callable=AsyncMock
+        ),
+        patch(
+            "app.services.worker_pool.ExecutionWorkerPool.stop", new_callable=AsyncMock
+        ),
         patch(
             "app.services.position_reconciler.PositionReconciler.start",
             new_callable=AsyncMock,
@@ -53,7 +58,6 @@ def client() -> Generator[TestClient, None, None]:
         TestClient(app) as c,
     ):
         yield c
-
 
 
 def _filled_order(side: OrderSide, qty: float, symbol: str = "AAPL") -> MagicMock:
@@ -103,7 +107,7 @@ async def test_broker_flatten_submits_market_reverse_and_skips_ledger(
         )
 
     mock_baskets = MagicMock()
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     async def fake_execute(intent, rms_pass, order_type="LIMIT"):
         captured["intent"] = intent
@@ -121,14 +125,18 @@ async def test_broker_flatten_submits_market_reverse_and_skips_ledger(
 
     mock_order_manager = MagicMock()
     mock_order_manager._baskets = mock_baskets
-    mock_order_manager._resolve_instruments = AsyncMock(side_effect=lambda intent: intent)
+    mock_order_manager._resolve_instruments = AsyncMock(
+        side_effect=lambda intent: intent
+    )
 
     svc = BrokerFlattenService(
         session_factory=session_factory,
         order_manager=mock_order_manager,
     )
 
-    with patch.object(PositionRepository, "close_trade", AsyncMock()) as mock_close_trade:
+    with patch.object(
+        PositionRepository, "close_trade", AsyncMock()
+    ) as mock_close_trade:
         result = await svc.flatten_line(
             ibkr_account=ibkr_account,
             symbol="AAPL",
@@ -192,7 +200,7 @@ async def test_broker_flatten_partial_quantity(
         )
 
     mock_baskets = MagicMock()
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     async def fake_execute(intent, rms_pass, order_type="LIMIT"):
         captured["intent"] = intent
@@ -208,7 +216,9 @@ async def test_broker_flatten_partial_quantity(
 
     mock_order_manager = MagicMock()
     mock_order_manager._baskets = mock_baskets
-    mock_order_manager._resolve_instruments = AsyncMock(side_effect=lambda intent: intent)
+    mock_order_manager._resolve_instruments = AsyncMock(
+        side_effect=lambda intent: intent
+    )
 
     svc = BrokerFlattenService(
         session_factory=session_factory,
@@ -270,7 +280,7 @@ async def test_broker_flatten_rejects_quantity_above_snapshot(
         order_manager=MagicMock(_baskets=MagicMock()),
     )
 
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(HTTPException) as exc_info:
         await svc.flatten_line(
             ibkr_account=ibkr_account,
             symbol="AAPL",
@@ -279,7 +289,7 @@ async def test_broker_flatten_rejects_quantity_above_snapshot(
             quantity=30.0,
         )
 
-    assert "exceeds broker snapshot" in str(exc_info.value.detail)
+    assert "exceeds broker snapshot" in exc_info.value.detail  # type: ignore[operator]
 
 
 @pytest.mark.asyncio
@@ -300,18 +310,20 @@ async def test_broker_flatten_rejects_quantity_below_ledger_net(
         await session.flush()
         account_id = acc.id
 
-        session.add(
-            InstrumentModel(
-                symbol="AAPL",
-                sec_type="CFD",
-                trade_conid=con_id,
-                market_data_conid=con_id,
-                underlying_exchange="NASDAQ",
-                exchange="SMART",
-                currency="USD",
-                multiplier=Decimal(1),
+        existing_inst = await session.get(InstrumentModel, "AAPL")
+        if not existing_inst:
+            session.add(
+                InstrumentModel(
+                    symbol="AAPL",
+                    sec_type="CFD",
+                    trade_conid=con_id,
+                    market_data_conid=con_id,
+                    underlying_exchange="NASDAQ",
+                    exchange="SMART",
+                    currency="USD",
+                    multiplier=Decimal(1),
+                )
             )
-        )
         session.add(
             PositionModel(
                 account_id=account_id,
@@ -364,7 +376,7 @@ async def test_broker_flatten_rejects_quantity_below_ledger_net(
             quantity=5.0,
         )
 
-    assert "below ledger net" in str(exc_info.value.detail)
+    assert "below ledger net" in exc_info.value.detail  # type: ignore[operator]
 
 
 def test_broker_flatten_http_endpoint_returns_schema(client: TestClient) -> None:
