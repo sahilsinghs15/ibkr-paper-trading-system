@@ -57,7 +57,7 @@ def test_format_canonical_notification_market_closed():
 
 
 @pytest.mark.asyncio
-async def test_notifications_api_flow(monkeypatch):
+async def test_notifications_api_flow():
     """Test /demo/notifications, /read, /mark-all-read with authentication and filtering."""
     redis_mock = MagicMock()
     redis_mock.ping = AsyncMock(return_value=True)
@@ -120,11 +120,11 @@ async def test_notifications_api_flow(monkeypatch):
         await session.commit()
 
     assert ev1 is not None and ev2 is not None and ev3 is not None and ev4 is not None and ev5 is not None
-    ev1_id: int = int(ev1.id)
-    ev2_id: int = int(ev2.id)
-    ev3_id: int = int(ev3.id)
-    ev4_id: int = int(ev4.id)
-    ev5_id: int = int(ev5.id)
+    ev1_id: int = ev1.id
+    ev2_id: int = ev2.id
+    ev3_id: int = ev3.id
+    ev4_id: int = ev4.id
+    ev5_id: int = ev5.id
 
     token = create_access_token({"sub": str(user.id)})
     headers = {"Authorization": f"Bearer {token}"}
