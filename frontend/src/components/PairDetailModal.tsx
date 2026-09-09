@@ -46,8 +46,18 @@ function thresholdPayload(input: string, unit: string): string {
 
 function resolveCurrency(magnitude: number, unit: string, notional: number): number | null {
   if (!magnitude || magnitude <= 0) return null
-  if (unit === 'PERCENT') return magnitude * notional
+  if (unit === 'PERCENT') {
+    if (!notional || notional <= 0) return null
+    return magnitude * notional
+  }
   return magnitude
+}
+
+function legGrossNotional(qty: unknown, mark: unknown): number | null {
+  const q = num(qty)
+  const p = num(mark)
+  if (q === null || p === null) return null
+  return Math.abs(q * p)
 }
 
 export function PairDetailModal({
@@ -125,11 +135,19 @@ export function PairDetailModal({
       ? `${liveLegs[0]?.symbol || '—'} / ${liveLegs[1]?.symbol || '—'}`
       : liveLegs[0]?.symbol || '—'
 
-  const notional = num(pos?.entry_gross_notional) || 0
+  const legANotional = pos
+    ? legGrossNotional(pos.leg_a_signed_qty, pos.leg_a_entry_mark)
+    : null
+  const legBNotional = pos?.leg_b_symbol
+    ? legGrossNotional(pos.leg_b_signed_qty, pos.leg_b_entry_mark)
+    : null
+  const pairNotional =
+    num(pos?.entry_gross_notional) || (legANotional || 0) + (legBNotional || 0)
+  const legsTotalNotional = (legANotional || 0) + (legBNotional || 0) || pairNotional || null
   const targetMag = parseFloat(thresholdPayload(target, targetUnit))
   const stopMag = parseFloat(thresholdPayload(stop, stopUnit))
-  const targetAmt = resolveCurrency(targetMag, targetUnit, notional)
-  const stopAmt = resolveCurrency(stopMag, stopUnit, notional)
+  const targetAmt = resolveCurrency(targetMag, targetUnit, pairNotional)
+  const stopAmt = resolveCurrency(stopMag, stopUnit, pairNotional)
   const liveNum = num(livePnl)
   const targetDistance =
     targetAmt !== null && liveNum !== null ? targetAmt - liveNum : null
@@ -186,13 +204,14 @@ export function PairDetailModal({
           {pos ? (
             <section className="pair-detail-section">
               <h4>LEGS</h4>
-              <table className="factory-table drawer-leg-table">
+              <table className="factory-table drawer-leg-table pair-legs-table">
                 <thead>
                   <tr>
                     <th>LEG</th>
                     <th>SYMBOL</th>
                     <th>QTY</th>
                     <th>ENTRY</th>
+                    <th>NOTIONAL</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -201,6 +220,7 @@ export function PairDetailModal({
                     <td className="mono">{pos.leg_a_symbol}</td>
                     <td className="mono">{fmtQty(pos.leg_a_signed_qty)}</td>
                     <td className="mono">{fmtUsd(pos.leg_a_entry_mark)}</td>
+                    <td className="mono">{fmtUsd(legANotional)}</td>
                   </tr>
                   {pos.leg_b_symbol ? (
                     <tr>
@@ -208,14 +228,20 @@ export function PairDetailModal({
                       <td className="mono">{pos.leg_b_symbol}</td>
                       <td className="mono">{fmtQty(pos.leg_b_signed_qty)}</td>
                       <td className="mono">{fmtUsd(pos.leg_b_entry_mark)}</td>
+                      <td className="mono">{fmtUsd(legBNotional)}</td>
                     </tr>
                   ) : null}
                 </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={4}>TOTAL</td>
+                    <td className="mono">{fmtUsd(legsTotalNotional)}</td>
+                  </tr>
+                </tfoot>
               </table>
-              <p className="field-hint dim">
-                Entry notional {fmtUsd(pos.entry_gross_notional)}
-                {pos.exit_reason ? ` · exit reason ${pos.exit_reason}` : ''}
-              </p>
+              {pos.exit_reason ? (
+                <p className="field-hint dim">Exit reason {pos.exit_reason}</p>
+              ) : null}
             </section>
           ) : null}
 
@@ -273,11 +299,20 @@ export function PairDetailModal({
                     <option value="ABSOLUTE">USD</option>
                     <option value="PERCENT">% of pair</option>
                   </select>
+                  {targetUnit === 'PERCENT' && targetAmt !== null ? (
+                    <span className="money-suffix pair-pct-abs target">{fmtUsd(targetAmt)}</span>
+                  ) : null}
                 </div>
                 <span className="field-hint dim">
-                  {targetAmt !== null
-                    ? `Fires at ${fmtUsd(targetAmt)}${targetDistance !== null ? ` · ${fmtPnl(targetDistance)} to target` : ''}`
-                    : '0 disables'}
+                  {targetUnit === 'PERCENT'
+                    ? targetAmt !== null
+                      ? `${fmtUsd(targetAmt)} target · ${target}% of ${fmtUsd(pairNotional)}${targetDistance !== null ? ` · ${fmtPnl(targetDistance)} to target` : ''}`
+                      : pairNotional <= 0 && parseFloat(target) > 0
+                        ? 'Pair notional needed to convert %'
+                        : '0 disables'
+                    : targetAmt !== null
+                      ? `Fires at ${fmtUsd(targetAmt)}${targetDistance !== null ? ` · ${fmtPnl(targetDistance)} to target` : ''}`
+                      : '0 disables'}
                 </span>
               </label>
               <label className="field">
@@ -305,11 +340,20 @@ export function PairDetailModal({
                     <option value="ABSOLUTE">USD</option>
                     <option value="PERCENT">% of pair</option>
                   </select>
+                  {stopUnit === 'PERCENT' && stopAmt !== null ? (
+                    <span className="money-suffix pair-pct-abs stop">−{fmtUsd(stopAmt)}</span>
+                  ) : null}
                 </div>
                 <span className="field-hint dim">
-                  {stopAmt !== null
-                    ? `Fires at −${fmtUsd(stopAmt).replace('$', '')}${stopDistance !== null ? ` · ${fmtPnl(stopDistance)} of cushion` : ''}`
-                    : '0 disables'}
+                  {stopUnit === 'PERCENT'
+                    ? stopAmt !== null
+                      ? `${fmtUsd(stopAmt)} stop · ${stop}% of ${fmtUsd(pairNotional)}${stopDistance !== null ? ` · ${fmtPnl(stopDistance)} of cushion` : ''}`
+                      : pairNotional <= 0 && parseFloat(stop) > 0
+                        ? 'Pair notional needed to convert %'
+                        : '0 disables'
+                    : stopAmt !== null
+                      ? `Fires at −${fmtUsd(stopAmt)}${stopDistance !== null ? ` · ${fmtPnl(stopDistance)} of cushion` : ''}`
+                      : '0 disables'}
                 </span>
               </label>
             </div>

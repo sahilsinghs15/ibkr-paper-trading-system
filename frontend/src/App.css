@@ -3352,10 +3352,64 @@ thead th {
   color: var(--muted);
 }
 
+.pair-detail-modal .pair-legs-table {
+  table-layout: auto;
+}
+
+.pair-detail-modal .pair-legs-table thead th:nth-child(1),
+.pair-detail-modal .pair-legs-table tbody td:nth-child(1) {
+  width: 8%;
+  word-break: normal;
+}
+
+.pair-detail-modal .pair-legs-table thead th:nth-child(2),
+.pair-detail-modal .pair-legs-table tbody td:nth-child(2) {
+  width: 22%;
+}
+
+.pair-detail-modal .pair-legs-table thead th:nth-child(3),
+.pair-detail-modal .pair-legs-table tbody td:nth-child(3),
+.pair-detail-modal .pair-legs-table thead th:nth-child(4),
+.pair-detail-modal .pair-legs-table tbody td:nth-child(4),
+.pair-detail-modal .pair-legs-table thead th:nth-child(5),
+.pair-detail-modal .pair-legs-table tbody td:nth-child(5) {
+  width: auto;
+  text-align: right;
+}
+
+.pair-detail-modal .pair-legs-table tfoot td {
+  border-top: 1px solid #2a3548;
+  border-bottom: none;
+  font-weight: 600;
+  color: var(--text, #e2e8f0);
+  width: auto;
+  word-break: normal;
+}
+
+.pair-detail-modal .pair-legs-table tfoot td:first-child,
+.pair-detail-modal .pair-legs-table tfoot td:last-child {
+  text-align: right;
+}
+
 .pair-exit-fields {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+}
+
+.pair-exit-fields .money-suffix.pair-pct-abs {
+  white-space: nowrap;
+  border-left: 1px solid var(--line);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.pair-exit-fields .money-suffix.pair-pct-abs.target {
+  color: var(--green);
+}
+
+.pair-exit-fields .money-suffix.pair-pct-abs.stop {
+  color: var(--red);
 }
 
 .pair-exit-actions {

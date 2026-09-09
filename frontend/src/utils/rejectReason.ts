@@ -46,6 +46,15 @@ function fmtUsd(value: string | number): string {
   })
 }
 
+/** Round decimal literals (and scientific notation) to 2 places. Integers stay as-is. */
+export function roundRejectReasonNumbers(text: string): string {
+  return text.replace(/-?\d+\.\d+(?:[eE][+-]?\d+)?/g, (token) => {
+    const n = Number(token)
+    if (!Number.isFinite(n)) return token
+    return n.toFixed(2)
+  })
+}
+
 function stripRmsPrefix(text: string): string {
   return text
     .replace(/^RMS\s+check\s+\d+\s+rejected\s+intent:\s*/i, '')
@@ -196,13 +205,14 @@ export function formatRejectReason(
     }
   }
 
-  const parsed = parseKnownReason(scoped)
+  const displayText = roundRejectReasonNumbers(scoped)
+  const parsed = parseKnownReason(displayText)
   if (parsed) {
-    return { ...parsed, raw: scoped }
+    return { ...parsed, raw: displayText }
   }
 
-  const fallback = fallbackDisplay(scoped)
-  return { ...fallback, raw: scoped }
+  const fallback = fallbackDisplay(displayText)
+  return { ...fallback, raw: displayText }
 }
 
 /** Back-compat: returns human summary only. */
