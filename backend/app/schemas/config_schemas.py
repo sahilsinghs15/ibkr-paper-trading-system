@@ -28,6 +28,9 @@ class AllocationConfigSchema(BaseModel):
     stop: Decimal
     time_limit: int
     pair_max_allocation_pct: Decimal
+    target_unit: str = "ABSOLUTE"
+    stop_unit: str = "ABSOLUTE"
+    exit_automation_enabled: bool = False
 
 
 class AccountConfigSchema(BaseModel):
@@ -42,6 +45,11 @@ class AccountConfigSchema(BaseModel):
     enabled: bool
     default_symbol_limit: Decimal | None = None
     kill_switch_active: bool = False
+    daily_target: Decimal | None = None
+    daily_stop: Decimal | None = None
+    daily_target_unit: str = "ABSOLUTE"
+    daily_stop_unit: str = "ABSOLUTE"
+    account_risk_enabled: bool = False
     allocations: list[AllocationConfigSchema] = Field(default_factory=list)
     symbol_limits: list[SymbolLimitSchema] = Field(default_factory=list)
 
@@ -70,6 +78,11 @@ class PatchAccountRequest(BaseModel):
     total_margin: Decimal | None = Field(None, gt=0)
     enabled: bool | None = None
     default_symbol_limit: Decimal | None = Field(None, gt=0)
+    daily_target: Decimal | None = Field(None, ge=0)
+    daily_stop: Decimal | None = Field(None, ge=0)
+    daily_target_unit: str | None = None
+    daily_stop_unit: str | None = None
+    account_risk_enabled: bool | None = None
 
 
 class CreateAllocationRequest(BaseModel):
@@ -78,10 +91,13 @@ class CreateAllocationRequest(BaseModel):
     strategy_id: str = Field(..., min_length=1)
     alloc_pct: Decimal = Field(..., ge=0, le=1)
     max_open_positions: int | None = Field(None, ge=0)
-    target: Decimal = Field(Decimal("500.00"), gt=0)
-    stop: Decimal = Field(Decimal("250.00"), gt=0)
-    time_limit: int = Field(3600, gt=0)
+    target: Decimal = Field(Decimal("500.00"), ge=0)
+    stop: Decimal = Field(Decimal("250.00"), ge=0)
+    time_limit: int = Field(3600, ge=0)
     pair_max_allocation_pct: Decimal = Field(Decimal("0.10"), gt=0, le=1)
+    target_unit: str = "ABSOLUTE"
+    stop_unit: str = "ABSOLUTE"
+    exit_automation_enabled: bool = False
     enabled: bool = True
 
 
@@ -100,6 +116,12 @@ class PatchAllocationRequest(BaseModel):
     enabled: bool | None = None
     max_open_positions: int | None = Field(None, ge=0)
     pair_max_allocation_pct: Decimal | None = Field(None, gt=0, le=1)
+    target: Decimal | None = Field(None, ge=0)
+    stop: Decimal | None = Field(None, ge=0)
+    time_limit: int | None = Field(None, ge=0)
+    target_unit: str | None = None
+    stop_unit: str | None = None
+    exit_automation_enabled: bool | None = None
 
 
 class PutSymbolLimitRequest(BaseModel):
@@ -207,6 +229,30 @@ class ClosePairResponse(BaseModel):
     status: str
     success: bool
     message: str | None = None
+
+
+class PatchPositionExitsRequest(BaseModel):
+    """Partial update for an OPEN pair's stop/target and automation flag."""
+
+    target: Decimal | None = Field(None, ge=0)
+    stop: Decimal | None = Field(None, ge=0)
+    target_unit: str | None = None
+    stop_unit: str | None = None
+    exit_automation_enabled: bool | None = None
+
+
+class PositionExitsSchema(BaseModel):
+    """Current exit knobs on a positions row."""
+
+    account_id: int
+    trade_id: str
+    risk_state: str
+    target: Decimal
+    stop: Decimal
+    time_limit: int
+    target_unit: str
+    stop_unit: str
+    exit_automation_enabled: bool
 
 
 class EmergencyKillSwitchRequest(BaseModel):

@@ -87,6 +87,7 @@ Dev extras: `httpx`, `mypy`, `pytest`, `pytest-asyncio`, `ruff` (`[project.optio
 | OMS / basket | `.venv/bin/pytest tests/test_oms.py tests/test_basket_coordinator.py tests/test_basket_retry.py` |
 | Concurrency / claims | `.venv/bin/pytest tests/test_mft_concurrency_recovery.py tests/test_tradingview_webhook.py` |
 | Kill switch | `.venv/bin/pytest tests/test_kill_switch.py tests/test_kill_switch_reconciliation_fix.py` |
+| Risk exit | `.venv/bin/pytest tests/test_risk_exit_rules.py tests/test_risk_exit_monitor.py` |
 | Position reconcile | `.venv/bin/pytest tests/test_position_reconciler.py tests/test_reconcile_api.py tests/test_broker_flatten_api.py` |
 | Full integration (mocked IBKR) | `.venv/bin/pytest tests/test_tradingview_execution_integration.py tests/test_hardening_lifecycle.py` |
 | Stress (heavy) | `.venv/bin/pytest tests/test_burst_stress_150_300.py tests/test_burst_stress_500_and_kill_switch.py` |

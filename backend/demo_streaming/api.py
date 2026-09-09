@@ -37,6 +37,7 @@ from demo_streaming.snapshot import (
     load_baskets,
     load_closed_position_rows,
     load_orders,
+    load_pair_detail,
     load_position_rows,
     load_signals,
     position_leg_payloads,
@@ -187,6 +188,26 @@ def create_demo_app(
                 )
             )
         return JSONResponse({"positions": payload, "market_data_status": "UNAVAILABLE"})
+
+    @app.get("/demo/positions/{account_id}/{trade_id}")
+    async def position_detail(
+        request: Request, account_id: int, trade_id: str
+    ) -> JSONResponse:
+        user = await _get_authenticated_user_from_request(request, session_factory)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        if user.role == "user" and account_id != user.ibkr_account_id:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        async with session_factory() as session:
+            payload = await load_pair_detail(session, account_id, trade_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="Position not found")
+        payload["exits"]["monitor_enabled"] = bool(settings.risk_exit_monitor_enabled)
+        payload["exits"]["shadow_mode"] = bool(settings.risk_exit_shadow_mode)
+        return JSONResponse(payload)
 
     @app.get("/demo/closed-positions")
     async def closed_positions(request: Request, account_id: int | None = None) -> JSONResponse:

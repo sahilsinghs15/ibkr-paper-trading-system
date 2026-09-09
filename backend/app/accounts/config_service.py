@@ -5,7 +5,7 @@ Does not route signals or submit orders.
 
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -13,9 +13,11 @@ from app.db.models.account import AccountModel, PerSymbolLimitModel
 from app.db.models.execution_settings import ExecutionSettingsModel
 from app.db.models.kill_switch import KillSwitchOperationModel
 from app.db.models.margin_settings import MarginSettingsModel
+from app.db.models.position import PositionModel
 from app.db.models.strategy import AllocationModel, StrategyModel
 from app.oms.retry_policy import ExecutionRetryPolicy
 from app.rms.models import MarginPolicy
+from app.services.risk_exit_rules import EXIT_UNIT_PERCENT, VALID_EXIT_UNITS
 
 ONE = Decimal(1)
 ZERO = Decimal(0)
@@ -66,6 +68,32 @@ class AccountStrategyConfigService:
             raise AllocationConfigError(
                 "PAIR_MAX_ALLOCATION_PCT_INVALID: pair_max_allocation_pct must be "
                 f"in (0, 1]; got {value}."
+            )
+
+    def validate_exit_unit(self, unit: str) -> str:
+        normalized = (unit or "").strip().upper()
+        if normalized not in VALID_EXIT_UNITS:
+            raise AllocationConfigError(
+                f"INVALID_EXIT_UNIT: unit must be ABSOLUTE or PERCENT, got {unit!r}."
+            )
+        return normalized
+
+    def validate_exit_threshold(self, value: Decimal | None, unit: str, *, field: str) -> None:
+        if value is None:
+            return
+        if value < ZERO:
+            raise AllocationConfigError(
+                f"INVALID_EXIT_THRESHOLD: {field} must be >= 0, got {value}."
+            )
+        if unit == EXIT_UNIT_PERCENT and value > ZERO and (value > ONE):
+            raise AllocationConfigError(
+                f"INVALID_EXIT_THRESHOLD: {field} as PERCENT must be in (0, 1], got {value}."
+            )
+
+    def validate_time_limit(self, time_limit: int) -> None:
+        if time_limit < 0:
+            raise AllocationConfigError(
+                f"INVALID_TIME_LIMIT: time_limit must be >= 0, got {time_limit}."
             )
 
     def _warn_if_pair_budget_below_min_notional(
@@ -264,6 +292,11 @@ class AccountStrategyConfigService:
         total_margin: Decimal | None = None,
         enabled: bool | None = None,
         default_symbol_limit: Decimal | None = None,
+        daily_target: Decimal | None = None,
+        daily_stop: Decimal | None = None,
+        daily_target_unit: str | None = None,
+        daily_stop_unit: str | None = None,
+        account_risk_enabled: bool | None = None,
     ) -> AccountModel:
         if name is not None:
             clean_name = name.strip()
@@ -304,6 +337,22 @@ class AccountStrategyConfigService:
                     "INVALID_DEFAULT_SYMBOL_LIMIT: default_symbol_limit must be greater than 0."
                 )
             account.default_symbol_limit = default_symbol_limit
+        if daily_target_unit is not None:
+            account.daily_target_unit = self.validate_exit_unit(daily_target_unit)
+        if daily_stop_unit is not None:
+            account.daily_stop_unit = self.validate_exit_unit(daily_stop_unit)
+        if daily_target is not None:
+            self.validate_exit_threshold(
+                daily_target, account.daily_target_unit, field="daily_target"
+            )
+            account.daily_target = daily_target
+        if daily_stop is not None:
+            self.validate_exit_threshold(
+                daily_stop, account.daily_stop_unit, field="daily_stop"
+            )
+            account.daily_stop = daily_stop
+        if account_risk_enabled is not None:
+            account.account_risk_enabled = account_risk_enabled
         await self._session.flush()
         return account
 
@@ -319,6 +368,9 @@ class AccountStrategyConfigService:
         enabled: bool = True,
         max_open_positions: int | None = None,
         pair_max_allocation_pct: Decimal | None = None,
+        target_unit: str = "ABSOLUTE",
+        stop_unit: str = "ABSOLUTE",
+        exit_automation_enabled: bool = False,
     ) -> AllocationModel:
         await self.validate_account_margin(account)
         self.validate_alloc_pct(alloc_pct)
@@ -340,6 +392,11 @@ class AccountStrategyConfigService:
         await self._validate_enabled_sum(
             account.id, alloc_pct=alloc_pct, enabled=enabled
         )
+        target_u = self.validate_exit_unit(target_unit)
+        stop_u = self.validate_exit_unit(stop_unit)
+        self.validate_exit_threshold(target, target_u, field="target")
+        self.validate_exit_threshold(stop, stop_u, field="stop")
+        self.validate_time_limit(time_limit)
         row = AllocationModel(
             account_id=account.id,
             strategy_id=strategy_id,
@@ -350,6 +407,9 @@ class AccountStrategyConfigService:
             pair_max_allocation_pct=pair_pct,
             max_open_positions=cap,
             enabled=enabled,
+            target_unit=target_u,
+            stop_unit=stop_u,
+            exit_automation_enabled=exit_automation_enabled,
         )
         self._session.add(row)
         await self._session.flush()
@@ -363,6 +423,12 @@ class AccountStrategyConfigService:
         enabled: bool | None = None,
         max_open_positions: int | None = None,
         pair_max_allocation_pct: Decimal | None = None,
+        target: Decimal | None = None,
+        stop: Decimal | None = None,
+        time_limit: int | None = None,
+        target_unit: str | None = None,
+        stop_unit: str | None = None,
+        exit_automation_enabled: bool | None = None,
     ) -> AllocationModel:
         new_pct = allocation.alloc_pct if alloc_pct is None else alloc_pct
         new_enabled = allocation.enabled if enabled is None else enabled
@@ -377,6 +443,30 @@ class AccountStrategyConfigService:
         if pair_max_allocation_pct is not None:
             self.validate_pair_max_allocation_pct(pair_max_allocation_pct)
             allocation.pair_max_allocation_pct = pair_max_allocation_pct
+        if target_unit is not None:
+            allocation.target_unit = self.validate_exit_unit(target_unit)
+        if stop_unit is not None:
+            allocation.stop_unit = self.validate_exit_unit(stop_unit)
+        if target is not None:
+            self.validate_exit_threshold(target, allocation.target_unit, field="target")
+            allocation.target = target
+        if stop is not None:
+            self.validate_exit_threshold(stop, allocation.stop_unit, field="stop")
+            allocation.stop = stop
+        if time_limit is not None:
+            self.validate_time_limit(time_limit)
+            allocation.time_limit = time_limit
+        if exit_automation_enabled is not None:
+            allocation.exit_automation_enabled = exit_automation_enabled
+            await self._session.execute(
+                update(PositionModel)
+                .where(
+                    PositionModel.account_id == allocation.account_id,
+                    PositionModel.strategy_id == allocation.strategy_id,
+                    PositionModel.risk_state == "OPEN",
+                )
+                .values(exit_automation_enabled=exit_automation_enabled)
+            )
         pair_pct = allocation.pair_max_allocation_pct
         account = await self.get_account(allocation.account_id)
         if account is not None:

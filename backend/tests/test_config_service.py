@@ -215,3 +215,61 @@ async def test_pair_budget_too_small_at_one_thousand(db_factory) -> None:
                 pair_max_allocation_pct=Decimal("0.10"),
             )
         await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_update_allocation_flag_propagates_to_open_pairs(db_factory) -> None:
+    from app.db.repositories.position_repository import PositionRepository
+    from app.models.model_blue_trade import OpenModelBlueTrade, OpenModelBlueTradeLeg
+    from app.rms.models import OrderSide
+
+    suffix = uuid.uuid4().hex[:8]
+    async with db_factory() as session:
+        account, strategy = await _seed_account_strategy(session, suffix=suffix)
+        svc = AccountStrategyConfigService(session)
+        alloc = await svc.create_allocation(
+            account=account,
+            strategy_id=strategy.strategy_id,
+            alloc_pct=Decimal("0.25"),
+            target=Decimal(500),
+            stop=Decimal(250),
+            time_limit=3600,
+            exit_automation_enabled=False,
+        )
+        trade = OpenModelBlueTrade(
+            trade_id=f"MBG-PROP-{suffix}",
+            strategy_id=strategy.strategy_id,
+            direction=1,
+            legs=(
+                OpenModelBlueTradeLeg(
+                    symbol="XLE",
+                    instrument_type="STK",
+                    side=OrderSide.BUY,
+                    quantity=Decimal(10),
+                    price=Decimal(80),
+                ),
+                OpenModelBlueTradeLeg(
+                    symbol="XOP",
+                    instrument_type="STK",
+                    side=OrderSide.SELL,
+                    quantity=Decimal(10),
+                    price=Decimal(80),
+                ),
+            ),
+        )
+        await PositionRepository(session).open_trade(
+            trade,
+            account_id=account.id,
+            target=Decimal(500),
+            stop=Decimal(250),
+            time_limit=3600,
+            exit_automation_enabled=False,
+        )
+        await session.flush()
+        await svc.update_allocation(alloc, exit_automation_enabled=True)
+        await session.commit()
+        row = await PositionRepository(session).get_open_by_trade_id(
+            trade.trade_id, account_id=account.id
+        )
+        assert row is not None
+        assert row.exit_automation_enabled is True

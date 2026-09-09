@@ -67,7 +67,8 @@ Runtime logs: trading app `storage/logs/{YYYY-MM-DD}/trading.log`; webhook inges
 - `POST /api/webhooks/tradingview` on **ingest** (`:8000`) returns **HTTP 202** with status **`accepted`** and enqueues `signal_jobs`; workers on **trading** (`:8001`) run `process_signal_execution` asynchronously. Durable payload is `signal_jobs.capture_data`.
 - Trading app lifespan: TWS → OMS → OrderManager → hydrate → **CriticalRecoveryService** (wired to `BasketCoordinator`) → connect → **RecoveryManager** → **ExecutionWorkerPool(10)** on `app.state.worker_pool`.
 - **Execution claims** are acquired after RMS + instrument resolve, before broker submit — the durable dedupe barrier across crashes/workers.
-- Kill switch **stays armed** after flatten completes until operator `POST .../kill-switch/clear`.
+- Kill switch **stays armed** after flatten completes until operator `POST .../kill-switch/clear`. Account daily stop/target auto-exit uses the same kill switch (`requested_by=auto_risk`).
+- Pair auto-exit uses `positions.target` / `stop` / `time_limit` (and units), gated by `positions.exit_automation_enabled`. Allocation edits of target/stop apply to newly opened pairs only; OPEN pairs can be edited via the Open Positions popup (`PATCH .../positions/{trade_id}/exits`). Toggling allocation automation also arms or disarms currently OPEN pairs of that strategy. Master switch `RISK_EXIT_MONITOR_ENABLED` defaults false.
 - Remainder-retry is allowed on live Gateway **4001** after M9/M14 identity/persist fixes (`paper_retry_ports_allowed` includes 4001).
 - **BASKET_CRITICAL** auto-recovery: background flatten via `CriticalRecoveryService`, unlock OPENs when broker snapshot flat (`BasketState.RECOVERED`); dashboard banner via `GET /api/v1/baskets/critical`.
 - Production submit pacing is `GatewayRateLimiter` (~30/24/6 msg/sec, wait+timeout, Error 100 cooldown) on the single adapter — one limiter, one socket, all accounts. P1 `placeOrder`/`cancelOrder` may consume tokens without a normal-bucket token if that would not eat the P0 emergency reserve.
@@ -97,6 +98,7 @@ Runtime logs: trading app `storage/logs/{YYYY-MM-DD}/trading.log`; webhook inges
 - Pipeline: `backend/app/services/order_manager.py`
 - Recovery: `backend/app/services/recovery.py`
 - Kill switch: `backend/app/services/kill_switch.py`
+- Risk-exit monitor: `backend/app/services/risk_exit_monitor.py` + `risk_exit_rules.py`
 - RMS: `backend/app/rms/engine.py` + `backend/app/rms/checks/`
 - OMS / basket: `backend/app/oms/`
 - DB models: `backend/app/db/models/`

@@ -60,6 +60,15 @@ class AllocationModel(Base):
     )
     max_open_positions: Mapped[int] = mapped_column(Integer, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    target_unit: Mapped[str] = mapped_column(
+        String, nullable=False, default="ABSOLUTE", server_default="ABSOLUTE"
+    )
+    stop_unit: Mapped[str] = mapped_column(
+        String, nullable=False, default="ABSOLUTE", server_default="ABSOLUTE"
+    )
+    exit_automation_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
 
     account: Mapped["AccountModel"] = relationship("AccountModel")
     strategy: Mapped[StrategyModel] = relationship("StrategyModel")
@@ -76,4 +85,15 @@ class AllocationModel(Base):
             "pair_max_allocation_pct > 0 AND pair_max_allocation_pct <= 1",
             name="ck_allocations_pair_max_allocation_pct_range",
         ),
+        CheckConstraint(
+            "target_unit IN ('ABSOLUTE', 'PERCENT')",
+            name="ck_allocations_target_unit",
+        ),
+        CheckConstraint(
+            "stop_unit IN ('ABSOLUTE', 'PERCENT')",
+            name="ck_allocations_stop_unit",
+        ),
+        CheckConstraint("target >= 0", name="ck_allocations_target_nonneg"),
+        CheckConstraint("stop >= 0", name="ck_allocations_stop_nonneg"),
+        CheckConstraint("time_limit >= 0", name="ck_allocations_time_limit_nonneg"),
     )

@@ -40,15 +40,17 @@ Mounted in `create_app()`:
 | `GET` | `/api/v1/config/accounts` | `list_accounts_config` | — | `AccountsConfigResponse` | Read Postgres accounts, allocations, symbol limits |
 | `GET` | `/api/v1/config/accounts/by-identifier/{ibkr_account}` | `get_account_by_identifier` | path | `AccountConfigSchema` | Lookup by IBKR account string |
 | `POST` | `/api/v1/config/accounts` | `create_account` | `CreateAccountRequest` | `AccountConfigSchema` (201) | Create account row |
-| `PATCH` | `/api/v1/config/accounts/{account_id}` | `patch_account` | `PatchAccountRequest` | `AccountConfigSchema` | Update name / ibkr_account / margin / enabled |
+| `PATCH` | `/api/v1/config/accounts/{account_id}` | `patch_account` | `PatchAccountRequest` | `AccountConfigSchema` | Update name / ibkr_account / margin / enabled / daily stop-target |
 | `GET` | `/api/v1/config/accounts/{account_id}/deletable` | `check_account_deletable_api` | — | `AccountDeleteCheckResponse` | Pre-delete safety check |
 | `DELETE` | `/api/v1/config/accounts/{account_id}` | `delete_account_api` | — | 204 | Delete account (no trading history) |
 | `POST` | `/api/v1/config/accounts/{account_id}/square-off` | `square_off_account_positions` | — | `SquareOffResponse` (202) | Kill switch: emergency flatten |
 | `GET` | `/api/v1/config/accounts/{account_id}/kill-switch` | `get_account_kill_switch_status` | — | `KillSwitchStatusResponse` | Armed? |
 | `POST` | `/api/v1/config/accounts/{account_id}/kill-switch/clear` | `clear_account_kill_switch_endpoint` | — | `KillSwitchClearResponse` | Disarm kill switch |
+| `POST` | `/api/v1/config/accounts/{account_id}/positions/{trade_id}/close` | `close_selected_pair_endpoint` | — | `ClosePairResponse` | Close one OPEN pair |
+| `PATCH` | `/api/v1/config/accounts/{account_id}/positions/{trade_id}/exits` | `patch_position_exits` | `PatchPositionExitsRequest` | `PositionExitsSchema` | Set/change OPEN pair target/stop/units/arm flag; 409 if CLOSED |
 | `POST` | `/api/v1/emergency-kill-switch` | `emergency_kill_switch_endpoint` | `EmergencyKillSwitchRequest` | `EmergencyKillSwitchResponse` | Pre-flight webhook: arm existing Kill Switch (NO broker flatten on EC2) |
 | `POST` | `/api/v1/config/accounts/{account_id}/allocations` | `create_account_allocation` | `CreateAllocationRequest` | `AllocationConfigSchema` (201) | Create allocation |
-| `PATCH` | `/api/v1/config/allocations/{allocation_id}` | `patch_allocation` | `PatchAllocationRequest` | `AllocationConfigSchema` | Update alloc_pct / enabled / max_open_positions |
+| `PATCH` | `/api/v1/config/allocations/{allocation_id}` | `patch_allocation` | `PatchAllocationRequest` | `AllocationConfigSchema` | Update alloc_pct / enabled / max_open_positions / pair_max / target / stop / time_limit / units / exit_automation_enabled |
 | `PUT` | `/api/v1/config/accounts/{account_id}/symbol-limits/{symbol}` | `put_symbol_limit` | `PutSymbolLimitRequest` | `SymbolLimitSchema` | Upsert limit; reload RMS limits |
 | `DELETE` | `/api/v1/config/accounts/{account_id}/symbol-limits/{symbol}` | `delete_symbol_limit` | — | 204 | Delete limit; reload RMS limits |
 | `GET` | `/api/v1/config/execution` | `get_execution_settings` | — | `ExecutionSettingsSchema` | Read/create singleton paper retry row |
@@ -67,7 +69,7 @@ Mounted in `create_app()`:
 
 Config validation errors → HTTP 400 with `AllocationConfigError` message in `detail`.
 
-Account create/patch fields: `name`, `ibkr_account`, `total_margin`, `enabled` (`schemas/config_schemas.py`). **No** gateway host, port, clientId, or binding. `ibkr_account` is the IB account string copied onto `IBOrder.account`, not a socket selector.
+Account create/patch fields: `name`, `ibkr_account`, `total_margin`, `enabled`, plus daily risk (`daily_target`, `daily_stop`, `daily_target_unit`, `daily_stop_unit`, `account_risk_enabled`) (`schemas/config_schemas.py`). **No** gateway host, port, clientId, or binding. `ibkr_account` is the IB account string copied onto `IBOrder.account`, not a socket selector. Allocation PATCH also accepts `target` / `stop` / `time_limit` / `target_unit` / `stop_unit` / `exit_automation_enabled`. Thresholds are positive magnitudes (0 disables); `PERCENT` is a fraction of pair entry notional or `accounts.total_margin`. Pair-row `target`/`stop`/units can be edited in-flight via `PATCH .../positions/{trade_id}/exits` (OPEN only). Toggling allocation `exit_automation_enabled` also arms or disarms currently OPEN pairs of that strategy.
 
 Global unhandled `Exception` → HTTP 500 `{"detail":"Internal server error. Please try again later."}`.
 
@@ -83,6 +85,7 @@ Default bind: `127.0.0.1:8010` (`demo_streaming/config.py`). Does **not** connec
 |--------|------|------|
 | `GET` | `/health` | Redis ping; `{status, redis, stream, mode:"read-only"}` |
 | `GET` | `/demo/positions` | Snapshot of OPEN positions from Postgres |
+| `GET` | `/demo/positions/{account_id}/{trade_id}` | Pair detail: summary, exits + monitor/shadow flags, orders with fills, baskets, events |
 | `GET` | `/demo/closed-positions` | Closed positions (optional `account_id`) |
 | `GET` | `/demo/signals` | Signal/job history with pagination and filters |
 | `GET` | `/demo/market-data-health` | Live PnL subscription health (if service attached) |

@@ -165,6 +165,16 @@ There is **no** MockBroker class and **no** `BROKER_MODE` switch in `Settings`. 
 - Persists `positions.live_pnl` with coalescing: at most one in-flight write per trade, minimum 1s between successful persists for the same `(account_id, trade_id)`, skips DB write when pnl is unchanged; first mark may persist immediately after hydrate
 - Hydrate on startup after TWS connect
 - Health via `get_market_data_health()` (exposed on demo `:8010/demo/market-data-health`)
+- Public `get_pair_pnl(account_id, trade_id)` returns `PairPnlSnapshot` (`pnl`, `updated_at_mono`, `all_legs_marked`) for the risk-exit monitor
+
+## Risk-exit monitor
+
+`RiskExitMonitor` (`services/risk_exit_monitor.py`) — 2s asyncio loop, same start/stop pattern as `PositionReconciler`. Wired in `main.py` lifespan as `app.state.risk_exit_monitor`.
+
+- Pair: `positions.target` / `stop` / `time_limit` / units vs `LivePnlService` PnL (editable in-flight). Requires `positions.exit_automation_enabled`. Actuator: `SinglePairCloseService.close_pair`.
+- Account: session PnL = `SUM(realised_pnl)` of pairs closed since current RTH open + fresh unrealized. Requires `accounts.account_risk_enabled`. Actuator: `KillSwitchService.initiate_square_off(requested_by="auto_risk")` (stays armed until operator clear).
+- Units: `ABSOLUTE` (currency) or `PERCENT` (fraction of pair entry gross notional / `accounts.total_margin`). 0 disables.
+- Gates: `RISK_EXIT_MONITOR_ENABLED`, RTH, TWS connected, PnL freshness, in-flight dedupe, bounded retries. `RISK_EXIT_SHADOW_MODE` logs `PAIR_EXIT_TRIGGERED` / `ACCOUNT_RISK_BREACH` without orders.
 
 ## Hard invariants for agents
 

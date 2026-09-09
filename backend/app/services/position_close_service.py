@@ -44,7 +44,9 @@ class SinglePairCloseService:
         self._session_factory = session_factory
         self._order_manager = order_manager
 
-    async def close_pair(self, account_id: int, trade_id: str) -> ClosePairResponse:
+    async def close_pair(
+        self, account_id: int, trade_id: str, *, exit_reason: str | None = None
+    ) -> ClosePairResponse:
         """Atomically execute close for a single open pair or return in-flight operation result."""
         key = (account_id, trade_id)
 
@@ -57,14 +59,18 @@ class SinglePairCloseService:
             )
             return await _IN_FLIGHT_PAIR_CLOSES[key]
 
-        task = asyncio.create_task(self._do_close_pair(account_id, trade_id))
+        task = asyncio.create_task(
+            self._do_close_pair(account_id, trade_id, exit_reason=exit_reason)
+        )
         _IN_FLIGHT_PAIR_CLOSES[key] = task
         try:
             return await task
         finally:
             _IN_FLIGHT_PAIR_CLOSES.pop(key, None)
 
-    async def _do_close_pair(self, account_id: int, trade_id: str) -> ClosePairResponse:
+    async def _do_close_pair(
+        self, account_id: int, trade_id: str, *, exit_reason: str | None = None
+    ) -> ClosePairResponse:
         """Execute single position reduction and verify fills."""
         async with self._session_factory() as session:
             account = await session.get(AccountModel, account_id)
@@ -153,6 +159,7 @@ class SinglePairCloseService:
                 leg_a_symbol=leg_a_symbol,
                 leg_b_symbol=leg_b_symbol,
                 legs=legs,
+                exit_reason=exit_reason,
             )
         finally:
             await flatten_inflight.release(ledger_key)
@@ -167,6 +174,7 @@ class SinglePairCloseService:
         leg_a_symbol: str,
         leg_b_symbol: str | None,
         legs: list[OrderLeg],
+        exit_reason: str | None = None,
     ) -> ClosePairResponse:
         close_intent = OrderIntent(
             signal_id=f"CLOSEPAIR-{trade_id}",
@@ -262,6 +270,7 @@ class SinglePairCloseService:
                             account_id=account_id,
                             exit_marks=exit_marks,
                             commission=comm,
+                            exit_reason=exit_reason,
                         )
                         await EventRepository(session).append(
                             process="position",
@@ -269,7 +278,8 @@ class SinglePairCloseService:
                             detail={
                                 "account_id": account_id,
                                 "trade_id": trade_id,
-                                "source": "CLOSE_PAIR",
+                                "source": "CLOSE_PAIR" if exit_reason is None else "RISK_EXIT",
+                                "exit_reason": exit_reason,
                             },
                             idempotency_key=f"position_close:single_pair:{account_id}:{trade_id}",
                         )

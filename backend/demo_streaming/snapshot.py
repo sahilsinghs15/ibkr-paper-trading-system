@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select, tuple_
+from sqlalchemy import or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.account import AccountModel
@@ -20,6 +20,7 @@ from app.services.account_reject_reason import (
     has_account_prefixed_segments,
     scope_reject_reason_for_account,
 )
+from app.services.risk_exit_rules import pair_entry_gross_notional
 
 RISK_OPEN = "OPEN"
 RISK_CLOSED = "CLOSED"
@@ -148,6 +149,78 @@ def _close_in_progress(baskets: list[BasketModel], orders: list[OrderModel]) -> 
         if ":CLOSE" in (row.internal_order_id or "") and row.status not in ("CANCELLED", "REJECTED"):
             return True
     return False
+
+
+def execution_payload(ex: ExecutionModel) -> dict[str, Any]:
+    """JSON dict for one IBKR fill nested under an order."""
+    return {
+        "id": ex.id,
+        "exec_id": ex.exec_id,
+        "symbol": ex.symbol,
+        "side": ex.side,
+        "quantity": float(ex.quantity) if ex.quantity is not None else 0.0,
+        "price": float(ex.price) if ex.price is not None else 0.0,
+        "commission": float(ex.commission) if ex.commission is not None else None,
+        "realized_pnl": float(ex.realized_pnl) if ex.realized_pnl is not None else None,
+        "executed_at": (
+            ex.executed_at.isoformat()
+            if ex.executed_at
+            else ex.created_at.isoformat()
+            if ex.created_at
+            else None
+        ),
+    }
+
+
+def order_payload(
+    order: OrderModel, executions: list[ExecutionModel]
+) -> dict[str, Any]:
+    """JSON dict for one ledger order with nested fills."""
+    m_execs = sorted(executions, key=lambda x: x.id)
+    return {
+        "id": order.id,
+        "internal_order_id": order.internal_order_id,
+        "basket_id": order.basket_id,
+        "leg": order.leg,
+        "symbol": order.symbol,
+        "buy_sell": order.buy_sell,
+        "quantity": float(order.quantity) if order.quantity is not None else 0.0,
+        "fill_qty": float(order.fill_qty) if order.fill_qty is not None else 0.0,
+        "fill_price": float(order.fill_price) if order.fill_price is not None else None,
+        "status": order.status,
+        "broker_order_id": order.broker_order_id,
+        "is_compensation": order.is_compensation,
+        "compensation_of_internal_order_id": order.compensation_of_internal_order_id,
+        "filled_at": order.filled_at.isoformat() if order.filled_at else None,
+        "created_at": order.created_at.isoformat() if order.created_at else None,
+        "executions": [execution_payload(ex) for ex in m_execs],
+    }
+
+
+def event_payload(ev: EventLogModel) -> dict[str, Any]:
+    """JSON dict for one event_log row."""
+    return {
+        "id": ev.id,
+        "kind": ev.kind,
+        "process": ev.process,
+        "ts": ev.ts.isoformat() if ev.ts else None,
+        "detail": ev.detail or {},
+        "order_id": ev.order_id,
+        "basket_id": ev.basket_id,
+        "signal_id": ev.signal_id,
+    }
+
+
+def basket_payload(row: BasketModel) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "action": row.action,
+        "state": row.state,
+        "intended_leg_count": row.intended_leg_count,
+        "recovery_status": row.recovery_status,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
 
 
 def _leg_payload(
@@ -337,6 +410,114 @@ async def load_position_with_account(
         )
     )
     return result.first()
+
+
+async def load_pair_detail(
+    session: AsyncSession, account_id: int, trade_id: str
+) -> dict[str, Any] | None:
+    """Full history payload for one (account_id, trade_id) pair, any risk_state."""
+    loaded = await load_position_with_account(session, account_id, trade_id)
+    if loaded is None:
+        return None
+    position, account = loaded
+    key = (account_id, trade_id)
+    baskets_map = await load_baskets(session, {key})
+    orders_map = await load_orders(session, {key})
+    baskets = baskets_map.get(key, [])
+    orders = sorted(orders_map.get(key, []), key=lambda o: o.id)
+
+    order_ids = [o.id for o in orders if o.id]
+    internal_ids = [o.internal_order_id for o in orders if o.internal_order_id]
+    all_executions: list[ExecutionModel] = []
+    exec_filters = []
+    if order_ids:
+        exec_filters.append(ExecutionModel.order_id.in_(order_ids))
+    if internal_ids:
+        exec_filters.append(ExecutionModel.internal_order_id.in_(internal_ids))
+    if exec_filters:
+        exec_stmt = select(ExecutionModel).where(or_(*exec_filters))
+        all_executions = list((await session.execute(exec_stmt)).scalars().all())
+    execs_by_order_id: dict[int, list[ExecutionModel]] = {}
+    execs_by_internal_id: dict[str, list[ExecutionModel]] = {}
+    for ex in all_executions:
+        if ex.order_id:
+            execs_by_order_id.setdefault(ex.order_id, []).append(ex)
+        if ex.internal_order_id:
+            execs_by_internal_id.setdefault(ex.internal_order_id, []).append(ex)
+
+    orders_payload = []
+    for o in orders:
+        m_execs = execs_by_order_id.get(o.id) or (
+            execs_by_internal_id.get(o.internal_order_id) if o.internal_order_id else []
+        ) or []
+        orders_payload.append(order_payload(o, m_execs))
+
+    basket_ids = [b.id for b in baskets if b.id]
+    event_filters = []
+    if order_ids:
+        event_filters.append(EventLogModel.order_id.in_(order_ids))
+    if basket_ids:
+        event_filters.append(EventLogModel.basket_id.in_(basket_ids))
+    event_filters.append(EventLogModel.detail.contains({"trade_id": trade_id}))
+    events = list(
+        (
+            await session.execute(
+                select(EventLogModel).where(or_(*event_filters)).order_by(EventLogModel.id)
+            )
+        ).scalars().all()
+    )
+    seen: set[int] = set()
+    events_payload = []
+    for ev in events:
+        if ev.id in seen:
+            continue
+        seen.add(ev.id)
+        events_payload.append(event_payload(ev))
+
+    notional = pair_entry_gross_notional(
+        leg_a_signed_qty=position.leg_a_signed_qty,
+        leg_a_entry_mark=position.leg_a_entry_mark,
+        leg_b_signed_qty=position.leg_b_signed_qty,
+        leg_b_entry_mark=position.leg_b_entry_mark,
+    )
+    return {
+        "position": {
+            "account_id": position.account_id,
+            "ibkr_account": account.ibkr_account,
+            "account_name": account.name,
+            "trade_id": position.trade_id,
+            "strategy_id": position.strategy_id,
+            "risk_state": position.risk_state,
+            "leg_a_symbol": position.leg_a_symbol,
+            "leg_a_signed_qty": _dec(position.leg_a_signed_qty),
+            "leg_a_entry_mark": _dec(position.leg_a_entry_mark),
+            "leg_a_instrument_type": position.leg_a_instrument_type,
+            "leg_b_symbol": position.leg_b_symbol,
+            "leg_b_signed_qty": _dec(position.leg_b_signed_qty),
+            "leg_b_entry_mark": _dec(position.leg_b_entry_mark),
+            "leg_b_instrument_type": position.leg_b_instrument_type,
+            "live_pnl": _dec(position.live_pnl),
+            "realised_pnl": _dec(position.realised_pnl),
+            "commission": _dec(position.commission),
+            "opened_at": position.opened_at.isoformat() if position.opened_at else None,
+            "closed_at": position.closed_at.isoformat() if position.closed_at else None,
+            "exit_reason": position.exit_reason,
+            "entry_gross_notional": _dec(notional),
+        },
+        "exits": {
+            "target": _dec(position.target),
+            "stop": _dec(position.stop),
+            "time_limit": position.time_limit,
+            "target_unit": getattr(position, "target_unit", None) or "ABSOLUTE",
+            "stop_unit": getattr(position, "stop_unit", None) or "ABSOLUTE",
+            "exit_automation_enabled": bool(
+                getattr(position, "exit_automation_enabled", False)
+            ),
+        },
+        "orders": orders_payload,
+        "baskets": [basket_payload(b) for b in baskets],
+        "events": events_payload,
+    }
 
 
 async def load_baskets(
@@ -586,40 +767,10 @@ async def load_signals(
 
         orders_payload = []
         for o in matched_orders:
-            m_execs = execs_by_order_id.get(o.id) or (execs_by_internal_id.get(o.internal_order_id) if o.internal_order_id else []) or []
-            m_execs = sorted(m_execs, key=lambda x: x.id)
-
-            execs_payload = [
-                {
-                    "id": ex.id,
-                    "exec_id": ex.exec_id,
-                    "symbol": ex.symbol,
-                    "side": ex.side,
-                    "quantity": float(ex.quantity) if ex.quantity is not None else 0.0,
-                    "price": float(ex.price) if ex.price is not None else 0.0,
-                    "executed_at": ex.executed_at.isoformat() if ex.executed_at else ex.created_at.isoformat() if ex.created_at else None,
-                }
-                for ex in m_execs
-            ]
-
-            orders_payload.append(
-                {
-                    "id": o.id,
-                    "internal_order_id": o.internal_order_id,
-                    "basket_id": o.basket_id,
-                    "leg": o.leg,
-                    "symbol": o.symbol,
-                    "buy_sell": o.buy_sell,
-                    "quantity": float(o.quantity) if o.quantity is not None else 0.0,
-                    "fill_qty": float(o.fill_qty) if o.fill_qty is not None else 0.0,
-                    "fill_price": float(o.fill_price) if o.fill_price is not None else None,
-                    "status": o.status,
-                    "is_compensation": o.is_compensation,
-                    "compensation_of_internal_order_id": o.compensation_of_internal_order_id,
-                    "filled_at": o.filled_at.isoformat() if o.filled_at else None,
-                    "executions": execs_payload,
-                }
-            )
+            m_execs = execs_by_order_id.get(o.id) or (
+                execs_by_internal_id.get(o.internal_order_id) if o.internal_order_id else []
+            ) or []
+            orders_payload.append(order_payload(o, m_execs))
 
         matched_events = events_by_sig_id.get(sig.id, [])
         if target_acc_id is not None or target_ibkr_acc:
@@ -629,15 +780,7 @@ async def load_signals(
             ]
         matched_events = sorted(matched_events, key=lambda x: x.id)
 
-        events_payload = [
-            {
-                "id": ev.id,
-                "kind": ev.kind,
-                "ts": ev.ts.isoformat() if ev.ts else None,
-                "detail": ev.detail or {},
-            }
-            for ev in matched_events
-        ]
+        events_payload = [event_payload(ev) for ev in matched_events]
 
         job_reject: str | None = None
         if sig.signal_id:

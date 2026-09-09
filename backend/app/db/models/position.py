@@ -4,7 +4,16 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -41,6 +50,16 @@ class PositionModel(Base):
     target: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     stop: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     time_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_unit: Mapped[str] = mapped_column(
+        String, nullable=False, default="ABSOLUTE", server_default="ABSOLUTE"
+    )
+    stop_unit: Mapped[str] = mapped_column(
+        String, nullable=False, default="ABSOLUTE", server_default="ABSOLUTE"
+    )
+    exit_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    exit_automation_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     leg_a_instrument_type: Mapped[str] = mapped_column(String, nullable=False, default="STK")
     leg_b_instrument_type: Mapped[str | None] = mapped_column(String, nullable=True)
     opened_at: Mapped[datetime] = mapped_column(

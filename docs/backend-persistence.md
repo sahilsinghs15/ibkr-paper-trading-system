@@ -8,12 +8,12 @@
 |-------|-------|------|
 | `signals` | `SignalModel` | `db/models/signal.py` |
 | `signal_jobs` | `SignalJobModel` | `db/models/signal.py` (not exported in `__init__.py`) |
-| `accounts` | `AccountModel` | `db/models/account.py` | `id`, `name`, `ibkr_account`, `total_margin`, `enabled`. **No** gateway host/port/clientId. `total_margin` is an operator-entered **market-value budget** (trading capital), not IBKR margin available. |
+| `accounts` | `AccountModel` | `db/models/account.py` | `id`, `name`, `ibkr_account`, `total_margin`, `enabled`. **No** gateway host/port/clientId. `total_margin` is an operator-entered **market-value budget** (trading capital), not IBKR margin available. Daily risk: `daily_target` / `daily_stop` (nullable, 0 disables), `daily_target_unit` / `daily_stop_unit` (`ABSOLUTE` \| `PERCENT`), `account_risk_enabled` (default false). |
 | `strategies` | `StrategyModel` | `db/models/strategy.py` |
-| `allocations` | `AllocationModel` | `db/models/strategy.py` | Includes `pair_max_allocation_pct` (`Numeric(9,6)`, `(0, 1]`, default 0.10) — fraction of the model allocation used as one pair's market-value budget. |
+| `allocations` | `AllocationModel` | `db/models/strategy.py` | Includes `pair_max_allocation_pct` (`Numeric(9,6)`, `(0, 1]`, default 0.10) — fraction of the model allocation used as one pair's market-value budget. Exit knobs: `target` / `stop` / `time_limit`, `target_unit` / `stop_unit` (`ABSOLUTE` \| `PERCENT`), `exit_automation_enabled` (default false). Copied onto `positions` at OPEN (units + automation flag included). Allocation flag edits also propagate to currently OPEN rows of that account+strategy. |
 | `per_symbol_limits` | `PerSymbolLimitModel` | `db/models/account.py` |
 | `orders` | `OrderModel` | `db/models/order.py` |
-| `positions` | `PositionModel` | `db/models/position.py` |
+| `positions` | `PositionModel` | `db/models/position.py` | Pair ledger. Frozen `target` / `stop` / `time_limit` / units at OPEN; editable in-flight via `PATCH .../positions/{trade_id}/exits`. `exit_automation_enabled` is the pair-loop arm flag (seeded from allocation, then authoritative). `exit_reason` set by auto-exit or close. |
 | `event_log` | `EventLogModel` | `db/models/event.py` |
 | `instruments` | `InstrumentModel` | `db/models/instrument.py` |
 | `baskets` | `BasketModel` | `db/models/basket.py` |
@@ -30,7 +30,7 @@ There is **no** `signal_legs` table. Legs live in signal payload / pair columns 
 
 There are **no** `gateways`, `gateway_clients`, or `account_gateway_bindings` tables. Multi-gateway mapping is target-only ([`backend-multi-gateway.md`](backend-multi-gateway.md)).
 
-## Alembic revisions (HEAD `k5l6m7n8o9p0`)
+## Alembic revisions (HEAD `q5r6s7t8u9v0`)
 
 | Revision | File | Topic |
 |----------|------|-------|
@@ -60,6 +60,10 @@ There are **no** `gateways`, `gateway_clients`, or `account_gateway_bindings` ta
 | `i3j4k5l6m7n8` | `i3j4k5l6m7n8_uppercase_position_and_limit_symbols.py` | uppercase `positions` / `per_symbol_limits` symbols |
 | `j4k5l6m7n8o9` | `j4k5l6m7n8o9_unique_armed_kill_switch.py` | partial unique armed kill-switch per account |
 | `k5l6m7n8o9p0` | `k5l6m7n8o9p0_margin_check_enabled_default.py` | `margin_settings.check_enabled` default true |
+| `l6m7n8o9p0q1` | `l6m7n8o9p0q1_red_zone_deferred.py` | Red-zone deferred job columns |
+| `o3p4q5r6s7t8` | `o3p4q5r6s7t8_notification_read_state.py` | user notification read state |
+| `p4q5r6s7t8u9` | `p4q5r6s7t8u9_risk_exit_thresholds.py` | Pair/account stop-target units, exit automation flags, `positions.exit_reason` |
+| `q5r6s7t8u9v0` | `q5r6s7t8u9v0_position_exit_automation.py` | `positions.exit_automation_enabled` (backfill from allocations for OPEN rows) |
 
 `users` and `strategies` rows are one-off INSERTs (no create-user / create-strategy HTTP API).
 
@@ -73,7 +77,7 @@ Under `backend/app/db/repositories/`:
 | `SignalJobRepository` | `create_job_if_not_exists`, `claim_next_jobs`, `update_status`, `heartbeat_lease`, `reclaim_stale_jobs`, `count_orders_emitted` |
 | `ExecutionClaimRepository` | `acquire`, `mark_executed`, `release`, `count_orders_emitted`, `reconcile_stale_claims` |
 | `OrderRepository` | `get_by_internal_id`, `list_by_trade_id`, `record_oms_order` |
-| `PositionRepository` | `list_open`, `open_trade`, `close_trade`, `update_live_pnl`, `get_open_by_trade_id` |
+| `PositionRepository` | `list_open`, `open_trade`, `close_trade`, `update_live_pnl`, `get_open_by_trade_id`, `sum_realised_closed_since`, `set_exit_reason`, `update_exit_thresholds` |
 | `TradeRepository` | `get_open`, `open_trade`, `close_trade` |
 | `EventRepository` | `append` |
 | `ExecutionRepository` | `list_by_internal_order_id`, `upsert` |

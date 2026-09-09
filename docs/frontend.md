@@ -33,7 +33,7 @@ Main FastAPI (`app.main`) does **not** serve any frontend. The dashboard is serv
 - `store/pnlStore.ts` — Zustand active/closed leg maps + stream state
 - `hooks/usePnlStream.ts` — `GET /demo/positions` + `EventSource("/demo/stream")` (positions route only)
 - `utils/format.ts` — USD/PnL/time/instrument helpers
-- `components/` — `DashboardHeader`, `AppNav`, `Kpis`, `OpenPositionsTable`, `ClosedPositionsTable`, `CriticalIncidentsBanner`
+- `components/` — `DashboardHeader`, `AppNav`, `Kpis`, `OpenPositionsTable`, `ClosedPositionsTable`, `CriticalIncidentsBanner`, `PairDetailModal`, `ClosePairModal`
 - `api/criticalBasketsApi.ts` — axios client for `/api/v1/baskets/critical`
 - `types/criticalBaskets.ts` — critical incident API types
 - `App.css` — demo-matching dark theme (no Tailwind)
@@ -43,7 +43,7 @@ Main FastAPI (`app.main`) does **not** serve any frontend. The dashboard is serv
 1. `GET /demo/positions` — snapshot; keep OPEN legs
 2. `EventSource("/demo/stream")` — SSE updates
 3. On SSE error: mark reconnecting, wait 1s, reload snapshot, reconnect
-4. KPIs + open/closed tables; group by `(account_id, trade_id)`; use **one** pair `unrealized_pnl` per trade (do not sum both legs). Fifth KPI card **ACCOUNT MARGIN** polls `GET /api/v1/margin/accounts/{ibkr}` every 15s (`Kpis.tsx`). Stale or HTTP 503 renders a dimmed value with a `STALE` / `GATEWAY DOWN` pill — never show a stale figure as live. Grid is five columns (`.factory-kpis`).
+4. KPIs + open/closed tables; group by `(account_id, trade_id)`; use **one** pair `unrealized_pnl` per trade (do not sum both legs). Fifth KPI card **ACCOUNT MARGIN** polls `GET /api/v1/margin/accounts/{ibkr}` every 15s (`Kpis.tsx`). Stale or HTTP 503 renders a dimmed value with a `STALE` / `GATEWAY DOWN` pill — never show a stale figure as live. Grid is five columns (`.factory-kpis`). Open Positions rows are clickable: `PairDetailModal` loads `GET /demo/positions/{account_id}/{trade_id}` (order/fill/event history) and can `PATCH /api/v1/config/accounts/{id}/positions/{trade_id}/exits` (stop/target/units + arm this pair). Close Pair still has its own confirm modal.
 5. Poll `GET /api/v1/baskets/critical?ibkr_account=` every 5s — banner + incident table when any CRITICAL basket exists; empty list means OPEN trading resumed for that account
 6. NY vs IST timezone in `localStorage` key `modelBlue.displayTimezone`
 7. Display maps instrument `STK` → label `CFD`
@@ -53,7 +53,7 @@ Main FastAPI (`app.main`) does **not** serve any frontend. The dashboard is serv
 Routed component is `AccountSettingsPage.tsx`, not `SettingsPage.tsx`.
 
 - `GET /api/v1/config/accounts` — load nested config
-- Per account: edit **Trading capital** (`accounts.total_margin`; market-value budget, not IBKR margin), `enabled`, allocation `alloc_pct` (with enabled-sum ≤ 100% guard), **per-pair allocation** (`pair_max_allocation_pct`, with a derived `$X per pair · room for N pairs` hint), per-account `max_open_positions`, and `per_symbol_limits` CRUD. Broker free-margin from `GET /api/v1/margin/accounts/{ibkr}` is shown beside that input so the two figures are not confused. New allocations are created from `AccountsPage` `AddAllocationModal` (includes the per-pair field).
+- Per account: edit **Trading capital** (`accounts.total_margin`; market-value budget, not IBKR margin), `enabled`, allocation `alloc_pct` (with enabled-sum ≤ 100% guard), **per-pair allocation** (`pair_max_allocation_pct`, with a derived `$X per pair · room for N pairs` hint), per-account `max_open_positions`, **exit automation** (pair target/stop/time_limit + units + enable toggle; threshold edits apply to new pairs, the automation toggle also arms currently OPEN pairs of that strategy), **account daily risk** (daily target/stop + units + enable toggle), and `per_symbol_limits` CRUD. Broker free-margin from `GET /api/v1/margin/accounts/{ibkr}` is shown beside that input so the two figures are not confused. New allocations are created from `AccountsPage` `AddAllocationModal` (includes the per-pair field).
 - Auto square-off & retry: `GET/PATCH /api/v1/config/execution`
 - **Margin gate policy:** `GET/PATCH /api/v1/config/margin` (`MarginSettingsCard`) — `check_enabled` defaults true (**Margin check enabled**); uncheck for shadow mode. Comfort ratio, floors, look-ahead; no TWS restart
 - Saves via PATCH/PUT/DELETE on `/api/v1/config/*` (proxied to trading app `:8001`)

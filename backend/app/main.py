@@ -28,6 +28,7 @@ from app.services.model_blue.persistence import ModelBlueExecutionPersistence
 from app.services.order_manager import OrderManager
 from app.services.pnl import LivePnlService
 from app.services.position_reconciler import PositionReconciler
+from app.services.risk_exit_monitor import RiskExitMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +190,21 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         await red_zone_release.start()
     fastapi_app.state.red_zone_release = red_zone_release
 
+    risk_exit_monitor = RiskExitMonitor(
+        AsyncSessionLocal,
+        client=client,
+        live_pnl=order_manager._live_pnl,
+        order_manager=order_manager,
+        interval_sec=float(settings.risk_exit_interval_sec),
+        max_pnl_staleness_sec=float(settings.risk_exit_max_pnl_staleness_sec),
+        max_retries=int(settings.risk_exit_max_retries),
+        enabled=bool(settings.risk_exit_monitor_enabled),
+        shadow_mode=bool(settings.risk_exit_shadow_mode),
+    )
+    if not testing:
+        await risk_exit_monitor.start()
+    fastapi_app.state.risk_exit_monitor = risk_exit_monitor
+
     if not testing:
         try:
             await critical_recovery.enqueue_all_critical()
@@ -218,6 +234,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     yield
 
     logger.info("Shutting down paper-trading application...")
+    if hasattr(fastapi_app.state, "risk_exit_monitor"):
+        await fastapi_app.state.risk_exit_monitor.stop()
     if hasattr(fastapi_app.state, "red_zone_release"):
         await fastapi_app.state.red_zone_release.stop()
     if hasattr(fastapi_app.state, "margin_scanner"):

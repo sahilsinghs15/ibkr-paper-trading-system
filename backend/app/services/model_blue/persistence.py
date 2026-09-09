@@ -267,6 +267,11 @@ class ModelBlueExecutionPersistence:
                 target=allocation.target,
                 stop=allocation.stop,
                 time_limit=allocation.time_limit,
+                target_unit=getattr(allocation, "target_unit", None) or "ABSOLUTE",
+                stop_unit=getattr(allocation, "stop_unit", None) or "ABSOLUTE",
+                exit_automation_enabled=bool(
+                    getattr(allocation, "exit_automation_enabled", False)
+                ),
             )
             comm = _commission_from_orders(orders)
             if comm is not None and comm > 0:

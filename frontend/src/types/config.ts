@@ -13,6 +13,9 @@ export interface AllocationConfig {
   stop: string
   time_limit: number
   pair_max_allocation_pct: string
+  target_unit: string
+  stop_unit: string
+  exit_automation_enabled: boolean
 }
 
 export interface AccountConfig {
@@ -23,6 +26,11 @@ export interface AccountConfig {
   enabled: boolean
   default_symbol_limit?: string | number | null
   kill_switch_active?: boolean
+  daily_target?: string | number | null
+  daily_stop?: string | number | null
+  daily_target_unit?: string
+  daily_stop_unit?: string
+  account_risk_enabled?: boolean
   allocations: AllocationConfig[]
   symbol_limits: SymbolLimit[]
 }
@@ -65,6 +73,11 @@ export interface PatchAccountPayload {
   ibkr_account?: string
   total_margin?: number | string
   enabled?: boolean
+  daily_target?: number | string
+  daily_stop?: number | string
+  daily_target_unit?: string
+  daily_stop_unit?: string
+  account_risk_enabled?: boolean
 }
 
 export interface CreateAllocationPayload {
@@ -75,6 +88,9 @@ export interface CreateAllocationPayload {
   stop?: number
   time_limit?: number
   pair_max_allocation_pct?: number
+  target_unit?: string
+  stop_unit?: string
+  exit_automation_enabled?: boolean
   enabled?: boolean
 }
 

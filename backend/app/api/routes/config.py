@@ -33,6 +33,8 @@ from app.schemas.config_schemas import (
     PatchAllocationRequest,
     PatchExecutionSettingsRequest,
     PatchMarginSettingsRequest,
+    PatchPositionExitsRequest,
+    PositionExitsSchema,
     PutDefaultSymbolLimitRequest,
     PutSymbolLimitRequest,
     SquareOffResponse,
@@ -48,6 +50,16 @@ router = APIRouter(prefix="/config", tags=["config"])
 
 def _config_error(exc: AllocationConfigError) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
+
+
+def _account_risk_fields(account: AccountModel) -> dict:
+    return {
+        "daily_target": getattr(account, "daily_target", None),
+        "daily_stop": getattr(account, "daily_stop", None),
+        "daily_target_unit": getattr(account, "daily_target_unit", None) or "ABSOLUTE",
+        "daily_stop_unit": getattr(account, "daily_stop_unit", None) or "ABSOLUTE",
+        "account_risk_enabled": bool(getattr(account, "account_risk_enabled", False)),
+    }
 
 
 def _check_account_authorization(
@@ -117,6 +129,7 @@ async def list_accounts_config(
                 enabled=account.enabled,
                 default_symbol_limit=account.default_symbol_limit,
                 kill_switch_active=is_account_kill_switch_active(account.id),
+                **_account_risk_fields(account),
                 allocations=[
                     AllocationConfigSchema.model_validate(a)
                     for a in allocs_by_account.get(account.id, [])
@@ -173,6 +186,7 @@ async def get_account_by_identifier(
         enabled=account.enabled,
         default_symbol_limit=account.default_symbol_limit,
         kill_switch_active=is_account_kill_switch_active(account.id),
+        **_account_risk_fields(account),
         allocations=[AllocationConfigSchema.model_validate(a) for a in allocations],
         symbol_limits=[SymbolLimitSchema.model_validate(l) for l in limits],
     )
@@ -326,6 +340,143 @@ async def close_selected_pair_endpoint(
     return await close_svc.close_pair(account_id=account_id, trade_id=trade_id)
 
 
+def _position_exits_schema(row) -> PositionExitsSchema:
+    return PositionExitsSchema(
+        account_id=row.account_id,
+        trade_id=row.trade_id,
+        risk_state=row.risk_state,
+        target=row.target,
+        stop=row.stop,
+        time_limit=row.time_limit,
+        target_unit=getattr(row, "target_unit", None) or "ABSOLUTE",
+        stop_unit=getattr(row, "stop_unit", None) or "ABSOLUTE",
+        exit_automation_enabled=bool(getattr(row, "exit_automation_enabled", False)),
+    )
+
+
+def _dec_str(value) -> str | None:
+    if value is None:
+        return None
+    return format(value, "f")
+
+
+@router.patch(
+    "/accounts/{account_id}/positions/{trade_id}/exits",
+    response_model=PositionExitsSchema,
+    summary="Set or change stop/target on an open pair",
+)
+async def patch_position_exits(
+    account_id: int,
+    trade_id: str,
+    body: PatchPositionExitsRequest,
+    session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
+) -> PositionExitsSchema:
+    """Update frozen exit knobs on one OPEN positions row. Takes effect on the next monitor tick."""
+    _check_account_authorization(current_user, account_id=account_id)
+    from app.db.repositories.event_repository import EventRepository
+    from app.db.repositories.position_repository import (
+        PositionNotFoundError,
+        PositionNotOpenError,
+        PositionRepository,
+    )
+
+    svc = AccountStrategyConfigService(session)
+    repo = PositionRepository(session)
+    row = await repo.get_by_trade_id(trade_id, account_id=account_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Position {trade_id} not found for account {account_id}.",
+        )
+    if row.risk_state != "OPEN":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"POSITION_NOT_OPEN: trade_id '{trade_id}' is {row.risk_state}; "
+                "exits are immutable after close."
+            ),
+        )
+    if (
+        body.target is None
+        and body.stop is None
+        and body.target_unit is None
+        and body.stop_unit is None
+        and body.exit_automation_enabled is None
+    ):
+        raise HTTPException(status_code=400, detail="No fields to update.")
+
+    try:
+        new_target_unit = row.target_unit
+        new_stop_unit = row.stop_unit
+        if body.target_unit is not None:
+            new_target_unit = svc.validate_exit_unit(body.target_unit)
+        if body.stop_unit is not None:
+            new_stop_unit = svc.validate_exit_unit(body.stop_unit)
+        if body.target is not None:
+            svc.validate_exit_threshold(body.target, new_target_unit, field="target")
+        elif body.target_unit is not None:
+            svc.validate_exit_threshold(row.target, new_target_unit, field="target")
+        if body.stop is not None:
+            svc.validate_exit_threshold(body.stop, new_stop_unit, field="stop")
+        elif body.stop_unit is not None:
+            svc.validate_exit_threshold(row.stop, new_stop_unit, field="stop")
+    except AllocationConfigError as exc:
+        raise _config_error(exc) from exc
+
+    old = {
+        "target": _dec_str(row.target),
+        "stop": _dec_str(row.stop),
+        "target_unit": row.target_unit,
+        "stop_unit": row.stop_unit,
+        "exit_automation_enabled": bool(getattr(row, "exit_automation_enabled", False)),
+    }
+    try:
+        updated = await repo.update_exit_thresholds(
+            account_id=account_id,
+            trade_id=trade_id,
+            target=body.target,
+            stop=body.stop,
+            target_unit=new_target_unit if body.target_unit is not None else None,
+            stop_unit=new_stop_unit if body.stop_unit is not None else None,
+            exit_automation_enabled=body.exit_automation_enabled,
+        )
+    except PositionNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Position {trade_id} not found for account {account_id}.",
+        ) from exc
+    except PositionNotOpenError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    new = {
+        "target": _dec_str(updated.target),
+        "stop": _dec_str(updated.stop),
+        "target_unit": updated.target_unit,
+        "stop_unit": updated.stop_unit,
+        "exit_automation_enabled": bool(updated.exit_automation_enabled),
+    }
+    await EventRepository(session).append(
+        process="config",
+        kind="PAIR_EXIT_THRESHOLDS_UPDATED",
+        detail={
+            "account_id": account_id,
+            "trade_id": trade_id,
+            "old": old,
+            "new": new,
+        },
+    )
+    await session.commit()
+    logger.info(
+        "Config PATCH position exits account_id=%s trade_id=%s old=%s new=%s",
+        account_id,
+        trade_id,
+        old,
+        new,
+    )
+    return _position_exits_schema(updated)
+
+
 @router.post(
     "/accounts",
     response_model=AccountConfigSchema,
@@ -366,6 +517,7 @@ async def create_account(
         total_margin=account.total_margin,
         enabled=account.enabled,
         default_symbol_limit=account.default_symbol_limit,
+        **_account_risk_fields(account),
         allocations=[],
         symbol_limits=[],
     )
@@ -394,6 +546,11 @@ async def patch_account(
         and body.total_margin is None
         and body.enabled is None
         and body.default_symbol_limit is None
+        and body.daily_target is None
+        and body.daily_stop is None
+        and body.daily_target_unit is None
+        and body.daily_stop_unit is None
+        and body.account_risk_enabled is None
     ):
         raise HTTPException(status_code=400, detail="No fields to update.")
     try:
@@ -404,6 +561,11 @@ async def patch_account(
             total_margin=body.total_margin,
             enabled=body.enabled,
             default_symbol_limit=body.default_symbol_limit,
+            daily_target=body.daily_target,
+            daily_stop=body.daily_stop,
+            daily_target_unit=body.daily_target_unit,
+            daily_stop_unit=body.daily_stop_unit,
+            account_risk_enabled=body.account_risk_enabled,
         )
         await session.commit()
     except AllocationConfigError as exc:
@@ -442,6 +604,7 @@ async def patch_account(
         enabled=account.enabled,
         default_symbol_limit=account.default_symbol_limit,
         kill_switch_active=is_account_kill_switch_active(account.id),
+        **_account_risk_fields(account),
         allocations=[AllocationConfigSchema.model_validate(a) for a in allocations],
         symbol_limits=[SymbolLimitSchema.model_validate(l) for l in limits],
     )
@@ -474,6 +637,9 @@ async def create_account_allocation(
             enabled=body.enabled,
             max_open_positions=body.max_open_positions,
             pair_max_allocation_pct=body.pair_max_allocation_pct,
+            target_unit=body.target_unit,
+            stop_unit=body.stop_unit,
+            exit_automation_enabled=body.exit_automation_enabled,
         )
         await session.commit()
     except AllocationConfigError as exc:
@@ -568,6 +734,12 @@ async def patch_allocation(
         and body.enabled is None
         and body.max_open_positions is None
         and body.pair_max_allocation_pct is None
+        and body.target is None
+        and body.stop is None
+        and body.time_limit is None
+        and body.target_unit is None
+        and body.stop_unit is None
+        and body.exit_automation_enabled is None
     ):
         raise HTTPException(status_code=400, detail="No fields to update.")
     try:
@@ -577,6 +749,12 @@ async def patch_allocation(
             enabled=body.enabled,
             max_open_positions=body.max_open_positions,
             pair_max_allocation_pct=body.pair_max_allocation_pct,
+            target=body.target,
+            stop=body.stop,
+            time_limit=body.time_limit,
+            target_unit=body.target_unit,
+            stop_unit=body.stop_unit,
+            exit_automation_enabled=body.exit_automation_enabled,
         )
         await session.commit()
     except AllocationConfigError as exc:
@@ -678,6 +856,7 @@ async def put_default_symbol_limit(
         enabled=account.enabled,
         default_symbol_limit=account.default_symbol_limit,
         kill_switch_active=is_account_kill_switch_active(account.id),
+        **_account_risk_fields(account),
         allocations=[AllocationConfigSchema.model_validate(a) for a in allocations],
         symbol_limits=[SymbolLimitSchema.model_validate(l) for l in limits],
     )

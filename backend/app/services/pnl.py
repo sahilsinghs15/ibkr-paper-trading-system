@@ -5,6 +5,7 @@ import inspect
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -74,6 +75,15 @@ def _effective_mark(quote: dict[str, Decimal]) -> Decimal | None:
     return quote.get("close")
 
 
+@dataclass(frozen=True)
+class PairPnlSnapshot:
+    """In-memory pair unrealized PnL as last recomputed from ticks."""
+
+    pnl: Decimal
+    updated_at_mono: float
+    all_legs_marked: bool
+
+
 class LivePnlService:
     """Subscribe to IBKR ticks for open pair positions and persist live_pnl.
 
@@ -108,6 +118,7 @@ class LivePnlService:
         self._pending_pnl: dict[tuple[int, str], Decimal] = {}
         self._last_persisted_pnl: dict[tuple[int, str], Decimal] = {}
         self._last_persist_at: dict[tuple[int, str], float] = {}
+        self._pnl_updated_at: dict[tuple[int, str], float] = {}
         self._persist_in_flight: set[tuple[int, str]] = set()
         self._persist_delayed: set[tuple[int, str]] = set()
         if client is not None and hasattr(client, "register_market_data_listener"):
@@ -209,6 +220,7 @@ class LivePnlService:
             self._pending_pnl.pop(trade_key, None)
             self._last_persisted_pnl.pop(trade_key, None)
             self._last_persist_at.pop(trade_key, None)
+            self._pnl_updated_at.pop(trade_key, None)
             self._persist_in_flight.discard(trade_key)
             self._persist_delayed.discard(trade_key)
         cancel = getattr(self._client, "cancelMktData", None)
@@ -233,6 +245,32 @@ class LivePnlService:
                         logger.exception("LivePnl cancelMktData failed for req_id=%s", req_id)
 
         logger.info("LivePnl unwatch: account_id=%s trade_id=%s", account_id, trade_id)
+
+    def get_pair_pnl(self, account_id: int, trade_id: str) -> PairPnlSnapshot | None:
+        """Return the latest in-memory pair PnL, or None if the trade is not watched."""
+        trade_key = (account_id, trade_id)
+        legs = self._legs.get(trade_key)
+        if not legs:
+            return None
+        all_marked = True
+        for symbol in legs:
+            if self._marks.get((account_id, trade_id, symbol)) is None:
+                all_marked = False
+                break
+        with self._persist_lock:
+            pnl = self._pending_pnl.get(trade_key)
+            if pnl is None:
+                pnl = self._last_persisted_pnl.get(trade_key)
+            updated = self._pnl_updated_at.get(trade_key)
+        if pnl is None or updated is None:
+            return PairPnlSnapshot(
+                pnl=Decimal(0),
+                updated_at_mono=0.0,
+                all_legs_marked=False,
+            )
+        return PairPnlSnapshot(
+            pnl=pnl, updated_at_mono=updated, all_legs_marked=all_marked
+        )
 
     def on_error(self, reqId: int, errorCode: int, errorString: str) -> None:
         c_key = self._req_to_contract.get(reqId)
@@ -808,6 +846,7 @@ class LivePnlService:
         trade_key = (account_id, trade_id)
         with self._persist_lock:
             self._pending_pnl[trade_key] = pnl
+            self._pnl_updated_at[trade_key] = time.monotonic()
         try:
             asyncio.run_coroutine_threadsafe(
                 self._schedule_persist(account_id, trade_id), loop

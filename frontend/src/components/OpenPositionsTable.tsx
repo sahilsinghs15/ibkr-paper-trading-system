@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { ClosePairModal } from './ClosePairModal'
+import { PairDetailModal } from './PairDetailModal'
 import { SortableTh } from './SortableTh'
 import { groupLegs, usePnlStore } from '../store/pnlStore'
 import type { ClosePairResponse } from '../types/config'
@@ -68,6 +69,12 @@ const OPEN_POSITIONS_SORT_EXTRACTORS: Record<string, (legs: PositionLeg[]) => un
   },
 }
 
+interface PairToInspect {
+  accountId: number
+  tradeId: string
+  legs: PositionLeg[]
+}
+
 interface PairToClose {
   accountId: number
   ibkrAccount: string
@@ -83,6 +90,7 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
   const [historyOrder, setHistoryOrder] = useState<'RECENT' | 'OLDER'>('RECENT')
   const [pairToClose, setPairToClose] = useState<PairToClose | null>(null)
+  const [pairToInspect, setPairToInspect] = useState<PairToInspect | null>(null)
   const [closeMessage, setCloseMessage] = useState<string | null>(null)
   const { sortKey, sortDir, handleSort } = useTableSortState()
 
@@ -204,8 +212,29 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                 const tk = `${head.account_id}|${head.trade_id}`
                 const rowSno = idx + 1
 
+                const openDetail = () => {
+                  if (head.account_id === undefined || head.account_id === null || !head.trade_id) return
+                  setPairToInspect({
+                    accountId: Number(head.account_id),
+                    tradeId: head.trade_id,
+                    legs,
+                  })
+                }
+
                 return (
-                  <tr key={tk} className="factory-row">
+                  <tr
+                    key={tk}
+                    className="factory-row factory-row-clickable"
+                    role="button"
+                    tabIndex={0}
+                    onClick={openDetail}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        openDetail()
+                      }
+                    }}
+                  >
                     {/* 1. SNO */}
                     <td className="mono dim sno">{rowSno}</td>
 
@@ -292,7 +321,8 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                         type="button"
                         className="btn danger"
                         style={{ padding: '4px 8px', fontSize: '10px', fontWeight: 600 }}
-                        onClick={() => {
+                        onClick={(e) => {
+                          e.stopPropagation()
                           if (head.account_id === undefined || head.account_id === null || !head.trade_id) return
                           setPairToClose({
                             accountId: Number(head.account_id),
@@ -330,6 +360,15 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
               setCloseMessage(`Pair ${res.trade_id} close status: ${res.status}. ${res.message || ''}`)
             }
           }}
+        />
+      ) : null}
+      {pairToInspect ? (
+        <PairDetailModal
+          isOpen={!!pairToInspect}
+          accountId={pairToInspect.accountId}
+          tradeId={pairToInspect.tradeId}
+          legs={pairToInspect.legs}
+          onClose={() => setPairToInspect(null)}
         />
       ) : null}
     </section>

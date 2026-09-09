@@ -80,7 +80,7 @@ flowchart LR
     B --> C[hydrate_runtime_from_db]
     C --> D[connect_and_start :7497]
     D --> E[RecoveryManager<br/>stale jobs/claims]
-    E --> F[WorkerPool 10<br/>+ Reconciler 30s<br/>+ CriticalRecovery]
+    E --> F[WorkerPool 10<br/>+ Reconciler 30s<br/>+ RiskExitMonitor<br/>+ CriticalRecovery]
 ```
 
 ### `webhook_ingest.py` (ingest, :8000)
@@ -122,6 +122,7 @@ Shutdown:
 | `order_manager` | `OrderManager` | Pipeline facade |
 | `worker_pool` | `ExecutionWorkerPool` | Background job consumers |
 | `position_reconciler` | `PositionReconciler` | IBKR position snapshot + ledger diff loop |
+| `risk_exit_monitor` | `RiskExitMonitor` | Pair/account stop-target auto-exit loop |
 
 Kill-switch armed cache is **not** on `app.state`; it lives in `kill_switch.py` module memory and is rebuilt during `hydrate_runtime_from_db()`.
 
@@ -146,6 +147,7 @@ Lifespan constructs **one** `TWSClient`, **one** `GatewayRateLimiter`, and **one
 | Execution dedupe barrier | `db/repositories/execution_claim_repository.py`, `services/order_manager.py` |
 | Startup recovery | `services/recovery.py` |
 | Kill switch | `services/kill_switch.py`, `api/routes/config.py` |
+| Risk-exit monitor (pair/account stop-target) | `services/risk_exit_monitor.py`, `services/risk_exit_rules.py` |
 | IBKR leftover flatten (operator sidecar, client id 99) | `scripts/oms/flatten_gateway_positions.py` — runbook: [`backend-kill-switch.md`](backend-kill-switch.md) |
 | Model Blue parse/size | `services/model_blue/parser.py`, `sizer.py`, `strategy.py` |
 | RMS check order / logic | `rms/engine.py`, `rms/checks/*.py` |
@@ -164,7 +166,7 @@ Lifespan constructs **one** `TWSClient`, **one** `GatewayRateLimiter`, and **one
 
 ## Alembic HEAD
 
-Chain ends at revision **`k5l6m7n8o9p0`** (`k5l6m7n8o9p0_margin_check_enabled_default.py`, revises `j4k5l6m7n8o9`). Full chain in [`backend-persistence.md`](backend-persistence.md).
+Chain ends at revision **`q5r6s7t8u9v0`** (`q5r6s7t8u9v0_position_exit_automation.py`, revises `p4q5r6s7t8u9`). Full chain in [`backend-persistence.md`](backend-persistence.md).
 
 ## Ignore / do not treat as source of truth
 

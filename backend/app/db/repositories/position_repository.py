@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.identifiers import normalize_symbol
@@ -13,6 +13,23 @@ from app.rms.models import OrderSide
 
 RISK_STATE_OPEN = "OPEN"
 RISK_STATE_CLOSED = "CLOSED"
+EXIT_UNIT_ABSOLUTE = "ABSOLUTE"
+
+
+class PositionNotFoundError(KeyError):
+    """No positions row for (account_id, trade_id)."""
+
+
+class PositionNotOpenError(ValueError):
+    """Exit thresholds may only be edited on OPEN rows."""
+
+    def __init__(self, trade_id: str, risk_state: str) -> None:
+        self.trade_id = trade_id
+        self.risk_state = risk_state
+        super().__init__(
+            f"POSITION_NOT_OPEN: trade_id '{trade_id}' is {risk_state}; "
+            "exits are immutable after close."
+        )
 
 
 def _signed_qty(side: OrderSide, quantity: Decimal) -> Decimal:
@@ -128,6 +145,9 @@ class PositionRepository:
         target: Decimal,
         stop: Decimal,
         time_limit: int,
+        target_unit: str = EXIT_UNIT_ABSOLUTE,
+        stop_unit: str = EXIT_UNIT_ABSOLUTE,
+        exit_automation_enabled: bool = False,
     ) -> PositionModel:
         # Pair-row schema (DB-3 deferred): Model Blue persistence, not generic N-leg storage.
         if len(trade.legs) != 2:
@@ -156,6 +176,9 @@ class PositionRepository:
             target=target,
             stop=stop,
             time_limit=time_limit,
+            target_unit=target_unit or EXIT_UNIT_ABSOLUTE,
+            stop_unit=stop_unit or EXIT_UNIT_ABSOLUTE,
+            exit_automation_enabled=bool(exit_automation_enabled),
             risk_state=RISK_STATE_OPEN,
         )
         self._session.add(row)
@@ -169,6 +192,7 @@ class PositionRepository:
         account_id: int | None = None,
         exit_marks: dict[str, Decimal] | None = None,
         commission: Decimal | None = None,
+        exit_reason: str | None = None,
     ) -> PositionModel:
         row = await self.get_open_by_trade_id(trade_id, account_id=account_id)
         if row is None:
@@ -209,6 +233,8 @@ class PositionRepository:
         row.live_pnl = realised
         row.risk_state = RISK_STATE_CLOSED
         row.closed_at = datetime.now(UTC)
+        if exit_reason is not None:
+            row.exit_reason = exit_reason
         await self._session.flush()
         return row
 
@@ -220,3 +246,63 @@ class PositionRepository:
             return
         row.live_pnl = live_pnl
         await self._session.flush()
+
+    async def sum_realised_closed_since(
+        self, *, account_id: int, since: datetime
+    ) -> Decimal:
+        """SUM(realised_pnl) for CLOSED rows with closed_at >= since."""
+        stmt = select(func.coalesce(func.sum(PositionModel.realised_pnl), 0)).where(
+            PositionModel.account_id == account_id,
+            PositionModel.risk_state == RISK_STATE_CLOSED,
+            PositionModel.closed_at >= since,
+        )
+        total = (await self._session.execute(stmt)).scalar_one()
+        return Decimal(str(total))
+
+    async def set_exit_reason(
+        self, *, account_id: int, reason: str, trade_id: str | None = None
+    ) -> int:
+        """Stamp exit_reason on OPEN rows. Returns number of rows updated."""
+        stmt = (
+            update(PositionModel)
+            .where(
+                PositionModel.account_id == account_id,
+                PositionModel.risk_state == RISK_STATE_OPEN,
+            )
+            .values(exit_reason=reason)
+        )
+        if trade_id is not None:
+            stmt = stmt.where(PositionModel.trade_id == trade_id)
+        result = await self._session.execute(stmt)
+        await self._session.flush()
+        return int(result.rowcount or 0)
+
+    async def update_exit_thresholds(
+        self,
+        *,
+        account_id: int,
+        trade_id: str,
+        target: Decimal | None = None,
+        stop: Decimal | None = None,
+        target_unit: str | None = None,
+        stop_unit: str | None = None,
+        exit_automation_enabled: bool | None = None,
+    ) -> PositionModel:
+        """Update frozen exit knobs on an OPEN positions row."""
+        row = await self.get_by_trade_id(trade_id, account_id=account_id)
+        if row is None:
+            raise PositionNotFoundError(trade_id)
+        if row.risk_state != RISK_STATE_OPEN:
+            raise PositionNotOpenError(trade_id, row.risk_state)
+        if target is not None:
+            row.target = target
+        if stop is not None:
+            row.stop = stop
+        if target_unit is not None:
+            row.target_unit = target_unit
+        if stop_unit is not None:
+            row.stop_unit = stop_unit
+        if exit_automation_enabled is not None:
+            row.exit_automation_enabled = exit_automation_enabled
+        await self._session.flush()
+        return row

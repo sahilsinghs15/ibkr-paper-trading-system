@@ -767,3 +767,185 @@ async def test_position_stream_xadd_passes_maxlen() -> None:
     kwargs = redis.xadd.call_args.kwargs
     assert kwargs.get("maxlen") == 10000
     assert kwargs.get("approximate") is True
+
+
+@pytest.mark.asyncio
+async def test_load_pair_detail_payload_shape(session_factory) -> None:
+    import uuid
+    from decimal import Decimal
+
+    from app.db.models.account import AccountModel
+    from app.db.repositories.event_repository import EventRepository
+    from app.db.repositories.position_repository import PositionRepository
+    from app.models.model_blue_trade import OpenModelBlueTrade, OpenModelBlueTradeLeg
+    from app.rms.models import OrderSide
+    from demo_streaming.snapshot import load_pair_detail
+
+    suffix = uuid.uuid4().hex[:8]
+    trade_id = f"MBG-DETAIL-{suffix}"
+    async with session_factory() as session:
+        acc = AccountModel(
+            name=f"detail-{suffix}",
+            ibkr_account=f"DUDET{suffix}",
+            total_margin=Decimal(100000),
+            enabled=True,
+        )
+        session.add(acc)
+        await session.flush()
+        await PositionRepository(session).open_trade(
+            OpenModelBlueTrade(
+                trade_id=trade_id,
+                strategy_id="model_blue",
+                direction=1,
+                legs=(
+                    OpenModelBlueTradeLeg(
+                        symbol="XLE",
+                        instrument_type="STK",
+                        side=OrderSide.BUY,
+                        quantity=Decimal(10),
+                        price=Decimal(80),
+                    ),
+                    OpenModelBlueTradeLeg(
+                        symbol="XOP",
+                        instrument_type="STK",
+                        side=OrderSide.SELL,
+                        quantity=Decimal(10),
+                        price=Decimal(80),
+                    ),
+                ),
+            ),
+            account_id=acc.id,
+            target=Decimal(500),
+            stop=Decimal(250),
+            time_limit=3600,
+            exit_automation_enabled=True,
+        )
+        await EventRepository(session).append(
+            process="risk_exit",
+            kind="PAIR_EXIT_TRIGGERED",
+            detail={"trade_id": trade_id, "account_id": acc.id},
+        )
+        await session.commit()
+        payload = await load_pair_detail(session, acc.id, trade_id)
+        account_id = acc.id
+
+    assert payload is not None
+    assert payload["position"]["trade_id"] == trade_id
+    assert payload["position"]["leg_a_symbol"] == "XLE"
+    assert payload["position"]["leg_b_symbol"] == "XOP"
+    assert payload["position"]["entry_gross_notional"] is not None
+    assert payload["exits"]["target"] is not None
+    assert payload["exits"]["exit_automation_enabled"] is True
+    assert payload["orders"] == []
+    assert any(e["kind"] == "PAIR_EXIT_TRIGGERED" for e in payload["events"])
+    async with session_factory() as session:
+        assert await load_pair_detail(session, account_id, "NOPE") is None
+
+
+@pytest.mark.asyncio
+async def test_pair_detail_endpoint_auth(session_factory) -> None:
+    import uuid
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, MagicMock
+
+    from httpx import ASGITransport, AsyncClient
+
+    from app.core.security import create_access_token, get_password_hash
+    from app.db.models.account import AccountModel
+    from app.db.models.user import UserModel
+    from app.db.repositories.position_repository import PositionRepository
+    from app.models.model_blue_trade import OpenModelBlueTrade, OpenModelBlueTradeLeg
+    from app.rms.models import OrderSide
+    from demo_streaming.api import create_demo_app
+
+    suffix = uuid.uuid4().hex[:8]
+    trade_id = f"MBG-AUTH-{suffix}"
+    async with session_factory() as session:
+        acc_a = AccountModel(
+            name=f"auth-a-{suffix}",
+            ibkr_account=f"DUAA{suffix}",
+            total_margin=Decimal(100000),
+            enabled=True,
+        )
+        acc_b = AccountModel(
+            name=f"auth-b-{suffix}",
+            ibkr_account=f"DUBB{suffix}",
+            total_margin=Decimal(100000),
+            enabled=True,
+        )
+        session.add_all([acc_a, acc_b])
+        await session.flush()
+        await PositionRepository(session).open_trade(
+            OpenModelBlueTrade(
+                trade_id=trade_id,
+                strategy_id="model_blue",
+                direction=1,
+                legs=(
+                    OpenModelBlueTradeLeg(
+                        symbol="XLE",
+                        instrument_type="STK",
+                        side=OrderSide.BUY,
+                        quantity=Decimal(10),
+                        price=Decimal(80),
+                    ),
+                    OpenModelBlueTradeLeg(
+                        symbol="XOP",
+                        instrument_type="STK",
+                        side=OrderSide.SELL,
+                        quantity=Decimal(10),
+                        price=Decimal(80),
+                    ),
+                ),
+            ),
+            account_id=acc_b.id,
+            target=Decimal(500),
+            stop=Decimal(250),
+            time_limit=3600,
+        )
+        user_a = UserModel(
+            email=f"pairuser_{suffix}@example.com",
+            password_hash=get_password_hash("Pass123!"),
+            role="user",
+            is_active=True,
+            ibkr_account_id=acc_a.id,
+        )
+        admin = UserModel(
+            email=f"pairadmin_{suffix}@example.com",
+            password_hash=get_password_hash("Pass123!"),
+            role="admin",
+            is_active=True,
+            ibkr_account_id=None,
+        )
+        session.add_all([user_a, admin])
+        await session.commit()
+        await session.refresh(user_a)
+        await session.refresh(admin)
+        acc_b_id = acc_b.id
+        user_a_id = user_a.id
+        admin_id = admin.id
+
+    redis_mock = MagicMock()
+    redis_mock.ping = AsyncMock(return_value=True)
+    redis_mock.xread = AsyncMock(return_value=[])
+    demo_app = create_demo_app(
+        session_factory=session_factory,
+        redis=redis_mock,
+        stream_name="positions:stream",
+    )
+    token_user = create_access_token({"sub": str(user_a_id), "role": "user"})
+    token_admin = create_access_token({"sub": str(admin_id), "role": "admin"})
+    path = f"/demo/positions/{acc_b_id}/{trade_id}"
+    async with AsyncClient(transport=ASGITransport(app=demo_app), base_url="http://test") as client:
+        unauth = await client.get(path, headers={"Authorization": "Bearer not-a-jwt"})
+        assert unauth.status_code == 401
+        forbidden = await client.get(path, headers={"Authorization": f"Bearer {token_user}"})
+        assert forbidden.status_code == 403
+        ok = await client.get(path, headers={"Authorization": f"Bearer {token_admin}"})
+        assert ok.status_code == 200, ok.text
+        body = ok.json()
+        assert body["position"]["trade_id"] == trade_id
+        assert "monitor_enabled" in body["exits"]
+        assert "shadow_mode" in body["exits"]
+        assert "orders" in body
+        assert "events" in body
+        assert "baskets" in body

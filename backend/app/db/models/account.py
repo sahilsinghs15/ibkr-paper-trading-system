@@ -21,9 +21,40 @@ class AccountModel(Base):
     default_symbol_limit: Mapped[Decimal | None] = mapped_column(
         Numeric(18, 4), nullable=True, default=None
     )
+    daily_target: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 4), nullable=True, default=None
+    )
+    daily_stop: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 4), nullable=True, default=None
+    )
+    daily_target_unit: Mapped[str] = mapped_column(
+        String, nullable=False, default="ABSOLUTE", server_default="ABSOLUTE"
+    )
+    daily_stop_unit: Mapped[str] = mapped_column(
+        String, nullable=False, default="ABSOLUTE", server_default="ABSOLUTE"
+    )
+    account_risk_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
 
     __table_args__ = (
         CheckConstraint("total_margin > 0", name="ck_accounts_total_margin_positive"),
+        CheckConstraint(
+            "daily_target_unit IN ('ABSOLUTE', 'PERCENT')",
+            name="ck_accounts_daily_target_unit",
+        ),
+        CheckConstraint(
+            "daily_stop_unit IN ('ABSOLUTE', 'PERCENT')",
+            name="ck_accounts_daily_stop_unit",
+        ),
+        CheckConstraint(
+            "daily_target IS NULL OR daily_target >= 0",
+            name="ck_accounts_daily_target_nonneg",
+        ),
+        CheckConstraint(
+            "daily_stop IS NULL OR daily_stop >= 0",
+            name="ck_accounts_daily_stop_nonneg",
+        ),
     )
 
 

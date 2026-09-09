@@ -118,6 +118,12 @@ export async function patchAllocation(
     enabled?: boolean
     max_open_positions?: number
     pair_max_allocation_pct?: string
+    target?: string
+    stop?: string
+    time_limit?: number
+    target_unit?: string
+    stop_unit?: string
+    exit_automation_enabled?: boolean
   },
 ): Promise<AllocationConfig> {
   const { data } = await axios.patch<AllocationConfig>(

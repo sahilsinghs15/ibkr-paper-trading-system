@@ -63,6 +63,11 @@ Use `get_settings()`; do not construct `Settings()` ad hoc in new code.
 | `max_deferred_sessions` | `MAX_DEFERRED_SESSIONS` | `1` | Max sessions a job may stay deferred before void |
 | `max_auto_release_count` | `MAX_AUTO_RELEASE_COUNT` | `50` | Circuit breaker max jobs per release batch |
 | `max_auto_release_notional` | `MAX_AUTO_RELEASE_NOTIONAL` | `None` | Optional notional cap for breaker |
+| `risk_exit_monitor_enabled` | `RISK_EXIT_MONITOR_ENABLED` | `false` | Master switch for the pair/account auto-exit loop |
+| `risk_exit_shadow_mode` | `RISK_EXIT_SHADOW_MODE` | `false` | Emit `risk_exit` events without placing flatten/close orders |
+| `risk_exit_interval_sec` | `RISK_EXIT_INTERVAL_SEC` | `2.0` | Monitor tick interval |
+| `risk_exit_max_pnl_staleness_sec` | `RISK_EXIT_MAX_PNL_STALENESS_SEC` | `15.0` | Skip stop/target when in-memory marks are older than this |
+| `risk_exit_max_retries` | `RISK_EXIT_MAX_RETRIES` | `3` | Bounded retries on PARTIAL/FAILED pair close |
 
 Property: `candle_timeframe_minutes` — parses `candle_timeframe` (defaults to 5).
 

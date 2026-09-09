@@ -1594,6 +1594,10 @@ body,
   background: #0e1420;
 }
 
+.factory-row-clickable {
+  cursor: pointer;
+}
+
 .factory-row td {
   padding: 10px 12px;
   vertical-align: middle;
@@ -2247,6 +2251,10 @@ thead th {
 
 .settings-msg.err {
   color: var(--red);
+}
+
+.settings-msg.warn {
+  color: #d4a017;
 }
 
 .settings-card tbody td {
@@ -3323,6 +3331,62 @@ thead th {
 .notification-empty-icon {
   font-size: 24px;
   opacity: 0.5;
+}
+
+.pair-detail-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pair-detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pair-detail-section h4 {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.pair-exit-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.pair-exit-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.pair-history-table {
+  width: 100%;
+}
+
+.pair-fill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+}
+
+.pair-event-list {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .pair-exit-fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 

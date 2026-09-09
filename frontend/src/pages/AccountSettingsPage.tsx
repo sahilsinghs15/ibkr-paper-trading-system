@@ -44,11 +44,35 @@ function decimalFromPct(pct: number): string {
   return (pct / 100).toFixed(4)
 }
 
+function thresholdInputValue(
+  raw: string | number | null | undefined,
+  unit: string,
+): string {
+  if (raw === null || raw === undefined || raw === '') return '0'
+  const n = parseFloat(String(raw))
+  if (Number.isNaN(n)) return '0'
+  if (unit === 'PERCENT') return String(Math.round(n * 10000) / 100)
+  return String(n)
+}
+
+function thresholdPayload(input: string, unit: string): string {
+  const n = parseFloat(input)
+  if (Number.isNaN(n) || n < 0) return '0'
+  if (unit === 'PERCENT') return (n / 100).toFixed(6)
+  return n.toFixed(4)
+}
+
 interface AllocationDraft {
   allocPct: number
   enabled: boolean
   maxOpenPositions: number
   pairMaxAllocationPct: number
+  target: string
+  stop: string
+  timeLimit: number
+  targetUnit: string
+  stopUnit: string
+  exitAutomationEnabled: boolean
 }
 
 function executionSummary(s: {
@@ -432,6 +456,11 @@ export function AccountSettingsPage() {
   const [margin, setMargin] = useState('')
   const [enabled, setEnabled] = useState(true)
   const [defaultLimitInput, setDefaultLimitInput] = useState('10000000')
+  const [dailyTarget, setDailyTarget] = useState('0')
+  const [dailyStop, setDailyStop] = useState('0')
+  const [dailyTargetUnit, setDailyTargetUnit] = useState('ABSOLUTE')
+  const [dailyStopUnit, setDailyStopUnit] = useState('ABSOLUTE')
+  const [accountRiskEnabled, setAccountRiskEnabled] = useState(false)
   const [drafts, setDrafts] = useState<Record<number, AllocationDraft>>({})
   const [newSymbol, setNewSymbol] = useState('')
   const [newLimit, setNewLimit] = useState('')
@@ -463,6 +492,13 @@ export function AccountSettingsPage() {
       if (account.default_symbol_limit !== undefined && account.default_symbol_limit !== null) {
         setDefaultLimitInput(cleanNumberInput(String(account.default_symbol_limit)))
       }
+      const tgtUnit = account.daily_target_unit || 'ABSOLUTE'
+      const stpUnit = account.daily_stop_unit || 'ABSOLUTE'
+      setDailyTargetUnit(tgtUnit)
+      setDailyStopUnit(stpUnit)
+      setDailyTarget(thresholdInputValue(account.daily_target, tgtUnit))
+      setDailyStop(thresholdInputValue(account.daily_stop, stpUnit))
+      setAccountRiskEnabled(Boolean(account.account_risk_enabled))
       setDrafts(
         Object.fromEntries(
           account.allocations.map((a) => [
@@ -472,6 +508,12 @@ export function AccountSettingsPage() {
               enabled: a.enabled,
               maxOpenPositions: a.max_open_positions,
               pairMaxAllocationPct: pctFromDecimal(a.pair_max_allocation_pct),
+              target: thresholdInputValue(a.target, a.target_unit || 'ABSOLUTE'),
+              stop: thresholdInputValue(a.stop, a.stop_unit || 'ABSOLUTE'),
+              timeLimit: a.time_limit,
+              targetUnit: a.target_unit || 'ABSOLUTE',
+              stopUnit: a.stop_unit || 'ABSOLUTE',
+              exitAutomationEnabled: Boolean(a.exit_automation_enabled),
             },
           ]),
         ),
@@ -485,6 +527,11 @@ export function AccountSettingsPage() {
       return patchAccount(account.id, {
         total_margin: parseFloat(margin) || undefined,
         enabled,
+        daily_target: thresholdPayload(dailyTarget, dailyTargetUnit),
+        daily_stop: thresholdPayload(dailyStop, dailyStopUnit),
+        daily_target_unit: dailyTargetUnit,
+        daily_stop_unit: dailyStopUnit,
+        account_risk_enabled: accountRiskEnabled,
       })
     },
     onSuccess: () => {
@@ -506,6 +553,12 @@ export function AccountSettingsPage() {
         enabled: draft.enabled,
         max_open_positions: draft.maxOpenPositions,
         pair_max_allocation_pct: decimalFromPct(draft.pairMaxAllocationPct),
+        target: thresholdPayload(draft.target, draft.targetUnit),
+        stop: thresholdPayload(draft.stop, draft.stopUnit),
+        time_limit: draft.timeLimit,
+        target_unit: draft.targetUnit,
+        stop_unit: draft.stopUnit,
+        exit_automation_enabled: draft.exitAutomationEnabled,
       }),
     onSuccess: () => {
       setMessage('Strategy allocation saved.')
@@ -687,7 +740,74 @@ export function AccountSettingsPage() {
                       </span>
                     ) : null}
                   </label>
+                </div>
 
+                <div className="settings-block-h" style={{ marginTop: 16 }}>
+                  <h2>ACCOUNT DAILY RISK</h2>
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={accountRiskEnabled}
+                      onChange={(e) => setAccountRiskEnabled(e.target.checked)}
+                    />
+                    <span>{accountRiskEnabled ? 'Enabled' : 'Disabled'}</span>
+                  </label>
+                </div>
+                <p className="field-hint">
+                  Session PnL (realized today + open unrealized) vs daily target / stop.
+                  Breach arms the kill switch and blocks new opens until cleared.
+                </p>
+                <div className="settings-grid">
+                  <label className="field">
+                    <span>Daily target</span>
+                    <div className="money-field">
+                      {dailyTargetUnit === 'ABSOLUTE' ? (
+                        <span className="money-prefix">$</span>
+                      ) : null}
+                      <input
+                        type="number"
+                        min="0"
+                        step={dailyTargetUnit === 'PERCENT' ? '0.01' : '1'}
+                        value={dailyTarget}
+                        onChange={(e) => setDailyTarget(e.target.value)}
+                      />
+                      <select
+                        className="inline-input"
+                        value={dailyTargetUnit}
+                        onChange={(e) => setDailyTargetUnit(e.target.value)}
+                      >
+                        <option value="ABSOLUTE">USD</option>
+                        <option value="PERCENT">% of capital</option>
+                      </select>
+                    </div>
+                  </label>
+                  <label className="field">
+                    <span>Daily stop</span>
+                    <div className="money-field">
+                      {dailyStopUnit === 'ABSOLUTE' ? (
+                        <span className="money-prefix">$</span>
+                      ) : null}
+                      <input
+                        type="number"
+                        min="0"
+                        step={dailyStopUnit === 'PERCENT' ? '0.01' : '1'}
+                        value={dailyStop}
+                        onChange={(e) => setDailyStop(e.target.value)}
+                      />
+                      <select
+                        className="inline-input"
+                        value={dailyStopUnit}
+                        onChange={(e) => setDailyStopUnit(e.target.value)}
+                      >
+                        <option value="ABSOLUTE">USD</option>
+                        <option value="PERCENT">% of capital</option>
+                      </select>
+                    </div>
+                    <span className="field-hint">0 disables that threshold</span>
+                  </label>
+                </div>
+
+                <div className="settings-grid">
                   <button
                     type="button"
                     className="btn primary"
@@ -707,6 +827,12 @@ export function AccountSettingsPage() {
                 enabled: a.enabled,
                 maxOpenPositions: a.max_open_positions,
                 pairMaxAllocationPct: pctFromDecimal(a.pair_max_allocation_pct),
+                target: thresholdInputValue(a.target, a.target_unit || 'ABSOLUTE'),
+                stop: thresholdInputValue(a.stop, a.stop_unit || 'ABSOLUTE'),
+                timeLimit: a.time_limit,
+                targetUnit: a.target_unit || 'ABSOLUTE',
+                stopUnit: a.stop_unit || 'ABSOLUTE',
+                exitAutomationEnabled: Boolean(a.exit_automation_enabled),
               }
               const committed =
                 (parseFloat(account.total_margin) * (draft.enabled ? draft.allocPct : 0)) / 100
@@ -800,6 +926,108 @@ export function AccountSettingsPage() {
                                   100 / draft.pairMaxAllocationPct,
                                 )} pairs`
                               : ''}
+                          </span>
+                        </label>
+
+                        <div className="settings-block-h">
+                          <h3>Exit automation</h3>
+                          <label className="toggle-row">
+                            <input
+                              type="checkbox"
+                              checked={draft.exitAutomationEnabled}
+                              onChange={(e) =>
+                                updateDraft(a.id, {
+                                  exitAutomationEnabled: e.target.checked,
+                                })
+                              }
+                            />
+                            <span>
+                              {draft.exitAutomationEnabled ? 'Enabled' : 'Disabled'}
+                            </span>
+                          </label>
+                        </div>
+                        <p className="field-hint">
+                          Target/stop/time_limit are copied onto each pair at open.
+                          Threshold edits here apply to new pairs only; click an Open
+                          Positions row to change an already-open pair. Toggling
+                          automation here also arms or disarms currently open pairs of
+                          this strategy. 0 disables a threshold.
+                        </p>
+
+                        <label className="field">
+                          <span>Pair target</span>
+                          <div className="money-field">
+                            {draft.targetUnit === 'ABSOLUTE' ? (
+                              <span className="money-prefix">$</span>
+                            ) : null}
+                            <input
+                              type="number"
+                              min="0"
+                              step={draft.targetUnit === 'PERCENT' ? '0.01' : '1'}
+                              value={draft.target}
+                              onChange={(e) =>
+                                updateDraft(a.id, { target: e.target.value })
+                              }
+                            />
+                            <select
+                              className="inline-input"
+                              value={draft.targetUnit}
+                              onChange={(e) =>
+                                updateDraft(a.id, { targetUnit: e.target.value })
+                              }
+                            >
+                              <option value="ABSOLUTE">USD</option>
+                              <option value="PERCENT">% of pair</option>
+                            </select>
+                          </div>
+                        </label>
+
+                        <label className="field">
+                          <span>Pair stop</span>
+                          <div className="money-field">
+                            {draft.stopUnit === 'ABSOLUTE' ? (
+                              <span className="money-prefix">$</span>
+                            ) : null}
+                            <input
+                              type="number"
+                              min="0"
+                              step={draft.stopUnit === 'PERCENT' ? '0.01' : '1'}
+                              value={draft.stop}
+                              onChange={(e) =>
+                                updateDraft(a.id, { stop: e.target.value })
+                              }
+                            />
+                            <select
+                              className="inline-input"
+                              value={draft.stopUnit}
+                              onChange={(e) =>
+                                updateDraft(a.id, { stopUnit: e.target.value })
+                              }
+                            >
+                              <option value="ABSOLUTE">USD</option>
+                              <option value="PERCENT">% of pair</option>
+                            </select>
+                          </div>
+                        </label>
+
+                        <label className="field">
+                          <span>Time limit (seconds)</span>
+                          <input
+                            className="inline-input"
+                            type="number"
+                            min="0"
+                            step="60"
+                            value={draft.timeLimit}
+                            onChange={(e) =>
+                              updateDraft(a.id, {
+                                timeLimit: parseInt(e.target.value, 10) || 0,
+                              })
+                            }
+                          />
+                          <span className="field-hint">
+                            {draft.timeLimit > 0
+                              ? `${Math.round(draft.timeLimit / 60)} min`
+                              : 'disabled'}
                           </span>
                         </label>
 

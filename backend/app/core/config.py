@@ -133,6 +133,13 @@ class Settings(BaseSettings):
     max_auto_release_count: Annotated[int, Ge(0)] = 50
     max_auto_release_notional: Decimal | None = Field(default=None)
 
+    # Risk-exit monitor (pair stop/target/time_limit + account daily risk)
+    risk_exit_monitor_enabled: bool = False
+    risk_exit_shadow_mode: bool = False
+    risk_exit_interval_sec: Annotated[float, Gt(0)] = 2.0
+    risk_exit_max_pnl_staleness_sec: Annotated[float, Gt(0)] = 15.0
+    risk_exit_max_retries: Annotated[int, Ge(0)] = 3
+
     def _validate_red_zone(self) -> None:
         if self.max_auto_release_notional is not None and self.max_auto_release_notional < 0:
             raise ValueError("max_auto_release_notional must be >= 0 or None")

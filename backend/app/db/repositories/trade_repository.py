@@ -37,6 +37,9 @@ class TradeRepository:
         target: Decimal,
         stop: Decimal,
         time_limit: int,
+        target_unit: str = "ABSOLUTE",
+        stop_unit: str = "ABSOLUTE",
+        exit_automation_enabled: bool = False,
     ) -> PositionModel:
         return await self._positions.open_trade(
             trade,
@@ -44,6 +47,9 @@ class TradeRepository:
             target=target,
             stop=stop,
             time_limit=time_limit,
+            target_unit=target_unit,
+            stop_unit=stop_unit,
+            exit_automation_enabled=exit_automation_enabled,
         )
 
     async def close_trade(
