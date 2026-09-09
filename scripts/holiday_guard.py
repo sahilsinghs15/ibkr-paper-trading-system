@@ -181,6 +181,7 @@ def check_trading_day(target_date: date | None = None) -> int:
             "date": today_s,
             "reason": reason,
             "icon": "📅",
+            "title": message,
             "message": message,
         }
 

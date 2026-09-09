@@ -16,14 +16,23 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.core.config import running_under_pytest
 from app.core.security import decode_access_token, decode_sse_token
 from app.db.models.event import EventLogModel
+from app.db.models.notification_read import (
+    UserNotificationReadModel,
+    UserNotificationStateModel,
+)
 from app.db.models.user import UserModel
+from app.services.notification_canonical import (
+    ALLOWED_KINDS,
+    ALLOWED_SERVICES,
+    format_canonical_notification,
+)
 from demo_streaming.snapshot import (
     load_baskets,
     load_closed_position_rows,
@@ -257,12 +266,11 @@ def create_demo_app(
             raise HTTPException(status_code=422, detail="since_id must be non-negative")
         clamped_limit = min(max(1, limit), 100)
 
-        relevant_kinds = ("SERVICE_STARTED", "SERVICE_STOPPED", "MARKET_CLOSED")
         async with session_factory() as session:
             stmt = (
                 select(EventLogModel)
                 .where(
-                    EventLogModel.kind.in_(relevant_kinds),
+                    EventLogModel.kind.in_(ALLOWED_KINDS),
                     EventLogModel.id > since_id,
                 )
                 .order_by(EventLogModel.id.asc())
@@ -270,16 +278,181 @@ def create_demo_app(
             )
             rows = (await session.execute(stmt)).scalars().all()
 
-        events_payload = [
-            {
-                "id": row.id,
-                "ts": row.ts.isoformat() if row.ts else None,
-                "kind": row.kind,
-                "detail": row.detail,
-            }
-            for row in rows
-        ]
+        events_payload = []
+        for row in rows:
+            if row.kind in ("SERVICE_STARTED", "SERVICE_STOPPED"):
+                svc = (row.detail or {}).get("service")
+                if svc not in ALLOWED_SERVICES:
+                    continue
+            canonical = format_canonical_notification(row.kind, row.detail)
+            events_payload.append(
+                {
+                    "id": row.id,
+                    "ts": row.ts.isoformat() if row.ts else None,
+                    "kind": row.kind,
+                    "service": canonical["service"],
+                    "unit": canonical["unit"],
+                    "friendly_name": canonical["friendly_name"],
+                    "title": canonical["title"],
+                    "message": canonical["message"],
+                    "icon": canonical["icon"],
+                    "detail": row.detail,
+                }
+            )
         return JSONResponse(events_payload)
+
+    @app.get("/demo/notifications")
+    async def get_notifications(
+        request: Request,
+        limit: int = 30,
+        offset: int = 0,
+    ) -> JSONResponse:
+        user = await _get_authenticated_user_from_request(request, session_factory)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+
+        clamped_limit = min(max(1, limit), 100)
+        safe_offset = max(0, offset)
+
+        async with session_factory() as session:
+            # 1. User read state
+            state_stmt = select(UserNotificationStateModel).where(
+                UserNotificationStateModel.user_id == user.id
+            )
+            user_state = (await session.execute(state_stmt)).scalar_one_or_none()
+            last_read_all_id = user_state.last_read_all_id if user_state else 0
+
+            reads_stmt = select(UserNotificationReadModel.event_id).where(
+                UserNotificationReadModel.user_id == user.id
+            )
+            individual_read_ids = set((await session.execute(reads_stmt)).scalars().all())
+
+            # 2. Approved historical notifications
+            stmt = (
+                select(EventLogModel)
+                .where(EventLogModel.kind.in_(ALLOWED_KINDS))
+                .order_by(EventLogModel.id.desc())
+            )
+            all_rows = (await session.execute(stmt)).scalars().all()
+
+            # Filter strictly to approved scope
+            approved_rows = []
+            for r in all_rows:
+                if (
+                    r.kind in ("SERVICE_STARTED", "SERVICE_STOPPED")
+                    and (r.detail or {}).get("service") not in ALLOWED_SERVICES
+                ):
+                    continue
+                approved_rows.append(r)
+
+            total = len(approved_rows)
+            paged_rows = approved_rows[safe_offset : safe_offset + clamped_limit]
+
+            # 3. Unread count
+            unread_count = sum(
+                1
+                for r in approved_rows
+                if r.id > last_read_all_id and r.id not in individual_read_ids
+            )
+
+            items = []
+            for row in paged_rows:
+                canonical = format_canonical_notification(row.kind, row.detail)
+                is_read = (row.id <= last_read_all_id) or (row.id in individual_read_ids)
+                items.append(
+                    {
+                        "id": row.id,
+                        "ts": row.ts.isoformat() if row.ts else None,
+                        "kind": row.kind,
+                        "service": canonical["service"],
+                        "unit": canonical["unit"],
+                        "friendly_name": canonical["friendly_name"],
+                        "title": canonical["title"],
+                        "message": canonical["message"],
+                        "icon": canonical["icon"],
+                        "is_read": is_read,
+                        "detail": row.detail,
+                    }
+                )
+
+        return JSONResponse(
+            {
+                "items": items,
+                "unread_count": unread_count,
+                "total": total,
+            }
+        )
+
+    @app.post("/demo/notifications/{event_id}/read")
+    async def mark_notification_read(
+        request: Request,
+        event_id: int,
+    ) -> JSONResponse:
+        user = await _get_authenticated_user_from_request(request, session_factory)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+
+        async with session_factory() as session:
+            stmt = select(UserNotificationReadModel).where(
+                UserNotificationReadModel.user_id == user.id,
+                UserNotificationReadModel.event_id == event_id,
+            )
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+            if not existing:
+                session.add(UserNotificationReadModel(user_id=user.id, event_id=event_id))
+                await session.commit()
+
+            # Recalculate unread count
+            state_stmt = select(UserNotificationStateModel).where(
+                UserNotificationStateModel.user_id == user.id
+            )
+            user_state = (await session.execute(state_stmt)).scalar_one_or_none()
+            last_read_all_id = user_state.last_read_all_id if user_state else 0
+
+            reads_stmt = select(UserNotificationReadModel.event_id).where(
+                UserNotificationReadModel.user_id == user.id
+            )
+            individual_read_ids = set((await session.execute(reads_stmt)).scalars().all())
+
+            rows_stmt = select(EventLogModel).where(
+                EventLogModel.kind.in_(ALLOWED_KINDS),
+                EventLogModel.id > last_read_all_id,
+            )
+            rows = (await session.execute(rows_stmt)).scalars().all()
+            unread_count = sum(
+                1
+                for r in rows
+                if (r.kind == "MARKET_CLOSED" or (r.detail or {}).get("service") in ALLOWED_SERVICES)
+                and r.id not in individual_read_ids
+            )
+
+        return JSONResponse({"ok": True, "event_id": event_id, "unread_count": unread_count})
+
+    @app.post("/demo/notifications/mark-all-read")
+    async def mark_all_notifications_read(
+        request: Request,
+    ) -> JSONResponse:
+        user = await _get_authenticated_user_from_request(request, session_factory)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+
+        async with session_factory() as session:
+            max_stmt = select(func.max(EventLogModel.id)).where(
+                EventLogModel.kind.in_(ALLOWED_KINDS)
+            )
+            max_id = (await session.execute(max_stmt)).scalar() or 0
+
+            state_stmt = select(UserNotificationStateModel).where(
+                UserNotificationStateModel.user_id == user.id
+            )
+            user_state = (await session.execute(state_stmt)).scalar_one_or_none()
+            if user_state:
+                user_state.last_read_all_id = max(user_state.last_read_all_id, max_id)
+            else:
+                session.add(UserNotificationStateModel(user_id=user.id, last_read_all_id=max_id))
+            await session.commit()
+
+        return JSONResponse({"ok": True, "last_read_id": max_id, "unread_count": 0})
 
     @app.get("/demo/stream")
     async def sse(request: Request) -> StreamingResponse:

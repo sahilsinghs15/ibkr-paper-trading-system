@@ -11,6 +11,10 @@ from app.db.models.instrument import InstrumentModel
 from app.db.models.kill_switch import KillSwitchOperationModel
 from app.db.models.margin_rate import MarginRateModel
 from app.db.models.margin_settings import MarginSettingsModel
+from app.db.models.notification_read import (
+    UserNotificationReadModel,
+    UserNotificationStateModel,
+)
 from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
 from app.db.models.signal import SignalModel
@@ -37,4 +41,6 @@ __all__ = [
     "SignalModel",
     "StrategyModel",
     "UserModel",
+    "UserNotificationReadModel",
+    "UserNotificationStateModel",
 ]

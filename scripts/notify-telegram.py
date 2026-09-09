@@ -15,6 +15,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 # Ensure backend and repository root on path
@@ -162,6 +163,7 @@ def do_market_closed() -> int:
         "date": today_s,
         "reason": reason,
         "icon": "📅",
+        "title": f"Market closed — {reason}",
         "message": f"Market closed — {reason}",
     }
 
@@ -200,6 +202,34 @@ def do_market_closed() -> int:
     return 0
 
 
+CANONICAL_SERVICES: dict[str, dict[str, Any]] = {
+    "ibgateway": {
+        "friendly_name": "Broker connection",
+        "unit": "ibgateway.service",
+        "SERVICE_STARTED": {"icon": "🟢", "message": "Broker connection started"},
+        "SERVICE_STOPPED": {"icon": "🔴", "message": "Broker connection stopped"},
+    },
+    "trading-backend": {
+        "friendly_name": "Trading system",
+        "unit": "trading-backend.service",
+        "SERVICE_STARTED": {"icon": "🟢", "message": "Trading system started"},
+        "SERVICE_STOPPED": {"icon": "🔴", "message": "Trading system stopped"},
+    },
+    "webhook-ingest": {
+        "friendly_name": "Market signal intake",
+        "unit": "webhook-ingest.service",
+        "SERVICE_STARTED": {"icon": "🟢", "message": "Market signal intake started"},
+        "SERVICE_STOPPED": {"icon": "🔴", "message": "Market signal intake stopped"},
+    },
+    "demo-streaming": {
+        "friendly_name": "Market data display",
+        "unit": "demo-streaming.service",
+        "SERVICE_STARTED": {"icon": "🟢", "message": "Market data display started"},
+        "SERVICE_STOPPED": {"icon": "🔴", "message": "Market data display stopped"},
+    },
+}
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         print(
@@ -218,10 +248,17 @@ def main(argv: list[str]) -> int:
                 svc = svc.replace(".service", "")
                 if svc not in ALLOWED_SERVICES:
                     return 0
-            verb = "started" if cmd == "start" else "stopped"
-            icon = "🟢" if cmd == "start" else "🔴"
+
             kind = "SERVICE_STARTED" if cmd == "start" else "SERVICE_STOPPED"
-            text = f"{icon} {svc} {verb}"
+            svc_cfg = CANONICAL_SERVICES.get(svc, {})
+            action_cfg = svc_cfg.get(kind, {})
+            friendly_name = svc_cfg.get("friendly_name", svc)
+            icon = action_cfg.get("icon", "🟢" if cmd == "start" else "🔴")
+            friendly_msg = action_cfg.get(
+                "message",
+                f"{friendly_name} {'started' if cmd == 'start' else 'stopped'}",
+            )
+            text = f"{icon} {friendly_msg}"
 
             now_ts = int(time.time())
             inv_id = os.environ.get("INVOCATION_ID") or f"{now_ts}_{os.getpid()}"
@@ -230,8 +267,10 @@ def main(argv: list[str]) -> int:
                 "service": svc,
                 "unit": f"{svc}.service",
                 "action": cmd,
+                "friendly_name": friendly_name,
                 "icon": icon,
-                "message": f"{svc} {verb}",
+                "title": friendly_msg,
+                "message": friendly_msg,
             }
 
             # 1. Persist to PostgreSQL event_log

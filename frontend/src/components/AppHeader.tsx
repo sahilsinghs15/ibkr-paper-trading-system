@@ -14,6 +14,8 @@ import {
   tzLongLabel,
 } from '../utils/format'
 import { AppNav } from './AppNav'
+import { NotificationBell } from './NotificationBell'
+import { NotificationCenterPanel } from './NotificationCenterPanel'
 
 export function AppHeader() {
   const currentAccount = useActiveIbkrAccount()
@@ -110,6 +112,10 @@ export function AppHeader() {
             </button>
           </div>
         )}
+        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+          <NotificationBell />
+          <NotificationCenterPanel />
+        </div>
         <span className={`dot ${streamClass}`} title="Position stream">
           <i />
           {streamText}
