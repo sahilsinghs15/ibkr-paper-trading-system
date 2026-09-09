@@ -91,10 +91,11 @@ export function ReconcilePage() {
   const [diffToFix, setDiffToFix] = useState<ReconcileDiffRow | null>(null)
   const { sortKey, sortDir, handleSort } = useTableSortState()
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (options?: { refresh?: boolean }) => {
     try {
       setError(null)
-      const res = await fetchReconcilePositions(cleanAccount || undefined)
+      if (options?.refresh) setLoading(true)
+      const res = await fetchReconcilePositions(cleanAccount || undefined, options)
       setData(res)
       setLastRefreshed(new Date())
     } catch (err: unknown) {
@@ -134,7 +135,7 @@ export function ReconcilePage() {
           ? `Fix ${res.symbol}: ${res.status} (${res.side} ${res.quantity})`
           : `Fix ${res.symbol}: ${res.status} — ${res.message ?? 'Incomplete'}`,
       )
-      void loadData()
+      void loadData({ refresh: true })
     },
     [loadData],
   )
@@ -153,7 +154,11 @@ export function ReconcilePage() {
         <div className="status-badge off reconcile-error">
           RECONCILE UNAVAILABLE: {error}
         </div>
-        <button type="button" className="reconcile-refresh-btn" onClick={() => void loadData()}>
+        <button
+          type="button"
+          className="reconcile-refresh-btn"
+          onClick={() => void loadData({ refresh: true })}
+        >
           Retry
         </button>
       </main>
@@ -172,7 +177,11 @@ export function ReconcilePage() {
         <div className="reconcile-meta">
           <span>Last refreshed: {lastRefreshed ? lastRefreshed.toLocaleTimeString() : 'Never'}</span>
           <span>Last run: {fmtTime(run?.finished_at)}</span>
-          <button type="button" className="reconcile-refresh-btn" onClick={() => void loadData()}>
+          <button
+            type="button"
+            className="reconcile-refresh-btn"
+            onClick={() => void loadData({ refresh: true })}
+          >
             Refresh
           </button>
         </div>

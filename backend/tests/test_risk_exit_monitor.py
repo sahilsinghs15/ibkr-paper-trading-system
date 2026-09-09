@@ -110,7 +110,7 @@ def _account(**overrides):
         "total_margin": Decimal(100000),
         "enabled": True,
         "daily_target": Decimal(2000),
-        "daily_stop": Decimal(1000),
+        "daily_stop": Decimal(-1000),
         "daily_target_unit": "ABSOLUTE",
         "daily_stop_unit": "ABSOLUTE",
         "account_risk_enabled": False,
@@ -135,7 +135,7 @@ def _position(**overrides):
         "trade_id": "T1",
         "strategy_id": "model_blue",
         "target": Decimal(500),
-        "stop": Decimal(250),
+        "stop": Decimal(-250),
         "time_limit": 3600,
         "target_unit": "ABSOLUTE",
         "stop_unit": "ABSOLUTE",
@@ -294,7 +294,7 @@ async def test_account_precedence_skips_pair_close(repo_patches) -> None:
     closer = FakeCloser()
     ks = FakeKillSwitch()
     mon = _monitor(
-        accounts=[_account(account_risk_enabled=True, daily_stop=Decimal(100))],
+        accounts=[_account(account_risk_enabled=True, daily_stop=Decimal(-100))],
         allocations=[_allocation()],
         live=FakeLive({(1, "T1"): _fresh_snap(Decimal(-250))}),
         closer=closer,
@@ -361,7 +361,7 @@ async def test_session_realised_uses_rth_open(repo_patches) -> None:
     repo_patches["realised"] = {1: Decimal(-1500)}
     ks = FakeKillSwitch()
     mon = _monitor(
-        accounts=[_account(account_risk_enabled=True, daily_stop=Decimal(1000))],
+        accounts=[_account(account_risk_enabled=True, daily_stop=Decimal(-1000))],
         allocations=[],
         live=FakeLive({}),
         closer=FakeCloser(),

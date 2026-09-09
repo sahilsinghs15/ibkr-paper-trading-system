@@ -8,9 +8,9 @@
 |-------|-------|------|
 | `signals` | `SignalModel` | `db/models/signal.py` |
 | `signal_jobs` | `SignalJobModel` | `db/models/signal.py` (not exported in `__init__.py`) |
-| `accounts` | `AccountModel` | `db/models/account.py` | `id`, `name`, `ibkr_account`, `total_margin`, `enabled`. **No** gateway host/port/clientId. `total_margin` is an operator-entered **market-value budget** (trading capital), not IBKR margin available. Daily risk: `daily_target` / `daily_stop` (nullable disables that side; 0 is breakeven), `daily_target_unit` / `daily_stop_unit` (`ABSOLUTE` \| `PERCENT`), `account_risk_enabled` (default false) is the on/off switch. |
+| `accounts` | `AccountModel` | `db/models/account.py` | `id`, `name`, `ibkr_account`, `total_margin`, `enabled`. **No** gateway host/port/clientId. `total_margin` is an operator-entered **market-value budget** (trading capital), not IBKR margin available. Daily risk: `daily_target` / `daily_stop` (nullable disables that side; signed PnL levels, 0 is breakeven), `daily_target_unit` / `daily_stop_unit` (`ABSOLUTE` \| `PERCENT`), `account_risk_enabled` (default false) is the on/off switch. |
 | `strategies` | `StrategyModel` | `db/models/strategy.py` |
-| `allocations` | `AllocationModel` | `db/models/strategy.py` | Includes `pair_max_allocation_pct` (`Numeric(9,6)`, `(0, 1]`, default 0.10) — fraction of the model allocation used as one pair's market-value budget. Exit knobs: `target` / `stop` / `time_limit`, `target_unit` / `stop_unit` (`ABSOLUTE` \| `PERCENT`), `exit_automation_enabled` (default false). Copied onto `positions` at OPEN (units + automation flag included). Allocation flag edits also propagate to currently OPEN rows of that account+strategy. |
+| `allocations` | `AllocationModel` | `db/models/strategy.py` | Includes `pair_max_allocation_pct` (`Numeric(9,6)`, `(0, 1]`, default 0.10) — fraction of the model allocation used as one pair's market-value budget. Exit knobs: `target` / `stop` / `time_limit`, `target_unit` / `stop_unit` (`ABSOLUTE` \| `PERCENT`), `exit_automation_enabled` (default false). Stop/target are signed PnL levels (negatives and 0 allowed). Copied onto `positions` at OPEN (units + automation flag included). Allocation flag edits also propagate to currently OPEN rows of that account+strategy. |
 | `per_symbol_limits` | `PerSymbolLimitModel` | `db/models/account.py` |
 | `orders` | `OrderModel` | `db/models/order.py` |
 | `positions` | `PositionModel` | `db/models/position.py` | Pair ledger. Frozen `target` / `stop` / `time_limit` / units at OPEN; editable in-flight via `PATCH .../positions/{trade_id}/exits`. `exit_automation_enabled` is the pair-loop arm flag (seeded from allocation, then authoritative). `exit_reason` set by auto-exit or close. |
@@ -30,7 +30,7 @@ There is **no** `signal_legs` table. Legs live in signal payload / pair columns 
 
 There are **no** `gateways`, `gateway_clients`, or `account_gateway_bindings` tables. Multi-gateway mapping is target-only ([`backend-multi-gateway.md`](backend-multi-gateway.md)).
 
-## Alembic revisions (HEAD `q5r6s7t8u9v0`)
+## Alembic revisions (HEAD `r6s7t8u9v0w1`)
 
 | Revision | File | Topic |
 |----------|------|-------|
@@ -64,6 +64,7 @@ There are **no** `gateways`, `gateway_clients`, or `account_gateway_bindings` ta
 | `o3p4q5r6s7t8` | `o3p4q5r6s7t8_notification_read_state.py` | user notification read state |
 | `p4q5r6s7t8u9` | `p4q5r6s7t8u9_risk_exit_thresholds.py` | Pair/account stop-target units, exit automation flags, `positions.exit_reason` |
 | `q5r6s7t8u9v0` | `q5r6s7t8u9v0_position_exit_automation.py` | `positions.exit_automation_enabled` (backfill from allocations for OPEN rows) |
+| `r6s7t8u9v0w1` | `r6s7t8u9v0w1_signed_exit_levels.py` | Signed stop/target PnL levels; drop nonneg checks; negate stored magnitude stops |
 
 `users` and `strategies` rows are one-off INSERTs (no create-user / create-strategy HTTP API).
 

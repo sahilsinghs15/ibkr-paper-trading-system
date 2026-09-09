@@ -93,7 +93,5 @@ class AllocationModel(Base):
             "stop_unit IN ('ABSOLUTE', 'PERCENT')",
             name="ck_allocations_stop_unit",
         ),
-        CheckConstraint("target >= 0", name="ck_allocations_target_nonneg"),
-        CheckConstraint("stop >= 0", name="ck_allocations_stop_nonneg"),
         CheckConstraint("time_limit >= 0", name="ck_allocations_time_limit_nonneg"),
     )

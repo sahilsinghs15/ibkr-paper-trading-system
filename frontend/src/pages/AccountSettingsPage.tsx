@@ -58,7 +58,7 @@ function thresholdInputValue(
 
 function thresholdPayload(input: string, unit: string): string {
   const n = parseFloat(input)
-  if (Number.isNaN(n) || n < 0) return '0'
+  if (Number.isNaN(n)) return '0'
   if (unit === 'PERCENT') return (n / 100).toFixed(6)
   return n.toFixed(4)
 }
@@ -787,10 +787,10 @@ export function AccountSettingsPage() {
                   </label>
                 </div>
                 <p className="field-hint">
-                  Session PnL (realized today + open unrealized) vs daily target / stop.
-                  Breach arms the kill switch and blocks new opens until cleared.
-                  0 is breakeven (stop at ≤ $0, target at ≥ $0). Use the switch
-                  above to turn this off — 0 does not disable a threshold.
+                  Session PnL (realized today + open unrealized) vs signed daily
+                  stop / target levels. Stop fires at PnL ≤ stop (e.g. −100).
+                  Target fires at PnL ≥ target (e.g. −10 or 0). 0 is breakeven,
+                  not off. Use the switch above to disable.
                 </p>
                 <div className="settings-grid">
                   <label className="field">
@@ -801,7 +801,6 @@ export function AccountSettingsPage() {
                       ) : null}
                       <input
                         type="number"
-                        min="0"
                         step={dailyTargetUnit === 'PERCENT' ? '0.01' : '1'}
                         value={dailyTarget}
                         onChange={(e) => setDailyTarget(e.target.value)}
@@ -824,7 +823,6 @@ export function AccountSettingsPage() {
                       ) : null}
                       <input
                         type="number"
-                        min="0"
                         step={dailyStopUnit === 'PERCENT' ? '0.01' : '1'}
                         value={dailyStop}
                         onChange={(e) => setDailyStop(e.target.value)}
@@ -985,7 +983,9 @@ export function AccountSettingsPage() {
                           Threshold edits here apply to new pairs only; click an Open
                           Positions row to change an already-open pair. Toggling
                           automation here also arms or disarms currently open pairs of
-                          this strategy. 0 disables a threshold.
+                          this strategy. Values are signed PnL levels: stop
+                          −100 fires at ≤ −$100, target −10 fires at ≥ −$10,
+                          target 0 is breakeven. The arm switch turns this off.
                         </p>
 
                         <label className="field">
@@ -996,7 +996,6 @@ export function AccountSettingsPage() {
                             ) : null}
                             <input
                               type="number"
-                              min="0"
                               step={draft.targetUnit === 'PERCENT' ? '0.01' : '1'}
                               value={draft.target}
                               onChange={(e) =>
@@ -1024,7 +1023,6 @@ export function AccountSettingsPage() {
                             ) : null}
                             <input
                               type="number"
-                              min="0"
                               step={draft.stopUnit === 'PERCENT' ? '0.01' : '1'}
                               value={draft.stop}
                               onChange={(e) =>

@@ -173,7 +173,7 @@ There is **no** MockBroker class and **no** `BROKER_MODE` switch in `Settings`. 
 
 - Pair: `positions.target` / `stop` / `time_limit` / units vs `LivePnlService` PnL (editable in-flight). Requires `positions.exit_automation_enabled`. Actuator: `SinglePairCloseService.close_pair`.
 - Account: session PnL = `SUM(realised_pnl)` of pairs closed since current RTH open + fresh unrealized. Requires `accounts.account_risk_enabled`. Actuator: `KillSwitchService.initiate_square_off(requested_by="auto_risk")` (stays armed until operator clear).
-- Units: `ABSOLUTE` (currency) or `PERCENT` (fraction of pair entry gross notional / `accounts.total_margin`). Pair 0 disables that threshold. Account daily 0 is breakeven (`pnl <= 0` stop / `pnl >= 0` target); NULL disables that side.
+- Units: `ABSOLUTE` (signed PnL level) or `PERCENT` (signed fraction of pair entry gross notional / `accounts.total_margin`). Stop fires at `pnl <= stop` (e.g. −100). Target fires at `pnl >= target` (e.g. −10 or 0). NULL disables that side.
 - Gates: `RISK_EXIT_MONITOR_ENABLED`, RTH, TWS connected, PnL freshness, in-flight dedupe, bounded retries. `RISK_EXIT_SHADOW_MODE` logs `PAIR_EXIT_TRIGGERED` / `ACCOUNT_RISK_BREACH` without orders.
 
 ## Hard invariants for agents

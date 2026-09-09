@@ -67,26 +67,20 @@ def pair_entry_gross_notional(
 
 
 def resolve_threshold(
-    magnitude: Decimal | None,
+    level: Decimal | None,
     unit: str,
     *,
     basis: Decimal,
-    zero_disables: bool = True,
 ) -> Decimal | None:
-    """Convert a stored magnitude into a currency amount.
+    """Convert a stored signed PnL level into a currency PnL trigger.
 
-    NULL disables. Negative values are rejected. When ``zero_disables`` is
-    true (pair thresholds), 0 also disables. Account daily stop/target keep
-    0 as breakeven. PERCENT is a fraction of ``basis`` in [0, 1].
+    NULL disables. 0 and negatives are valid. PERCENT is a signed fraction
+    of ``basis`` (for example -0.01 of $10,000 → -$100).
     Returns None when the threshold is disabled or cannot be resolved.
     """
-    if magnitude is None:
+    if level is None:
         return None
-    value = Decimal(str(magnitude))
-    if value < ZERO:
-        return None
-    if value == ZERO and zero_disables:
-        return None
+    value = Decimal(str(level))
     normalized = (unit or EXIT_UNIT_ABSOLUTE).upper()
     if normalized == EXIT_UNIT_ABSOLUTE:
         return value
@@ -105,13 +99,14 @@ def evaluate_pair_exit(
 ) -> ExitDecision | None:
     """Return PAIR_STOP / PAIR_TARGET / PAIR_TIME_LIMIT, or None.
 
-    Stop is checked before target. Time limit fires only if neither PnL
-    threshold has already fired. ``time_limit <= 0`` disables the timer.
+    Stop fires when ``pnl <= stop``. Target fires when ``pnl >= target``.
+    Stop is checked first. Time limit fires only if neither PnL threshold
+    has already fired. ``time_limit <= 0`` disables the timer.
     """
     stop_amt = resolve_threshold(
         params.stop, params.stop_unit, basis=params.entry_gross_notional
     )
-    if stop_amt is not None and pnl <= -stop_amt:
+    if stop_amt is not None and pnl <= stop_amt:
         return ExitDecision(reason=REASON_PAIR_STOP, threshold=stop_amt, pnl=pnl)
 
     target_amt = resolve_threshold(
@@ -142,25 +137,19 @@ def evaluate_account_risk(
 ) -> ExitDecision | None:
     """Return ACCOUNT_STOP / ACCOUNT_TARGET, or None. Stop is checked first.
 
-    NULL disables a side. 0 is breakeven (stop at ``pnl <= 0``, target at
-    ``pnl >= 0``). The account_risk_enabled flag is the on/off switch.
+    NULL disables a side. Stored values are signed session-PnL levels.
+    The account_risk_enabled flag is the on/off switch.
     """
     stop_amt = resolve_threshold(
-        params.daily_stop,
-        params.daily_stop_unit,
-        basis=params.total_margin,
-        zero_disables=False,
+        params.daily_stop, params.daily_stop_unit, basis=params.total_margin
     )
-    if stop_amt is not None and session_pnl <= -stop_amt:
+    if stop_amt is not None and session_pnl <= stop_amt:
         return ExitDecision(
             reason=REASON_ACCOUNT_STOP, threshold=stop_amt, pnl=session_pnl
         )
 
     target_amt = resolve_threshold(
-        params.daily_target,
-        params.daily_target_unit,
-        basis=params.total_margin,
-        zero_disables=False,
+        params.daily_target, params.daily_target_unit, basis=params.total_margin
     )
     if target_amt is not None and session_pnl >= target_amt:
         return ExitDecision(

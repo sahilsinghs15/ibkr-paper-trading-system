@@ -81,13 +81,9 @@ class AccountStrategyConfigService:
     def validate_exit_threshold(self, value: Decimal | None, unit: str, *, field: str) -> None:
         if value is None:
             return
-        if value < ZERO:
+        if unit == EXIT_UNIT_PERCENT and abs(value) > ONE:
             raise AllocationConfigError(
-                f"INVALID_EXIT_THRESHOLD: {field} must be >= 0, got {value}."
-            )
-        if unit == EXIT_UNIT_PERCENT and value > ZERO and (value > ONE):
-            raise AllocationConfigError(
-                f"INVALID_EXIT_THRESHOLD: {field} as PERCENT must be in (0, 1], got {value}."
+                f"INVALID_EXIT_THRESHOLD: {field} as PERCENT must be in [-1, 1], got {value}."
             )
 
     def validate_time_limit(self, time_limit: int) -> None:

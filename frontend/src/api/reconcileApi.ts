@@ -11,9 +11,14 @@ const base = '/api/v1/reconcile/positions'
 
 export async function fetchReconcilePositions(
   ibkrAccount?: string,
+  options?: { refresh?: boolean },
 ): Promise<ReconcilePositionsResponse> {
-  const params = ibkrAccount ? { ibkr_account: ibkrAccount } : undefined
-  const { data } = await axios.get<ReconcilePositionsResponse>(base, { params })
+  const params: Record<string, string | boolean> = {}
+  if (ibkrAccount) params.ibkr_account = ibkrAccount
+  if (options?.refresh) params.refresh = true
+  const { data } = await axios.get<ReconcilePositionsResponse>(base, {
+    params: Object.keys(params).length > 0 ? params : undefined,
+  })
   return data
 }
 

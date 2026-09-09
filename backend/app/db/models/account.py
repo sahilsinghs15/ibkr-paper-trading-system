@@ -47,14 +47,6 @@ class AccountModel(Base):
             "daily_stop_unit IN ('ABSOLUTE', 'PERCENT')",
             name="ck_accounts_daily_stop_unit",
         ),
-        CheckConstraint(
-            "daily_target IS NULL OR daily_target >= 0",
-            name="ck_accounts_daily_target_nonneg",
-        ),
-        CheckConstraint(
-            "daily_stop IS NULL OR daily_stop >= 0",
-            name="ck_accounts_daily_stop_nonneg",
-        ),
     )
 
 

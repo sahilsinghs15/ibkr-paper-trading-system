@@ -39,18 +39,18 @@ function thresholdInputValue(raw: string | number | null | undefined, unit: stri
 
 function thresholdPayload(input: string, unit: string): string {
   const n = parseFloat(input)
-  if (Number.isNaN(n) || n < 0) return '0'
+  if (Number.isNaN(n)) return '0'
   if (unit === 'PERCENT') return (n / 100).toFixed(6)
   return n.toFixed(4)
 }
 
-function resolveCurrency(magnitude: number, unit: string, notional: number): number | null {
-  if (!magnitude || magnitude <= 0) return null
+function resolveCurrency(value: number, unit: string, notional: number): number | null {
+  if (Number.isNaN(value)) return null
   if (unit === 'PERCENT') {
     if (!notional || notional <= 0) return null
-    return magnitude * notional
+    return value * notional
   }
-  return magnitude
+  return value
 }
 
 function legGrossNotional(qty: unknown, mark: unknown): number | null {
@@ -152,7 +152,7 @@ export function PairDetailModal({
   const targetDistance =
     targetAmt !== null && liveNum !== null ? targetAmt - liveNum : null
   const stopDistance =
-    stopAmt !== null && liveNum !== null ? liveNum - -stopAmt : null
+    stopAmt !== null && liveNum !== null ? liveNum - stopAmt : null
 
   const orders = useMemo(
     () => [...(detailQuery.data?.orders || [])].sort((a, b) => a.id - b.id),
@@ -280,7 +280,6 @@ export function PairDetailModal({
                   {targetUnit === 'ABSOLUTE' ? <span className="money-prefix">$</span> : null}
                   <input
                     type="number"
-                    min="0"
                     step={targetUnit === 'PERCENT' ? '0.01' : '1'}
                     value={target}
                     disabled={!isOpenPair || mutation.isPending}
@@ -300,19 +299,15 @@ export function PairDetailModal({
                     <option value="PERCENT">% of pair</option>
                   </select>
                   {targetUnit === 'PERCENT' && targetAmt !== null ? (
-                    <span className="money-suffix pair-pct-abs target">{fmtUsd(targetAmt)}</span>
+                    <span className="money-suffix pair-pct-abs target">{fmtPnl(targetAmt)}</span>
                   ) : null}
                 </div>
                 <span className="field-hint dim">
-                  {targetUnit === 'PERCENT'
-                    ? targetAmt !== null
-                      ? `${fmtUsd(targetAmt)} target · ${target}% of ${fmtUsd(pairNotional)}${targetDistance !== null ? ` · ${fmtPnl(targetDistance)} to target` : ''}`
-                      : pairNotional <= 0 && parseFloat(target) > 0
-                        ? 'Pair notional needed to convert %'
-                        : '0 disables'
-                    : targetAmt !== null
-                      ? `Fires at ${fmtUsd(targetAmt)}${targetDistance !== null ? ` · ${fmtPnl(targetDistance)} to target` : ''}`
-                      : '0 disables'}
+                  {targetAmt !== null
+                    ? `Fires when PnL ≥ ${fmtPnl(targetAmt)}${targetUnit === 'PERCENT' ? ` · ${target}% of ${fmtUsd(pairNotional)}` : ''}${targetDistance !== null ? ` · ${fmtPnl(targetDistance)} to target` : ''}`
+                    : pairNotional <= 0 && targetUnit === 'PERCENT'
+                      ? 'Pair notional needed to convert %'
+                      : 'Need a valid target'}
                 </span>
               </label>
               <label className="field">
@@ -321,7 +316,6 @@ export function PairDetailModal({
                   {stopUnit === 'ABSOLUTE' ? <span className="money-prefix">$</span> : null}
                   <input
                     type="number"
-                    min="0"
                     step={stopUnit === 'PERCENT' ? '0.01' : '1'}
                     value={stop}
                     disabled={!isOpenPair || mutation.isPending}
@@ -341,19 +335,15 @@ export function PairDetailModal({
                     <option value="PERCENT">% of pair</option>
                   </select>
                   {stopUnit === 'PERCENT' && stopAmt !== null ? (
-                    <span className="money-suffix pair-pct-abs stop">−{fmtUsd(stopAmt)}</span>
+                    <span className="money-suffix pair-pct-abs stop">{fmtPnl(stopAmt)}</span>
                   ) : null}
                 </div>
                 <span className="field-hint dim">
-                  {stopUnit === 'PERCENT'
-                    ? stopAmt !== null
-                      ? `${fmtUsd(stopAmt)} stop · ${stop}% of ${fmtUsd(pairNotional)}${stopDistance !== null ? ` · ${fmtPnl(stopDistance)} of cushion` : ''}`
-                      : pairNotional <= 0 && parseFloat(stop) > 0
-                        ? 'Pair notional needed to convert %'
-                        : '0 disables'
-                    : stopAmt !== null
-                      ? `Fires at −${fmtUsd(stopAmt)}${stopDistance !== null ? ` · ${fmtPnl(stopDistance)} of cushion` : ''}`
-                      : '0 disables'}
+                  {stopAmt !== null
+                    ? `Fires when PnL ≤ ${fmtPnl(stopAmt)}${stopUnit === 'PERCENT' ? ` · ${stop}% of ${fmtUsd(pairNotional)}` : ''}${stopDistance !== null ? ` · ${fmtPnl(stopDistance)} of cushion` : ''}`
+                    : pairNotional <= 0 && stopUnit === 'PERCENT'
+                      ? 'Pair notional needed to convert %'
+                      : 'Need a valid stop'}
                 </span>
               </label>
             </div>

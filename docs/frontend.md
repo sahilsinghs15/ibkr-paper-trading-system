@@ -53,7 +53,7 @@ Main FastAPI (`app.main`) does **not** serve any frontend. The dashboard is serv
 Routed component is `AccountSettingsPage.tsx`, not `SettingsPage.tsx`.
 
 - `GET /api/v1/config/accounts` — load nested config
-- Per account: edit **Trading capital** (`accounts.total_margin`; market-value budget, not IBKR margin), `enabled`, allocation `alloc_pct` (with enabled-sum ≤ 100% guard), **per-pair allocation** (`pair_max_allocation_pct`, with a derived `$X per pair · room for N pairs` hint), per-account `max_open_positions`, **exit automation** (pair target/stop/time_limit + units + enable toggle; threshold edits apply to new pairs, the automation toggle also arms currently OPEN pairs of that strategy), **account daily risk** (daily target/stop + units + enable toggle; 0 is breakeven, the toggle disables), and `per_symbol_limits` CRUD. Broker free-margin from `GET /api/v1/margin/accounts/{ibkr}` is shown beside that input so the two figures are not confused. New allocations are created from `AccountsPage` `AddAllocationModal` (includes the per-pair field).
+- Per account: edit **Trading capital** (`accounts.total_margin`; market-value budget, not IBKR margin), `enabled`, allocation `alloc_pct` (with enabled-sum ≤ 100% guard), **per-pair allocation** (`pair_max_allocation_pct`, with a derived `$X per pair · room for N pairs` hint), per-account `max_open_positions`, **exit automation** (pair target/stop/time_limit + units + enable toggle; signed PnL levels, negatives and 0 allowed; threshold edits apply to new pairs, the automation toggle also arms currently OPEN pairs of that strategy), **account daily risk** (daily target/stop + units + enable toggle; signed PnL levels, 0 is breakeven, the toggle disables), and `per_symbol_limits` CRUD. Broker free-margin from `GET /api/v1/margin/accounts/{ibkr}` is shown beside that input so the two figures are not confused. New allocations are created from `AccountsPage` `AddAllocationModal` (includes the per-pair field).
 - Auto square-off & retry: `GET/PATCH /api/v1/config/execution`
 - **Margin gate policy:** `GET/PATCH /api/v1/config/margin` (`MarginSettingsCard`) — `check_enabled` defaults true (**Margin check enabled**); uncheck for shadow mode. Comfort ratio, floors, look-ahead; no TWS restart
 - Saves via PATCH/PUT/DELETE on `/api/v1/config/*` (proxied to trading app `:8001`)
@@ -65,7 +65,7 @@ Routed component is `AccountSettingsPage.tsx`, not `SettingsPage.tsx`.
 Nav label **Inventory**; route and API remain `/reconcile`. Broker vs ledger reconcile view.
 
 - `GET /api/v1/reconcile/positions?ibkr_account=` — latest persisted IBKR snapshot, OPEN ledger pair rows, and freshly classified diffs
-- Poll every 30s (same pattern as System Monitor)
+- Poll every 30s (same pattern as System Monitor); **Refresh** button and post-**Fix** refetch pass `refresh=true` to run one live IBKR `reqPositions` sweep first
 - **Differences table only** (broker vs ledger classified diffs); broker/ledger qty columns show `qty / $notional` (notional from snapshot `avg_cost`)
 - Per-row **Fix**: `POST /api/v1/reconcile/positions/align` — preview affected OPEN ledger pairs in a modal, then submit a MARKET trade computed server-side so IBKR broker qty matches the signal ledger (`broker_qty → ledger_qty`); does not arm kill switch or close OPEN ledger pairs. Legacy `POST .../flatten` remains on the API but is unused by the UI.
 

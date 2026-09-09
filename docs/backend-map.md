@@ -166,7 +166,7 @@ Lifespan constructs **one** `TWSClient`, **one** `GatewayRateLimiter`, and **one
 
 ## Alembic HEAD
 
-Chain ends at revision **`q5r6s7t8u9v0`** (`q5r6s7t8u9v0_position_exit_automation.py`, revises `p4q5r6s7t8u9`). Full chain in [`backend-persistence.md`](backend-persistence.md).
+Chain ends at revision **`r6s7t8u9v0w1`** (`r6s7t8u9v0w1_signed_exit_levels.py`, revises `q5r6s7t8u9v0`). Full chain in [`backend-persistence.md`](backend-persistence.md).
 
 ## Ignore / do not treat as source of truth
 

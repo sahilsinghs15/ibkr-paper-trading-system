@@ -28,19 +28,29 @@ router = APIRouter(prefix="/reconcile", tags=["reconcile"])
     "/positions",
     summary="Get broker snapshot, ledger rows, and reconcile diffs",
     description=(
-        "Read-only view of the latest persisted IBKR broker snapshot, OPEN Model Blue "
-        "ledger pair rows, and freshly classified broker-vs-ledger diffs. Does not call "
-        "reqPositions; data reflects the background reconciler's last sweep."
+        "View of the latest persisted IBKR broker snapshot, OPEN Model Blue ledger pair "
+        "rows, and freshly classified broker-vs-ledger diffs. By default data reflects the "
+        "background reconciler's last sweep. Pass refresh=true to run one live reqPositions "
+        "sweep first (skipped when TWS is disconnected or a sweep is already running)."
     ),
     response_model=ReconcilePositionsResponse,
 )
 async def get_reconcile_positions(
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db_session)],
     current_user: Annotated[UserModel, Depends(require_authenticated_user)],
     ibkr_account: Annotated[
         str | None,
         Query(description="Optional IBKR account filter (e.g. DUR919062)"),
     ] = None,
+    refresh: Annotated[
+        bool,
+        Query(
+            description=(
+                "When true, run one IBKR position reconcile sweep before returning data."
+            ),
+        ),
+    ] = False,
 ) -> ReconcilePositionsResponse:
     """Return reconcile dashboard payload for one account or all accounts."""
     if current_user.role == "user":
@@ -48,6 +58,10 @@ async def get_reconcile_positions(
         if ibkr_account and normalize_account(ibkr_account) != normalize_account(user_account):
             raise HTTPException(status_code=403, detail="Forbidden: Cannot access another account")
         ibkr_account = user_account
+    if refresh:
+        reconciler = getattr(request.app.state, "position_reconciler", None)
+        if reconciler is not None:
+            await reconciler.run_once()
     return await collect_reconcile_positions(db, ibkr_account=ibkr_account)
 
 

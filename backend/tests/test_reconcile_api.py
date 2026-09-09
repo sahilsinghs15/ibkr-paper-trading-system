@@ -59,3 +59,21 @@ def test_reconcile_positions_unfiltered_returns_schema(client: TestClient) -> No
     response = client.get("/api/v1/reconcile/positions")
     assert response.status_code == 200, response.text
     ReconcilePositionsResponse.model_validate(response.json())
+
+
+def test_reconcile_positions_refresh_triggers_run_once(client: TestClient) -> None:
+    reconciler = client.app.state.position_reconciler
+    with patch.object(reconciler, "run_once", new_callable=AsyncMock) as run_once:
+        response = client.get("/api/v1/reconcile/positions", params={"refresh": "true"})
+        assert response.status_code == 200, response.text
+        ReconcilePositionsResponse.model_validate(response.json())
+        run_once.assert_awaited_once()
+
+
+def test_reconcile_positions_default_does_not_trigger_run_once(client: TestClient) -> None:
+    reconciler = client.app.state.position_reconciler
+    with patch.object(reconciler, "run_once", new_callable=AsyncMock) as run_once:
+        response = client.get("/api/v1/reconcile/positions")
+        assert response.status_code == 200, response.text
+        ReconcilePositionsResponse.model_validate(response.json())
+        run_once.assert_not_awaited()

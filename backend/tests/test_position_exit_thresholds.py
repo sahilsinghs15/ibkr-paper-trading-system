@@ -235,7 +235,7 @@ def test_patch_exits_writes_event(
         f"/api/v1/config/accounts/{account_id}/positions/{trade_id}/exits",
         json={
             "target": "900",
-            "stop": "300",
+            "stop": "-300",
             "target_unit": "ABSOLUTE",
             "stop_unit": "ABSOLUTE",
             "exit_automation_enabled": True,
@@ -244,7 +244,22 @@ def test_patch_exits_writes_event(
     assert res.status_code == 200, res.text
     body = res.json()
     assert Decimal(body["target"]) == Decimal(900)
+    assert Decimal(body["stop"]) == Decimal(-300)
     assert body["exit_automation_enabled"] is True
+
+
+def test_patch_exits_accepts_negative_target(
+    client: TestClient, seeded_open_pair: dict
+) -> None:
+    res = client.patch(
+        f"/api/v1/config/accounts/{seeded_open_pair['account_id']}"
+        f"/positions/{seeded_open_pair['trade_id']}/exits",
+        json={"stop": "-100", "target": "-10"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert Decimal(body["stop"]) == Decimal(-100)
+    assert Decimal(body["target"]) == Decimal(-10)
 
 
 @pytest.mark.asyncio
