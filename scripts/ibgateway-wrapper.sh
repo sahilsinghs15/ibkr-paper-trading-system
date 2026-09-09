@@ -24,6 +24,16 @@ GATEWAY_PORT="${ENV_PORT:-4001}"
 GATEWAY_LOGIN_MARKER="Login has completed"
 RESTART_BACKEND_TRIGGER="${HOME_DIR}/storage/state/restart_backend.trigger"
 
+# Check canonical holiday guard before starting Xvfb, IBC, or IB Gateway
+PYTHON_BIN="${HOME_DIR}/app/backend/.venv/bin/python"
+HOLIDAY_GUARD="${HOME_DIR}/app/scripts/holiday_guard.py"
+if [ -f "$HOLIDAY_GUARD" ] && [ -x "$PYTHON_BIN" ]; then
+  if ! "$PYTHON_BIN" "$HOLIDAY_GUARD"; then
+    echo "NYSE market closed today. IB Gateway startup blocked." >&2
+    exit 0
+  fi
+fi
+
 # Cleanup stale Xvfb locks (mirrors process_manager.clear_stale_xvfb_lock)
 for p in "/tmp/.X${DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM}"; do
   if [ -e "$p" ]; then

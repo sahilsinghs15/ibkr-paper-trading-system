@@ -10,8 +10,13 @@ Gateway max wait is added for projected check.
 
 from __future__ import annotations
 
+import csv
+import logging
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -19,18 +24,66 @@ RTH_OPEN = time(9, 30)
 RTH_CLOSE = time(16, 0)
 HALF_CLOSE = time(13, 0)
 
-# Fallback minimal sets if exchange_calendars unavailable (tests still pass)
-_FALLBACK_HOLIDAYS = set()
-_FALLBACK_HALF = set()
+# Path to the generated reference/fallback CSV artifact
+CSV_PATH = Path(__file__).resolve().parents[2] / "data" / "holidays_xnys.csv"
+
+# Fallback minimal sets for tests
+_FALLBACK_HOLIDAYS: set[date] = set()
+_FALLBACK_HALF: set[date] = set()
+
+_CSV_CACHE: dict[date, dict[str, str | bool]] | None = None
+_CSV_RANGE: tuple[date, date] | None = None
+
+
+def _load_csv_schedule() -> tuple[dict[date, dict[str, str | bool]], tuple[date, date] | None]:
+    """Load reference/fallback NYSE schedule from CSV."""
+    global _CSV_CACHE, _CSV_RANGE
+    if _CSV_CACHE is not None:
+        return _CSV_CACHE, _CSV_RANGE
+
+    schedule: dict[date, dict[str, str | bool]] = {}
+    date_range: tuple[date, date] | None = None
+
+    if CSV_PATH.is_file():
+        try:
+            with open(CSV_PATH, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                dates: list[date] = []
+                for row in reader:
+                    d_str = row.get("date", "").strip()
+                    if not d_str:
+                        continue
+                    d = date.fromisoformat(d_str)
+                    dates.append(d)
+                    is_early = str(row.get("is_early_close", "")).strip().lower() == "true"
+                    schedule[d] = {
+                        "holiday_name": row.get("holiday_name", "").strip(),
+                        "is_early_close": is_early,
+                        "close_time_et": row.get("close_time_et", "").strip(),
+                    }
+                if dates:
+                    date_range = (min(dates), max(dates))
+        except Exception:
+            logger.exception("Failed to load holiday reference CSV from %s", CSV_PATH)
+
+    _CSV_CACHE = schedule
+    _CSV_RANGE = date_range
+    return _CSV_CACHE, _CSV_RANGE
 
 
 def _get_calendar():
     try:
         import exchange_calendars as xc  # type: ignore
 
-        return xc.get_calendar("XNYS")
-    except Exception:
-        return None
+        # Generous calendar range covering 2020 through 2036
+        return xc.get_calendar("XNYS", start="2020-01-01", end="2036-01-01")
+    except Exception:  # noqa: BLE001
+        try:
+            import exchange_calendars as xc  # type: ignore
+
+            return xc.get_calendar("XNYS")
+        except Exception:  # noqa: BLE001
+            return None
 
 
 _CAL = None
@@ -44,20 +97,91 @@ def _cal():
 
 
 def is_trading_day(d: date) -> bool:
+    """Canonical trading day check.
+    
+    1. Primary authority: exchange_calendars (XNYS).
+    2. Fallback: generated CSV artifact.
+    3. Fail-closed: returns False if neither is available.
+       Never fails open to weekday < 5.
+    """
+    if d in _FALLBACK_HOLIDAYS:
+        return False
+
     cal = _cal()
     if cal is not None:
         try:
-            # exchange_calendars is_session uses Timestamp
             import pandas as pd  # type: ignore
 
-            return bool(cal.is_session(pd.Timestamp(d)))
-        except Exception:
-            pass
-    # fallback: weekend only
-    return d.weekday() < 5
+            ts = pd.Timestamp(d)
+            return bool(cal.is_session(ts))
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed checking session in exchange_calendars for %s", d)
+
+    # Fallback to CSV artifact
+    csv_schedule, csv_range = _load_csv_schedule()
+    if csv_schedule is not None and csv_range is not None:
+        min_d, max_d = csv_range
+        if min_d <= d <= max_d:
+            if d.weekday() >= 5:
+                return False
+            entry = csv_schedule.get(d)
+            if entry is not None:
+                return bool(entry["is_early_close"])
+            return True
+
+    # Calendar and CSV both unavailable or out-of-range -> FAIL CLOSED
+    return False
+
+
+def get_holiday_reason(d: date) -> str:
+    """Return descriptive reason why market is closed (holiday name or weekend day)."""
+    weekday = d.weekday()
+    if weekday == 5:
+        return "Saturday"
+    if weekday == 6:
+        return "Sunday"
+
+    cal = _cal()
+    if cal is not None:
+        try:
+            import pandas as pd  # type: ignore
+
+            ts = pd.Timestamp(d)
+            if not cal.is_session(ts):
+                h = cal.regular_holidays.holidays(ts, ts, return_name=True)
+                if not h.empty:
+                    name = str(h.iloc[0]).strip()
+                    if name == "July 4th":
+                        return "Independence Day"
+                    if name == "President's Day":
+                        return "Presidents' Day"
+                    return name
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed resolving regular holiday from calendar for %s", d)
+        try:
+            for adh in getattr(cal, "adhoc_holidays", []):
+                import pandas as pd  # type: ignore
+
+                adh_d = adh.date() if isinstance(adh, (pd.Timestamp, datetime)) else adh
+                if adh_d == d:
+                    return "Special Non-Trading Day"
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed resolving adhoc holiday from calendar for %s", d)
+
+    csv_schedule, _ = _load_csv_schedule()
+    if csv_schedule and d in csv_schedule:
+        entry = csv_schedule[d]
+        if not entry["is_early_close"]:
+            return str(entry["holiday_name"])
+
+    if not is_trading_day(d):
+        return "NYSE Holiday"
+    return ""
 
 
 def rth_open_for(d: date) -> datetime | None:
+    if not is_trading_day(d):
+        return None
     cal = _cal()
     if cal is not None:
         try:
@@ -68,14 +192,16 @@ def rth_open_for(d: date) -> datetime | None:
             sched = cal.schedule.loc[pd.Timestamp(d)]
             o = sched["open"]
             return o.tz_convert(ET)  # type: ignore
-        except Exception:
+        except (KeyError, ValueError, AttributeError, RuntimeError):
             pass
-    if not is_trading_day(d):
-        return None
     return datetime.combine(d, RTH_OPEN, tzinfo=ET)
 
 
 def rth_close_for(d: date) -> datetime | None:
+    if not is_trading_day(d):
+        return None
+    if d in _FALLBACK_HALF:
+        return datetime.combine(d, HALF_CLOSE, tzinfo=ET)
     cal = _cal()
     if cal is not None:
         try:
@@ -86,10 +212,14 @@ def rth_close_for(d: date) -> datetime | None:
             sched = cal.schedule.loc[pd.Timestamp(d)]
             c = sched["close"]
             return c.tz_convert(ET)  # type: ignore
-        except Exception:
+        except (KeyError, ValueError, AttributeError, RuntimeError):
             pass
-    if not is_trading_day(d):
-        return None
+    csv_schedule, _ = _load_csv_schedule()
+    if csv_schedule and d in csv_schedule:
+        entry = csv_schedule[d]
+        if entry["is_early_close"] and entry["close_time_et"]:
+            parts = str(entry["close_time_et"]).split(":")
+            return datetime.combine(d, time(int(parts[0]), int(parts[1])), tzinfo=ET)
     return datetime.combine(d, RTH_CLOSE, tzinfo=ET)
 
 
@@ -100,14 +230,13 @@ def next_trading_day(d: date) -> date:
             import pandas as pd  # type: ignore
 
             nxt = cal.next_open(pd.Timestamp(d)).date()  # type: ignore
-            # next_open returns next session open timestamp; extract date
             if isinstance(nxt, date) and not isinstance(nxt, datetime):
                 return nxt
             return nxt  # type: ignore
-        except Exception:
+        except (KeyError, ValueError, AttributeError, RuntimeError):
             pass
     cur = d + timedelta(days=1)
-    for _ in range(10):
+    for _ in range(15):
         if is_trading_day(cur):
             return cur
         cur += timedelta(days=1)
@@ -124,10 +253,10 @@ def prev_trading_day(d: date) -> date:
             if isinstance(prev, date) and not isinstance(prev, datetime):
                 return prev
             return prev  # type: ignore
-        except Exception:
+        except (KeyError, ValueError, AttributeError, RuntimeError):
             pass
     cur = d - timedelta(days=1)
-    for _ in range(10):
+    for _ in range(15):
         if is_trading_day(cur):
             return cur
         cur -= timedelta(days=1)

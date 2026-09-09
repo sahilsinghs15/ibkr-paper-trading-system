@@ -26,7 +26,9 @@ backend/.env.*
 # ------------------------
 
 backend/logs/
-backend/data/
+backend/data/*
+!backend/data/holidays_xnys.csv
+storage/
 *.log
 
 # ------------------------

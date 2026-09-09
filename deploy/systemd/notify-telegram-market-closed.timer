@@ -2,7 +2,7 @@
 Description=Daily check for NYSE market closed (weekend/holiday) — Telegram once per ET day
 
 [Timer]
-OnCalendar=*-*-* 10:00:00
+OnCalendar=*-*-* 10:00:00 America/New_York
 Persistent=true
 Unit=notify-telegram-market-closed.service
 

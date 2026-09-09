@@ -22,6 +22,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import running_under_pytest
 from app.core.security import decode_access_token, decode_sse_token
+from app.db.models.event import EventLogModel
 from app.db.models.user import UserModel
 from demo_streaming.snapshot import (
     load_baskets,
@@ -242,11 +243,43 @@ def create_demo_app(
         pnl_svc = getattr(app.state, "live_pnl_service", None)
         if pnl_svc is not None and hasattr(pnl_svc, "get_market_data_health"):
             return JSONResponse(pnl_svc.get_market_data_health())
-        return JSONResponse({
-            "active_subscriptions": 0,
-            "contracts": [],
-            "status": "NO_LIVE_PNL_SERVICE"
-        })
+    @app.get("/demo/system-events")
+    async def get_system_events(
+        request: Request,
+        since_id: int = 0,
+        limit: int = 20,
+    ) -> JSONResponse:
+        user = await _get_authenticated_user_from_request(request, session_factory)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+
+        if since_id < 0:
+            raise HTTPException(status_code=422, detail="since_id must be non-negative")
+        clamped_limit = min(max(1, limit), 100)
+
+        relevant_kinds = ("SERVICE_STARTED", "SERVICE_STOPPED", "MARKET_CLOSED")
+        async with session_factory() as session:
+            stmt = (
+                select(EventLogModel)
+                .where(
+                    EventLogModel.kind.in_(relevant_kinds),
+                    EventLogModel.id > since_id,
+                )
+                .order_by(EventLogModel.id.asc())
+                .limit(clamped_limit)
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+
+        events_payload = [
+            {
+                "id": row.id,
+                "ts": row.ts.isoformat() if row.ts else None,
+                "kind": row.kind,
+                "detail": row.detail,
+            }
+            for row in rows
+        ]
+        return JSONResponse(events_payload)
 
     @app.get("/demo/stream")
     async def sse(request: Request) -> StreamingResponse:

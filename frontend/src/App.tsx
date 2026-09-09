@@ -9,7 +9,9 @@ import { PositionsPage } from './pages/PositionsPage'
 import { AccountSettingsPage } from './pages/AccountSettingsPage'
 import { SystemMonitorPage } from './pages/SystemMonitorPage'
 import { ReconcilePage } from './pages/ReconcilePage'
+import { NotificationContainer } from './components/NotificationContainer'
 import { usePnlStream } from './hooks/usePnlStream'
+import { useSystemEvents } from './hooks/useSystemEvents'
 import { useAuthStore } from './store/authStore'
 import './App.css'
 
@@ -19,11 +21,13 @@ function App() {
   const location = useLocation()
 
   usePnlStream()
+  useSystemEvents()
 
   const hideHeader = location.pathname === '/login'
 
   return (
     <>
+      <NotificationContainer />
       {!hideHeader && <AppHeader />}
       <Routes>
         <Route path="/login" element={<LoginPage />} />

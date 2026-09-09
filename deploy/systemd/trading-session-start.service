@@ -4,6 +4,7 @@ After=network.target
 
 [Service]
 Type=oneshot
+ExecStartPre=/home/tradingapp/app/backend/.venv/bin/python /home/tradingapp/app/scripts/holiday_guard.py
 ExecStart=/usr/bin/systemctl start ibgateway.service
 # Ensure 24/7 services are running
 ExecStart=/usr/bin/systemctl start webhook-ingest.service
