@@ -57,7 +57,7 @@ Routed component is `AccountSettingsPage.tsx`, not `SettingsPage.tsx`.
 - Auto square-off & retry: `GET/PATCH /api/v1/config/execution`
 - **Margin gate policy:** `GET/PATCH /api/v1/config/margin` (`MarginSettingsCard`) — `check_enabled` defaults true (**Margin check enabled**); uncheck for shadow mode. Comfort ratio, floors, look-ahead; no TWS restart
 - Saves via PATCH/PUT/DELETE on `/api/v1/config/*` (proxied to trading app `:8001`)
-- Successful saves show a top-right toast (`showFeedbackToast`) plus a banner under the Settings header. Failures use the same surfaces.
+- Successful saves show a top-right toast (`showFeedbackToast`) plus a banner under the Settings header. Failures use the same surfaces. Kill-switch status polls every 2s; if it flips from cleared back to armed (`requested_by` other than `operator`, typically `auto_risk`), Settings shows an error toast and keeps the reason in the header banner.
 - **No** Gateway host/port/clientId binding. `ibkr_account` is the IB account id tagged on orders, not a socket. Target UI: [`backend-multi-gateway.md`](backend-multi-gateway.md).
 
 ### Inventory tab (`/account/:ibkrAccount/reconcile`)

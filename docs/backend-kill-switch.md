@@ -11,7 +11,7 @@ Mounted under `/api/v1/config/accounts/{account_id}/...` in `api/routes/config.p
 | Method | Path | Status | Role |
 |--------|------|--------|------|
 | `POST` | `/api/v1/config/accounts/{account_id}/square-off` | 202 | Start EC2 emergency flatten (background worker task) |
-| `GET` | `/api/v1/config/accounts/{account_id}/kill-switch` | 200 | Report whether account is armed (blocks OPEN) |
+| `GET` | `/api/v1/config/accounts/{account_id}/kill-switch` | 200 | Report whether account is armed (blocks OPEN); includes `requested_by` / `status` of the armed operation |
 | `POST` | `/api/v1/config/accounts/{account_id}/kill-switch/clear` | 200 | Disarm account — only way to resume OPENs (Start Again) |
 | `POST` | `/api/v1/emergency-kill-switch` | 200 | External pre-flight webhook: arms existing Kill Switch (NO broker flatten on EC2) |
 

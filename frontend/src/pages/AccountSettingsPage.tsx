@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import {
@@ -61,6 +61,32 @@ function thresholdPayload(input: string, unit: string): string {
   if (Number.isNaN(n)) return '0'
   if (unit === 'PERCENT') return (n / 100).toFixed(6)
   return n.toFixed(4)
+}
+
+function killSwitchRearmNotice(
+  requestedBy: string | null | undefined,
+  accountRiskEnabled: boolean,
+): {
+  title: string
+  message: string
+} {
+  if (requestedBy === 'auto_risk' || (requestedBy == null && accountRiskEnabled)) {
+    return {
+      title: 'Kill switch re-armed',
+      message:
+        'Account daily risk is still breached. Turn off account daily risk or change the daily stop/target, then Start Again.',
+    }
+  }
+  if (requestedBy === 'emergency_webhook') {
+    return {
+      title: 'Kill switch re-armed',
+      message: 'The emergency kill-switch webhook armed this account again.',
+    }
+  }
+  return {
+    title: 'Kill switch re-armed',
+    message: 'This account is blocked from new opening signals again.',
+  }
 }
 
 interface AllocationDraft {
@@ -456,9 +482,14 @@ export function AccountSettingsPage() {
     queryKey: ['config', 'kill-switch', account?.id],
     queryFn: () => (account ? fetchKillSwitchStatus(account.id) : Promise.resolve(null)),
     enabled: !!account,
+    refetchInterval: 2_000,
+    staleTime: 0,
   })
 
   const isKillSwitchActive = killSwitchData?.kill_switch_active ?? account?.kill_switch_active ?? false
+  const prevKillSwitchActiveRef = useRef<boolean | null>(null)
+  const killSwitchWatchAccountRef = useRef<number | undefined>(undefined)
+  const skipNextArmToastRef = useRef(false)
 
   const [margin, setMargin] = useState('')
   const [enabled, setEnabled] = useState(true)
@@ -491,6 +522,27 @@ export function AccountSettingsPage() {
     }
     return count
   }, [activeMap, account, cleanAccount])
+
+  useEffect(() => {
+    if (!account?.id || killSwitchData == null) return
+    if (killSwitchWatchAccountRef.current !== account.id) {
+      killSwitchWatchAccountRef.current = account.id
+      prevKillSwitchActiveRef.current = killSwitchData.kill_switch_active
+      return
+    }
+    const prev = prevKillSwitchActiveRef.current
+    const next = killSwitchData.kill_switch_active
+    prevKillSwitchActiveRef.current = next
+    if (prev !== false || next !== true) return
+    if (skipNextArmToastRef.current || killSwitchData.requested_by === 'operator') {
+      skipNextArmToastRef.current = false
+      return
+    }
+    const notice = killSwitchRearmNotice(killSwitchData.requested_by, accountRiskEnabled)
+    setMessage(null)
+    setLocalError(notice.message)
+    showFeedbackToast('error', notice.title, notice.message)
+  }, [account?.id, accountRiskEnabled, killSwitchData])
 
   useEffect(() => {
     if (account) {
@@ -1236,7 +1288,10 @@ export function AccountSettingsPage() {
                       ⛔ STOPPED BY KILL SWITCH
                     </strong>
                     <p className="field-hint" style={{ color: '#fca5a5', margin: 0 }}>
-                      This account is currently blocked from receiving or processing new opening trading signals.
+                      {killSwitchData?.requested_by === 'auto_risk' ||
+                      (killSwitchData?.requested_by == null && accountRiskEnabled)
+                        ? 'Re-armed by account daily risk. New opening signals stay blocked until you change the daily stop/target or turn daily risk off, then Start Again.'
+                        : 'This account is currently blocked from receiving or processing new opening trading signals.'}
                     </p>
                   </div>
                 ) : (
@@ -1282,6 +1337,7 @@ export function AccountSettingsPage() {
             onClose={() => setIsKillSwitchOpen(false)}
             onSuccess={(closedCount) => {
               const text = `Kill Switch executed: squared off ${closedCount} position(s).`
+              skipNextArmToastRef.current = true
               setMessage(text)
               setLocalError(null)
               showFeedbackToast('success', 'Kill switch executed', text)

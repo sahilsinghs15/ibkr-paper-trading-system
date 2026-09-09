@@ -77,6 +77,22 @@ def is_account_kill_switch_active(account_id: int) -> bool:
     return account_id in _KILL_SWITCH_ACTIVE_ACCOUNTS
 
 
+async def get_armed_kill_switch_operation(
+    session: AsyncSession, account_id: int
+) -> KillSwitchOperationModel | None:
+    """Latest armed operation for an account, or None if disarmed in the DB."""
+    result = await session.execute(
+        select(KillSwitchOperationModel)
+        .where(
+            KillSwitchOperationModel.account_id == account_id,
+            KillSwitchOperationModel.status.in_(_ARMED_STATUSES),
+        )
+        .order_by(KillSwitchOperationModel.created_at.desc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
 def _arm_kill_switch_cache(account_id: int) -> None:
     """Mark an account blocked in the in-memory cache."""
     _KILL_SWITCH_ACTIVE_ACCOUNTS.add(account_id)

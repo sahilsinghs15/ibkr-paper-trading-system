@@ -263,3 +263,43 @@ async def test_active_account_signal_execution_intact(
 
     # Active account is NOT in _KILL_SWITCH_ACTIVE_ACCOUNTS
     assert is_account_kill_switch_active(acc_id) is False
+
+
+@pytest.mark.asyncio
+async def test_get_kill_switch_status_includes_requested_by(
+    client: TestClient,
+    session_factory: async_sessionmaker[AsyncSession],
+):
+    """GET /kill-switch reports requested_by so the UI can explain a re-arm."""
+    suffix = uuid4().hex[:6]
+    async with session_factory() as session, session.begin():
+        acc = AccountModel(
+            name=f"KsStatus-{suffix}",
+            ibkr_account=f"DUKS{suffix}",
+            total_margin=Decimal("100000.00"),
+        )
+        session.add(acc)
+        await session.flush()
+        acc_id = acc.id
+
+    idle = client.get(f"/api/v1/config/accounts/{acc_id}/kill-switch")
+    assert idle.status_code == 200
+    idle_body = idle.json()
+    assert idle_body["kill_switch_active"] is False
+    assert idle_body["requested_by"] is None
+
+    svc = KillSwitchService(session_factory=session_factory)
+    await svc.initiate_square_off(account_id=acc_id, requested_by="auto_risk")
+
+    armed = client.get(f"/api/v1/config/accounts/{acc_id}/kill-switch")
+    assert armed.status_code == 200
+    armed_body = armed.json()
+    assert armed_body["kill_switch_active"] is True
+    assert armed_body["requested_by"] == "auto_risk"
+    assert armed_body["status"] == KILL_SWITCH_STATUS_ACTIVATING
+
+    await clear_account_kill_switch(session_factory, acc_id, cleared_by="operator")
+    cleared = client.get(f"/api/v1/config/accounts/{acc_id}/kill-switch")
+    assert cleared.status_code == 200
+    assert cleared.json()["kill_switch_active"] is False
+    assert cleared.json()["requested_by"] is None

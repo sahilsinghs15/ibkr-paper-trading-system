@@ -110,6 +110,8 @@ export interface KillSwitchClearResponse {
 export interface KillSwitchStatusResponse {
   account_id: number
   kill_switch_active: boolean
+  requested_by?: string | null
+  status?: string | null
 }
 
 export interface ClosePairResponse {

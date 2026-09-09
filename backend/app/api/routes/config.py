@@ -301,11 +301,25 @@ async def get_account_kill_switch_status(
     if account is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
 
-    from app.services.kill_switch import is_account_kill_switch_active
+    from app.services.kill_switch import (
+        get_armed_kill_switch_operation,
+        is_account_kill_switch_active,
+    )
+
+    active = is_account_kill_switch_active(account_id)
+    requested_by: str | None = None
+    op_status: str | None = None
+    if active:
+        armed_op = await get_armed_kill_switch_operation(session, account_id)
+        if armed_op is not None:
+            requested_by = armed_op.requested_by
+            op_status = armed_op.status
 
     return KillSwitchStatusResponse(
         account_id=account_id,
-        kill_switch_active=is_account_kill_switch_active(account_id),
+        kill_switch_active=active,
+        requested_by=requested_by,
+        status=op_status,
     )
 
 

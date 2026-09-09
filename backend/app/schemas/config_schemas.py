@@ -216,6 +216,8 @@ class KillSwitchStatusResponse(BaseModel):
 
     account_id: int
     kill_switch_active: bool
+    requested_by: str | None = None
+    status: str | None = None
 
 
 class ClosePairResponse(BaseModel):
