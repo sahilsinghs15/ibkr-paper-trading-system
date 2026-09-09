@@ -22,6 +22,7 @@ from app.db.models.signal import (
 )
 from app.db.repositories.execution_claim_repository import ExecutionClaimRepository
 from app.db.repositories.signal_repository import SignalJobRepository
+from app.services.account_reject_reason import collect_fanout_reject_reasons
 
 logger = logging.getLogger(__name__)
 
@@ -478,15 +479,19 @@ class ExecutionWorkerPool:
                 return
 
             if execution is not None and getattr(execution, "all_rejected", False):
+                reject_msg = collect_fanout_reject_reasons(execution)
                 logger.warning(
-                    "Worker %s: signal %s rejected by RMS/OMS policy", worker_id, job.signal_id
+                    "Worker %s: signal %s rejected: %s",
+                    worker_id,
+                    job.signal_id,
+                    reject_msg,
                 )
                 await self._write_status(
                     job.job_id,
                     JOB_STATUS_REJECTED,
                     worker_id,
                     lease_lost,
-                    error="Execution rejected by RMS/OMS policy",
+                    error=reject_msg,
                 )
                 return
 

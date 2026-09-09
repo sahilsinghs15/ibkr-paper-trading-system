@@ -1113,6 +1113,43 @@ class IBKRExecutionAdapter:
     # True order failures. 10243 = fractional STK via API.
     _ORDER_REJECTION_CODES = frozenset({200, 201, 10147, 10148, 10243})
 
+    def _is_non_terminal_tws_warning(self, errorCode: int) -> bool:
+        return (
+            errorCode in self._NON_TERMINAL_WARNING_CODES
+            or (errorCode >= 2000 and errorCode < 3000)
+            or (errorCode >= 10000 and errorCode < 11000)
+        )
+
+    def _format_tws_error_message(self, errorCode: int, errorString: str) -> str | None:
+        """Return broker reject text, or None for pacing / non-terminal warnings."""
+        if errorCode == 100 or self._is_non_terminal_tws_warning(errorCode):
+            return None
+        if errorCode == 202:
+            return f"Canceled: {errorString}"
+        return f"TWS Error {errorCode}: {errorString}"
+
+    def _attach_tws_error_message(
+        self,
+        order: OMSOrder,
+        errorCode: int,
+        errorString: str,
+    ) -> bool:
+        """Apply TWS error text to an order. Returns True when message is set."""
+        msg = self._format_tws_error_message(errorCode, errorString)
+        if not msg:
+            return False
+        if order.error_message and str(order.error_message).strip():
+            return False
+        order.error_message = msg
+        if order.status not in self._TERMINAL_STATUSES:
+            if errorCode == 202:
+                order.status = OMSOrderStatus.CANCELLED
+            elif errorCode in self._ORDER_REJECTION_CODES:
+                order.status = OMSOrderStatus.REJECTED
+            else:
+                order.status = OMSOrderStatus.ERROR
+        return True
+
     def on_error(self, reqId: int, errorCode: int, errorString: str) -> None:
         """Handle TWS error callback."""
         if errorCode == 100 and self._rate_limiter is not None:
@@ -1134,7 +1171,18 @@ class IBKRExecutionAdapter:
             order = self._orders_by_tws_id.get(reqId) if req_type == "order" or reqId in self._orders_by_tws_id else None
 
             if order and order.status in self._TERMINAL_STATUSES:
-                captured = None
+                # orderStatus/openOrder often marks REJECTED before the TWS error text arrives.
+                if self._attach_tws_error_message(order, errorCode, errorString):
+                    logger.warning(
+                        "Order %s already %s; attached TWS error %d: %s",
+                        order.internal_order_id,
+                        order.status.value,
+                        errorCode,
+                        errorString,
+                    )
+                    captured = order
+                else:
+                    captured = None
             elif order:
                 if errorCode == 100:
                     logger.warning(
@@ -1143,20 +1191,7 @@ class IBKRExecutionAdapter:
                         errorString,
                     )
                     return
-                # Code 202 is Order Canceled by user/system
-                if errorCode == 202:
-                    order.status = OMSOrderStatus.CANCELLED
-                    order.error_message = f"Canceled: {errorString}"
-                elif errorCode in self._ORDER_REJECTION_CODES:
-                    # Checked before 10xxx warning range so 10243 stays REJECTED.
-                    order.status = OMSOrderStatus.REJECTED
-                    order.error_message = f"TWS Error {errorCode}: {errorString}"
-                elif (
-                    errorCode in self._NON_TERMINAL_WARNING_CODES
-                    or (errorCode >= 2000 and errorCode < 3000)
-                    or (errorCode >= 10000 and errorCode < 11000)
-                ):
-                    # Warnings: order remains working. Must not REJECT (would compensate).
+                if self._is_non_terminal_tws_warning(errorCode):
                     logger.info(
                         "TWS Status info for order %s: %d %s",
                         order.internal_order_id,
@@ -1164,20 +1199,18 @@ class IBKRExecutionAdapter:
                         errorString,
                     )
                     return
+                if not self._attach_tws_error_message(order, errorCode, errorString):
+                    captured = None
                 else:
-                    order.status = OMSOrderStatus.ERROR
-                    order.error_message = f"TWS Error {errorCode}: {errorString}"
-
-                logger.warning(
-                    "Order %s status updated to %s via TWS error %d: %s",
-                    order.internal_order_id,
-                    order.status.value,
-                    errorCode,
-                    errorString,
-                )
-
-                self._notify_future_if_terminal(order)
-                captured = order
+                    logger.warning(
+                        "Order %s status updated to %s via TWS error %d: %s",
+                        order.internal_order_id,
+                        order.status.value,
+                        errorCode,
+                        errorString,
+                    )
+                    self._notify_future_if_terminal(order)
+                    captured = order
             else:
                 captured = None
         if captured is not None:

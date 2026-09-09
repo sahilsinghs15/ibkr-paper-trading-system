@@ -21,6 +21,7 @@ from app.core.config import get_settings
 from app.core.identifiers import normalize_symbol
 from app.core.logger import bind_log_context, get_log_context
 from app.services.account_reject_reason import (
+    collect_fanout_reject_reasons,
     format_account_reject_reason,
     merge_account_reject_reasons,
 )
@@ -810,16 +811,7 @@ class OrderManager:
                 signal, inbound_row, account_scope=account_scope
             )
             if res is not None and getattr(res, "all_rejected", False):
-                reasons = []
-                outcomes = getattr(res, "outcomes", [])
-                for o in outcomes:
-                    if getattr(o, "error", None):
-                        reasons.append(f"Account {o.ibkr_account}: {o.error}")
-                    elif getattr(o, "result", None) and getattr(o.result, "rms_result", None):
-                        r_res = o.result.rms_result
-                        if getattr(r_res, "reason", None):
-                            reasons.append(f"Account {o.ibkr_account}: {r_res.reason}")
-                rej_msg = "; ".join(reasons) if reasons else "Execution rejected by RMS/OMS policy"
+                rej_msg = collect_fanout_reject_reasons(res)
                 existing_reason = getattr(inbound_row, "reject_reason", None) if inbound_row else None
                 if existing_reason is None and self._session_factory is not None:
                     persist_id = persist_signal_id_for(signal)

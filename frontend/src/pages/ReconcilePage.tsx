@@ -125,7 +125,7 @@ export function ReconcilePage() {
     )
     const timer = setInterval(() => {
       void loadData()
-    }, 30000)
+    }, 5000)
     return () => {
       mounted = false
       clearInterval(timer)

@@ -136,6 +136,35 @@ function parseKnownReason(scoped: string): Omit<RejectDisplay, 'raw'> | null {
     }
   }
 
+  if (
+    /TWS\s+Error\s+201/i.test(s) ||
+    /Client Portal.*token.*verif/i.test(s)
+  ) {
+    return {
+      category: 'Broker',
+      summary: 'IBKR requires Client Portal token verification',
+    }
+  }
+
+  if (
+    /TWS\s+Error\s+321/i.test(s) ||
+    /read-?only\s+(?:api|mode)/i.test(s)
+  ) {
+    return {
+      category: 'Broker',
+      summary: 'IBKR API is in read-only mode — orders cannot be placed',
+    }
+  }
+
+  const twsError = s.match(/TWS\s+Error\s+(\d+):\s*(.*)/i)
+  if (twsError) {
+    const detail = String(twsError[2] || '').trim()
+    return {
+      category: 'Broker',
+      summary: detail || `IBKR rejected order (error ${twsError[1]})`,
+    }
+  }
+
   if (s.includes('ambiguous') || s.includes('code=200')) {
     return {
       category: 'Broker',

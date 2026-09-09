@@ -780,6 +780,35 @@ async def test_399_and_2109_are_non_terminal_warnings(
 
 
 @pytest.mark.asyncio
+async def test_tws_error_attaches_to_already_rejected_order(
+    mock_adapter: IBKRExecutionAdapter,
+    sample_intent: OrderIntent,
+    pass_rms_result: RMSResult,
+) -> None:
+    """orderStatus often marks REJECTED before on_error delivers the broker text."""
+    oms = OMSService(adapter=mock_adapter)
+    order = (await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)).order
+    tws_id = int(order.ibkr_order_id)  # type: ignore[arg-type]
+    mock_adapter._client.get_request_type.return_value = "order"
+    mock_adapter.on_order_status(
+        tws_id, "Inactive", 0.0, float(order.quantity), 0.0, 0, 0, 0.0, 1, "", 0.0
+    )
+    assert oms.get_order(order.internal_order_id).status == OMSOrderStatus.REJECTED
+    assert not oms.get_order(order.internal_order_id).error_message
+
+    mock_adapter.on_error(
+        reqId=tws_id,
+        errorCode=201,
+        errorString="Order rejected - reason: Client Portal token verification required",
+    )
+    stored = oms.get_order(order.internal_order_id)
+    assert stored is not None
+    assert stored.status == OMSOrderStatus.REJECTED
+    assert "TWS Error 201" in (stored.error_message or "")
+    assert "Client Portal" in (stored.error_message or "")
+
+
+@pytest.mark.asyncio
 async def test_201_is_rejected_and_202_is_cancelled(
     mock_adapter: IBKRExecutionAdapter,
     sample_intent: OrderIntent,

@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.db.models.account import AccountModel
 from app.db.models.order import OrderModel
 from app.db.models.signal import SignalJobModel, SignalModel
-from demo_streaming.snapshot import load_signals
+from app.services.account_reject_reason import GENERIC_REJECT_FALLBACK
+from demo_streaming.snapshot import load_signals, reconcile_signal_status
 
 
 @pytest.mark.asyncio
@@ -294,3 +295,126 @@ async def test_load_signals_scopes_combined_reject_reason_to_requested_account(
     assert "MODEL_BLUE_MIN_NOTIONAL" in (row_b["reject_reason"] or "")
     assert ibkr_a not in (row_b["reject_reason"] or "")
     assert "MARGIN_SNAPSHOT_STALE" not in (row_b["reject_reason"] or "")
+
+
+@pytest.mark.asyncio
+async def test_load_signals_prefers_specific_signal_reject_over_generic_job_error(
+    session_factory: async_sessionmaker[AsyncSession],
+):
+    """When job last_error is generic, keep the specific signal reject_reason."""
+    test_id = uuid4().hex[:6]
+    ibkr_acc = f"DU{test_id}"
+    sig_id = f"SIG-SPEC-REJ-{test_id}"
+    broker_reason = (
+        f"Account {ibkr_acc}: TWS Error 201: Client Portal token verification required"
+    )
+
+    async with session_factory() as session, session.begin():
+        acc = AccountModel(name="SpecReject", ibkr_account=ibkr_acc, total_margin=Decimal("100000.00"))
+        session.add(acc)
+        await session.flush()
+
+        sig = SignalModel(
+            signal_id=sig_id,
+            strategy_id="model_blue",
+            action="OPEN",
+            pair="EWC / EWY",
+            side="BUY",
+            ref_price_a=Decimal("40.0"),
+            ref_price_b=Decimal("30.0"),
+            status="REJECTED",
+            reject_reason=broker_reason,
+            raw_payload={"account": ibkr_acc},
+        )
+        session.add(sig)
+        await session.flush()
+
+        session.add(
+            SignalJobModel(
+                signal_id=sig_id,
+                strategy_id="model_blue",
+                status="REJECTED",
+                idempotency_key=f"idem-spec-{test_id}",
+                account_scope=str(acc.id),
+                last_error=GENERIC_REJECT_FALLBACK,
+                raw_payload={},
+                correlation_id=f"corr-spec-{test_id}",
+            )
+        )
+
+    async with session_factory() as session:
+        res = await load_signals(session, ibkr_account=ibkr_acc, return_dict=True)
+
+    row = next(s for s in res["signals"] if s["signal_id"] == sig_id)
+    assert "TWS Error 201" in (row["reject_reason"] or "")
+    assert row["reject_reason"] != GENERIC_REJECT_FALLBACK
+    assert row["canonical_status"] == "REJECTED"
+
+
+def test_zero_fill_unwind_stays_rejected_not_square_off() -> None:
+    class _SigStub:
+        status = "REJECTED"
+        reject_reason = "Account U7211090: TWS Error 201: Client Portal token verification required"
+        processed_at = None
+        received_at = None
+
+    orders = [
+        {
+            "basket_id": 1,
+            "leg": "0",
+            "symbol": "EWC",
+            "buy_sell": "BUY",
+            "quantity": 10.0,
+            "fill_qty": 0.0,
+            "status": "REJECTED",
+            "is_compensation": False,
+        },
+        {
+            "basket_id": 1,
+            "leg": "1",
+            "symbol": "EWY",
+            "buy_sell": "SELL",
+            "quantity": 10.0,
+            "fill_qty": 0.0,
+            "status": "REJECTED",
+            "is_compensation": False,
+        },
+    ]
+    events = [{"kind": "BASKET_UNWINDING", "ts": "2026-09-09T15:15:00+00:00"}]
+    c_status, _, reason, _, _ = reconcile_signal_status(_SigStub(), orders, events)
+    assert c_status == "REJECTED"
+    assert reason is not None and "TWS Error 201" in reason
+
+
+def test_partial_fill_unwind_remains_square_off() -> None:
+    class _SigStub:
+        status = "PROCESSED"
+        reject_reason = None
+        processed_at = None
+        received_at = None
+
+    orders = [
+        {
+            "basket_id": 1,
+            "leg": "0",
+            "symbol": "EWC",
+            "buy_sell": "BUY",
+            "quantity": 10.0,
+            "fill_qty": 5.0,
+            "status": "PARTIALLY_FILLED",
+            "is_compensation": False,
+        },
+        {
+            "basket_id": 1,
+            "leg": "0",
+            "symbol": "EWC",
+            "buy_sell": "SELL",
+            "quantity": 5.0,
+            "fill_qty": 5.0,
+            "status": "FILLED",
+            "is_compensation": True,
+        },
+    ]
+    events = [{"kind": "BASKET_UNWINDING", "ts": "2026-09-09T15:15:00+00:00"}]
+    c_status, _, _, _, _ = reconcile_signal_status(_SigStub(), orders, events)
+    assert c_status == "SQUARE-OFF"

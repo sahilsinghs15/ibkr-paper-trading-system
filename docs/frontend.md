@@ -65,7 +65,7 @@ Routed component is `AccountSettingsPage.tsx`, not `SettingsPage.tsx`.
 Nav label **Inventory**; route and API remain `/reconcile`. Broker vs ledger reconcile view.
 
 - `GET /api/v1/reconcile/positions?ibkr_account=` — latest persisted IBKR snapshot, OPEN ledger pair rows, and freshly classified diffs
-- Poll every 30s (same pattern as System Monitor); **Refresh** button and post-**Fix** refetch pass `refresh=true` to run one live IBKR `reqPositions` sweep first
+- Poll every 5s; **Refresh** button and post-**Fix** refetch pass `refresh=true` to run one live IBKR `reqPositions` sweep first
 - **Differences table only** (broker vs ledger classified diffs); broker/ledger qty columns show `qty / $notional` (notional from snapshot `avg_cost`)
 - Per-row **Fix**: `POST /api/v1/reconcile/positions/align` — preview affected OPEN ledger pairs in a modal, then submit a MARKET trade computed server-side so IBKR broker qty matches the signal ledger (`broker_qty → ledger_qty`); does not arm kill switch or close OPEN ledger pairs. Legacy `POST .../flatten` remains on the API but is unused by the UI.
 

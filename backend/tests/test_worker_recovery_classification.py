@@ -13,11 +13,19 @@ from app.db.models.order import OrderModel
 from app.db.models.signal import (
     JOB_STATUS_FAILED,
     JOB_STATUS_RECOVERY_REQUIRED,
+    JOB_STATUS_REJECTED,
     SignalJobModel,
     SignalModel,
 )
 from app.db.session import create_engine_from_settings
-from app.oms.models import FanoutExecutionResult
+from app.oms.models import (
+    AccountExecutionOutcome,
+    ExecutionResult,
+    FanoutExecutionResult,
+    OMSOrder,
+    OMSOrderStatus,
+)
+from app.rms.models import OrderAction, OrderIntent, OrderSide, RMSOutcome, RMSResult
 from app.services.worker_pool import ExecutionWorkerPool
 
 
@@ -147,3 +155,67 @@ async def test_execute_job_quarantines_when_exception_and_orders_emitted() -> No
         assert JOB_STATUS_RECOVERY_REQUIRED in statuses
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_execute_job_all_rejected_uses_broker_error_not_generic_fallback() -> None:
+    broker_msg = "TWS Error 201: Client Portal token verification required"
+    intent = OrderIntent(
+        signal_id="sig-broker-rej",
+        strategy_id="model_blue",
+        action=OrderAction.OPEN,
+        legs=[],
+        account_id=452,
+        ibkr_account="U7211090",
+    )
+    order = OMSOrder(
+        internal_order_id="ord-broker-rej",
+        intent=intent,
+        symbol="EWC",
+        side=OrderSide.BUY,
+        quantity=10,
+        status=OMSOrderStatus.REJECTED,
+        error_message=broker_msg,
+    )
+    rms = RMSResult(
+        outcome=RMSOutcome.PASS,
+        intent=intent,
+        original_intent=intent,
+        reason=None,
+    )
+    result = ExecutionResult(
+        order=order,
+        rms_result=rms,
+        success=False,
+        orders=[order],
+        error_message="COMPENSATED",
+    )
+    fanout = FanoutExecutionResult(
+        outcomes=[
+            AccountExecutionOutcome(
+                account_id=452,
+                ibkr_account="U7211090",
+                result=result,
+            )
+        ]
+    )
+
+    om = MagicMock()
+    om.parse_inbound_payload = MagicMock(return_value=MagicMock())
+    om.process_signal_execution = AsyncMock(return_value=fanout)
+    factory = MagicMock()
+    pool = ExecutionWorkerPool(factory, om, worker_count=1)
+    statuses: list[str] = []
+    errors: list[str | None] = []
+
+    async def capture_status(job_id, status, worker_id, lease_lost, error=None):
+        statuses.append(status)
+        errors.append(error)
+        return True
+
+    with patch.object(pool, "_write_status", capture_status):
+        await pool._execute_job("w1", _job(), asyncio.Event())
+
+    assert JOB_STATUS_REJECTED in statuses
+    assert any(err and "TWS Error 201" in err for err in errors)
+    assert not any(err == "Execution rejected by RMS/OMS policy" for err in errors)

@@ -18,12 +18,39 @@ from app.db.models.signal import SignalJobModel, SignalModel
 from app.services.account_reject_reason import (
     format_account_reject_reason,
     has_account_prefixed_segments,
+    is_generic_reject_reason,
+    resolve_reject_source,
     scope_reject_reason_for_account,
 )
 from app.services.risk_exit_rules import pair_entry_gross_notional
 
 RISK_OPEN = "OPEN"
 RISK_CLOSED = "CLOSED"
+
+
+def _resolve_scoped_reject(
+    sig_reject: str | None,
+    job_reject: str | None,
+    *,
+    ibkr_account: str | None,
+    account_id: int | None,
+) -> str | None:
+    """Pick the best reject text and scope it to the open account."""
+    best = resolve_reject_source(job_reject, sig_reject)
+    if not best:
+        return None
+    raw_for_scope = best
+    if job_reject and best == job_reject and not is_generic_reject_reason(job_reject):
+        raw_for_scope = format_account_reject_reason(
+            ibkr_account,
+            best,
+            account_id=account_id,
+        ) or best
+    return scope_reject_reason_for_account(
+        raw_for_scope,
+        ibkr_account=ibkr_account,
+        account_id=account_id,
+    )
 
 
 class _SignalRejectView:
@@ -797,17 +824,9 @@ async def load_signals(
                 if job_reject:
                     break
 
-        raw_reject_for_scope = sig.reject_reason
-        if job_reject:
-            # Prefer durable per-account job error over the shared (often overwritten) signal row.
-            raw_reject_for_scope = format_account_reject_reason(
-                sig_ibkr_acc or target_ibkr_canonical,
-                job_reject,
-                account_id=sig_acc_id if sig_acc_id is not None else target_acc_id,
-            )
-
-        scoped_reject = scope_reject_reason_for_account(
-            raw_reject_for_scope,
+        scoped_reject = _resolve_scoped_reject(
+            sig.reject_reason,
+            job_reject,
             ibkr_account=sig_ibkr_acc or target_ibkr_canonical,
             account_id=sig_acc_id if sig_acc_id is not None else target_acc_id,
         )
@@ -884,13 +903,9 @@ async def load_signals(
                     job_reject = job_error_by_sig_scope.get((sid, key))
                     if job_reject:
                         break
-            raw_reject_for_scope = sig.reject_reason
-            if job_reject:
-                raw_reject_for_scope = format_account_reject_reason(
-                    sig_ibkr_acc, job_reject, account_id=sig_acc_id
-                )
-            scoped_reject = scope_reject_reason_for_account(
-                raw_reject_for_scope,
+            scoped_reject = _resolve_scoped_reject(
+                sig.reject_reason,
+                job_reject,
                 ibkr_account=sig_ibkr_acc,
                 account_id=sig_acc_id,
             )
@@ -1020,6 +1035,17 @@ def _duration_sec(received_at: datetime | None, processed_at: str | None) -> flo
         return None
 
 
+def _total_fill_qty(orders: list[dict[str, Any]]) -> float:
+    total = 0.0
+    for o in orders:
+        fill_qty = o.get("fill_qty")
+        if fill_qty is not None:
+            total += float(fill_qty)
+        else:
+            total += float(o.get("filled_quantity") or 0.0)
+    return total
+
+
 def reconcile_signal_status(
     sig: SignalModel,
     orders: list[dict[str, Any]],
@@ -1042,10 +1068,19 @@ def reconcile_signal_status(
     ) or unwind_event is not None
 
     if has_comp_unwound or (comp_orders and all(o.get("status") in ("FILLED", "CANCELLED") for o in comp_orders)):
-        unwind_event_ts = unwind_event.get("ts") if unwind_event else None
-        proc_at = db_processed or unwind_event_ts or _last_fill_ts(comp_orders)
-        duration = _duration_sec(sig.received_at, proc_at)
-        return ("SQUARE-OFF", False, "Incomplete leg timeout reached — Exposure automatically squared off", proc_at, duration)
+        primary_fill = _total_fill_qty(primary_orders)
+        comp_fill = _total_fill_qty(comp_orders)
+        if primary_fill > 0 or comp_fill > 0:
+            unwind_event_ts = unwind_event.get("ts") if unwind_event else None
+            proc_at = db_processed or unwind_event_ts or _last_fill_ts(comp_orders)
+            duration = _duration_sec(sig.received_at, proc_at)
+            return (
+                "SQUARE-OFF",
+                False,
+                "Incomplete leg timeout reached — Exposure automatically squared off",
+                proc_at,
+                duration,
+            )
 
     # Account-scoped fills beat a shared signal-row REJECTED from a sibling account.
     if primary_orders:
@@ -1094,7 +1129,8 @@ def reconcile_signal_status(
         if any(o.get("status") in ("CANCELLED", "REJECTED", "ERROR") for o in primary_orders):
             proc_at = db_processed
             duration = _duration_sec(sig.received_at, proc_at)
-            return ("REJECTED", False, "Broker leg order rejected or cancelled", proc_at, duration)
+            rec = reject_reason or "Broker leg order rejected or cancelled"
+            return ("REJECTED", False, rec, proc_at, duration)
 
     reject_event = next(
         (
@@ -1122,6 +1158,7 @@ def reconcile_signal_status(
     if primary_orders and any(o.get("status") in ("CANCELLED", "REJECTED", "ERROR") for o in primary_orders):
         proc_at = db_processed
         duration = _duration_sec(sig.received_at, proc_at)
-        return ("REJECTED", False, "Broker leg order rejected or cancelled", proc_at, duration)
+        rec = reject_reason or "Broker leg order rejected or cancelled"
+        return ("REJECTED", False, rec, proc_at, duration)
 
     return ("PROCESSING", True, "Awaiting broker orders", None, None)

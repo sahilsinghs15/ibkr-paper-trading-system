@@ -8,6 +8,25 @@ segment; concurrent scoped jobs must merge rather than overwrite siblings.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.oms.models import AccountExecutionOutcome, FanoutExecutionResult, OMSOrder
+
+GENERIC_REJECT_FALLBACK = "Execution rejected by RMS/OMS policy"
+
+_BASKET_STATE_NAMES = frozenset(
+    {
+        "PENDING",
+        "EXECUTING",
+        "OPEN",
+        "CLOSED",
+        "UNWINDING",
+        "COMPENSATED",
+        "CRITICAL",
+        "RECOVERED",
+    }
+)
 
 _ACCOUNT_SEGMENT = re.compile(
     r"Account\s+(\S+?):\s*(.*?)(?=(?:;\s*)?Account\s+\S+?:|\Z)",
@@ -116,3 +135,81 @@ def _format_segments(segments: dict[str, str]) -> str:
     # Stable order by label for readable diffs / tests.
     parts = [f"Account {label}: {reason}" for label, reason in sorted(segments.items())]
     return "; ".join(parts)
+
+
+def is_generic_reject_reason(reason: str | None) -> bool:
+    """True when the text is empty or the legacy worker/order_manager fallback."""
+    if reason is None:
+        return True
+    return str(reason).strip() == GENERIC_REJECT_FALLBACK
+
+
+def _is_basket_state_error(msg: str) -> bool:
+    return msg.strip().upper() in _BASKET_STATE_NAMES
+
+
+def _first_order_broker_error(orders: list[OMSOrder] | None) -> str | None:
+    for order in orders or []:
+        msg = getattr(order, "error_message", None)
+        if not msg or not str(msg).strip():
+            continue
+        text = str(msg).strip()
+        if text.startswith("Connection closed unexpectedly"):
+            continue
+        return text
+    return None
+
+
+def _outcome_reject_reason(outcome: AccountExecutionOutcome) -> str | None:
+    if outcome.error:
+        return str(outcome.error).strip() or None
+    result = outcome.result
+    if result is None:
+        return None
+    rms = getattr(result, "rms_result", None)
+    if rms is not None and getattr(rms, "reason", None):
+        reason = str(rms.reason).strip()
+        if reason:
+            return reason
+    broker = _first_order_broker_error(getattr(result, "orders", None))
+    if broker:
+        return broker
+    err_msg = getattr(result, "error_message", None)
+    if err_msg and str(err_msg).strip():
+        text = str(err_msg).strip()
+        if not _is_basket_state_error(text):
+            return text
+    return None
+
+
+def collect_fanout_reject_reasons(res: FanoutExecutionResult) -> str:
+    """Build a merged Account-prefixed reject_reason from a fan-out execution result."""
+    merged: str | None = None
+    for outcome in getattr(res, "outcomes", []) or []:
+        raw = _outcome_reject_reason(outcome)
+        if not raw:
+            continue
+        formatted = format_account_reject_reason(
+            outcome.ibkr_account,
+            raw,
+            account_id=outcome.account_id,
+        )
+        if formatted:
+            merged = merge_account_reject_reasons(merged, formatted)
+    return merged or GENERIC_REJECT_FALLBACK
+
+
+def resolve_reject_source(
+    job_reject: str | None,
+    signal_reject: str | None,
+) -> str | None:
+    """Prefer a specific job or signal reject over the generic fallback."""
+    job_specific = job_reject if job_reject and not is_generic_reject_reason(job_reject) else None
+    sig_specific = (
+        signal_reject if signal_reject and not is_generic_reject_reason(signal_reject) else None
+    )
+    if job_specific:
+        return job_specific
+    if sig_specific:
+        return sig_specific
+    return job_reject or signal_reject
