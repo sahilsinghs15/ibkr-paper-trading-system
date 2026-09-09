@@ -378,6 +378,7 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                     {/* 6. PL */}
                     <td className={`right pl-cell ${head.unrealized_pnl !== null && head.unrealized_pnl !== undefined ? pnlClass(head.unrealized_pnl) : 'dim-txt'}`}>
                       {head.unrealized_pnl !== null && head.unrealized_pnl !== undefined
+                        && head.market_data_status !== 'UNAVAILABLE'
                         ? fmtPnl(head.unrealized_pnl)
                         : head.market_data_status === 'NO_LIVE_ENTITLEMENT_API_SUBSCRIPTION_REQUIRED' || head.market_data_status === 'NO_LIVE_ENTITLEMENT' || head.market_data_status === '10089'
                         ? 'ENTITLEMENT REQUIRED'
