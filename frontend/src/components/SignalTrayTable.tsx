@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
+import { SortableTh } from './SortableTh'
 import { usePnlStore } from '../store/pnlStore'
 import { accountMatches, getCanonicalStatus, type SignalItem, useSignalStore } from '../store/signalStore'
 import { isSoundEnabled, toggleSoundEnabled, unlockAudioContext } from '../utils/audioNotification'
 import { displayStrategy, fmtTime } from '../utils/format'
 import { formatRejectReason } from '../utils/rejectReason'
+import { sortRows, useTableSortState } from '../utils/tableSort'
 import { SignalDetailModal } from './SignalDetailModal'
 
 export function isRejectedSig(sig: SignalItem): boolean {
@@ -17,6 +19,21 @@ export function isAcceptedSig(sig: SignalItem): boolean {
 
 export function isProcessingSig(sig: SignalItem): boolean {
   return getCanonicalStatus(sig) === 'PROCESSING'
+}
+
+const SIGNAL_TRAY_SORT_EXTRACTORS: Record<string, (sig: SignalItem) => unknown> = {
+  received: (sig) => (sig.received_at ? Date.parse(sig.received_at) : null),
+  pair: (sig) => sig.pair,
+  action: (sig) => String(sig.action || 'OPEN').toUpperCase(),
+  strategy: (sig) => sig.strategy_id,
+  account: (sig) => sig.ibkr_account,
+  status: (sig) => getCanonicalStatus(sig),
+}
+
+const defaultSignalSort = (a: SignalItem, b: SignalItem) => {
+  const ta = a.received_at ? Date.parse(a.received_at) : 0
+  const tb = b.received_at ? Date.parse(b.received_at) : 0
+  return tb - ta
 }
 
 function computeFillSummary(sig: SignalItem): {
@@ -96,11 +113,16 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
 
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
+  const { sortKey, sortDir, handleSort } = useTableSortState()
 
-  const signals = useMemo(() => {
+  const rawSignals = useMemo(() => {
     if (!cleanFilter) return traySignals
     return traySignals.filter((sig) => accountMatches(sig.ibkr_account, cleanFilter))
   }, [traySignals, cleanFilter])
+
+  const signals = useMemo(() => {
+    return sortRows(rawSignals, sortKey, sortDir, SIGNAL_TRAY_SORT_EXTRACTORS, defaultSignalSort)
+  }, [rawSignals, sortKey, sortDir])
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [soundOn, setSoundOn] = useState(() => isSoundEnabled())
@@ -203,12 +225,12 @@ export function SignalTrayTable({ accountFilter }: { accountFilter?: string }) {
           <table className="factory-table signal-workspace-table">
             <thead>
               <tr>
-                <th style={{ width: '12%' }}>RECEIVED</th>
-                <th style={{ width: '15%' }}>PAIR</th>
-                <th style={{ width: '10%' }}>ACTION</th>
-                <th style={{ width: '13%' }}>STRATEGY</th>
-                <th style={{ width: '12%' }}>ACCOUNT</th>
-                <th style={{ width: '13%' }}>STATUS</th>
+                <SortableTh sortKey="received" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort} style={{ width: '12%' }}>RECEIVED</SortableTh>
+                <SortableTh sortKey="pair" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort} style={{ width: '15%' }}>PAIR</SortableTh>
+                <SortableTh sortKey="action" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort} style={{ width: '10%' }}>ACTION</SortableTh>
+                <SortableTh sortKey="strategy" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort} style={{ width: '13%' }}>STRATEGY</SortableTh>
+                <SortableTh sortKey="account" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort} style={{ width: '12%' }}>ACCOUNT</SortableTh>
+                <SortableTh sortKey="status" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort} style={{ width: '13%' }}>STATUS</SortableTh>
                 <th style={{ width: '25%' }}>OUTCOME & LEG PROGRESS</th>
               </tr>
             </thead>

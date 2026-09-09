@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { fetchReconcilePositions } from '../api/reconcileApi'
 import { canFixDiff, FixDiffModal, fixTooltip } from '../components/FixDiffModal'
+import { SortableTh } from '../components/SortableTh'
 import type { FlattenBrokerPositionResponse, ReconcileDiffRow, ReconcilePositionsResponse } from '../types/reconcile'
 import { normalizeIbkrAccount } from '../utils/activeAccount'
 import { fmtCompactCurrency, fmtQty } from '../utils/format'
+import { sortRows, useTableSortState } from '../utils/tableSort'
 
 const DIFF_KIND_LABELS: Record<string, string> = {
   MATCH: 'Match',
@@ -12,6 +14,15 @@ const DIFF_KIND_LABELS: Record<string, string> = {
   BROKER_ORPHAN: 'Broker orphan',
   QTY_DRIFT: 'Qty drift',
   UNMAPPED_ACCOUNT: 'Unmapped account',
+}
+
+const DIFF_SORT_EXTRACTORS: Record<string, (row: ReconcileDiffRow) => unknown> = {
+  kind: (row) => DIFF_KIND_LABELS[row.kind] ?? row.kind,
+  symbol: (row) => row.symbol,
+  sec_type: (row) => row.sec_type,
+  broker_qty: (row) => row.broker_qty,
+  ledger_qty: (row) => row.ledger_qty,
+  in_flight: (row) => (row.in_flight ? 1 : 0),
 }
 
 function diffBadgeClass(kind: string): string {
@@ -78,6 +89,7 @@ export function ReconcilePage() {
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null)
   const [fixMessage, setFixMessage] = useState<string | null>(null)
   const [diffToFix, setDiffToFix] = useState<ReconcileDiffRow | null>(null)
+  const { sortKey, sortDir, handleSort } = useTableSortState()
 
   const loadData = useCallback(async () => {
     try {
@@ -109,6 +121,11 @@ export function ReconcilePage() {
     () => buildBrokerAvgCostMap(data?.broker_positions ?? []),
     [data?.broker_positions],
   )
+
+  const rawDiffs = useMemo(() => data?.diffs ?? [], [data?.diffs])
+  const diffs = useMemo(() => {
+    return sortRows(rawDiffs, sortKey, sortDir, DIFF_SORT_EXTRACTORS)
+  }, [rawDiffs, sortKey, sortDir])
 
   const handleFixSuccess = useCallback(
     (res: FlattenBrokerPositionResponse) => {
@@ -144,7 +161,6 @@ export function ReconcilePage() {
   }
 
   const run = data?.run
-  const diffs = data?.diffs ?? []
 
   return (
     <main className="page reconcile-page">
@@ -191,12 +207,12 @@ export function ReconcilePage() {
           <table className="reconcile-table">
             <thead>
               <tr>
-                <th>Kind</th>
-                <th>Symbol</th>
-                <th>Sec type</th>
-                <th>Broker qty</th>
-                <th>Ledger qty</th>
-                <th>In flight</th>
+                <SortableTh sortKey="kind" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Kind</SortableTh>
+                <SortableTh sortKey="symbol" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Symbol</SortableTh>
+                <SortableTh sortKey="sec_type" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Sec type</SortableTh>
+                <SortableTh sortKey="broker_qty" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Broker qty</SortableTh>
+                <SortableTh sortKey="ledger_qty" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Ledger qty</SortableTh>
+                <SortableTh sortKey="in_flight" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>In flight</SortableTh>
                 <th>Fix</th>
               </tr>
             </thead>

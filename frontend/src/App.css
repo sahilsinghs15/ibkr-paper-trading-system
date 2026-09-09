@@ -1503,6 +1503,88 @@ body,
   text-transform: uppercase;
 }
 
+/* Accessible Column Sorting */
+.sortable-th {
+  padding: 0 !important;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+}
+
+.sortable-th:hover {
+  background: #131b28 !important;
+}
+
+.sortable-th.active-sort {
+  background: rgba(56, 189, 248, 0.08) !important;
+}
+
+.sort-header-btn {
+  width: 100%;
+  height: 100%;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.sort-header-btn:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: -2px;
+}
+
+.sort-header-btn.sort-right {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.sort-header-btn.sort-center {
+  justify-content: center;
+  text-align: center;
+}
+
+.sort-header-btn.sort-left {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.sort-label {
+  display: inline-block;
+}
+
+.sort-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  width: 12px;
+  height: 12px;
+  opacity: 0.25;
+  transition: opacity 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+
+.sortable-th:hover .sort-indicator.idle {
+  opacity: 0.65;
+  color: var(--dim, #94a3b8);
+}
+
+.sort-indicator.active {
+  opacity: 1;
+  color: #38bdf8;
+  font-weight: 900;
+}
+
 .factory-row {
   border-bottom: 1px solid #141a26;
   transition: background 0.15s ease;

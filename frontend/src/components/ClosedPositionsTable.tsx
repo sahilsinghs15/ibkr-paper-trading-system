@@ -1,5 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
+import { SortableTh } from './SortableTh'
 import { groupLegs, usePnlStore } from '../store/pnlStore'
+import type { PositionLeg } from '../types/position'
 import {
   calcAgeDays,
   calcRMultiple,
@@ -9,6 +11,7 @@ import {
   num,
   pnlClass,
 } from '../utils/format'
+import { sortRows, useTableSortState } from '../utils/tableSort'
 
 function getEpochMs(isoStr?: string | null): number {
   if (!isoStr) return 0
@@ -16,11 +19,63 @@ function getEpochMs(isoStr?: string | null): number {
   return isNaN(ms) ? 0 : ms
 }
 
+function computeTradeTotalNotional(legs: PositionLeg[]): number {
+  const legA = legs[0]
+  const legB = legs[1] || legs[0]
+  const legAQty = Math.abs(num(legA.filled_quantity ?? legA.quantity) || 0)
+  const legAPrice = num(legA.mark_price || legA.entry_price || legA.last_price) || 0
+  const legANotional = legAQty * legAPrice
+  const legBQty = Math.abs(num(legB.filled_quantity ?? legB.quantity) || 0)
+  const legBPrice = num(legB.mark_price || legB.entry_price || legB.last_price) || 0
+  const legBNotional = legBQty * legBPrice
+  return legANotional + legBNotional || 1
+}
+
+const CLOSED_POSITIONS_SORT_EXTRACTORS: Record<string, (legs: PositionLeg[]) => unknown> = {
+  entry: (legs) => {
+    const head = legs[0]
+    return getEpochMs(head.opened_at || head.timestamp)
+  },
+  closed: (legs) => {
+    const head = legs[0]
+    return getEpochMs(head.closed_at || head.fill_timestamp || head.timestamp)
+  },
+  age: (legs) => {
+    const head = legs[0]
+    const openMs = getEpochMs(head.opened_at || head.timestamp)
+    const closeMs = getEpochMs(head.closed_at || head.fill_timestamp || head.timestamp)
+    if (closeMs > 0 && openMs > 0) return closeMs - openMs
+    return closeMs || openMs || null
+  },
+  pair: (legs) => {
+    const legA = legs[0]
+    const legB = legs[1] || legs[0]
+    return `${legA.symbol || ''}/${legB.symbol || ''}`
+  },
+  exposure: (legs) => {
+    return computeTradeTotalNotional(legs)
+  },
+  pl: (legs) => {
+    const head = legs[0]
+    return head.realized_pnl !== null && head.realized_pnl !== undefined
+      ? num(head.realized_pnl)
+      : null
+  },
+  progress: (legs) => {
+    const head = legs[0]
+    const notional = computeTradeTotalNotional(legs)
+    return head.realized_pnl !== null && head.realized_pnl !== undefined
+      ? (num(head.realized_pnl) || 0) / notional
+      : null
+  },
+}
+
 export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string }) {
   const closed = usePnlStore((s) => s.closed)
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
   const [historyOrder, setHistoryOrder] = useState<'RECENT' | 'OLDER'>('RECENT')
+  const { sortKey, sortDir, handleSort } = useTableSortState()
 
   const filteredClosed = useMemo(() => {
     if (!cleanFilter) return closed
@@ -33,11 +88,8 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
     return out
   }, [closed, cleanFilter])
 
-  const closedTrades = useMemo(() => {
-    const list = [...groupLegs(filteredClosed).values()]
-
-    // Deterministically sort by CLOSED TIME
-    list.sort((a, b) => {
+  const defaultSort = useCallback(
+    (a: PositionLeg[], b: PositionLeg[]) => {
       const headA = a[0]
       const headB = b[0]
       const closeTsA = getEpochMs(headA.closed_at || headA.fill_timestamp || headA.timestamp)
@@ -47,10 +99,14 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
         return closeTsB - closeTsA // Newest closed trades first (DESC)
       }
       return closeTsA - closeTsB // Older trades chronologically (ASC)
-    })
+    },
+    [historyOrder],
+  )
 
-    return list
-  }, [filteredClosed, historyOrder])
+  const closedTrades = useMemo(() => {
+    const list = [...groupLegs(filteredClosed).values()]
+    return sortRows(list, sortKey, sortDir, CLOSED_POSITIONS_SORT_EXTRACTORS, defaultSort)
+  }, [filteredClosed, sortKey, sortDir, defaultSort])
 
   return (
     <section className="factory-panel-section">
@@ -86,13 +142,13 @@ export function ClosedPositionsTable({ accountFilter }: { accountFilter?: string
           <thead>
             <tr>
               <th style={{ width: '4%' }}>SNO</th>
-              <th style={{ width: '12%' }}>ENTRY</th>
-              <th style={{ width: '12%' }}>CLOSED TIME</th>
-              <th style={{ width: '6%' }}>AGE</th>
-              <th style={{ width: '11%' }}>PAIR</th>
-              <th style={{ width: '35%' }}>EXPOSURE BALANCE</th>
-              <th style={{ width: '10%', textAlign: 'right' }}>REALIZED PL</th>
-              <th style={{ width: '10%', textAlign: 'right' }}>PROGRESS</th>
+              <SortableTh sortKey="entry" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort} style={{ width: '12%' }}>ENTRY</SortableTh>
+              <SortableTh sortKey="closed" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort} style={{ width: '12%' }}>CLOSED TIME</SortableTh>
+              <SortableTh sortKey="age" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort} style={{ width: '6%' }}>AGE</SortableTh>
+              <SortableTh sortKey="pair" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort} style={{ width: '11%' }}>PAIR</SortableTh>
+              <SortableTh sortKey="exposure" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort} style={{ width: '35%' }}>EXPOSURE BALANCE</SortableTh>
+              <SortableTh sortKey="pl" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort} align="right" style={{ width: '10%', textAlign: 'right' }}>REALIZED PL</SortableTh>
+              <SortableTh sortKey="progress" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort} align="right" style={{ width: '10%', textAlign: 'right' }}>PROGRESS</SortableTh>
             </tr>
           </thead>
           <tbody>
