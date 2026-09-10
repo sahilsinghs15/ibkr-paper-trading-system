@@ -27,10 +27,10 @@ export function AppNav() {
         Positions
       </NavLink>
       <NavLink
-        to={effectiveAccount ? `${accountHome}/settings` : '/accounts'}
+        to={effectiveAccount ? `${accountHome}/trade-book` : '/accounts'}
         className={({ isActive }) => (effectiveAccount && isActive ? 'on' : undefined)}
       >
-        Settings
+        Trade Book
       </NavLink>
       <NavLink
         to={effectiveAccount ? `${accountHome}/reconcile` : '/accounts'}
@@ -38,18 +38,12 @@ export function AppNav() {
       >
         Inventory
       </NavLink>
-      <NavLink
-        to={effectiveAccount ? `${accountHome}/trade-book` : '/accounts'}
-        className={({ isActive }) => (effectiveAccount && isActive ? 'on' : undefined)}
-      >
-        Trade Book
-      </NavLink>
       {user?.role === 'admin' && (
         <NavLink
-          to={effectiveAccount ? `${accountHome}/system-monitor` : '/accounts'}
+          to={effectiveAccount ? `${accountHome}/ingest` : '/accounts'}
           className={({ isActive }) => (effectiveAccount && isActive ? 'on' : undefined)}
         >
-          System Monitor
+          Ingested Signals
         </NavLink>
       )}
       {user?.role === 'admin' && (
@@ -62,12 +56,18 @@ export function AppNav() {
       )}
       {user?.role === 'admin' && (
         <NavLink
-          to={effectiveAccount ? `${accountHome}/ingest` : '/accounts'}
+          to={effectiveAccount ? `${accountHome}/system-monitor` : '/accounts'}
           className={({ isActive }) => (effectiveAccount && isActive ? 'on' : undefined)}
         >
-          Ingest
+          System Monitor
         </NavLink>
       )}
+      <NavLink
+        to={effectiveAccount ? `${accountHome}/settings` : '/accounts'}
+        className={({ isActive }) => (effectiveAccount && isActive ? 'on' : undefined)}
+      >
+        Settings
+      </NavLink>
     </nav>
   )
 }

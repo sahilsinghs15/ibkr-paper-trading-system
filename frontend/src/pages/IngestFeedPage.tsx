@@ -208,7 +208,7 @@ export function IngestFeedPage() {
       >
         <div>
           <h1 style={{ fontSize: '20px', fontWeight: 700, margin: 0, color: 'var(--ink)' }}>
-            Ingest Feed
+            Ingested Signals
           </h1>
           <span style={{ fontSize: '12px', color: 'var(--muted)' }}>
             Raw webhook ingest stored in signal_jobs (auto-polls every 5s, newest-first)
