@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from ibapi.client import EClient  # type: ignore[import-untyped]
 from ibapi.wrapper import EWrapper  # type: ignore[import-untyped]
 
+from app.broker.ibkr.executions import BrokerExecutionLine, ExecutionSnapshotCollector
 from app.broker.ibkr.positions import BrokerPositionLine, PositionSnapshotCollector
 
 if TYPE_CHECKING:
@@ -47,6 +48,9 @@ class TWSClient(EWrapper, EClient):
 
         self._positions_request_lock = threading.Lock()
         self._position_collector = PositionSnapshotCollector()
+        self._executions_request_lock = threading.Lock()
+        self._execution_collector = ExecutionSnapshotCollector()
+        self._next_execution_req_id = 91000
         self._rate_limiter: GatewayRateLimiter | None = None
 
         self.managed_accounts: frozenset[str] = frozenset()
@@ -381,6 +385,13 @@ class TWSClient(EWrapper, EClient):
     def execDetails(self, reqId: int, contract: Any, execution: Any) -> None:
         """Callback received when an order execution/fill details update."""
         super().execDetails(reqId, contract, execution)
+        if self._execution_collector.req_id is not None and reqId == self._execution_collector.req_id:
+            try:
+                self._execution_collector.on_exec_details(reqId, contract, execution)
+            except Exception:
+                logger.exception("Error in execution_collector on_exec_details callback")
+            return
+
         for listener in list(self._listeners):
             try:
                 if hasattr(listener, "on_exec_details"):
@@ -391,6 +402,13 @@ class TWSClient(EWrapper, EClient):
     def execDetailsEnd(self, reqId: int) -> None:
         """Callback received when execution details transmission is complete."""
         super().execDetailsEnd(reqId)
+        if self._execution_collector.req_id is not None and reqId == self._execution_collector.req_id:
+            try:
+                self._execution_collector.on_exec_details_end(reqId)
+            except Exception:
+                logger.exception("Error in execution_collector on_exec_details_end callback")
+            return
+
         for listener in list(self._listeners):
             try:
                 listener.on_exec_details_end(reqId)
@@ -402,6 +420,12 @@ class TWSClient(EWrapper, EClient):
     def commissionReport(self, commissionReport: Any) -> None:
         """Callback received when commission info is reported for an execution."""
         super().commissionReport(commissionReport)
+        if self._execution_collector.req_id is not None:
+            try:
+                self._execution_collector.on_commission_report(commissionReport)
+            except Exception:
+                logger.exception("Error in execution_collector on_commission_report callback")
+
         for listener in list(self._listeners):
             try:
                 listener.on_commission_report(commissionReport)
@@ -518,6 +542,93 @@ class TWSClient(EWrapper, EClient):
     ) -> tuple[list[BrokerPositionLine], bool]:
         """Request IBKR positions asynchronously off the event loop."""
         return await asyncio.to_thread(self.request_positions, timeout=timeout)
+
+    def request_executions(
+        self,
+        *,
+        ibkr_account: str,
+        timeout: float = 15.0,
+    ) -> tuple[list[BrokerExecutionLine], bool]:
+        """Request IBKR Gateway executions for an account and block until execDetailsEnd or timeout.
+
+        Returns (lines, timed_out). Lines may be partial when timed_out is True.
+        """
+        if not self.is_connected():
+            logger.warning("request_executions: TWS not connected")
+            return [], False
+
+        if not ibkr_account or not ibkr_account.strip():
+            logger.warning("request_executions: ibkr_account is required")
+            return [], False
+
+        clean_account = ibkr_account.strip().upper()
+
+        with self._executions_request_lock:
+            if not self.is_connected():
+                logger.warning("request_executions: TWS not connected after acquiring lock")
+                return [], False
+
+            if self._rate_limiter is not None:
+                from app.broker.ibkr.gateway_rate_limiter import PRIORITY_DIAGNOSTIC
+
+                acquired = self._rate_limiter.blocking_acquire(
+                    PRIORITY_DIAGNOSTIC,
+                    "reqExecutions",
+                    timeout=min(timeout, self._rate_limiter.max_wait_sec),
+                )
+                if acquired is None:
+                    logger.warning("request_executions: gateway pacing timeout reqExecutions")
+                    return [], True
+
+            req_id = self._next_execution_req_id
+            self._next_execution_req_id += 1
+            if self._next_execution_req_id > 99999:
+                self._next_execution_req_id = 91000
+
+            collector = self._execution_collector
+            collector.reset(req_id=req_id)
+            self.register_request_id(req_id, "executions")
+
+            try:
+                from ibapi.execution import (  # type: ignore[import-untyped]
+                    ExecutionFilter,
+                )
+
+                execution_filter = ExecutionFilter()
+                execution_filter.acctCode = clean_account
+                execution_filter.clientId = 0
+
+                self.reqExecutions(req_id, execution_filter)
+                completed = collector.wait(timeout=timeout)
+                lines = collector.snapshot()
+
+                if not completed:
+                    logger.warning(
+                        "request_executions timed out after %.1fs for account %s; returning %d line(s)",
+                        timeout,
+                        clean_account,
+                        len(lines),
+                    )
+                return lines, not completed
+            except Exception:
+                logger.exception("request_executions failed for reqId=%d", req_id)
+                return collector.snapshot(), True
+            finally:
+                self.unregister_request_id(req_id)
+                collector.req_id = None
+
+    async def request_executions_async(
+        self,
+        *,
+        ibkr_account: str,
+        timeout: float = 15.0,
+    ) -> tuple[list[BrokerExecutionLine], bool]:
+        """Request IBKR executions asynchronously off the event loop."""
+        return await asyncio.to_thread(
+            self.request_executions,
+            ibkr_account=ibkr_account,
+            timeout=timeout,
+        )
 
     def _clear_contract_details_request(self, req_id: int) -> None:
         with self._contract_details_lock:
@@ -652,13 +763,19 @@ class TWSClient(EWrapper, EClient):
         while not self._reconnect_stop.is_set() and not self._intentional_disconnect:
             if self.is_connected():
                 return
-            logger.warning("TWS reconnect attempt host=%s port=%s", self._connect_host, self._connect_port)
+            host = self._connect_host
+            port = self._connect_port
+            client_id = self._connect_client_id
+            if host is None or port is None or client_id is None:
+                logger.warning("TWS reconnect aborted: connect parameters became None")
+                return
+            logger.warning("TWS reconnect attempt host=%s port=%s", host, port)
             try:
                 ok = self.connect_and_start(
-                    self._connect_host,
-                    int(self._connect_port),
-                    int(self._connect_client_id),
-                    timeout=float(self._connect_timeout),
+                    host,
+                    port,
+                    client_id,
+                    timeout=self._connect_timeout,
                 )
             except Exception:
                 logger.exception("TWS reconnect raised")

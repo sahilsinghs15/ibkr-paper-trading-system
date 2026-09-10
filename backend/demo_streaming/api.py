@@ -874,6 +874,7 @@ def create_demo_app(
     @app.get("/settings")
     @app.get("/system-monitor")
     @app.get("/audit-logs")
+    @app.get("/trade-book")
     @app.get("/account/{path:path}")
     async def index() -> FileResponse:
         return _spa_index()

@@ -9,6 +9,7 @@ import { PositionsPage } from './pages/PositionsPage'
 import { AccountSettingsPage } from './pages/AccountSettingsPage'
 import { SystemMonitorPage } from './pages/SystemMonitorPage'
 import { ReconcilePage } from './pages/ReconcilePage'
+import { TradeBookPage } from './pages/TradeBookPage'
 import { AuditLogsPage } from './pages/AuditLogsPage'
 import { NotificationContainer } from './components/NotificationContainer'
 import { usePnlStream } from './hooks/usePnlStream'
@@ -87,6 +88,24 @@ function App() {
               <AccountScoped>
                 <ReconcilePage />
               </AccountScoped>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/account/:ibkrAccount/trade-book"
+          element={
+            <ProtectedRoute>
+              <AccountScoped>
+                <TradeBookPage />
+              </AccountScoped>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/trade-book"
+          element={
+            <ProtectedRoute>
+              <RedirectToAccount suffix="/trade-book" />
             </ProtectedRoute>
           }
         />

@@ -29,6 +29,7 @@ This file lists things agents must **not** claim are implemented. Items appear h
 | MockBroker / `BROKER_MODE` | Not in `Settings`; no MockBroker class |
 | Place / modify order HTTP APIs | Schemas exist; **no** routes |
 | Positions / margin / broker status HTTP APIs on `app.main` | Live margin: `GET /api/v1/margin/accounts` and `GET /api/v1/margin/accounts/{ibkr_account}` (503 if gateway down). Positions remain read-only on `demo_streaming` `:8010`. Place/modify order routes still absent |
+| Broker executions snapshot HTTP API on `app.main` | **Implemented** — `GET /api/v1/broker/executions` (since-midnight IBKR Gateway executions snapshot via `reqExecutions`; 503 if gateway down). Historical 7-day Flex/ledger trade log remains not implemented |
 | Five Candle live strategy engine as product path | Model Blue webhook path is what executes; candle Settings fields are unused by that path |
 | Webhook runs pipeline synchronously in HTTP handler | **Stale** — normal path enqueues `signal_jobs`; workers execute (HTTP 202 `accepted`) |
 | React “Live Dashboard” | **Implemented** — PnL on `/` and Settings on `/settings` (Vite + `:8010`) |

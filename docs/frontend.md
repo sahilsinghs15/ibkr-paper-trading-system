@@ -23,8 +23,11 @@ Main FastAPI (`app.main`) does **not** serve any frontend. The dashboard is serv
 
 - `pages/SystemMonitorPage.tsx` — operational metrics (polls `/api/v1/system-monitor`)
 - `pages/ReconcilePage.tsx` — **Inventory** tab: broker vs ledger reconcile view (polls `/api/v1/reconcile/positions`)
+- `pages/TradeBookPage.tsx` — **Trade Book** tab: direct snapshot of today's IBKR Gateway executions since midnight (via `GET /api/v1/broker/executions`)
 - `api/reconcileApi.ts` — axios client for `/api/v1/reconcile/positions`
+- `api/brokerExecutionsApi.ts` — axios client for `/api/v1/broker/executions`
 - `types/reconcile.ts` — reconcile API types
+- `types/brokerExecution.ts` — broker execution snapshot types
 - `types/position.ts` — demo stream payload types
 - `pages/AccountSettingsPage.tsx` — **routed** Settings UI (`/account/:ibkrAccount/settings`; `/settings` redirects). `SettingsPage.tsx` exists but is **not mounted**.
 - `api/marginApi.ts` — axios client for `/api/v1/margin/accounts*`
@@ -68,6 +71,16 @@ Nav label **Inventory**; route and API remain `/reconcile`. Broker vs ledger rec
 - Poll every 5s; **Refresh** button and post-**Fix** refetch pass `refresh=true` to run one live IBKR `reqPositions` sweep first
 - **Differences table only** (broker vs ledger classified diffs); broker/ledger qty columns show `qty / $notional` (notional from snapshot `avg_cost`)
 - Per-row **Fix**: `POST /api/v1/reconcile/positions/align` — preview affected OPEN ledger pairs in a modal, then submit a MARKET trade computed server-side so IBKR broker qty matches the signal ledger (`broker_qty → ledger_qty`); does not arm kill switch or close OPEN ledger pairs. Legacy `POST .../flatten` remains on the API but is unused by the UI.
+
+### Trade Book tab (`/account/:ibkrAccount/trade-book`)
+
+Nav label **Trade Book** right next to Inventory; route `/account/:ibkrAccount/trade-book` (with `/trade-book` redirect).
+
+- `GET /api/v1/broker/executions?ibkr_account=` — live snapshot directly from IBKR Gateway via `reqExecutions` since midnight.
+- **Display-only snapshot**: not persisted to database, not replacing OMS or execution claims. Retains unknown/manual fills without requiring OMS order matching.
+- Manual **Refresh** button requests fresh snapshot through `GatewayRateLimiter` with `PRIORITY_DIAGNOSTIC`.
+- Displays: Time, Symbol, Type, Side, Qty, Price, Notional (`qty * price`), Commission, Exec ID, Broker Order ID.
+- Displays explicit header notice: `IBKR executions since midnight (Gateway)`. Shows `GATEWAY DOWN` (HTTP 503) and timeout warnings appropriately.
 
 ### Scripts (`package.json`)
 

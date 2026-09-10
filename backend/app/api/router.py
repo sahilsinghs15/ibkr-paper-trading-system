@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.baskets import router as baskets_router
+from app.api.routes.broker import router as broker_router
 from app.api.routes.config import router as config_router
 from app.api.routes.emergency import router as emergency_router
 from app.api.routes.margin import router as margin_router
@@ -23,4 +24,5 @@ api_router.include_router(emergency_router)
 api_router.include_router(system_monitor_router)
 api_router.include_router(reconcile_router)
 api_router.include_router(service_control_router)
+api_router.include_router(broker_router)
 

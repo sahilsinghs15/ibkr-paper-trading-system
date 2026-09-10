@@ -25,7 +25,7 @@ Local bind only. Execution engine + config/kill-switch API.
 Mounted in `create_app()`:
 
 - `health_router` — no prefix
-- `api_router` — prefix `/api/v1` (orders + baskets + config + margin + system-monitor + reconcile routers)
+- `api_router` — prefix `/api/v1` (orders + baskets + config + margin + system-monitor + reconcile + broker routers)
 
 **No** `CORSMiddleware`, **no** WebSocket routes, **no** `StaticFiles` / HTML mount on this app.
 
@@ -64,6 +64,7 @@ Mounted in `create_app()`:
 | `POST` | `/api/v1/reconcile/positions/flatten` | `flatten_broker_position_line` | `FlattenBrokerPositionRequest` | `FlattenBrokerPositionResponse` | MARKET flatten one broker snapshot line (request qty min = ledger net when present, max = snapshot); no kill switch, no ledger close |
 | `POST` | `/api/v1/reconcile/positions/align` | `align_broker_position_line` | `AlignBrokerPositionRequest` | `AlignBrokerPositionResponse` | MARKET align broker net to OPEN ledger (server computes side/qty from delta); no kill switch, no ledger close |
 | `GET` | `/api/v1/baskets/critical` | `list_critical_baskets` | query `ibkr_account` (required) | `CriticalBasketsResponse` | CRITICAL baskets with recovery status and leg fill summary; empty list = OPEN latch cleared |
+| `GET` | `/api/v1/broker/executions` | `get_broker_executions` | query `ibkr_account` (required) | `BrokerExecutionsResponse` | Live execution snapshot since midnight directly from IBKR Gateway via `reqExecutions`; 503 if gateway down; 403 if unauthorized; display-only, not persisted to DB |
 
 `OrderSchema` fields: `order_id`, `symbol`, `side`, `quantity`, `order_type`, `status`, `timestamp`, `price`, `filled_quantity`, `average_fill_price`.
 
