@@ -46,6 +46,7 @@ ALLOWED_KINDS = frozenset(
         "MARKET_CLOSED",
         "ROGUE_TRADE_DETECTED",
         "ROGUE_TRADE_RESOLVED",
+        "LOSS_THRESHOLD_BREACHED",
     }
 )
 
@@ -143,6 +144,32 @@ def format_canonical_notification(
             "message": msg2,
             "friendly_name": "Rogue trade detection",
             "service": "reconcile",
+            "unit": "trading-backend.service",
+        }
+
+    if kind == "LOSS_THRESHOLD_BREACHED":
+        acc = detail.get("ibkr_account") or detail.get("account_id") or "Unknown"
+        realised = detail.get("realized_pnl") or detail.get("realized_pnl_str") or "0"
+        thresh = detail.get("loss_threshold") or detail.get("loss_threshold_str") or "0"
+        ts = detail.get("timestamp") or ""
+        try:
+            rv = float(realised)
+            tv = float(thresh)
+            realised_str = f"${rv:,.2f}"
+            thresh_str = f"${tv:,.2f}"
+        except Exception:
+            realised_str = str(realised)
+            thresh_str = str(thresh)
+        title = "Loss threshold breached"
+        msg = f"🔴 Loss threshold breached\nAccount: {acc}\nRealized P&L: {realised_str}\nLoss Threshold: {thresh_str}"
+        if ts:
+            msg = f"{msg}\nTimestamp: {ts}"
+        return {
+            "icon": "🔴",
+            "title": title,
+            "message": msg,
+            "friendly_name": "Risk monitoring",
+            "service": "risk",
             "unit": "trading-backend.service",
         }
 

@@ -21,6 +21,7 @@ from app.services.risk_exit_rules import EXIT_UNIT_PERCENT, VALID_EXIT_UNITS
 
 ONE = Decimal(1)
 ZERO = Decimal(0)
+_MISSING = object()
 
 
 class AllocationConfigError(ValueError):
@@ -90,6 +91,14 @@ class AccountStrategyConfigService:
         if time_limit < 0:
             raise AllocationConfigError(
                 f"INVALID_TIME_LIMIT: time_limit must be >= 0, got {time_limit}."
+            )
+
+    def validate_loss_threshold(self, loss_threshold: Decimal | None) -> None:
+        if loss_threshold is None:
+            return
+        if loss_threshold >= 0:
+            raise AllocationConfigError(
+                f"INVALID_LOSS_THRESHOLD: loss_threshold must be negative, got {loss_threshold}."
             )
 
     def _warn_if_pair_budget_below_min_notional(
@@ -293,6 +302,7 @@ class AccountStrategyConfigService:
         daily_target_unit: str | None = None,
         daily_stop_unit: str | None = None,
         account_risk_enabled: bool | None = None,
+        loss_threshold: Decimal | None = _MISSING,  # type: ignore[assignment]
     ) -> AccountModel:
         if name is not None:
             clean_name = name.strip()
@@ -349,6 +359,9 @@ class AccountStrategyConfigService:
             account.daily_stop = daily_stop
         if account_risk_enabled is not None:
             account.account_risk_enabled = account_risk_enabled
+        if loss_threshold is not _MISSING:
+            self.validate_loss_threshold(loss_threshold)  # type: ignore[arg-type]
+            account.loss_threshold = loss_threshold  # type: ignore[assignment]
         await self._session.flush()
         return account
 

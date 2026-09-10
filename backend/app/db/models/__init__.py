@@ -17,6 +17,7 @@ from app.db.models.notification_read import (
 )
 from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
+from app.db.models.account_loss_state import AccountLossStateModel
 from app.db.models.trade_execution import TradeExecutionModel
 from app.db.models.signal import SignalModel
 from app.db.models.strategy import AllocationModel, StrategyModel
@@ -37,6 +38,7 @@ __all__ = [
     "MarginSettingsModel",
     "OrderModel",
     "PerSymbolLimitModel",
+    "AccountLossStateModel",
     "TradeExecutionModel",
     "PositionModel",
     "PositionReconcileRunModel",

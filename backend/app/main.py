@@ -205,7 +205,13 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         await risk_exit_monitor.start()
     fastapi_app.state.risk_exit_monitor = risk_exit_monitor
 
+    from app.services.loss_threshold_monitor import LossThresholdMonitor
     from app.services.trade_book_sync_service import TradeBookSyncService
+
+    loss_monitor = LossThresholdMonitor(AsyncSessionLocal, interval_sec=30.0)
+    fastapi_app.state.loss_monitor = loss_monitor
+    if not testing:
+        await loss_monitor.start()
 
     trade_book_sync = TradeBookSyncService(AsyncSessionLocal, client, interval_sec=10.0)
     fastapi_app.state.trade_book_sync = trade_book_sync
@@ -241,6 +247,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     yield
 
     logger.info("Shutting down paper-trading application...")
+    if hasattr(fastapi_app.state, "loss_monitor"):
+        await fastapi_app.state.loss_monitor.stop()
     if hasattr(fastapi_app.state, "trade_book_sync"):
         await fastapi_app.state.trade_book_sync.stop()
     if hasattr(fastapi_app.state, "risk_exit_monitor"):

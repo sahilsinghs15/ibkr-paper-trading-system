@@ -36,6 +36,9 @@ class AccountModel(Base):
     account_risk_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    loss_threshold: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 4), nullable=True, default=None
+    )
 
     __table_args__ = (
         CheckConstraint("total_margin > 0", name="ck_accounts_total_margin_positive"),

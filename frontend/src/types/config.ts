@@ -31,6 +31,7 @@ export interface AccountConfig {
   daily_target_unit?: string
   daily_stop_unit?: string
   account_risk_enabled?: boolean
+  loss_threshold?: string | number | null
   allocations: AllocationConfig[]
   symbol_limits: SymbolLimit[]
 }
@@ -78,6 +79,7 @@ export interface PatchAccountPayload {
   daily_target_unit?: string
   daily_stop_unit?: string
   account_risk_enabled?: boolean
+  loss_threshold?: number | string | null
 }
 
 export interface CreateAllocationPayload {

@@ -38,6 +38,7 @@ interface AllocationDraft {
 function AccountCard({ account }: { account: AccountConfig }) {
   const queryClient = useQueryClient()
   const [margin, setMargin] = useState(() => cleanNumberInput(account.total_margin))
+  const [lossThreshold, setLossThreshold] = useState(() => (account.loss_threshold != null ? String(account.loss_threshold) : ''))
   const [enabled, setEnabled] = useState(account.enabled)
   const [drafts, setDrafts] = useState<Record<number, AllocationDraft>>(() =>
     Object.fromEntries(
@@ -66,11 +67,20 @@ function AccountCard({ account }: { account: AccountConfig }) {
   )
 
   const accountMutation = useMutation({
-    mutationFn: () =>
-      patchAccount(account.id, {
+    mutationFn: () => {
+      const payload: Record<string, unknown> = {
         total_margin: parseFloat(margin) || undefined,
         enabled,
-      }),
+      }
+      if (lossThreshold.trim() === '') {
+        payload.loss_threshold = null
+      } else {
+        const v = parseFloat(lossThreshold)
+        if (isNaN(v) || v >= 0) throw new Error('Loss Threshold must be negative (e.g. -500) or empty to disable.')
+        payload.loss_threshold = v
+      }
+      return patchAccount(account.id, payload as Parameters<typeof patchAccount>[1])
+    },
     onSuccess: () => {
       setMessage('Account saved.')
       setError(null)
@@ -181,6 +191,20 @@ function AccountCard({ account }: { account: AccountConfig }) {
               />
             </div>
             <span className="field-hint">{fmtUsd(margin)}</span>
+          </label>
+          <label className="field">
+            <span>Loss Threshold (realized P&L)</span>
+            <div className="money-field">
+              <span className="money-prefix">$</span>
+              <input
+                type="number"
+                step="1"
+                placeholder="-500 (empty = disabled)"
+                value={lossThreshold}
+                onChange={(e) => setLossThreshold(e.target.value)}
+              />
+            </div>
+            <span className="field-hint">Negative value triggers alert when realized P&L ≤ threshold</span>
           </label>
           <button
             type="button"

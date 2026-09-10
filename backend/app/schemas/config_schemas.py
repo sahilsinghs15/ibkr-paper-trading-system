@@ -50,6 +50,7 @@ class AccountConfigSchema(BaseModel):
     daily_target_unit: str = "ABSOLUTE"
     daily_stop_unit: str = "ABSOLUTE"
     account_risk_enabled: bool = False
+    loss_threshold: Decimal | None = None
     allocations: list[AllocationConfigSchema] = Field(default_factory=list)
     symbol_limits: list[SymbolLimitSchema] = Field(default_factory=list)
 
@@ -83,6 +84,7 @@ class PatchAccountRequest(BaseModel):
     daily_target_unit: str | None = None
     daily_stop_unit: str | None = None
     account_risk_enabled: bool | None = None
+    loss_threshold: Decimal | None = None
 
 
 class CreateAllocationRequest(BaseModel):

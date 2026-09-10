@@ -59,6 +59,7 @@ def _account_risk_fields(account: AccountModel) -> dict:
         "daily_target_unit": getattr(account, "daily_target_unit", None) or "ABSOLUTE",
         "daily_stop_unit": getattr(account, "daily_stop_unit", None) or "ABSOLUTE",
         "account_risk_enabled": bool(getattr(account, "account_risk_enabled", False)),
+        "loss_threshold": getattr(account, "loss_threshold", None),
     }
 
 
@@ -554,6 +555,8 @@ async def patch_account(
     account = await svc.get_account(account_id)
     if account is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+    # loss_threshold needs sentinel to distinguish omitted vs explicit null
+    has_loss = "loss_threshold" in body.model_fields_set
     if (
         body.name is None
         and body.ibkr_account is None
@@ -565,22 +568,25 @@ async def patch_account(
         and body.daily_target_unit is None
         and body.daily_stop_unit is None
         and body.account_risk_enabled is None
+        and not has_loss
     ):
         raise HTTPException(status_code=400, detail="No fields to update.")
+    kwargs: dict = dict(
+        name=body.name,
+        ibkr_account=body.ibkr_account,
+        total_margin=body.total_margin,
+        enabled=body.enabled,
+        default_symbol_limit=body.default_symbol_limit,
+        daily_target=body.daily_target,
+        daily_stop=body.daily_stop,
+        daily_target_unit=body.daily_target_unit,
+        daily_stop_unit=body.daily_stop_unit,
+        account_risk_enabled=body.account_risk_enabled,
+    )
+    if has_loss:
+        kwargs["loss_threshold"] = body.loss_threshold
     try:
-        await svc.update_account(
-            account,
-            name=body.name,
-            ibkr_account=body.ibkr_account,
-            total_margin=body.total_margin,
-            enabled=body.enabled,
-            default_symbol_limit=body.default_symbol_limit,
-            daily_target=body.daily_target,
-            daily_stop=body.daily_stop,
-            daily_target_unit=body.daily_target_unit,
-            daily_stop_unit=body.daily_stop_unit,
-            account_risk_enabled=body.account_risk_enabled,
-        )
+        await svc.update_account(account, **kwargs)
         await session.commit()
     except AllocationConfigError as exc:
         await session.rollback()
