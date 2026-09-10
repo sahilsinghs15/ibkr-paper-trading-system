@@ -1,11 +1,12 @@
 """Read-only snapshot of executed positions from PostgreSQL. Never writes."""
 
 import json
+import math
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import or_, select, tuple_
+from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.account import AccountModel
@@ -68,7 +69,7 @@ class _SignalRejectView:
 def _norm_ibkr(value: str | None) -> str | None:
     if value is None:
         return None
-    s = str(value).strip().upper()
+    s = value.strip().upper()
     return s or None
 
 
@@ -85,9 +86,7 @@ def _payload_matches_account(
     p_str = str(p_acc).strip()
     if target_ibkr_acc and p_str.upper() == target_ibkr_acc.upper():
         return True
-    if target_acc_id is not None and p_str.isdigit() and int(p_str) == target_acc_id:
-        return True
-    return False
+    return target_acc_id is not None and p_str.isdigit() and int(p_str) == target_acc_id
 
 
 def _dec(value: Decimal | None) -> str | None:
@@ -167,13 +166,13 @@ def _basket_state(baskets: list[BasketModel], position_status: str) -> str | Non
 
 
 def _close_in_progress(baskets: list[BasketModel], orders: list[OrderModel]) -> bool:
-    for row in baskets:
-        if row.action.upper() == "CLOSE" and row.state in ("EXECUTING", "UNWINDING"):
+    for b_row in baskets:
+        if b_row.action.upper() == "CLOSE" and b_row.state in ("EXECUTING", "UNWINDING"):
             return True
-    for row in orders:
-        if row.is_compensation:
+    for o_row in orders:
+        if o_row.is_compensation:
             continue
-        if ":CLOSE" in (row.internal_order_id or "") and row.status not in ("CANCELLED", "REJECTED"):
+        if ":CLOSE" in (o_row.internal_order_id or "") and o_row.status not in ("CANCELLED", "REJECTED"):
             return True
     return False
 
@@ -402,7 +401,7 @@ async def load_position_rows(session: AsyncSession) -> list[tuple[PositionModel,
         .join(AccountModel, AccountModel.id == PositionModel.account_id)
         .where(PositionModel.risk_state == RISK_OPEN)
     )
-    return list(result.all())
+    return [(row[0], row[1]) for row in result.all()]
 
 
 async def load_closed_position_rows(
@@ -419,7 +418,7 @@ async def load_closed_position_rows(
     if account_id is not None:
         stmt = stmt.where(PositionModel.account_id == account_id)
     result = await session.execute(stmt)
-    return list(result.all())
+    return [(row[0], row[1]) for row in result.all()]
 
 
 async def load_position_with_account(
@@ -434,7 +433,8 @@ async def load_position_with_account(
             PositionModel.trade_id == trade_id,
         )
     )
-    return result.first()
+    row = result.first()
+    return (row[0], row[1]) if row is not None else None
 
 
 async def load_pair_detail(
@@ -478,7 +478,7 @@ async def load_pair_detail(
         orders_payload.append(order_payload(o, m_execs))
 
     basket_ids = [b.id for b in baskets if b.id]
-    event_filters = []
+    event_filters: list[Any] = []
     if order_ids:
         event_filters.append(EventLogModel.order_id.in_(order_ids))
     if basket_ids:
@@ -720,7 +720,7 @@ async def load_signals(
             (ExecutionModel.order_id.in_(order_ids))
             | (ExecutionModel.internal_order_id.in_(internal_order_ids))
         )
-        all_executions = (await session.execute(exec_stmt)).scalars().all()
+        all_executions = list((await session.execute(exec_stmt)).scalars().all())
 
     execs_by_order_id: dict[int, list[ExecutionModel]] = {}
     execs_by_internal_id: dict[str, list[ExecutionModel]] = {}
@@ -772,7 +772,7 @@ async def load_signals(
             ]
             payload_match = _payload_matches_account(sig.raw_payload, target_acc_id, target_ibkr_acc)
             job_match = False
-            for scope_str in job_scopes_by_sig.get(str(sig.signal_id), []):
+            for scope_str in job_scopes_by_sig.get(sig.signal_id, []):
                 if target_acc_id is not None and scope_str == str(target_acc_id):
                     job_match = True
                     break
@@ -809,7 +809,7 @@ async def load_signals(
 
         job_reject: str | None = None
         if sig.signal_id:
-            sid = str(sig.signal_id)
+            sid = sig.signal_id
             for key in (
                 str(sig_acc_id) if sig_acc_id is not None else None,
                 str(target_acc_id) if target_acc_id is not None else None,
@@ -819,7 +819,7 @@ async def load_signals(
                 if not key:
                     continue
                 job_reject = job_error_by_sig_scope.get((sid, key)) or job_error_by_sig_scope.get(
-                    (sid, str(key))
+                    (sid, key)
                 )
                 if job_reject:
                     break
@@ -893,7 +893,7 @@ async def load_signals(
         # Re-scope after late account resolution (unfiltered / for_watch path).
         if sig_ibkr_acc or sig_acc_id is not None:
             if not job_reject and sig.signal_id:
-                sid = str(sig.signal_id)
+                sid = sig.signal_id
                 for key in (
                     str(sig_acc_id) if sig_acc_id is not None else None,
                     (sig_ibkr_acc or "").strip().upper() or None,
@@ -1052,7 +1052,7 @@ def reconcile_signal_status(
     events: list[dict[str, Any]],
 ) -> tuple[str, bool, str | None, str | None, float | None]:
     """Reconcile raw database status to canonical_status, is_active_processing, reason, processed_at, duration_sec."""
-    raw_status = str(sig.status or "").upper()
+    raw_status = (sig.status or "").upper()
     reject_reason = sig.reject_reason
     db_processed = sig.processed_at.isoformat() if sig.processed_at else None
 
@@ -1094,11 +1094,10 @@ def reconcile_signal_status(
                 key = f"basket:{basket}:sym:{o.get('symbol')}:{o.get('buy_sell')}"
 
             req_qty = float(o.get("quantity") or 0.0)
-            fill_qty = float(
-                o.get("fill_qty")
-                if o.get("fill_qty") is not None
-                else (o.get("filled_quantity") or 0.0)
-            )
+            fill_raw = o.get("fill_qty")
+            if fill_raw is None:
+                fill_raw = o.get("filled_quantity")
+            fill_qty = float(fill_raw or 0.0)
 
             if key not in legs_map:
                 legs_map[key] = {
@@ -1162,3 +1161,254 @@ def reconcile_signal_status(
         return ("REJECTED", False, rec, proc_at, duration)
 
     return ("PROCESSING", True, "Awaiting broker orders", None, None)
+
+
+STATUS_FILTER_MAP: dict[str, list[str]] = {
+    "QUEUED": ["QUEUED", "RECEIVED"],
+    "RECEIVED": ["QUEUED", "RECEIVED"],
+    "PROCESSING": ["CLAIMED", "PROCESSING"],
+    "CLAIMED": ["CLAIMED", "PROCESSING"],
+    "COMPLETED": ["COMPLETED"],
+    "REJECTED": ["REJECTED"],
+    "FAILED": ["FAILED"],
+    "DEFERRED": ["DEFERRED_RED_ZONE", "DEFERRED"],
+    "DEFERRED_RED_ZONE": ["DEFERRED_RED_ZONE", "DEFERRED"],
+    "RECOVERY": ["RECOVERY_REQUIRED", "RECOVERY"],
+    "RECOVERY_REQUIRED": ["RECOVERY_REQUIRED", "RECOVERY"],
+    "DEAD_LETTER": ["DEAD_LETTER"],
+    "DEAD LETTER": ["DEAD_LETTER"],
+}
+
+
+def _ingest_job_payload(
+    job: SignalJobModel,
+    acc_by_id: dict[int, AccountModel],
+    acc_by_ibkr: dict[str, AccountModel],
+) -> dict[str, Any]:
+    capture = job.capture_data if isinstance(job.capture_data, dict) else {}
+
+    # parsed_json: prefer capture_data.parsed_json when dict, otherwise raw_payload when dict, else {}
+    if isinstance(capture.get("parsed_json"), dict):
+        parsed_json = capture["parsed_json"]
+    elif isinstance(job.raw_payload, dict):
+        parsed_json = job.raw_payload
+    else:
+        parsed_json = {}
+
+    # raw_body: prefer capture_data.raw_body when string, otherwise reconstruct from parsed_json
+    if isinstance(capture.get("raw_body"), str):
+        raw_body = capture["raw_body"]
+    else:
+        raw_body = json.dumps(parsed_json) if parsed_json else ""
+
+    # metadata: must be a dict or {}
+    meta_raw = capture.get("metadata")
+    metadata = meta_raw if isinstance(meta_raw, dict) else {}
+
+    # action: extracted from parsed_json or raw_payload
+    action_val = parsed_json.get("action") or (
+        job.raw_payload.get("action") if isinstance(job.raw_payload, dict) else None
+    )
+    action = str(action_val).upper() if action_val else "UNKNOWN"
+
+    # Account resolution:
+    # 1. If account_scope is numeric and matches AccountModel.id: resolve account_id and ibkr_account.
+    # 2. Otherwise attempt case-insensitive IBKR account lookup.
+    # 3. If neither resolves: preserve account_scope as ibkr_account fallback.
+    acc_id: int | None = None
+    ibkr_acc: str | None = None
+    if job.account_scope:
+        scope_str = job.account_scope.strip()
+        if scope_str.isdigit() and int(scope_str) in acc_by_id:
+            acc = acc_by_id[int(scope_str)]
+            acc_id = acc.id
+            ibkr_acc = acc.ibkr_account
+        elif scope_str.upper() in acc_by_ibkr:
+            acc = acc_by_ibkr[scope_str.upper()]
+            acc_id = acc.id
+            ibkr_acc = acc.ibkr_account
+        else:
+            ibkr_acc = scope_str
+
+    return {
+        "job_id": str(job.job_id),
+        "signal_id": job.signal_id,
+        "trade_id": job.trade_id,
+        "strategy_id": job.strategy_id,
+        "action": action,
+        "status": job.status,
+        "account_scope": job.account_scope,
+        "account_id": acc_id,
+        "ibkr_account": ibkr_acc,
+        "correlation_id": job.correlation_id,
+        "idempotency_key": job.idempotency_key,
+        "attempt_count": job.attempt_count,
+        "max_attempts": job.max_attempts,
+        "last_error": job.last_error,
+        "deferral_reason": job.deferral_reason,
+        "received_at": job.received_at.isoformat() if job.received_at else None,
+        "queued_at": job.queued_at.isoformat() if job.queued_at else None,
+        "claimed_at": job.claimed_at.isoformat() if job.claimed_at else None,
+        "processing_started_at": job.processing_started_at.isoformat() if job.processing_started_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "raw_body": raw_body,
+        "parsed_json": parsed_json,
+        "metadata": metadata,
+    }
+
+
+async def load_ingest_jobs(
+    session: AsyncSession,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    status_filter: str | None = None,
+    account_id: int | None = None,
+    ibkr_account: str | None = None,
+    search: str | None = None,
+) -> dict[str, Any]:
+    eff_page = max(1, page)
+    eff_page_size = min(max(1, page_size), 200)
+
+    empty_counts = {
+        "all": 0,
+        "total": 0,
+        "queued": 0,
+        "processing": 0,
+        "completed": 0,
+        "rejected": 0,
+        "failed": 0,
+        "deferred": 0,
+        "recovery": 0,
+        "dead_letter": 0,
+    }
+
+    if session is None or not hasattr(session, "execute"):
+        return {
+            "jobs": [],
+            "page": eff_page,
+            "page_size": eff_page_size,
+            "total": 0,
+            "total_pages": 1,
+            "counts": empty_counts,
+        }
+
+    # Load Account map for account_id <-> ibkr_account resolution
+    acc_rows = (await session.execute(select(AccountModel))).scalars().all()
+    acc_by_id: dict[int, AccountModel] = {a.id: a for a in acc_rows}
+    acc_by_ibkr: dict[str, AccountModel] = {
+        a.ibkr_account.strip().upper(): a for a in acc_rows if a.ibkr_account
+    }
+
+    target_acc_id: int | None = account_id
+    target_ibkr_acc: str | None = _norm_ibkr(ibkr_account)
+    if target_ibkr_acc and not target_acc_id:
+        acc_obj = acc_by_ibkr.get(target_ibkr_acc)
+        if acc_obj:
+            target_acc_id = acc_obj.id
+    elif target_acc_id and not target_ibkr_acc:
+        acc_obj = acc_by_id.get(target_acc_id)
+        if acc_obj:
+            target_ibkr_acc = _norm_ibkr(acc_obj.ibkr_account)
+
+    base_clauses: list[Any] = []
+
+    # ACCOUNT FILTER:
+    # When account_id or ibkr_account is supplied:
+    # account_scope == str(account_id) OR case-insensitive account_scope == IBKR account string.
+    # Do NOT add account_scope IS NULL to the filtered account path.
+    # When admin requests an unscoped/global list: include all rows, including NULL account_scope.
+    if target_acc_id is not None or target_ibkr_acc:
+        account_or_clauses = []
+        if target_acc_id is not None:
+            account_or_clauses.append(SignalJobModel.account_scope == str(target_acc_id))
+        if target_ibkr_acc:
+            account_or_clauses.append(
+                func.upper(SignalJobModel.account_scope) == target_ibkr_acc.upper()
+            )
+        base_clauses.append(or_(*account_or_clauses))
+
+    # SEARCH FILTER:
+    # Use OR/ILIKE across: signal_id, trade_id, correlation_id, strategy_id
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        search_clause = or_(
+            SignalJobModel.signal_id.ilike(term),
+            SignalJobModel.trade_id.ilike(term),
+            SignalJobModel.correlation_id.ilike(term),
+            SignalJobModel.strategy_id.ilike(term),
+        )
+        base_clauses.append(search_clause)
+
+    # 1. Grouped status histogram using base filters (WITHOUT status filter)
+    count_stmt = (
+        select(SignalJobModel.status, func.count(SignalJobModel.job_id))
+        .where(*base_clauses)
+        .group_by(SignalJobModel.status)
+    )
+    count_res = (await session.execute(count_stmt)).all()
+    raw_counts: dict[str, int] = {}
+    for st, cnt in count_res:
+        if st:
+            raw_counts[str(st).strip().upper()] = int(cnt)
+
+    c_queued = raw_counts.get("QUEUED", 0) + raw_counts.get("RECEIVED", 0)
+    c_processing = raw_counts.get("CLAIMED", 0) + raw_counts.get("PROCESSING", 0)
+    c_completed = raw_counts.get("COMPLETED", 0)
+    c_rejected = raw_counts.get("REJECTED", 0)
+    c_failed = raw_counts.get("FAILED", 0)
+    c_deferred = raw_counts.get("DEFERRED_RED_ZONE", 0) + raw_counts.get("DEFERRED", 0)
+    c_recovery = raw_counts.get("RECOVERY_REQUIRED", 0) + raw_counts.get("RECOVERY", 0)
+    c_dead_letter = raw_counts.get("DEAD_LETTER", 0)
+    total_unfiltered = sum(raw_counts.values())
+
+    counts = {
+        "all": total_unfiltered,
+        "total": total_unfiltered,
+        "queued": c_queued,
+        "processing": c_processing,
+        "completed": c_completed,
+        "rejected": c_rejected,
+        "failed": c_failed,
+        "deferred": c_deferred,
+        "recovery": c_recovery,
+        "dead_letter": c_dead_letter,
+    }
+
+    # 2. STATUS FILTER:
+    # Ignore if unset or ALL. Otherwise compare uppercase status.
+    all_clauses = list(base_clauses)
+    clean_status = status_filter.strip().upper() if status_filter else None
+    if clean_status and clean_status != "ALL":
+        if clean_status in STATUS_FILTER_MAP:
+            all_clauses.append(SignalJobModel.status.in_(STATUS_FILTER_MAP[clean_status]))
+        else:
+            all_clauses.append(func.upper(SignalJobModel.status) == clean_status)
+
+    # 3. Total matching filters (including status filter)
+    total_stmt = select(func.count(SignalJobModel.job_id)).where(*all_clauses)
+    total = (await session.execute(total_stmt)).scalar() or 0
+
+    # 4. Paginated SELECT
+    offset = (eff_page - 1) * eff_page_size
+    items_stmt = (
+        select(SignalJobModel)
+        .where(*all_clauses)
+        .order_by(SignalJobModel.received_at.desc(), SignalJobModel.job_id.desc())
+        .offset(offset)
+        .limit(eff_page_size)
+    )
+    job_rows = (await session.execute(items_stmt)).scalars().all()
+
+    jobs = [_ingest_job_payload(job, acc_by_id, acc_by_ibkr) for job in job_rows]
+    total_pages = max(1, math.ceil(total / eff_page_size))
+
+    return {
+        "jobs": jobs,
+        "page": eff_page,
+        "page_size": eff_page_size,
+        "total": total,
+        "total_pages": total_pages,
+        "counts": counts,
+    }
+

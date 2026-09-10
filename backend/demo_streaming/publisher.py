@@ -67,6 +67,8 @@ class PositionBridge:
 
     async def _load_account_scoped_signals(self, session: AsyncSession) -> list[dict]:
         """Load watch signals once per IBKR account so reject reasons stay scoped."""
+        if session is None or not hasattr(session, "execute"):
+            return []
         acc_rows = (await session.execute(select(AccountModel))).scalars().all()
         enabled = [a for a in acc_rows if a.enabled and a.ibkr_account]
         if not enabled:

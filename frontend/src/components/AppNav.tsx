@@ -60,6 +60,14 @@ export function AppNav() {
           Audit Logs
         </NavLink>
       )}
+      {user?.role === 'admin' && (
+        <NavLink
+          to={effectiveAccount ? `${accountHome}/ingest` : '/accounts'}
+          className={({ isActive }) => (effectiveAccount && isActive ? 'on' : undefined)}
+        >
+          Ingest
+        </NavLink>
+      )}
     </nav>
   )
 }

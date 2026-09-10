@@ -82,6 +82,17 @@ Nav label **Trade Book** right next to Inventory; route `/account/:ibkrAccount/t
 - Displays: Time, Symbol, Type, Side, Qty, Price, Notional (`qty * price`), Commission, Exec ID, Broker Order ID.
 - Displays explicit header notice: `IBKR executions since midnight (Gateway)`. Shows `GATEWAY DOWN` (HTTP 503) and timeout warnings appropriately.
 
+### Ingest Feed tab (`/account/:ibkrAccount/ingest`)
+
+Nav label **Ingest** in admin navigation after Audit Logs; route `/account/:ibkrAccount/ingest` (with `/ingest` redirect).
+
+- **Admin-only**: Non-admin users cannot see or access the Ingest tab.
+- `GET /demo/ingest-jobs` — reads directly from `signal_jobs` in Postgres (auto-polls every 5 seconds; no SSE or WebSocket).
+- **Difference from Signal Tray**: Shows raw webhook jobs received into `signal_jobs`, including queued/processing/rejected jobs before or independent of processed Signal Tray / Order execution pipeline rows. Does not join signals or orders.
+- **Side Drawer**: Clicking any row opens an inspector showing job metadata, timestamps, and a toggle between parsed JSON and exact stored `capture_data.raw_body` with one-click clipboard copy.
+- **Status Filter Chips & Search**: Server-side paginated filtering across statuses (`QUEUED`, `PROCESSING`, `COMPLETED`, `REJECTED`, `FAILED`, `DEFERRED`, `RECOVERY`, `DEAD LETTER`) and text search across IDs.
+
+
 ### Scripts (`package.json`)
 
 - `dev` → `vite` (proxies `/demo` → `:8010`, `/api/v1/config` → `:8001`)

@@ -11,6 +11,7 @@ import { SystemMonitorPage } from './pages/SystemMonitorPage'
 import { ReconcilePage } from './pages/ReconcilePage'
 import { TradeBookPage } from './pages/TradeBookPage'
 import { AuditLogsPage } from './pages/AuditLogsPage'
+import { IngestFeedPage } from './pages/IngestFeedPage'
 import { NotificationContainer } from './components/NotificationContainer'
 import { usePnlStream } from './hooks/usePnlStream'
 import { useSystemEvents } from './hooks/useSystemEvents'
@@ -82,6 +83,16 @@ function App() {
           }
         />
         <Route
+          path="/account/:ibkrAccount/ingest"
+          element={
+            <ProtectedRoute requireAdmin>
+              <AccountScoped>
+                <IngestFeedPage />
+              </AccountScoped>
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/account/:ibkrAccount/reconcile"
           element={
             <ProtectedRoute>
@@ -130,6 +141,14 @@ function App() {
           element={
             <ProtectedRoute requireAdmin>
               <RedirectToAccount suffix="/audit-logs" />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/ingest"
+          element={
+            <ProtectedRoute requireAdmin>
+              <RedirectToAccount suffix="/ingest" />
             </ProtectedRoute>
           }
         />

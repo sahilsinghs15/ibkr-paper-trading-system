@@ -89,12 +89,16 @@ Default bind: `127.0.0.1:8010` (`demo_streaming/config.py`). Does **not** connec
 | `GET` | `/demo/positions/{account_id}/{trade_id}` | Pair detail: summary, exits + monitor/shadow flags, orders with fills, baskets, events |
 | `GET` | `/demo/closed-positions` | Closed positions (optional `account_id`) |
 | `GET` | `/demo/signals` | Signal/job history with pagination and filters |
+| `GET` | `/demo/ingest-jobs` | Paginated raw webhook ingest feed directly from `signal_jobs`. Exposes exact `capture_data.raw_body`, `parsed_json`, status, and timestamps. Requires JWT Bearer auth. Normal users are forcibly account-scoped; admins have global visibility (including NULL `account_scope`) or optional account filtering. Query params: `page`, `page_size` (1..200), `status`, `account_id`, `ibkr_account`, `search` |
 | `GET` | `/demo/market-data-health` | Live PnL subscription health (if service attached) |
 | `GET` | `/demo/stream` | SSE from Redis stream |
 | `GET/POST/PATCH/PUT/DELETE` | `/api/v1/config/*` | Proxy to trading app (`TRADING_API_URL`, default `http://127.0.0.1:8001`) |
 | `GET` | `/` | React build `frontend/dist/index.html` if present; else static fallback |
 | `GET` | `/settings` | SPA fallback (same as `/`) |
 | `GET` | `/accounts` | SPA fallback |
+| `GET` | `/audit-logs` | SPA fallback |
+| `GET` | `/ingest` | SPA fallback |
+| `GET` | `/trade-book` | SPA fallback |
 | `GET` | `/account/{path}` | SPA fallback |
 | `GET` | `/assets/*` | Mounted when `frontend/dist/assets` exists (Vite build) |
 

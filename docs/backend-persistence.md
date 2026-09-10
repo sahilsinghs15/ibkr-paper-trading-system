@@ -100,9 +100,10 @@ Under `backend/app/db/repositories/`:
 | Live marks / PnL subscriptions | `LivePnlService` in-memory; coalesced writes to `positions.live_pnl` (not one Postgres commit per IBKR tick) |
 | IBKR broker position snapshot | `broker_positions` table; refreshed every 30s by `PositionReconciler` |
 | Durable execution queue | `signal_jobs` table |
+| Raw webhook ingest visibility (Ingest Feed) | `signal_jobs.capture_data` read-only via `demo_streaming` (no joins, no persistence mutations) |
 | Durable dedupe barrier | `execution_claims` table |
 | Durable ledger | Postgres tables above |
-| Webhook raw captures | Files under `backend/data/tradingview_webhooks/` |
+| Webhook raw captures | Files under `backend/data/tradingview_webhooks/` and `signal_jobs.capture_data` |
 
 `GET /api/v1/orders` reads the **in-memory** OMS map, not `OrderRepository`.
 

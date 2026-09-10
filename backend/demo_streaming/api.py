@@ -46,6 +46,7 @@ from app.services.notification_canonical import (
 from demo_streaming.snapshot import (
     load_baskets,
     load_closed_position_rows,
+    load_ingest_jobs,
     load_orders,
     load_pair_detail,
     load_position_rows,
@@ -531,6 +532,37 @@ def create_demo_app(
             return JSONResponse({"signals": payload})
         return JSONResponse(payload)
 
+    @app.get("/demo/ingest-jobs")
+    async def ingest_jobs(
+        request: Request,
+        page: int = 1,
+        page_size: int = 50,
+        status: str | None = None,
+        account_id: int | None = None,
+        ibkr_account: str | None = None,
+        search: str | None = None,
+    ) -> JSONResponse:
+        user = await _get_authenticated_user_from_request(request, session_factory)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        logger.info(
+            "/demo/ingest-jobs authenticated user_id=%s role=%s", user.id, user.role
+        )
+        if user.role == "user":
+            account_id = user.ibkr_account_id
+            ibkr_account = user.account.ibkr_account if user.account else None
+        async with session_factory() as session:
+            payload = await load_ingest_jobs(
+                session,
+                page=page,
+                page_size=page_size,
+                status_filter=status,
+                account_id=account_id,
+                ibkr_account=ibkr_account,
+                search=search,
+            )
+        return JSONResponse(payload)
+
     @app.get("/demo/market-data-health")
     async def get_market_data_health() -> JSONResponse:
         pnl_svc = getattr(app.state, "live_pnl_service", None)
@@ -874,6 +906,7 @@ def create_demo_app(
     @app.get("/settings")
     @app.get("/system-monitor")
     @app.get("/audit-logs")
+    @app.get("/ingest")
     @app.get("/trade-book")
     @app.get("/account/{path:path}")
     async def index() -> FileResponse:
