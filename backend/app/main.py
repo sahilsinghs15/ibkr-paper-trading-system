@@ -205,6 +205,13 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         await risk_exit_monitor.start()
     fastapi_app.state.risk_exit_monitor = risk_exit_monitor
 
+    from app.services.trade_book_sync_service import TradeBookSyncService
+
+    trade_book_sync = TradeBookSyncService(AsyncSessionLocal, client, interval_sec=10.0)
+    fastapi_app.state.trade_book_sync = trade_book_sync
+    if not testing:
+        await trade_book_sync.start()
+
     if not testing:
         try:
             await critical_recovery.enqueue_all_critical()
@@ -234,6 +241,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     yield
 
     logger.info("Shutting down paper-trading application...")
+    if hasattr(fastapi_app.state, "trade_book_sync"):
+        await fastapi_app.state.trade_book_sync.stop()
     if hasattr(fastapi_app.state, "risk_exit_monitor"):
         await fastapi_app.state.risk_exit_monitor.stop()
     if hasattr(fastapi_app.state, "red_zone_release"):

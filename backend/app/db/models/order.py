@@ -69,9 +69,24 @@ class OrderModel(Base):
         onupdate=func.now(),
     )
 
+    # Order Book enhancements (t1u2v3w4x5y6)
+    sec_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    exchange: Mapped[str | None] = mapped_column(String, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String, nullable=True)
+    order_type: Mapped[str | None] = mapped_column(String, nullable=True, server_default="LIMIT")
+    perm_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    remaining_qty: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    outside_rth: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    time_in_force: Mapped[str | None] = mapped_column(String, nullable=True)
+    rejection_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    cancel_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+
     signal: Mapped["SignalModel"] = relationship("SignalModel")
     account: Mapped["AccountModel"] = relationship("AccountModel")
 
     __table_args__ = (
         Index("ix_orders_account_status", "account_id", "status"),
+        Index("ix_orders_account_updated_at", "account_id", "updated_at"),
+        Index("ix_orders_symbol", "symbol"),
     )

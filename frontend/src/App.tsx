@@ -10,6 +10,7 @@ import { AccountSettingsPage } from './pages/AccountSettingsPage'
 import { SystemMonitorPage } from './pages/SystemMonitorPage'
 import { ReconcilePage } from './pages/ReconcilePage'
 import { TradeBookPage } from './pages/TradeBookPage'
+import { OrderBookPage } from './pages/OrderBookPage'
 import { AuditLogsPage } from './pages/AuditLogsPage'
 import { IngestFeedPage } from './pages/IngestFeedPage'
 import { NotificationContainer } from './components/NotificationContainer'
@@ -113,10 +114,28 @@ function App() {
           }
         />
         <Route
+          path="/account/:ibkrAccount/order-book"
+          element={
+            <ProtectedRoute>
+              <AccountScoped>
+                <OrderBookPage />
+              </AccountScoped>
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/trade-book"
           element={
             <ProtectedRoute>
               <RedirectToAccount suffix="/trade-book" />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/order-book"
+          element={
+            <ProtectedRoute>
+              <RedirectToAccount suffix="/order-book" />
             </ProtectedRoute>
           }
         />

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useParams } from 'react-router-dom'
 import { fetchReconcilePositions } from '../api/reconcileApi'
 import { canFixDiff, FixDiffModal, fixTooltip } from '../components/FixDiffModal'
@@ -72,12 +72,18 @@ function buildBrokerAvgCostMap(
 function fmtQtyWithNotional(
   qty: number | null | undefined,
   unitPrice: number | undefined,
-): string {
+): ReactNode {
   if (qty === null || qty === undefined) return '—'
   const qtyText = fmtQty(qty)
-  if (unitPrice === undefined || unitPrice <= 0) return qtyText
+  const colorClass = qty > 0 ? 'pnl-pos' : qty < 0 ? 'pnl-neg' : undefined
+  const qtyElement = colorClass ? <span className={colorClass}>{qtyText}</span> : qtyText
+  if (unitPrice === undefined || unitPrice <= 0) return qtyElement
   const notional = Math.abs(qty) * unitPrice
-  return `${qtyText} / ${fmtCompactCurrency(notional)}`
+  return (
+    <>
+      {qtyElement} / {fmtCompactCurrency(notional)}
+    </>
+  )
 }
 
 export function ReconcilePage() {

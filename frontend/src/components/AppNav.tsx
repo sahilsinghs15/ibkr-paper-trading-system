@@ -33,6 +33,12 @@ export function AppNav() {
         Trade Book
       </NavLink>
       <NavLink
+        to={effectiveAccount ? `${accountHome}/order-book` : '/accounts'}
+        className={({ isActive }) => (effectiveAccount && isActive ? 'on' : undefined)}
+      >
+        Order Book
+      </NavLink>
+      <NavLink
         to={effectiveAccount ? `${accountHome}/reconcile` : '/accounts'}
         className={({ isActive }) => (effectiveAccount && isActive ? 'on' : undefined)}
       >

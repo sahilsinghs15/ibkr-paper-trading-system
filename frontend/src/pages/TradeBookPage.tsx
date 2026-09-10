@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { fetchBrokerExecutions } from '../api/brokerExecutionsApi'
+import { fetchTradeBook } from '../api/brokerExecutionsApi'
 import { SortableTh } from '../components/SortableTh'
-import type { BrokerExecutionLine, BrokerExecutionsResponse } from '../types/brokerExecution'
+import type { BrokerExecutionLine, TradeBookPaginatedResponse } from '../types/brokerExecution'
 import { normalizeIbkrAccount } from '../utils/activeAccount'
 import { displayInstrument, fmtQty, fmtTime, fmtUsd, loadTimezone } from '../utils/format'
 import { sortRows, useTableSortState } from '../utils/tableSort'
@@ -21,6 +21,7 @@ const EXECUTION_SORT_EXTRACTORS: Record<string, (row: BrokerExecutionLine) => un
   commission: (row) => row.commission,
   exec_id: (row) => row.exec_id,
   broker_order_id: (row) => row.broker_order_id,
+  order_status: (row) => row.order_status || '',
 }
 
 function defaultSort(a: BrokerExecutionLine, b: BrokerExecutionLine): number {
@@ -35,11 +36,12 @@ function defaultSort(a: BrokerExecutionLine, b: BrokerExecutionLine): number {
 export function TradeBookPage() {
   const { ibkrAccount } = useParams<{ ibkrAccount: string }>()
   const cleanAccount = normalizeIbkrAccount(ibkrAccount)
-  const [data, setData] = useState<BrokerExecutionsResponse | null>(null)
+  const [data, setData] = useState<TradeBookPaginatedResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isGatewayDown, setIsGatewayDown] = useState(false)
-  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null)
+  const [page, setPage] = useState(1)
+  const pageSize = 50
   const { sortKey, sortDir, handleSort } = useTableSortState()
   const tz = loadTimezone()
 
@@ -53,9 +55,8 @@ export function TradeBookPage() {
       setLoading(true)
       setError(null)
       setIsGatewayDown(false)
-      const res = await fetchBrokerExecutions(cleanAccount)
+      const res = await fetchTradeBook(cleanAccount, { page, page_size: pageSize })
       setData(res)
-      setLastRefreshed(new Date())
     } catch (err: unknown) {
       const axiosError = err as { response?: { status?: number; data?: { detail?: string } }; message?: string }
       if (axiosError?.response?.status === 503) {
@@ -70,16 +71,15 @@ export function TradeBookPage() {
     } finally {
       setLoading(false)
     }
-  }, [cleanAccount])
+  }, [cleanAccount, page])
 
   useEffect(() => {
     let mounted = true
     if (cleanAccount) {
-      void fetchBrokerExecutions(cleanAccount).then(
+      void fetchTradeBook(cleanAccount, { page, page_size: pageSize }).then(
         (res) => {
           if (mounted) {
             setData(res)
-            setLastRefreshed(new Date())
             setLoading(false)
           }
         },
@@ -103,7 +103,7 @@ export function TradeBookPage() {
     return () => {
       mounted = false
     }
-  }, [cleanAccount])
+  }, [cleanAccount, page])
 
   const sortedExecutions = useMemo(() => {
     const list = data?.executions ?? []
@@ -147,15 +147,16 @@ export function TradeBookPage() {
     )
   }
 
+  const totalPages = data ? Math.ceil(data.total / pageSize) : 1
+  const lastSyncedText = data?.last_synced_at ? fmtTime(data.last_synced_at, tz, { withZone: true }) : '—'
   return (
     <main className="page trade-book-page">
       <header className="trade-book-header">
         <div className="trade-book-title-block">
           <h1>Trade Book</h1>
-          <span className="trade-book-subtitle">IBKR executions since midnight (Gateway) · {cleanAccount}</span>
+          <span className="trade-book-subtitle">Persisted Trade Book · {cleanAccount} · Last synced: {lastSyncedText}</span>
         </div>
         <div className="trade-book-meta">
-          <span>Last refreshed: {lastRefreshed ? lastRefreshed.toLocaleTimeString() : 'Never'}</span>
           <button
             type="button"
             className="trade-book-refresh-btn"
@@ -187,8 +188,8 @@ export function TradeBookPage() {
 
       <section className="trade-book-panel">
         <div className="trade-book-panel-head">
-          <h2>Executions ({sortedExecutions.length})</h2>
-          <span className="trade-book-panel-hint">Direct snapshot from IBKR Gateway</span>
+          <h2>Executions ({data?.total ?? sortedExecutions.length})</h2>
+          <span className="trade-book-panel-hint">Persisted Trade Book · page {page}/{totalPages}</span>
         </div>
 
         <div className="trade-book-table-wrap">
@@ -205,13 +206,14 @@ export function TradeBookPage() {
                 <SortableTh sortKey="commission" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Commission</SortableTh>
                 <SortableTh sortKey="exec_id" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Exec ID</SortableTh>
                 <SortableTh sortKey="broker_order_id" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Broker Order ID</SortableTh>
+                <SortableTh sortKey="order_status" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Order Status</SortableTh>
               </tr>
             </thead>
             <tbody>
               {sortedExecutions.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="trade-book-empty">
-                    No Gateway executions since midnight
+                  <td colSpan={11} className="trade-book-empty">
+                    No executions
                   </td>
                 </tr>
               ) : (
@@ -220,6 +222,7 @@ export function TradeBookPage() {
                   const commText = row.commission != null
                     ? `${fmtUsd(row.commission)} ${row.commission_currency || ''}`.trim()
                     : '—'
+                  const status = row.order_status
                   return (
                     <tr key={row.exec_id}>
                       <td className="mono">{fmtTime(row.executed_at, tz, { withZone: true })}</td>
@@ -236,12 +239,18 @@ export function TradeBookPage() {
                       <td className="mono">{commText}</td>
                       <td className="mono muted">{row.exec_id}</td>
                       <td className="mono muted">{row.broker_order_id ?? '—'}</td>
+                      <td>{status ? <span className={`trade-book-side ${status === 'FILLED' ? 'buy' : status === 'REJECTED' || status === 'ERROR' ? 'sell' : ''}`}>{status}</span> : '—'}</td>
                     </tr>
                   )
                 })
               )}
             </tbody>
           </table>
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <button type="button" disabled={page<=1} onClick={() => setPage((p)=>Math.max(1,p-1))}>Prev</button>
+          <span>Page {page} / {totalPages} · Total {data?.total ?? 0}</span>
+          <button type="button" disabled={page>=totalPages} onClick={() => setPage((p)=>p+1)}>Next</button>
         </div>
       </section>
     </main>

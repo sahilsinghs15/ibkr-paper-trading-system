@@ -29,6 +29,7 @@ class BrokerExecutionLineSchema(BaseModel):
     commission: float | None = Field(None, description="Commission amount")
     commission_currency: str | None = Field(None, description="Commission currency")
     realized_pnl: float | None = Field(None, description="Realized PnL from execution")
+    order_status: str | None = Field(None, description="Derived Order Book status (PENDING/SUBMITTED/etc) or null if detached")
 
 
 class BrokerExecutionsResponse(BaseModel):
@@ -41,3 +42,54 @@ class BrokerExecutionsResponse(BaseModel):
     executions: list[BrokerExecutionLineSchema] = Field(
         default_factory=list, description="List of broker executions"
     )
+
+
+class TradeBookPaginatedResponse(BaseModel):
+    ibkr_account: str
+    as_of: datetime
+    last_synced_at: datetime | None = None
+    timed_out: bool = False
+    total: int
+    page: int
+    page_size: int
+    executions: list[BrokerExecutionLineSchema]
+
+
+class OrderBookRowSchema(BaseModel):
+    internal_order_id: str
+    broker_order_id: str | None = None
+    perm_id: int | None = None
+    ibkr_account: str
+    symbol: str
+    sec_type: str | None = None
+    exchange: str | None = None
+    currency: str | None = None
+    ibkr_contract: str | None = None
+    side: str
+    quantity: float
+    filled: float
+    remaining: float
+    order_type: str
+    limit_price: float | None = None
+    status: str
+    avg_fill_price: float | None = None
+    last_fill_price: float | None = None
+    trade_id: str | None = None
+    signal_id: str | None = None
+    basket_id: int | None = None
+    is_compensation: bool = False
+    compensation_of: str | None = None
+    rejection_reason: str | None = None
+    cancel_reason: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    filled_at: datetime | None = None
+
+
+class OrderBookResponse(BaseModel):
+    ibkr_account: str
+    as_of: datetime
+    total: int
+    page: int
+    page_size: int
+    orders: list[OrderBookRowSchema]
