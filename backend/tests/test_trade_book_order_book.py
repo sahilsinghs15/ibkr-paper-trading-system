@@ -181,15 +181,15 @@ async def test_trade_book_sync_non_overlapping():
 @pytest.mark.asyncio
 async def test_trade_book_no_flex_import():
     """Verify Flex removed from active path"""
-    import ast
     import pathlib
-    src = pathlib.Path("backend/app/broker/trade_book_sources.py").read_text()
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / "app/broker/trade_book_sources.py").read_text()
     assert "flex_client" not in src.lower()
     assert "HistoricalExecutionSource" not in src
-    src2 = pathlib.Path("backend/app/services/trade_book_sync_service.py").read_text()
+    src2 = (root / "app/services/trade_book_sync_service.py").read_text()
     assert "flex" not in src2.lower()
     assert "historical" not in src2.lower()
-    src3 = pathlib.Path("backend/app/core/config.py").read_text()
+    src3 = (root / "app/core/config.py").read_text()
     assert "FLEX_WEB" not in src3
 
 

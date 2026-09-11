@@ -125,16 +125,11 @@ async def get_trade_book(
 ) -> TradeBookPaginatedResponse:
     from datetime import datetime as _dt
 
-    from sqlalchemy.ext.asyncio import AsyncSession
-
     from app.db.repositories.trade_execution_repository import TradeExecutionRepository
 
     clean_account = ibkr_account.strip().upper()
     _check_account_authorization(current_user, ibkr_account=clean_account)
 
-    # Resolve account_id
-    session: AsyncSession = next(iter([]))  # placeholder to satisfy type
-    # Use dependency-style session via get_db_session manually from request state
     from app.db.session import AsyncSessionLocal
 
     async with AsyncSessionLocal() as session2:
@@ -173,13 +168,13 @@ async def get_trade_book(
                 sec_type=r.sec_type,
                 currency=r.currency,
                 exchange=r.exchange,
-                con_id=int(r.con_id or 0),
+                con_id=r.con_id or 0,
                 side=r.side,
                 quantity=float(r.quantity),
                 price=float(r.price),
                 cum_qty=float(r.cum_qty),
                 avg_price=float(r.avg_price),
-                broker_order_id=int(r.broker_order_id) if r.broker_order_id and str(r.broker_order_id).isdigit() else None,
+                broker_order_id=int(r.broker_order_id) if r.broker_order_id and r.broker_order_id.isdigit() else None,
                 perm_id=r.perm_id,
                 client_id=r.client_id,
                 commission=float(r.commission) if r.commission is not None else None,
@@ -277,7 +272,7 @@ async def get_order_book(
                 trade_id=r.trade_id,
                 signal_id=str(r.signal_id),
                 basket_id=r.basket_id,
-                is_compensation=bool(r.is_compensation),
+                is_compensation=r.is_compensation,
                 compensation_of=r.compensation_of_internal_order_id,
                 rejection_reason=r.rejection_reason,
                 cancel_reason=r.cancel_reason,
@@ -342,7 +337,7 @@ async def get_order_book_detail(
             trade_id=row.trade_id,
             signal_id=str(row.signal_id),
             basket_id=row.basket_id,
-            is_compensation=bool(row.is_compensation),
+            is_compensation=row.is_compensation,
             compensation_of=row.compensation_of_internal_order_id,
             rejection_reason=row.rejection_reason,
             cancel_reason=row.cancel_reason,
