@@ -36,6 +36,7 @@ from app.services.risk_exit_rules import (
     pair_entry_gross_notional,
 )
 from app.services.session_clock import SessionClock, get_session_clock
+from app.services.trading_pause import is_account_trading_paused
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +220,12 @@ class RiskExitMonitor:
             if account is None:
                 continue
             if is_account_kill_switch_active(account_id):
+                continue
+            if is_account_trading_paused(account_id):
+                logger.info(
+                    "TRADING_PAUSED: account_id=%s is paused; skipping daily-risk evaluation and square-off.",
+                    account_id,
+                )
                 continue
             if account_id in self._inflight_accounts:
                 continue

@@ -210,6 +210,14 @@ class OrderManager:
         except Exception:
             logger.exception("Failed to hydrate kill-switch cache from PostgreSQL.")
 
+        # Trading pause cache hydration
+        try:
+            from app.services.trading_pause import hydrate_trading_pause_cache
+
+            await hydrate_trading_pause_cache(self._session_factory)
+        except Exception:
+            logger.exception("Failed to hydrate trading-pause cache from PostgreSQL.")
+
         try:
             ks = KillSwitchService(
                 session_factory=self._session_factory, order_manager=self
@@ -977,6 +985,8 @@ class OrderManager:
         try:
             intent = await handler.build_intent(signal, account=ctx)
             from app.services.kill_switch import is_account_kill_switch_active
+            from app.services.trading_pause import is_account_trading_paused
+
             if intent.action == OrderAction.OPEN and is_account_kill_switch_active(ctx.account_id):
                 logger.warning(
                     "KILL_SWITCH_ACTIVE: Blocking NEW open signal for account_id=%s ibkr=%s signal_id=%s",
@@ -986,6 +996,17 @@ class OrderManager:
                 )
                 raise ValueError(
                     f"KILL_SWITCH_ACTIVE: Account {ctx.account_id} is in active emergency kill-switch mode."
+                )
+
+            if intent.action == OrderAction.OPEN and is_account_trading_paused(ctx.account_id):
+                logger.warning(
+                    "TRADING_PAUSED: Blocking NEW open signal for account_id=%s ibkr=%s signal_id=%s",
+                    ctx.account_id,
+                    ctx.ibkr_account,
+                    signal.signal_id,
+                )
+                raise ValueError(
+                    f"TRADING_PAUSED: Account {ctx.account_id} is paused; new opens blocked."
                 )
             result = await self._evaluate_and_submit(
                 intent, signal, handler=handler, inbound_pk=inbound_pk
@@ -1314,6 +1335,7 @@ class OrderManager:
         use_leg_prices = handler is not None and handler.uses_per_leg_prices()
 
         from app.services.kill_switch import is_account_kill_switch_active
+        from app.services.trading_pause import is_account_trading_paused
 
         if (
             evaluated_intent.action == OrderAction.OPEN
@@ -1323,6 +1345,15 @@ class OrderManager:
             raise ValueError(
                 f"KILL_SWITCH_ACTIVE: Account {evaluated_intent.account_id} is in "
                 "active emergency kill-switch mode."
+            )
+
+        if (
+            evaluated_intent.action == OrderAction.OPEN
+            and evaluated_intent.account_id is not None
+            and is_account_trading_paused(evaluated_intent.account_id)
+        ):
+            raise ValueError(
+                f"TRADING_PAUSED: Account {evaluated_intent.account_id} is paused; new opens blocked."
             )
 
         # Red Zone second gate before claim (defense-in-depth)

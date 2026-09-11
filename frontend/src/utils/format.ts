@@ -283,7 +283,7 @@ export function fmtCompactCurrency(v: unknown): string {
   const n = num(v)
   if (n === null) return '—'
   const abs = Math.abs(n)
-  let text = ''
+  let text: string
   if (abs >= 1_000_000) {
     text = (abs / 1_000_000).toFixed(2) + 'M'
   } else if (abs >= 1_000) {

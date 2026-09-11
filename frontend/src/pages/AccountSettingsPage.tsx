@@ -7,11 +7,14 @@ import {
   fetchExecutionSettings,
   fetchKillSwitchStatus,
   fetchMarginSettings,
+  fetchTradingPause,
   patchAccount,
   patchAllocation,
   patchExecutionSettings,
   patchMarginSettings,
+  pauseTrading,
   putSymbolLimit,
+  resumeTrading,
   updateDefaultSymbolLimit,
 } from '../api/configApi'
 import { fetchAccountMargin } from '../api/marginApi'
@@ -486,7 +489,16 @@ export function AccountSettingsPage() {
     staleTime: 0,
   })
 
+  const { data: pauseData } = useQuery({
+    queryKey: ['config', 'trading-pause', account?.id],
+    queryFn: () => (account ? fetchTradingPause(account.id) : Promise.resolve(null)),
+    enabled: !!account,
+    refetchInterval: 2_000,
+    staleTime: 0,
+  })
+
   const isKillSwitchActive = killSwitchData?.kill_switch_active ?? account?.kill_switch_active ?? false
+  const isTradingPaused = pauseData?.trading_paused ?? account?.trading_paused ?? false
   const prevKillSwitchActiveRef = useRef<boolean | null>(null)
   const killSwitchWatchAccountRef = useRef<number | undefined>(undefined)
   const skipNextArmToastRef = useRef(false)
@@ -522,6 +534,34 @@ export function AccountSettingsPage() {
     }
     return count
   }, [activeMap, account, cleanAccount])
+
+  const pauseMutation = useMutation({
+    mutationFn: () => (account ? pauseTrading(account.id) : Promise.reject(new Error('No account'))),
+    onSuccess: () => {
+      setMessage(`Trading paused for account ${cleanAccount}. New open signals are blocked.`)
+      setLocalError(null)
+      showFeedbackToast('success', 'Trading paused', `Account ${cleanAccount} is paused.`)
+      void queryClient.invalidateQueries({ queryKey: ['config', 'trading-pause', account?.id] })
+      void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
+    },
+    onError: (err: unknown) => {
+      setLocalError(extractError(err))
+    },
+  })
+
+  const resumeMutation = useMutation({
+    mutationFn: () => (account ? resumeTrading(account.id) : Promise.reject(new Error('No account'))),
+    onSuccess: () => {
+      setMessage(`Trading resumed for account ${cleanAccount}. New open signals are allowed.`)
+      setLocalError(null)
+      showFeedbackToast('success', 'Trading resumed', `Account ${cleanAccount} has resumed trading.`)
+      void queryClient.invalidateQueries({ queryKey: ['config', 'trading-pause', account?.id] })
+      void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
+    },
+    onError: (err: unknown) => {
+      setLocalError(extractError(err))
+    },
+  })
 
   useEffect(() => {
     if (!account?.id || killSwitchData == null) return
@@ -744,6 +784,11 @@ export function AccountSettingsPage() {
                 <span className={`account-status-pill ${enabled ? 'enabled' : 'disabled'}`}>
                   ● {enabled ? 'ENABLED' : 'DISABLED'}
                 </span>
+                {isTradingPaused ? (
+                  <span className="account-status-pill paused" style={{ background: '#78350f', color: '#fcd34d' }}>
+                    ⏸️ PAUSED
+                  </span>
+                ) : null}
                 {isKillSwitchActive ? (
                   <span className="account-status-pill disabled" style={{ background: '#7f1d1d', color: '#fca5a5' }}>
                     ⛔ STOPPED (KILL SWITCH)
@@ -1262,6 +1307,64 @@ export function AccountSettingsPage() {
                   >
                     + Add Limit
                   </button>
+                </div>
+              </div>
+            </section>
+
+            {/* Trading Pause */}
+            <section className="settings-card">
+              <div className="settings-block">
+                <div className="settings-block-h">
+                  <h2>TRADING PAUSE</h2>
+                </div>
+
+                {isTradingPaused ? (
+                  <div
+                    className="trading-pause-banner"
+                    style={{
+                      background: '#451a03',
+                      border: '1px solid #b45309',
+                      padding: '12px 16px',
+                      borderRadius: '6px',
+                      marginBottom: 12,
+                    }}
+                  >
+                    <strong style={{ color: '#fbbf24', fontSize: '13px', display: 'block', marginBottom: 4 }}>
+                      ⏸️ TRADING PAUSED
+                    </strong>
+                    <p className="field-hint" style={{ color: '#fde68a', margin: 0 }}>
+                      This account is currently paused for new opening trading signals. Currently open positions and protective exits (stop loss / target) remain active.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="field-hint" style={{ color: 'var(--ink)' }}>
+                    Temporarily pause incoming opening signals for account{' '}
+                    <span className="mono bold">{cleanAccount}</span> without affecting open positions or protective exits.
+                  </p>
+                )}
+
+                <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                  {isTradingPaused ? (
+                    <button
+                      type="button"
+                      className="btn primary"
+                      style={{ padding: '10px 16px', fontSize: '11px' }}
+                      disabled={resumeMutation.isPending}
+                      onClick={() => resumeMutation.mutate()}
+                    >
+                      {resumeMutation.isPending ? 'RESUMING…' : '▶️ RESUME TRADING'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ padding: '10px 16px', fontSize: '11px', borderColor: '#b45309', color: '#fbbf24' }}
+                      disabled={pauseMutation.isPending}
+                      onClick={() => pauseMutation.mutate()}
+                    >
+                      {pauseMutation.isPending ? 'PAUSING…' : '⏸️ PAUSE TRADING'}
+                    </button>
+                  )}
                 </div>
               </div>
             </section>

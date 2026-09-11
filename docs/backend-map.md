@@ -64,6 +64,7 @@ app/
     ├── worker_pool.py         # Claims signal_jobs; runs execution
     ├── recovery.py            # Startup crash recovery scanner
     ├── kill_switch.py         # Emergency flatten + armed-account cache
+    ├── trading_pause.py       # Trading pause state, DB persistence & hot in-memory cache
     ├── pnl.py                 # Live unrealized P&L via TWS marks
     ├── position_reconciler.py # Periodic IBKR snapshot vs ledger diff (log only)
     ├── model_blue/            # Parse, size, trade book, persistence
@@ -94,7 +95,7 @@ Startup:
 
 1. `setup_logging(level=settings.log_level)`
 2. Build `TWSClient` → `GatewayRateLimiter` → `IBKRExecutionAdapter` → `OMSService` → `OrderManager` (+ DB capital/trade book/persistence; `_live_pnl` attached)
-3. `order_manager.hydrate_runtime_from_db()` — RMS context, open positions, kill-switch cache, critical baskets, execution policy
+3. `order_manager.hydrate_runtime_from_db()` — RMS context, open positions, kill-switch cache, trading-pause cache, critical baskets, execution policy
 4. `client.connect_and_start(...)` to `ibkr_host:ibkr_port`
 5. On successful connect: `hydrate_live_pnl()`
 6. Store on `app.state`: `session_factory`, `client`, `ibkr_adapter`, `oms`, `order_manager`

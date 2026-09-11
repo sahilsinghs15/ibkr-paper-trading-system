@@ -8,7 +8,7 @@
 |-------|-------|------|
 | `signals` | `SignalModel` | `db/models/signal.py` |
 | `signal_jobs` | `SignalJobModel` | `db/models/signal.py` (not exported in `__init__.py`) |
-| `accounts` | `AccountModel` | `db/models/account.py` | `id`, `name`, `ibkr_account`, `total_margin`, `enabled`. **No** gateway host/port/clientId. `total_margin` is an operator-entered **market-value budget** (trading capital), not IBKR margin available. Daily risk: `daily_target` / `daily_stop` (nullable disables that side; signed PnL levels, 0 is breakeven), `daily_target_unit` / `daily_stop_unit` (`ABSOLUTE` \| `PERCENT`), `account_risk_enabled` (default false) is the on/off switch. |
+| `accounts` | `AccountModel` | `db/models/account.py` | `id`, `name`, `ibkr_account`, `total_margin`, `enabled`, `trading_paused` (default false), `paused_at`, `paused_by`. **No** gateway host/port/clientId. `total_margin` is an operator-entered **market-value budget** (trading capital), not IBKR margin available. Daily risk: `daily_target` / `daily_stop` (nullable disables that side; signed PnL levels, 0 is breakeven), `daily_target_unit` / `daily_stop_unit` (`ABSOLUTE` \| `PERCENT`), `account_risk_enabled` (default false) is the on/off switch. `loss_threshold` / `loss_threshold_unit` for trailing loss protection. |
 | `strategies` | `StrategyModel` | `db/models/strategy.py` |
 | `allocations` | `AllocationModel` | `db/models/strategy.py` | Includes `pair_max_allocation_pct` (`Numeric(9,6)`, `(0, 1]`, default 0.10) — fraction of the model allocation used as one pair's market-value budget. Exit knobs: `target` / `stop` / `time_limit`, `target_unit` / `stop_unit` (`ABSOLUTE` \| `PERCENT`), `exit_automation_enabled` (default false). Stop/target are signed PnL levels (negatives and 0 allowed). Copied onto `positions` at OPEN (units + automation flag included). Allocation flag edits also propagate to currently OPEN rows of that account+strategy. |
 | `per_symbol_limits` | `PerSymbolLimitModel` | `db/models/account.py` |
@@ -30,7 +30,7 @@ There is **no** `signal_legs` table. Legs live in signal payload / pair columns 
 
 There are **no** `gateways`, `gateway_clients`, or `account_gateway_bindings` tables. Multi-gateway mapping is target-only ([`backend-multi-gateway.md`](backend-multi-gateway.md)).
 
-## Alembic revisions (HEAD `r6s7t8u9v0w1`)
+## Alembic revisions (HEAD `v3w4x5y6z7a8`)
 
 | Revision | File | Topic |
 |----------|------|-------|
@@ -65,6 +65,10 @@ There are **no** `gateways`, `gateway_clients`, or `account_gateway_bindings` ta
 | `p4q5r6s7t8u9` | `p4q5r6s7t8u9_risk_exit_thresholds.py` | Pair/account stop-target units, exit automation flags, `positions.exit_reason` |
 | `q5r6s7t8u9v0` | `q5r6s7t8u9v0_position_exit_automation.py` | `positions.exit_automation_enabled` (backfill from allocations for OPEN rows) |
 | `r6s7t8u9v0w1` | `r6s7t8u9v0w1_signed_exit_levels.py` | Signed stop/target PnL levels; drop nonneg checks; negate stored magnitude stops |
+| `s7t8u9v0w1x2` | `s7t8u9v0w1x2_event_log_audit_indexes.py` | event_log audit indexes |
+| `t1u2v3w4x5y6` | `t1u2v3w4x5y6_trade_book_and_order_book.py` | trade_book and order_book queries & indexes |
+| `u2v3w4x5y6z7` | `u2v3w4x5y6z7_account_loss_threshold.py` | accounts.loss_threshold and loss_threshold_unit |
+| `v3w4x5y6z7a8` | `v3w4x5y6z7a8_account_trading_pause.py` | accounts.trading_paused, paused_at, paused_by |
 
 `users` and `strategies` rows are one-off INSERTs (no create-user / create-strategy HTTP API).
 

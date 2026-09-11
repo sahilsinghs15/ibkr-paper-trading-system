@@ -1,8 +1,17 @@
 """SQLAlchemy models for accounts and per-symbol limits."""
 
+from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, ForeignKey, Numeric, String
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Numeric,
+    String,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -38,6 +47,15 @@ class AccountModel(Base):
     )
     loss_threshold: Mapped[Decimal | None] = mapped_column(
         Numeric(18, 4), nullable=True, default=None
+    )
+    trading_paused: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    paused_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    paused_by: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None
     )
 
     __table_args__ = (

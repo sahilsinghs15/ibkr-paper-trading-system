@@ -1,5 +1,3 @@
-"""Broker execution snapshot API endpoints."""
-
 from __future__ import annotations
 
 import logging
@@ -7,15 +5,12 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import func, select
 
 from app.api.deps import require_authenticated_user
 from app.api.routes.config import _check_account_authorization
-from app.db.models.user import UserModel
-from sqlalchemy import func, select
-
 from app.db.models.account import AccountModel
-from app.db.models.trade_execution import TradeExecutionModel
-from app.db.session import get_db_session
+from app.db.models.user import UserModel
 from app.schemas.broker_execution_schemas import (
     BrokerExecutionLineSchema,
     BrokerExecutionsResponse,
@@ -93,6 +88,7 @@ async def get_broker_executions(
             commission=line.commission,
             commission_currency=line.commission_currency,
             realized_pnl=line.realized_pnl,
+            order_status=None,
         )
         for line in filtered_lines
     ]
@@ -121,7 +117,7 @@ async def get_trade_book(
     date_from: Annotated[str | None, Query()] = None,
     date_to: Annotated[str | None, Query()] = None,
     sort: Annotated[str, Query()] = "executed_at",
-    dir: Annotated[str, Query()] = "desc",  # noqa: A002
+    dir: Annotated[str, Query()] = "desc",
 ) -> TradeBookPaginatedResponse:
     from datetime import datetime as _dt
 
@@ -142,12 +138,12 @@ async def get_trade_book(
         if date_from:
             try:
                 df = _dt.fromisoformat(date_from)
-            except Exception:
+            except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail="Invalid date_from")
         if date_to:
             try:
                 d_to = _dt.fromisoformat(date_to)
-            except Exception:
+            except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail="Invalid date_to")
         allowed_sorts = {"executed_at", "symbol", "quantity", "price", "created_at", "last_synced_at"}
         if sort not in allowed_sorts:
@@ -214,7 +210,7 @@ async def get_order_book(
     date_from: Annotated[str | None, Query()] = None,
     date_to: Annotated[str | None, Query()] = None,
     sort: Annotated[str, Query()] = "updated_at",
-    dir: Annotated[str, Query()] = "desc",  # noqa: A002
+    dir: Annotated[str, Query()] = "desc",
 ) -> OrderBookResponse:
     from datetime import datetime as _dt
 
@@ -233,12 +229,12 @@ async def get_order_book(
         if date_from:
             try:
                 df = _dt.fromisoformat(date_from)
-            except Exception:
+            except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail="Invalid date_from")
         if date_to:
             try:
                 d_to = _dt.fromisoformat(date_to)
-            except Exception:
+            except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail="Invalid date_to")
         allowed = {"created_at", "updated_at", "symbol", "status", "quantity"}
         if sort not in allowed:

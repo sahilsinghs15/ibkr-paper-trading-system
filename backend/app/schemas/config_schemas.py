@@ -1,5 +1,6 @@
 """Pydantic schemas for dashboard config CRUD."""
 
+from datetime import datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -51,6 +52,9 @@ class AccountConfigSchema(BaseModel):
     daily_stop_unit: str = "ABSOLUTE"
     account_risk_enabled: bool = False
     loss_threshold: Decimal | None = None
+    trading_paused: bool = False
+    paused_at: datetime | None = None
+    paused_by: str | None = None
     allocations: list[AllocationConfigSchema] = Field(default_factory=list)
     symbol_limits: list[SymbolLimitSchema] = Field(default_factory=list)
 
@@ -220,6 +224,16 @@ class KillSwitchStatusResponse(BaseModel):
     kill_switch_active: bool
     requested_by: str | None = None
     status: str | None = None
+
+
+class TradingPauseResponse(BaseModel):
+    """Response payload for account trading pause operations."""
+
+    account_id: int
+    ibkr_account: str
+    trading_paused: bool
+    paused_at: datetime | None = None
+    paused_by: str | None = None
 
 
 class ClosePairResponse(BaseModel):

@@ -186,6 +186,13 @@ function parseKnownReason(scoped: string): Omit<RejectDisplay, 'raw'> | null {
     }
   }
 
+  if (s.includes('TRADING_PAUSED')) {
+    return {
+      category: 'Trading paused',
+      summary: 'Trading paused for this account — new opening signals blocked',
+    }
+  }
+
   if (s.includes('NO_ELIGIBLE_ACCOUNTS')) {
     return {
       category: 'Routing',

@@ -46,6 +46,9 @@ Mounted in `create_app()`:
 | `POST` | `/api/v1/config/accounts/{account_id}/square-off` | `square_off_account_positions` | — | `SquareOffResponse` (202) | Kill switch: emergency flatten |
 | `GET` | `/api/v1/config/accounts/{account_id}/kill-switch` | `get_account_kill_switch_status` | — | `KillSwitchStatusResponse` (`kill_switch_active`, `requested_by`, `status`) | Armed? |
 | `POST` | `/api/v1/config/accounts/{account_id}/kill-switch/clear` | `clear_account_kill_switch_endpoint` | — | `KillSwitchClearResponse` | Disarm kill switch |
+| `GET` | `/api/v1/config/accounts/{account_id}/trading-pause` | `get_account_trading_pause_status` | — | `TradingPauseResponse` (`trading_paused`, `paused_at`, `paused_by`) | Paused? |
+| `POST` | `/api/v1/config/accounts/{account_id}/trading-pause` | `pause_account_trading_endpoint` | — | `TradingPauseResponse` | Pause new OPENs (idempotent) |
+| `POST` | `/api/v1/config/accounts/{account_id}/trading-pause/clear` | `resume_account_trading_endpoint` | — | `TradingPauseResponse` | Resume new OPENs (idempotent) |
 | `POST` | `/api/v1/config/accounts/{account_id}/positions/{trade_id}/close` | `close_selected_pair_endpoint` | — | `ClosePairResponse` | Close one OPEN pair |
 | `PATCH` | `/api/v1/config/accounts/{account_id}/positions/{trade_id}/exits` | `patch_position_exits` | `PatchPositionExitsRequest` | `PositionExitsSchema` | Set/change OPEN pair target/stop/units/arm flag; 409 if CLOSED |
 | `POST` | `/api/v1/emergency-kill-switch` | `emergency_kill_switch_endpoint` | `EmergencyKillSwitchRequest` | `EmergencyKillSwitchResponse` | Pre-flight webhook: arm existing Kill Switch (NO broker flatten on EC2) |

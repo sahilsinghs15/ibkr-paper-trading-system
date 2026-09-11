@@ -39,6 +39,7 @@ from app.schemas.config_schemas import (
     PutSymbolLimitRequest,
     SquareOffResponse,
     SymbolLimitSchema,
+    TradingPauseResponse,
 )
 from app.services.kill_switch import KillSwitchService
 from app.services.order_manager import OrderManager
@@ -130,6 +131,9 @@ async def list_accounts_config(
                 enabled=account.enabled,
                 default_symbol_limit=account.default_symbol_limit,
                 kill_switch_active=is_account_kill_switch_active(account.id),
+                trading_paused=account.trading_paused,
+                paused_at=account.paused_at,
+                paused_by=account.paused_by,
                 **_account_risk_fields(account),
                 allocations=[
                     AllocationConfigSchema.model_validate(a)
@@ -187,6 +191,9 @@ async def get_account_by_identifier(
         enabled=account.enabled,
         default_symbol_limit=account.default_symbol_limit,
         kill_switch_active=is_account_kill_switch_active(account.id),
+        trading_paused=account.trading_paused,
+        paused_at=account.paused_at,
+        paused_by=account.paused_by,
         **_account_risk_fields(account),
         allocations=[AllocationConfigSchema.model_validate(a) for a in allocations],
         symbol_limits=[SymbolLimitSchema.model_validate(l) for l in limits],
@@ -321,6 +328,108 @@ async def get_account_kill_switch_status(
         kill_switch_active=active,
         requested_by=requested_by,
         status=op_status,
+    )
+
+
+@router.get(
+    "/accounts/{account_id}/trading-pause",
+    response_model=TradingPauseResponse,
+    summary="Report whether an account is paused for new OPEN orders",
+)
+async def get_account_trading_pause_status(
+    account_id: int,
+    session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
+) -> TradingPauseResponse:
+    _check_account_authorization(current_user, account_id=account_id)
+    svc = AccountStrategyConfigService(session)
+    account = await svc.get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    from app.services.trading_pause import is_account_trading_paused
+
+    return TradingPauseResponse(
+        account_id=account_id,
+        ibkr_account=account.ibkr_account,
+        trading_paused=is_account_trading_paused(account_id) or account.trading_paused,
+        paused_at=account.paused_at,
+        paused_by=account.paused_by,
+    )
+
+
+@router.post(
+    "/accounts/{account_id}/trading-pause",
+    response_model=TradingPauseResponse,
+    summary="Pause new opening trading signals for an account",
+)
+async def pause_account_trading_endpoint(
+    account_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
+) -> TradingPauseResponse:
+    _check_account_authorization(current_user, account_id=account_id)
+    svc = AccountStrategyConfigService(session)
+    account = await svc.get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory is None:
+        from app.db.session import AsyncSessionLocal
+
+        session_factory = AsyncSessionLocal
+
+    from app.services.trading_pause import TradingPauseService
+
+    pause_svc = TradingPauseService(session_factory)
+    actor = getattr(current_user, "username", "operator") or "operator"
+    updated_account, _ = await pause_svc.pause_account(account_id, paused_by=actor)
+    acct = updated_account or account
+    return TradingPauseResponse(
+        account_id=acct.id,
+        ibkr_account=acct.ibkr_account,
+        trading_paused=acct.trading_paused,
+        paused_at=acct.paused_at,
+        paused_by=acct.paused_by,
+    )
+
+
+@router.post(
+    "/accounts/{account_id}/trading-pause/clear",
+    response_model=TradingPauseResponse,
+    summary="Resume trading and allow new opening signals for an account",
+)
+async def resume_account_trading_endpoint(
+    account_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
+) -> TradingPauseResponse:
+    _check_account_authorization(current_user, account_id=account_id)
+    svc = AccountStrategyConfigService(session)
+    account = await svc.get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory is None:
+        from app.db.session import AsyncSessionLocal
+
+        session_factory = AsyncSessionLocal
+
+    from app.services.trading_pause import TradingPauseService
+
+    pause_svc = TradingPauseService(session_factory)
+    updated_account, _ = await pause_svc.resume_account(account_id)
+    acct = updated_account or account
+    return TradingPauseResponse(
+        account_id=acct.id,
+        ibkr_account=acct.ibkr_account,
+        trading_paused=acct.trading_paused,
+        paused_at=acct.paused_at,
+        paused_by=acct.paused_by,
     )
 
 
@@ -469,7 +578,7 @@ async def patch_position_exits(
         "stop": _dec_str(updated.stop),
         "target_unit": updated.target_unit,
         "stop_unit": updated.stop_unit,
-        "exit_automation_enabled": bool(updated.exit_automation_enabled),
+        "exit_automation_enabled": updated.exit_automation_enabled,
     }
     await EventRepository(session).append(
         process="config",
@@ -532,6 +641,9 @@ async def create_account(
         total_margin=account.total_margin,
         enabled=account.enabled,
         default_symbol_limit=account.default_symbol_limit,
+        trading_paused=account.trading_paused,
+        paused_at=account.paused_at,
+        paused_by=account.paused_by,
         **_account_risk_fields(account),
         allocations=[],
         symbol_limits=[],
@@ -546,8 +658,8 @@ async def create_account(
 async def patch_account(
     account_id: int,
     body: PatchAccountRequest,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
-    request: Request = None,
     current_user: UserModel = Depends(require_authenticated_user),
 ) -> AccountConfigSchema:
     _check_account_authorization(current_user, account_id=account_id)
@@ -571,18 +683,18 @@ async def patch_account(
         and not has_loss
     ):
         raise HTTPException(status_code=400, detail="No fields to update.")
-    kwargs: dict = dict(
-        name=body.name,
-        ibkr_account=body.ibkr_account,
-        total_margin=body.total_margin,
-        enabled=body.enabled,
-        default_symbol_limit=body.default_symbol_limit,
-        daily_target=body.daily_target,
-        daily_stop=body.daily_stop,
-        daily_target_unit=body.daily_target_unit,
-        daily_stop_unit=body.daily_stop_unit,
-        account_risk_enabled=body.account_risk_enabled,
-    )
+    kwargs: dict = {
+        "name": body.name,
+        "ibkr_account": body.ibkr_account,
+        "total_margin": body.total_margin,
+        "enabled": body.enabled,
+        "default_symbol_limit": body.default_symbol_limit,
+        "daily_target": body.daily_target,
+        "daily_stop": body.daily_stop,
+        "daily_target_unit": body.daily_target_unit,
+        "daily_stop_unit": body.daily_stop_unit,
+        "account_risk_enabled": body.account_risk_enabled,
+    }
     if has_loss:
         kwargs["loss_threshold"] = body.loss_threshold
     try:
@@ -624,6 +736,9 @@ async def patch_account(
         enabled=account.enabled,
         default_symbol_limit=account.default_symbol_limit,
         kill_switch_active=is_account_kill_switch_active(account.id),
+        trading_paused=account.trading_paused,
+        paused_at=account.paused_at,
+        paused_by=account.paused_by,
         **_account_risk_fields(account),
         allocations=[AllocationConfigSchema.model_validate(a) for a in allocations],
         symbol_limits=[SymbolLimitSchema.model_validate(l) for l in limits],
@@ -876,6 +991,9 @@ async def put_default_symbol_limit(
         enabled=account.enabled,
         default_symbol_limit=account.default_symbol_limit,
         kill_switch_active=is_account_kill_switch_active(account.id),
+        trading_paused=account.trading_paused,
+        paused_at=account.paused_at,
+        paused_by=account.paused_by,
         **_account_risk_fields(account),
         allocations=[AllocationConfigSchema.model_validate(a) for a in allocations],
         symbol_limits=[SymbolLimitSchema.model_validate(l) for l in limits],

@@ -32,6 +32,9 @@ export interface AccountConfig {
   daily_stop_unit?: string
   account_risk_enabled?: boolean
   loss_threshold?: string | number | null
+  trading_paused?: boolean
+  paused_at?: string | null
+  paused_by?: string | null
   allocations: AllocationConfig[]
   symbol_limits: SymbolLimit[]
 }
@@ -125,6 +128,14 @@ export interface ClosePairResponse {
   status: string
   success: boolean
   message?: string | null
+}
+
+export interface TradingPauseResponse {
+  account_id: number
+  ibkr_account: string
+  trading_paused: boolean
+  paused_at?: string | null
+  paused_by?: string | null
 }
 
 

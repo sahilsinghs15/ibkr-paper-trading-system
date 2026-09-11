@@ -86,7 +86,7 @@ From `main.py` lifespan:
 
 1. `setup_logging(level=settings.log_level)` → daily file `storage/logs/{YYYY-MM-DD}/trading.log` + stderr.
 2. Build adapter / OMS / OrderManager (+ DB capital, trade book, persistence, LivePnl).
-3. `order_manager.hydrate_runtime_from_db()` — RMS context, open positions, kill-switch cache, critical baskets, execution policy.
+3. `order_manager.hydrate_runtime_from_db()` — RMS context, open positions, kill-switch cache, trading-pause cache, critical baskets, execution policy.
 4. `client.connect_and_start(...)` to `ibkr_host:ibkr_port` (the **only** IB session).
 5. On successful connect: `hydrate_live_pnl()`. On failure: lifespan logs that orders wait until the socket is up. `TWSClient` reconnects on `connectionClosed` (unless `_intentional_disconnect`). `next_order_id` is allocated under a lock and never defaults `None→1`. `on_connection_closed` parks in-memory working orders as `ERROR` **without** resolving fill waiters or compensating. Reconnect unparks disconnect-ERROR → `SUBMITTED`, `fetch_broker_order_snapshot`, adopts non-terminal `orders` rows, and resubscribes live P&L.
 6. Store `session_factory`, `client`, `ibkr_adapter`, `oms`, `order_manager` on `app.state`.
@@ -116,6 +116,7 @@ Format: `%(asctime)s | %(levelname)-8s | %(name)s | %(trace)s | %(message)s` whe
 | `Stale lease sweep` / `Orphaned claim sweep` | Reclaimer |
 | `Inbound parse:` / `Model Blue parse` | Strategy handler |
 | `KILL_SWITCH_ACTIVE: Blocking NEW open signal` | Kill switch OPEN block |
+| `TRADING_PAUSED: Blocking NEW open signal` | Trading pause OPEN block |
 | `Model Blue size_open` / `OPEN intent` / `CLOSE intent` | Sizing |
 | `RMS check` / `RMS evaluate` | Per-check RMS trail |
 | `Acquired execution claim` | Pre-broker dedupe barrier |

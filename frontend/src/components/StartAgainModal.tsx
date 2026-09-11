@@ -61,7 +61,7 @@ export function StartAgainModal({
             Are you sure you want to start this account again? It will be allowed to receive trading signals.
           </p>
           <p className="field-hint dim">
-            This will disarm the emergency Kill Switch for paper account{' '}
+            This will disarm the emergency Kill Switch for account{' '}
             <strong>{ibkrAccount}</strong> and restore its ACTIVE status. No IBKR orders will be automatically submitted.
           </p>
 

@@ -129,7 +129,7 @@ export function SystemMonitorPage() {
 
   const renderServiceBadge = (svc: ServiceStatus) => {
     let badgeClass = 'status-badge'
-    let textLabel: string = svc.status
+    let textLabel: string
     if (svc.status === 'RUNNING') {
       badgeClass += ' on'
       textLabel = '● RUNNING'

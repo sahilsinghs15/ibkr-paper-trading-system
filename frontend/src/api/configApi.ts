@@ -13,6 +13,7 @@ import type {
   MarginSettings,
   PatchAccountPayload,
   SymbolLimit,
+  TradingPauseResponse,
 } from '../types/config'
 
 const base = '/api/v1/config'
@@ -53,6 +54,33 @@ export async function clearKillSwitch(
 ): Promise<KillSwitchClearResponse> {
   const { data } = await axios.post<KillSwitchClearResponse>(
     `${base}/accounts/${accountId}/kill-switch/clear`,
+  )
+  return data
+}
+
+export async function fetchTradingPause(
+  accountId: number,
+): Promise<TradingPauseResponse> {
+  const { data } = await axios.get<TradingPauseResponse>(
+    `${base}/accounts/${accountId}/trading-pause`,
+  )
+  return data
+}
+
+export async function pauseTrading(
+  accountId: number,
+): Promise<TradingPauseResponse> {
+  const { data } = await axios.post<TradingPauseResponse>(
+    `${base}/accounts/${accountId}/trading-pause`,
+  )
+  return data
+}
+
+export async function resumeTrading(
+  accountId: number,
+): Promise<TradingPauseResponse> {
+  const { data } = await axios.post<TradingPauseResponse>(
+    `${base}/accounts/${accountId}/trading-pause/clear`,
   )
   return data
 }

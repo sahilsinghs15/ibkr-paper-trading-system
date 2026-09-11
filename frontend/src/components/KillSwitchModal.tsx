@@ -63,7 +63,7 @@ export function KillSwitchModal({
             <>
               <p className="killswitch-warning-text">
                 You are about to close all <strong>{openCount}</strong> currently open
-                position{openCount === 1 ? '' : 's'} for paper account{' '}
+                position{openCount === 1 ? '' : 's'} for account{' '}
                 <strong>{ibkrAccount}</strong>.
               </p>
               <p className="field-hint dim">
