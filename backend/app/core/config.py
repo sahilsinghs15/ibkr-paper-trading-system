@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     margin_scan_enabled: bool = False
     margin_scan_max_per_sec: Annotated[float, Gt(0)] = 5.0
     margin_scan_startup_budget_sec: Annotated[float, Gt(0)] = 20.0
-    margin_scan_probe_notional: Annotated[Decimal, Gt(0)] = Decimal("1000")
+    margin_scan_probe_notional: Annotated[Decimal, Gt(0)] = Decimal(1000)
     margin_scan_signal_lookback_days: Annotated[int, Gt(0)] = 30
 
     # Rate table freshness
@@ -201,6 +201,4 @@ def get_settings() -> Settings:
                 "Refusing production database 'ibkr_trading' while TRADINGAPP_TESTING=1. "
                 "Use ibkr_trading_test (conftest rewrites DATABASE_URL automatically)."
             )
-    if not running_under_pytest():
-        assert_webhook_auth_configured(settings)
     return settings

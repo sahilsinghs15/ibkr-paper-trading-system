@@ -3,15 +3,14 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 # import helper as module (filename has hyphen, register as notify_telegram)
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import importlib.util
+
 spec = importlib.util.spec_from_file_location("notify_telegram", Path(__file__).resolve().parents[2] / "scripts" / "notify-telegram.py")
-notify = importlib.util.module_from_spec(spec)
+notify = importlib.util.module_from_spec(spec)  # pyrefly: ignore[bad-argument-type]
 sys.modules["notify_telegram"] = notify
-spec.loader.exec_module(notify)
+spec.loader.exec_module(notify)  # pyrefly: ignore[missing-attribute]
 
 
 def _mock_settings(enabled=True, token="tok", chat="123"):
@@ -35,7 +34,7 @@ def test_start_message(mock_client_cls, mock_settings):
     rc = notify.main(["prog", "start", "ibgateway"])
     assert rc == 0
     # check message sent contains service + started and correct icon
-    args, kwargs = mock_client.send_message.call_args
+    args, _kwargs = mock_client.send_message.call_args
     text = args[0]
     assert "ibgateway" in text
     assert "started" in text
@@ -112,7 +111,7 @@ def test_market_closed_once_per_day(tmp_path, monkeypatch):
     state = tmp_path / "state.json"
     monkeypatch.setenv("NOTIFY_STATE_FILE", str(state))
     # reload module state file path? helper reads env at import, but we set STATE_FILE dynamically
-    notify.STATE_FILE = state
+    notify.STATE_FILE = state  # pyrefly: ignore[missing-attribute]
     with patch("app.services.session_clock.is_trading_day", return_value=False), \
          patch("notify_telegram._market_closed_reason", return_value="Saturday"), \
          patch("notify_telegram._load_settings", return_value=_mock_settings()), \
@@ -133,8 +132,7 @@ def test_market_closed_once_per_day(tmp_path, monkeypatch):
 def test_saturday_market_closed(tmp_path, monkeypatch):
     state = tmp_path / "state2.json"
     monkeypatch.setenv("NOTIFY_STATE_FILE", str(state))
-    notify.STATE_FILE = state
-    from datetime import date
+    notify.STATE_FILE = state  # pyrefly: ignore[missing-attribute]
     # force today to be Saturday via is_trading_day False + reason Saturday
     with patch("app.services.session_clock.is_trading_day", return_value=False), \
          patch("notify_telegram._market_closed_reason", return_value="Saturday"), \
@@ -151,7 +149,7 @@ def test_saturday_market_closed(tmp_path, monkeypatch):
 
 def test_sunday_market_closed(tmp_path, monkeypatch):
     state = tmp_path / "state3.json"
-    notify.STATE_FILE = state
+    notify.STATE_FILE = state  # pyrefly: ignore[missing-attribute]
     with patch("app.services.session_clock.is_trading_day", return_value=False), \
          patch("notify_telegram._market_closed_reason", return_value="Sunday"), \
          patch("notify_telegram._load_settings", return_value=_mock_settings()), \
@@ -165,7 +163,7 @@ def test_sunday_market_closed(tmp_path, monkeypatch):
 
 def test_holiday_market_closed(tmp_path, monkeypatch):
     state = tmp_path / "state4.json"
-    notify.STATE_FILE = state
+    notify.STATE_FILE = state  # pyrefly: ignore[missing-attribute]
     with patch("app.services.session_clock.is_trading_day", return_value=False), \
          patch("notify_telegram._market_closed_reason", return_value="Labor Day"), \
          patch("notify_telegram._load_settings", return_value=_mock_settings()), \
@@ -179,7 +177,7 @@ def test_holiday_market_closed(tmp_path, monkeypatch):
 
 def test_trading_day_no_market_closed(tmp_path, monkeypatch):
     state = tmp_path / "state5.json"
-    notify.STATE_FILE = state
+    notify.STATE_FILE = state  # pyrefly: ignore[missing-attribute]
     with patch("app.services.session_clock.is_trading_day", return_value=True), \
          patch("notify_telegram._load_settings", return_value=_mock_settings()), \
          patch("app.services.watchdog.telegram.TelegramClient") as mock_cls:
@@ -195,7 +193,7 @@ def test_trading_day_no_market_closed(tmp_path, monkeypatch):
 def test_early_close_no_market_closed(tmp_path, monkeypatch):
     # Early-close day is_trading_day True → no message
     state = tmp_path / "state6.json"
-    notify.STATE_FILE = state
+    notify.STATE_FILE = state  # pyrefly: ignore[missing-attribute]
     with patch("app.services.session_clock.is_trading_day", return_value=True), \
          patch("notify_telegram._load_settings", return_value=_mock_settings()), \
          patch("app.services.watchdog.telegram.TelegramClient") as mock_cls:

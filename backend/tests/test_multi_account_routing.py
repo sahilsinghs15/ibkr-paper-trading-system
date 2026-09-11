@@ -84,7 +84,7 @@ def _ctx(
         total_margin=total,
         alloc_pct=pct,
         committed_notional=total * pct,
-        pair_max_allocation_pct=Decimal("1"),
+        pair_max_allocation_pct=Decimal(1),
         pair_budget=total * pct,
         target=Decimal(500),
         stop=Decimal(250),
@@ -140,9 +140,9 @@ async def test_1_one_account_one_strategy_routes() -> None:
     signal = parse_model_blue_payload(_open_payload("MBG-ACC-1"), timestamp=_TS, reason="t1")
     result = await manager.process_signal_execution(signal)
     assert result is not None
-    assert len(result.outcomes) == 1
-    assert result.outcomes[0].account_id == 11
-    assert result.outcomes[0].ibkr_account == "DU-TEST-A"
+    assert len(result.outcomes) == 1  # pyrefly: ignore[missing-attribute]
+    assert result.outcomes[0].account_id == 11  # pyrefly: ignore[bad-index]
+    assert result.outcomes[0].ibkr_account == "DU-TEST-A"  # pyrefly: ignore[bad-index]
     assert len(result.orders) == 2
     assert {o.intent.account_id for o in result.orders} == {11}
     assert {o.symbol for o in result.orders} == {"XLE", "XOP"}
@@ -156,7 +156,7 @@ async def test_2_signal_fans_out_to_two_enabled_accounts() -> None:
     signal = parse_model_blue_payload(_open_payload("MBG-ACC-2"), timestamp=_TS, reason="t2")
     result = await manager.process_signal_execution(signal)
     assert result is not None
-    assert {o.account_id for o in result.outcomes} == {21, 22}
+    assert {o.account_id for o in result.outcomes} == {21, 22}  # pyrefly: ignore[missing-attribute]
     assert len(result.orders) == 4
 
 
@@ -167,7 +167,7 @@ async def test_3_disabled_account_not_in_static_router() -> None:
     signal = parse_model_blue_payload(_open_payload("MBG-ACC-3"), timestamp=_TS, reason="t3")
     result = await manager.process_signal_execution(signal)
     assert result is not None
-    assert [o.account_id for o in result.outcomes] == [31]
+    assert [o.account_id for o in result.outcomes] == [31]  # pyrefly: ignore[missing-attribute]
 
 
 @pytest.mark.asyncio
@@ -211,7 +211,7 @@ async def test_8_account_a_rms_pass_account_b_reject() -> None:
     signal = parse_model_blue_payload(_open_payload("MBG-ACC-8"), timestamp=_TS, reason="t8")
     result = await manager.process_signal_execution(signal)
     assert result is not None
-    by_id = {o.account_id: o for o in result.outcomes}
+    by_id = {o.account_id: o for o in result.outcomes}  # pyrefly: ignore[missing-attribute]
     assert by_id[51].success is True
     assert by_id[52].success is False
     assert by_id[52].error is not None and "DUPLICATE_SIGNAL" in by_id[52].error
@@ -241,7 +241,7 @@ async def test_9_per_symbol_limits_are_account_specific() -> None:
     signal = parse_model_blue_payload(_open_payload("MBG-ACC-9"), timestamp=_TS, reason="t9")
     result = await manager.process_signal_execution(signal)
     assert result is not None
-    by_id = {o.account_id: o for o in result.outcomes}
+    by_id = {o.account_id: o for o in result.outcomes}  # pyrefly: ignore[missing-attribute]
     assert by_id[61].success is True
     assert by_id[62].success is False
     assert by_id[62].error is not None and "MONEY_LIMIT_EXCEEDED" in by_id[62].error
@@ -355,7 +355,7 @@ def test_generic_n_leg_intent_still_iterates_all_legs() -> None:
 
 
 @pytest.fixture
-async def db_factory() -> async_sessionmaker[AsyncSession]:
+async def db_factory() -> async_sessionmaker[AsyncSession]:  # pyrefly: ignore[bad-return]
     engine = create_engine_from_settings()
     factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
     try:
@@ -796,9 +796,9 @@ async def test_router_derives_pair_budget_from_percentage(
     router = DatabaseStrategyAccountRouter(db_factory)
     contexts = await router.resolve(strategy_id)
     by_id = {c.account_id: c for c in contexts}
-    assert by_id[rich_id].pair_budget == Decimal("5000")
-    assert by_id[lean_id].pair_budget == Decimal("2500")
-    assert by_id[rich_id].committed_notional == Decimal("50000")
+    assert by_id[rich_id].pair_budget == Decimal(5000)
+    assert by_id[lean_id].pair_budget == Decimal(2500)
+    assert by_id[rich_id].committed_notional == Decimal(50000)
 
     async with db_factory() as session, session.begin():
         for row in (

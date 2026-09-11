@@ -9,14 +9,19 @@ Verifies:
 5. Watchdog market-closed notification semantics (honest expected stop messaging, no false TRADING BLOCKED alerts).
 6. Manual operator start compatibility.
 """
-from datetime import datetime
 import subprocess
 import sys
+from datetime import datetime
 from zoneinfo import ZoneInfo
-import pytest
 
-from app.services.watchdog.daemon import _is_trading_session, _is_market_closed_for, ServiceName, ServiceSnapshot, ServiceState, WatchdogDaemon
-from app.services.watchdog.models import HealthResult, NotificationEvent
+from app.services.watchdog.daemon import (
+    ServiceName,
+    ServiceSnapshot,
+    ServiceState,
+    _is_market_closed_for,
+    _is_trading_session,
+)
+from app.services.watchdog.models import NotificationEvent
 from app.services.watchdog.notifier import format_telegram_message
 
 

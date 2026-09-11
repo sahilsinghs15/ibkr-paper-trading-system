@@ -159,7 +159,7 @@ def _build_close_contract(pos: OpenPosition) -> Contract:
 def _build_close_order(pos: OpenPosition) -> IBOrder:
     order = IBOrder()
     order.action = pos.close_action
-    order.totalQuantity = pos.close_qty
+    order.totalQuantity = pos.close_qty  # pyrefly: ignore[bad-assignment]
     order.orderType = "MKT"
     order.transmit = True
     order.eTradeOnly = False

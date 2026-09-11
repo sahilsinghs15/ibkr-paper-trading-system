@@ -152,7 +152,7 @@ def test_recovery_window_expiry():
         store = RecoveryBudgetStore(s)
         old = datetime.now(UTC) - timedelta(seconds=20)
         state = {"backend": [old.isoformat(), old.isoformat()]}
-        store.save(state)
+        store.save(state)  # pyrefly: ignore[bad-argument-type]
         assert store.is_exhausted("backend", 5, 10) is False
 
 

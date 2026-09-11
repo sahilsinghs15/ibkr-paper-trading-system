@@ -183,7 +183,7 @@ async def test_pair_max_allocation_pct_rejects_zero_and_over_one(db_factory) -> 
                 target=Decimal(500),
                 stop=Decimal(250),
                 time_limit=3600,
-                pair_max_allocation_pct=Decimal("0"),
+                pair_max_allocation_pct=Decimal(0),
             )
         with pytest.raises(AllocationConfigError, match="PAIR_MAX_ALLOCATION_PCT_INVALID"):
             await svc.create_allocation(
@@ -202,13 +202,13 @@ async def test_pair_max_allocation_pct_rejects_zero_and_over_one(db_factory) -> 
 async def test_pair_budget_too_small_at_one_thousand(db_factory) -> None:
     async with db_factory() as session:
         account, strategy = await _seed_account_strategy(session, suffix=uuid.uuid4().hex[:8])
-        account.total_margin = Decimal("1000")
+        account.total_margin = Decimal(1000)
         svc = AccountStrategyConfigService(session)
         with pytest.raises(AllocationConfigError, match="PAIR_BUDGET_TOO_SMALL"):
             await svc.create_allocation(
                 account=account,
                 strategy_id=strategy.strategy_id,
-                alloc_pct=Decimal("1"),
+                alloc_pct=Decimal(1),
                 target=Decimal(500),
                 stop=Decimal(250),
                 time_limit=3600,

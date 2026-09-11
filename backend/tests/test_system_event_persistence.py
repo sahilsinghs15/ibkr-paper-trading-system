@@ -114,7 +114,7 @@ class TestSystemEventPersistence:
                 idempotency_key=idem_key,
             )
             await session.commit()
-            assert row2.id == row1.id
+            assert row2.id == row1.id  # pyrefly: ignore[missing-attribute]
 
             # Clean up test row
             await session.delete(row1)

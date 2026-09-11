@@ -33,7 +33,7 @@ def _make_oms_stub() -> AsyncMock:
     dummy_intent = OrderIntent(
         signal_id="SIG-001",
         strategy_id="MODEL_BLUE",
-        action=None,
+        action=None,  # pyrefly: ignore[bad-argument-type]
         legs=[],
         timestamp=datetime.now(UTC),
     )
@@ -66,7 +66,7 @@ async def test_buy_signal_submits_intent_to_oms() -> None:
                 "default_strategy": StrategyConfig(
                     strategy_id="default_strategy",
                     max_open_positions=100,
-                    money_limit_per_symbol=Decimal("1000000"),
+                    money_limit_per_symbol=Decimal(1000000),
                 )
             }
         ),
@@ -89,7 +89,7 @@ async def test_sell_signal_submits_intent_to_oms() -> None:
                 "default_strategy": StrategyConfig(
                     strategy_id="default_strategy",
                     max_open_positions=100,
-                    money_limit_per_symbol=Decimal("1000000"),
+                    money_limit_per_symbol=Decimal(1000000),
                 )
             }
         ),
@@ -112,7 +112,7 @@ async def test_hold_signal_returns_none() -> None:
                 "default_strategy": StrategyConfig(
                     strategy_id="default_strategy",
                     max_open_positions=100,
-                    money_limit_per_symbol=Decimal("1000000"),
+                    money_limit_per_symbol=Decimal(1000000),
                 )
             }
         ),

@@ -106,7 +106,7 @@ class SinglePairCloseService:
                     OrderLeg(
                         symbol=pos.leg_a_symbol,
                         side=side,
-                        quantity=qty,
+                        quantity=qty,  # type: ignore[arg-type]
                         price=Decimal(0),
                         instrument_type=pos.leg_a_instrument_type or "STK",
                         leg_index=0,
@@ -120,7 +120,7 @@ class SinglePairCloseService:
                     OrderLeg(
                         symbol=pos.leg_b_symbol,
                         side=side,
-                        quantity=qty,
+                        quantity=qty,  # type: ignore[arg-type]
                         price=Decimal(0),
                         instrument_type=pos.leg_b_instrument_type or "STK",
                         leg_index=1,

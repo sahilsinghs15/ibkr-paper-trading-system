@@ -130,7 +130,7 @@ class ExecutionClaimRepository:
             )
         )
         res = await self._session.execute(stmt)
-        return bool(res.rowcount)
+        return bool(res.rowcount)  # type: ignore[attr-defined]
 
     async def release(self, dedupe_key: str, *, note: str | None = None) -> bool:
         """Release a claim so the intent can be retried.
@@ -146,7 +146,7 @@ class ExecutionClaimRepository:
             .values(state=CLAIM_STATE_ABANDONED, last_note=note)
         )
         res = await self._session.execute(stmt)
-        return bool(res.rowcount)
+        return bool(res.rowcount)  # type: ignore[attr-defined]
 
     async def count_orders_emitted(self, strategy_id: str, signal_id: str) -> int:
         """Orders already written for this (strategy_id, signal_id).

@@ -332,6 +332,7 @@ def _leg_payload(
         "market_data_status": market_status,
         "connection_status": "OBSERVING_DB",
         "close_in_progress": close_in_progress,
+        "source": "engine",
     }
     return payload
 

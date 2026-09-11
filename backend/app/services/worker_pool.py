@@ -375,7 +375,7 @@ class ExecutionWorkerPool:
                     if isinstance(buckets, list) and buckets:
                         leg = (buckets[0].get("legs") or [{}])[0]
                         ref_price = Decimal(str(leg.get("price") or 0))
-                except Exception:
+                except Exception:  # noqa: BLE001
                     ref_price = None
                 resolved_close = clock.resolved_session_close(now)
                 async with self._session_factory() as session, session.begin():
@@ -406,7 +406,7 @@ class ExecutionWorkerPool:
                                 "deferred_session_count": 0,
                             },
                         )
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110
                         pass
                 logger.warning("Worker %s parked job %s in DEFERRED_RED_ZONE", worker_id, job.job_id)
                 return
@@ -423,6 +423,7 @@ class ExecutionWorkerPool:
                 # If worker-level gate already parked, this is no-op; else park now
                 try:
                     from decimal import Decimal
+
                     from app.services.session_clock import get_session_clock
 
                     clock2 = get_session_clock()
@@ -433,7 +434,7 @@ class ExecutionWorkerPool:
                         if isinstance(buckets, list) and buckets:
                             leg = (buckets[0].get("legs") or [{}])[0]
                             ref_price2 = Decimal(str(leg.get("price") or 0))
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         ref_price2 = None
                     resolved_close2 = clock2.resolved_session_close(now2)
                     async with self._session_factory() as session, session.begin():
@@ -522,6 +523,7 @@ class ExecutionWorkerPool:
             if "RED_ZONE_DEFERRED" in str(exc):
                 try:
                     from decimal import Decimal
+
                     from app.services.session_clock import get_session_clock
 
                     clock_e = get_session_clock()
@@ -532,7 +534,7 @@ class ExecutionWorkerPool:
                         if isinstance(buckets, list) and buckets:
                             leg = (buckets[0].get("legs") or [{}])[0]
                             ref_price_e = Decimal(str(leg.get("price") or 0))
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         ref_price_e = None
                     resolved_close_e = clock_e.resolved_session_close(now_e)
                     async with self._session_factory() as session, session.begin():

@@ -264,7 +264,7 @@ async def test_cfd_reaches_ibkr_as_cfd() -> None:
     contract = tws.placeOrder.call_args.args[1]
     assert contract.secType == "CFD"
     assert contract.conId == 777
-    assert res.order.resolved.sec_type == "CFD"
+    assert res.order.resolved.sec_type == "CFD"  # pyrefly: ignore[missing-attribute]
     ib_order = tws.placeOrder.call_args.args[2]
     assert ib_order.totalQuantity == 10.25
 

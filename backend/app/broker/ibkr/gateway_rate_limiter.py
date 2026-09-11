@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import heapq
-import asyncio
 import logging
 import threading
 import time
@@ -321,7 +320,7 @@ class GatewayRateLimiter:
     def _notify_highest_waiter_locked(self) -> None:
         """Wake the highest-priority waiter when a token may be available (M31)."""
         while self._wait_heap:
-            pri, seq, evt = self._wait_heap[0]
+            pri, _seq, evt = self._wait_heap[0]
             if not self._could_grant_locked(pri):
                 break
             evt.set()

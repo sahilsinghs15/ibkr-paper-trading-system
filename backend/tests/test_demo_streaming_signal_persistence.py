@@ -283,8 +283,8 @@ async def test_load_signals_scopes_combined_reject_reason_to_requested_account(
         res_a = await load_signals(session, ibkr_account=ibkr_a, return_dict=True)
         res_b = await load_signals(session, ibkr_account=ibkr_b, return_dict=True)
 
-    row_a = next(s for s in res_a["signals"] if s["signal_id"] == sig_id)
-    row_b = next(s for s in res_b["signals"] if s["signal_id"] == sig_id)
+    row_a = next(s for s in res_a["signals"] if s["signal_id"] == sig_id)  # pyrefly: ignore[bad-index]
+    row_b = next(s for s in res_b["signals"] if s["signal_id"] == sig_id)  # pyrefly: ignore[bad-index]
 
     assert row_a["ibkr_account"] == ibkr_a
     assert "MARGIN_SNAPSHOT_STALE" in (row_a["reject_reason"] or "")
@@ -345,7 +345,7 @@ async def test_load_signals_prefers_specific_signal_reject_over_generic_job_erro
     async with session_factory() as session:
         res = await load_signals(session, ibkr_account=ibkr_acc, return_dict=True)
 
-    row = next(s for s in res["signals"] if s["signal_id"] == sig_id)
+    row = next(s for s in res["signals"] if s["signal_id"] == sig_id)  # pyrefly: ignore[bad-index]
     assert "TWS Error 201" in (row["reject_reason"] or "")
     assert row["reject_reason"] != GENERIC_REJECT_FALLBACK
     assert row["canonical_status"] == "REJECTED"
@@ -381,7 +381,7 @@ def test_zero_fill_unwind_stays_rejected_not_square_off() -> None:
         },
     ]
     events = [{"kind": "BASKET_UNWINDING", "ts": "2026-09-09T15:15:00+00:00"}]
-    c_status, _, reason, _, _ = reconcile_signal_status(_SigStub(), orders, events)
+    c_status, _, reason, _, _ = reconcile_signal_status(_SigStub(), orders, events)  # pyrefly: ignore[bad-argument-type]
     assert c_status == "REJECTED"
     assert reason is not None and "TWS Error 201" in reason
 
@@ -416,5 +416,5 @@ def test_partial_fill_unwind_remains_square_off() -> None:
         },
     ]
     events = [{"kind": "BASKET_UNWINDING", "ts": "2026-09-09T15:15:00+00:00"}]
-    c_status, _, _, _, _ = reconcile_signal_status(_SigStub(), orders, events)
+    c_status, _, _, _, _ = reconcile_signal_status(_SigStub(), orders, events)  # pyrefly: ignore[bad-argument-type]
     assert c_status == "SQUARE-OFF"

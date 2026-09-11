@@ -34,7 +34,7 @@ class TestOMSOrder:
         intent = OrderIntent(
             signal_id="SIG-100",
             strategy_id="MODEL_BLUE",
-            action=None,
+            action=None,  # pyrefly: ignore[bad-argument-type]
             legs=[],
             timestamp=datetime.now(UTC),
         )

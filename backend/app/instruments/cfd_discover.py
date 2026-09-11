@@ -193,7 +193,7 @@ async def ensure_cfd_instruments_for_symbols(
             continue
         finder = getattr(catalog, "find_all_async", None)
         if callable(finder):
-            existing = list(await finder(sym, "CFD"))
+            existing = list(await finder(sym, "CFD"))  # pyrefly: ignore[not-async]
         else:
             existing = list(catalog.find_all(sym, "CFD"))
         if existing:

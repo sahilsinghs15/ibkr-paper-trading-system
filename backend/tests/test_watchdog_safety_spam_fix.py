@@ -79,7 +79,7 @@ def test_healthy_postgres_with_unsafe_system_monitor():
         snap = daemon.snapshots[ServiceName.POSTGRES]
         # PostgreSQL service state must remain HEALTHY (not mutated to TRADING_BLOCKED)
         assert snap.state == ServiceState.HEALTHY
-        assert snap.last_health.status == HealthStatus.HEALTHY
+        assert snap.last_health.status == HealthStatus.HEALTHY  # pyrefly: ignore[missing-attribute]
 
     asyncio.run(_run())
 

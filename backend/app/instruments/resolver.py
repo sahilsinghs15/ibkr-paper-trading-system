@@ -21,8 +21,8 @@ from typing import Protocol
 
 from app.instruments.execution_override import (
     STK_TO_CFD,
-    execution_instrument_type,
     execute_stk_as_cfd_enabled,
+    execution_instrument_type,
 )
 from app.instruments.models import (
     InstrumentRecord,

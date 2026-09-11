@@ -36,6 +36,7 @@ export interface PositionLeg {
   connection_status?: string | null
   close_in_progress?: boolean
   redis_id?: string
+  source?: 'engine' | 'manual' | string
 }
 
 export interface PositionsSnapshot {

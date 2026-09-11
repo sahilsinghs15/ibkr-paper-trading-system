@@ -87,7 +87,7 @@ def _ctx(
         total_margin=total,
         alloc_pct=pct,
         committed_notional=total * pct,
-        pair_max_allocation_pct=Decimal("1"),
+        pair_max_allocation_pct=Decimal(1),
         pair_budget=total * pct,
         target=Decimal(500),
         stop=Decimal(250),
@@ -596,14 +596,14 @@ async def test_close_trade_adds_commission_to_entry_commission() -> None:
                             instrument_type="STK",
                             side=OrderSide.BUY,
                             quantity=Decimal(100),
-                            price=Decimal("50"),
+                            price=Decimal(50),
                         ),
                         OpenModelBlueTradeLeg(
                             symbol="XOP",
                             instrument_type="STK",
                             side=OrderSide.SELL,
                             quantity=Decimal(50),
-                            price=Decimal("100"),
+                            price=Decimal(100),
                         ),
                     ),
                 ),
@@ -620,7 +620,7 @@ async def test_close_trade_adds_commission_to_entry_commission() -> None:
             closed = await PositionRepository(session).close_trade(
                 trade_id,
                 account_id=account_id,
-                exit_marks={"XLE": Decimal("51"), "XOP": Decimal("99")},
+                exit_marks={"XLE": Decimal(51), "XOP": Decimal(99)},
                 commission=Decimal("1.25"),
             )
             assert closed.commission == Decimal("3.75")
@@ -659,14 +659,14 @@ async def test_closed_trade_id_cannot_open_again() -> None:
                             instrument_type="STK",
                             side=OrderSide.BUY,
                             quantity=Decimal(100),
-                            price=Decimal("50"),
+                            price=Decimal(50),
                         ),
                         OpenModelBlueTradeLeg(
                             symbol="XOP",
                             instrument_type="STK",
                             side=OrderSide.SELL,
                             quantity=Decimal(50),
-                            price=Decimal("100"),
+                            price=Decimal(100),
                         ),
                     ),
                 ),
@@ -678,7 +678,7 @@ async def test_closed_trade_id_cannot_open_again() -> None:
             await PositionRepository(session).close_trade(
                 trade_id,
                 account_id=account_id,
-                exit_marks={"XLE": Decimal("51"), "XOP": Decimal("99")},
+                exit_marks={"XLE": Decimal(51), "XOP": Decimal(99)},
             )
 
         from app.services.model_blue.db_trade_book import DatabaseModelBlueTradeBook
@@ -733,7 +733,7 @@ async def test_order_reaper_escalates_stale_zero_fill_order() -> None:
                 pair="XLE:XOP",
                 action="OPEN",
                 side="BUY",
-                ref_price_a=Decimal("50"),
+                ref_price_a=Decimal(50),
                 raw_payload={"trade_id": trade_id},
                 status="NEW",
             )
@@ -761,8 +761,8 @@ async def test_order_reaper_escalates_stale_zero_fill_order() -> None:
                 symbol="XLE",
                 ibkr_contract="XLE-STK-SMART-USD",
                 buy_sell="BUY",
-                quantity=Decimal("100"),
-                limit_price=Decimal("50"),
+                quantity=Decimal(100),
+                limit_price=Decimal(50),
                 status="PENDING",
                 fill_qty=Decimal(0),
             )
@@ -779,7 +779,7 @@ async def test_order_reaper_escalates_stale_zero_fill_order() -> None:
             assert refreshed.state == BasketState.CRITICAL.value
             assert refreshed.recovery_status == "ORDER_REAPED"
             assert refreshed.recovery_detail is not None
-            assert order.internal_order_id in refreshed.recovery_detail
+            assert order.internal_order_id in refreshed.recovery_detail  # pyrefly: ignore[unsupported-operation]
     finally:
         await engine.dispose()
     a = _ctx(81, "DU-TEST-A", total=Decimal(100000), pct=Decimal("0.25"), max_open=1)
@@ -806,7 +806,7 @@ async def test_order_reaper_escalates_stale_zero_fill_order() -> None:
         parse_model_blue_payload(_open_payload("MBG-ISO-1"), timestamp=_TS, reason="iso")
     )
     assert result is not None
-    by_id = {o.account_id: o for o in result.outcomes}
+    by_id = {o.account_id: o for o in result.outcomes}  # pyrefly: ignore[missing-attribute]
     assert by_id[81].success is False
     assert by_id[81].error is not None and "OPEN_POSITION_LIMIT_REACHED" in by_id[81].error
     assert by_id[82].success is True

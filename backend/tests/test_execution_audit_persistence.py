@@ -187,7 +187,7 @@ async def test_single_execution_persists_once_with_precision_and_commission() ->
         )
         adapter.on_commission_report(_commission(exec_id, 0.375))
 
-    adapter._client.placeOrder.side_effect = place
+    adapter._client.placeOrder.side_effect = place  # pyrefly: ignore[missing-attribute]
     try:
         result = await coord.execute(intent, _pass(intent), order_type="MARKET")
         assert result.success
@@ -252,7 +252,7 @@ async def test_multiple_partial_executions_weighted_average_and_commission_once(
         adapter.on_commission_report(_commission(ex2, 0.375))
         adapter.on_commission_report(_commission(ex2, 0.375))
 
-    adapter._client.placeOrder.side_effect = place
+    adapter._client.placeOrder.side_effect = place  # pyrefly: ignore[missing-attribute]
     try:
         result = await coord.execute(intent, _pass(intent), order_type="MARKET")
         assert result.success
@@ -285,7 +285,7 @@ async def test_duplicate_execid_does_not_duplicate_execution_or_fill_event() -> 
     rms = _pass(intent)
     res = await oms.submit_intent(intent, rms, order_type="MARKET")
     order = res.order
-    tws_id = int(order.ibkr_order_id)
+    tws_id = int(order.ibkr_order_id)  # pyrefly: ignore[bad-argument-type]
     execution = _exec(tws_id, exec_id="EX-DUP", shares=275, price=88.39, cum=275, avg=88.39)
     adapter.on_exec_details(tws_id, MagicMock(), execution)
     adapter.on_exec_details(tws_id, MagicMock(), execution)

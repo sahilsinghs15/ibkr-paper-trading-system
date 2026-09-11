@@ -41,11 +41,11 @@ class TestConfig:
             assert settings.margin_scan_enabled is False
             assert settings.margin_whatif_timeout_sec == 5.0
             assert settings.margin_scan_max_per_sec == 5.0
-            assert settings.margin_snapshot_max_age_sec == 300
-            assert settings.margin_snapshot_refresh_sec == 60
-            assert settings.min_order_notional == Decimal("100")
+            assert settings.margin_snapshot_max_age_sec == 3600
+            assert settings.margin_snapshot_refresh_sec == 600
+            assert settings.min_order_notional == Decimal(100)
             assert settings.pair_ratio_tolerance == Decimal("0.5")
-            assert settings.pair_min_deployment_pct == Decimal("0")
+            assert settings.pair_min_deployment_pct == Decimal(0)
             assert settings.market_value_utilisation_cap == Decimal("1.0")
             assert settings.market_value_check_enabled is False
 

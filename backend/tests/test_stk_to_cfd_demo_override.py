@@ -86,9 +86,9 @@ def test_stk_to_cfd_demo_converts_execution_type() -> None:
     assert exec_type == "CFD"
     assert override == STK_TO_CFD
     resolved = _demo_cfd("SIL")
-    assert resolved.requested_instrument_type == "STK"
-    assert resolved.sec_type == "CFD"
-    assert resolved.con_id is None
+    assert resolved.requested_instrument_type == "STK"  # pyrefly: ignore[missing-attribute]
+    assert resolved.sec_type == "CFD"  # pyrefly: ignore[missing-attribute]
+    assert resolved.con_id is None  # pyrefly: ignore[missing-attribute]
 
 
 def test_empty_instruments_table_does_not_reject_demo_cfd() -> None:
@@ -105,7 +105,7 @@ def test_empty_instruments_table_does_not_reject_demo_cfd() -> None:
 @pytest.mark.parametrize("symbol", ["SIL", "GDX"])
 def test_demo_cfd_ibkr_contract_from_symbol(symbol: str) -> None:
     resolved = _demo_cfd(symbol)
-    contract = ibkr_contract_from_resolved(resolved)
+    contract = ibkr_contract_from_resolved(resolved)  # pyrefly: ignore[bad-argument-type]
     assert contract.symbol == symbol
     assert contract.secType == "CFD"
     assert contract.secType != "STK"
@@ -129,7 +129,7 @@ def test_ibkr_adapter_builds_cfd_contract(symbol: str) -> None:
                 price=Decimal(90),
                 contract_month="2026-09",
                 instrument_type="STK",
-                resolved=_demo_cfd(symbol),
+                resolved=_demo_cfd(symbol),  # pyrefly: ignore[bad-argument-type]
                 leg_index=0,
             )
         ],
@@ -238,7 +238,7 @@ def test_open_persists_resolved_cfd_not_requested_stk() -> None:
                 price=Decimal(90),
                 contract_month="2026-09",
                 instrument_type="STK",
-                resolved=_demo_cfd("SIL"),
+                resolved=_demo_cfd("SIL"),  # pyrefly: ignore[bad-argument-type]
                 leg_index=0,
             ),
             OrderLeg(
@@ -248,7 +248,7 @@ def test_open_persists_resolved_cfd_not_requested_stk() -> None:
                 price=Decimal(40),
                 contract_month="2026-09",
                 instrument_type="STK",
-                resolved=_demo_cfd("GDX"),
+                resolved=_demo_cfd("GDX"),  # pyrefly: ignore[bad-argument-type]
                 leg_index=1,
             ),
         ],

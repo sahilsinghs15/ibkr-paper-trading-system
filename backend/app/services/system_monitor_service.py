@@ -177,7 +177,7 @@ async def collect_system_monitor_data(
         s.connect(("8.8.8.8", 80))
         private_ip = s.getsockname()[0]
         s.close()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
 
     network_info = {
@@ -275,9 +275,12 @@ async def collect_system_monitor_data(
                 overall_status = "DEGRADED"
 
     # Market-closed overall: if no real failure and market is closed, overall is MARKET_CLOSED (not HEALTHY)
-    if not is_open and overall_status == "HEALTHY":
-        if ib_gateway_status.status == "MARKET_CLOSED" or webhook_status.status == "MARKET_CLOSED":
-            overall_status = "MARKET_CLOSED"
+    if (
+        not is_open
+        and overall_status == "HEALTHY"
+        and (ib_gateway_status.status == "MARKET_CLOSED" or webhook_status.status == "MARKET_CLOSED")
+    ):
+        overall_status = "MARKET_CLOSED"
 
     if account_margin is not None:
         try:
@@ -341,7 +344,7 @@ async def _check_demo_stream_health() -> ServiceStatus:
                 detail = "SSE & React UI active" if redis_ok else "Demo stream active (Redis degraded)"
                 return ServiceStatus(
                     name="Demo Streaming",
-                    status=status_str,
+                    status=status_str,  # type: ignore[arg-type]
                     port=8010,
                     health_detail=detail,
                     latency_ms=elapsed_ms,
@@ -353,7 +356,7 @@ async def _check_demo_stream_health() -> ServiceStatus:
                 health_detail=f"HTTP {res.status_code}",
                 latency_ms=elapsed_ms,
             )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return ServiceStatus(
             name="Demo Streaming",
             status="STOPPED",
@@ -388,7 +391,7 @@ async def _check_ib_gateway_health(
 
     # Fallback to direct TCP socket check on configured gw_host:gw_port
     try:
-        reader, writer = await asyncio.wait_for(
+        _reader, writer = await asyncio.wait_for(
             asyncio.open_connection(gw_host, gw_port),
             timeout=1.5,
         )
@@ -402,7 +405,7 @@ async def _check_ib_gateway_health(
             health_detail=f"Listening on socket port {gw_port}",
             latency_ms=elapsed_ms,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return ServiceStatus(
             name="IB Gateway",
             status="STOPPED",
@@ -424,7 +427,7 @@ async def _check_postgresql_health(session: AsyncSession | None = None) -> Servi
                 row = res.scalar_one_or_none()
                 if row:
                     rev_str = str(row)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
             elapsed_ms = round((time.perf_counter() - start_t) * 1000, 1)
             return ServiceStatus(
@@ -434,7 +437,7 @@ async def _check_postgresql_health(session: AsyncSession | None = None) -> Servi
                 health_detail=f"Connected to ibkr_trading (Alembic: {rev_str})",
                 latency_ms=elapsed_ms,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return ServiceStatus(
                 name="PostgreSQL",
                 status="STOPPED",
@@ -445,7 +448,7 @@ async def _check_postgresql_health(session: AsyncSession | None = None) -> Servi
 
     # Fallback socket check on 5432
     try:
-        reader, writer = await asyncio.wait_for(
+        _reader, writer = await asyncio.wait_for(
             asyncio.open_connection("127.0.0.1", 5432),
             timeout=1.5,
         )
@@ -459,7 +462,7 @@ async def _check_postgresql_health(session: AsyncSession | None = None) -> Servi
             health_detail="Listening on socket port 5432",
             latency_ms=elapsed_ms,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return ServiceStatus(
             name="PostgreSQL",
             status="STOPPED",
@@ -483,7 +486,7 @@ async def _check_redis_health(redis_client: Redis | None = None) -> ServiceStatu
                     health_detail="Redis server ping OK",
                     latency_ms=elapsed_ms,
                 )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return ServiceStatus(
                 name="Redis",
                 status="STOPPED",
@@ -494,7 +497,7 @@ async def _check_redis_health(redis_client: Redis | None = None) -> ServiceStatu
 
     # Fallback socket check on 6379
     try:
-        reader, writer = await asyncio.wait_for(
+        _reader, writer = await asyncio.wait_for(
             asyncio.open_connection("127.0.0.1", 6379),
             timeout=1.5,
         )
@@ -508,7 +511,7 @@ async def _check_redis_health(redis_client: Redis | None = None) -> ServiceStatu
             health_detail="Listening on socket port 6379",
             latency_ms=elapsed_ms,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return ServiceStatus(
             name="Redis",
             status="STOPPED",
@@ -539,7 +542,7 @@ async def _check_backend_health() -> ServiceStatus:
                 health_detail=f"HTTP {res.status_code}",
                 latency_ms=elapsed_ms,
             )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return ServiceStatus(
             name="FastAPI Backend",
             status="STOPPED",
@@ -570,7 +573,7 @@ async def _check_webhook_health() -> ServiceStatus:
                 health_detail=f"HTTP {res.status_code}",
                 latency_ms=elapsed_ms,
             )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return ServiceStatus(
             name="Webhook Ingest",
             status="STOPPED",
@@ -605,7 +608,7 @@ async def _check_watchdog_health() -> ServiceStatus:
             health_detail="Watchdog process not found",
             latency_ms=None,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return ServiceStatus(
             name="Watchdog",
             status="UNKNOWN",

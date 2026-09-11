@@ -29,12 +29,12 @@ def execute_stk_as_cfd_enabled() -> bool:
 
 
 def apply_stk_to_cfd_for_strategy(strategy_id: str | None) -> bool:
-    """Model Blue always executes IBKR CFD; other strategies follow the global flag."""
+    """Model Blue executes IBKR CFD when enabled; other strategies follow the global flag."""
+    if not execute_stk_as_cfd_enabled():
+        return False
     from app.core.identifiers import normalize_strategy_id
 
-    if normalize_strategy_id(strategy_id) == MODEL_BLUE_STRATEGY_ID:
-        return True
-    return execute_stk_as_cfd_enabled()
+    return normalize_strategy_id(strategy_id) == MODEL_BLUE_STRATEGY_ID
 
 
 def execution_instrument_type(

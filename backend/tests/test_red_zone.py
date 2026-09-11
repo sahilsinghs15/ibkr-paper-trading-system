@@ -3,15 +3,18 @@
 import asyncio
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
-import pytest_asyncio
 
-from app.db.models.signal import JOB_STATUS_DEFERRED_RED_ZONE, JOB_STATUS_QUEUED, JOB_STATUS_PROCESSING, JOB_STATUS_CLAIMED, SignalJobModel
+from app.db.models.signal import (
+    JOB_STATUS_DEFERRED_RED_ZONE,
+    JOB_STATUS_PROCESSING,
+    JOB_STATUS_QUEUED,
+    SignalJobModel,
+)
 from app.db.repositories.signal_repository import SignalJobRepository
-from app.db.repositories.event_repository import EventRepository
 
 ET = ZoneInfo("America/New_York")
 
@@ -26,7 +29,7 @@ def et(y, m, d, H, M, S=0):
 # -------------------------------------------------
 class TestSessionClock:
     def test_45s_boundary(self):
-        from app.services.session_clock import SessionClock, rth_close_for
+        from app.services.session_clock import SessionClock
         s = SessionClock(buffer_seconds=45, post_open_delay_seconds=120, gateway_max_wait_sec=8)
         # normal day 2026-09-08 is trading day (Tue)
         # close 16:00 => buffer 15:59:15
@@ -242,8 +245,8 @@ async def test_two_workers_park_same_job(session_factory):
 
 @pytest.mark.asyncio
 async def test_release_concurrency(session_factory):
-    from app.services.session_clock import SessionClock
     from unittest.mock import patch
+
     from app.services.red_zone_release import RedZoneReleaseService
     # create deferred job
     async with session_factory() as session, session.begin():
@@ -283,10 +286,14 @@ async def test_release_concurrency(session_factory):
 
 @pytest.mark.asyncio
 async def test_kill_switch_blocks_release(session_factory):
-    from app.services.kill_switch import _arm_kill_switch_cache, clear_account_kill_switch_cache
     from unittest.mock import patch
-    from app.services.red_zone_release import RedZoneReleaseService
+
     from app.db.models.account import AccountModel
+    from app.services.kill_switch import (
+        _arm_kill_switch_cache,
+        clear_account_kill_switch_cache,
+    )
+    from app.services.red_zone_release import RedZoneReleaseService
     # need account id
     async with session_factory() as session:
         acc = (await session.execute(__import__("sqlalchemy").select(AccountModel))).scalars().first()
@@ -332,7 +339,8 @@ async def test_kill_switch_blocks_release(session_factory):
 
 @pytest.mark.asyncio
 async def test_expired_contract_void(session_factory):
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
+
     from app.services.red_zone_release import RedZoneReleaseService
     async with session_factory() as session, session.begin():
         repo = SignalJobRepository(session)
@@ -367,10 +375,9 @@ async def test_expired_contract_void(session_factory):
 
 @pytest.mark.asyncio
 async def test_breaker_count(session_factory):
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
+
     from app.services.red_zone_release import RedZoneReleaseService
-    from app.core.config import get_settings
-    import os
     # create many jobs > max_auto_release_count (default 50)
     async with session_factory() as session, session.begin():
         for i in range(55):
@@ -409,7 +416,8 @@ async def test_breaker_count(session_factory):
 
 @pytest.mark.asyncio
 async def test_missed_window_emitted(session_factory):
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
+
     from app.services.red_zone_release import RedZoneReleaseService
     async with session_factory() as session, session.begin():
         repo = SignalJobRepository(session)
@@ -427,7 +435,6 @@ async def test_missed_window_emitted(session_factory):
         job.resolved_session_close = datetime.now(UTC)
         job.reference_price = Decimal(10)
         await session.flush()
-        jid = job.job_id
     with patch("app.services.red_zone_release.get_session_clock") as mock_clock:
         mock = MagicMock()
         mock.in_red_zone.return_value = False
@@ -439,6 +446,7 @@ async def test_missed_window_emitted(session_factory):
         await svc._release_cycle()
     async with session_factory() as session:
         from sqlalchemy import select
+
         from app.db.models.event import EventLogModel
         res = await session.execute(select(EventLogModel).where(EventLogModel.kind == "RED_ZONE_MISSED_WINDOW"))
         ev = res.scalars().first()
@@ -458,7 +466,7 @@ async def test_missed_window_emitted(session_factory):
 def test_ibkr_outside_rth_false():
     from app.oms.ibkr_adapter import IBKRExecutionAdapter
     from app.oms.models import OMSOrder
-    from app.rms.models import OrderIntent, OrderLeg, OrderSide, OrderAction
+    from app.rms.models import OrderAction, OrderIntent, OrderLeg, OrderSide
     adapter = IBKRExecutionAdapter()
     intent = OrderIntent(signal_id="S1", strategy_id="model_blue", action=OrderAction.OPEN, legs=[OrderLeg(symbol="AAPL", side=OrderSide.BUY, quantity=1, price=Decimal(10))])
     order = OMSOrder(internal_order_id="ORD1", intent=intent, symbol="AAPL", side=OrderSide.BUY, quantity=1, order_type="MARKET")
@@ -466,10 +474,10 @@ def test_ibkr_outside_rth_false():
     assert ib.outsideRth is False
 
 def test_ibkr_outside_rth_fail_closed():
+    from app.instruments.models import ResolvedInstrument
     from app.oms.ibkr_adapter import IBKRExecutionAdapter
     from app.oms.models import OMSOrder
-    from app.rms.models import OrderIntent, OrderLeg, OrderSide, OrderAction
-    from app.instruments.models import ResolvedInstrument
+    from app.rms.models import OrderAction, OrderIntent, OrderLeg, OrderSide
     adapter = IBKRExecutionAdapter()
     adapter._client.is_connected = lambda: True
     adapter._client.placeOrder = lambda *a, **kw: None
@@ -491,7 +499,7 @@ def test_ibkr_outside_rth_fail_closed():
     try:
         asyncio.run(adapter.submit_order(order))
         assert False, "should have raised"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         assert "outsideRth" in str(e).lower() or "RED_ZONE" in str(e)
 
 @pytest.mark.asyncio
@@ -511,7 +519,6 @@ async def test_no_claim_for_deferred(session_factory):
         job.status = JOB_STATUS_DEFERRED_RED_ZONE
         job.deferred_at = datetime.now(UTC)
         await session.flush()
-        jid = job.job_id
         claim_repo = ExecutionClaimRepository(session)
         has = await claim_repo.has_claimed("model_blue", "SIG-NOCLAIM")
         assert has is False

@@ -378,16 +378,16 @@ def extract_contract_record(
         "error_message": error_message,
         "con_id": str(c.conId) if c and c.conId else "",
         "symbol": c.symbol if c and c.symbol else "",
-        "local_symbol": safe_str(c.localSymbol),
-        "sec_type": safe_str(c.secType),
-        "exchange": safe_str(c.exchange),
-        "primary_exchange": safe_str(c.primaryExchange),
-        "currency": safe_str(c.currency),
-        "trading_class": safe_str(c.tradingClass),
-        "multiplier": safe_str(c.multiplier),
-        "expiry": safe_str(c.lastTradeDateOrContractMonth),
+        "local_symbol": safe_str(c.localSymbol),  # pyrefly: ignore[missing-attribute]
+        "sec_type": safe_str(c.secType),  # pyrefly: ignore[missing-attribute]
+        "exchange": safe_str(c.exchange),  # pyrefly: ignore[missing-attribute]
+        "primary_exchange": safe_str(c.primaryExchange),  # pyrefly: ignore[missing-attribute]
+        "currency": safe_str(c.currency),  # pyrefly: ignore[missing-attribute]
+        "trading_class": safe_str(c.tradingClass),  # pyrefly: ignore[missing-attribute]
+        "multiplier": safe_str(c.multiplier),  # pyrefly: ignore[missing-attribute]
+        "expiry": safe_str(c.lastTradeDateOrContractMonth),  # pyrefly: ignore[missing-attribute]
         "strike": str(c.strike) if c and c.strike else "",
-        "right": safe_str(c.right),
+        "right": safe_str(c.right),  # pyrefly: ignore[missing-attribute]
         "min_tick": str(details.minTick)
         if details and details.minTick is not None
         else "",
@@ -1171,13 +1171,13 @@ def main() -> None:
     seeds: list[str | SeedRecord]
     if args.use_nasdaq_seeds:
         logger.info("Fetching seed universe from NASDAQ Trader directory...")
-        seeds = fetch_nasdaq_seed_universe()
+        seeds = fetch_nasdaq_seed_universe()  # pyrefly: ignore[bad-assignment]
         if args.limit is None:
             args.limit = 25
     elif args.symbols:
         seeds = args.symbols
     else:
-        seeds = DEFAULT_SEED_SYMBOLS
+        seeds = DEFAULT_SEED_SYMBOLS  # pyrefly: ignore[bad-assignment]
 
     logger.info("Seed pool size: %d items", len(seeds))
 

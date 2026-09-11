@@ -189,7 +189,7 @@ class BrokerFlattenService:
 
             flatten_keys: list = [flatten_inflight.broker_key(ibkr_account, con_id)]
             if account_id is not None:
-                for pos in open_rows:
+                for pos in open_rows:  # pyrefly: ignore[unbound-name]
                     if pos.account_id != account_id:
                         continue
                     symbols = {
@@ -288,7 +288,7 @@ class BrokerFlattenService:
                 st = getattr(order, "status", None)
                 if st == OMSOrderStatus.FILLED or st == "FILLED":
                     return True
-                return bool(hasattr(st, "value") and st.value == "FILLED")
+                return bool(hasattr(st, "value") and st.value == "FILLED")  # type: ignore[union-attr]
 
             fill_orders = [o for o in orders if not getattr(o, "is_compensation", False)]
             is_fully_filled = bool(fill_orders) and all(_is_filled(o) for o in fill_orders)

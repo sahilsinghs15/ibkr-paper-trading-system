@@ -31,7 +31,7 @@ class PositionStream:
         if self._stream_maxlen is not None and self._stream_maxlen > 0:
             kwargs["maxlen"] = self._stream_maxlen
             kwargs["approximate"] = True
-        entry_id = await self._redis.xadd(self.stream_name, fields, **kwargs)
+        entry_id = await self._redis.xadd(self.stream_name, fields, **kwargs)  # pyrefly: ignore[no-matching-overload]
         return entry_id.decode() if isinstance(entry_id, bytes) else str(entry_id)
 
     async def xread(
@@ -47,13 +47,13 @@ class PositionStream:
         if not rows:
             return out
         for _name, entries in rows:
-            for entry_id, fields in entries:
+            for entry_id, fields in entries:  # pyrefly: ignore[not-iterable]
                 decoded_id = entry_id.decode() if isinstance(entry_id, bytes) else str(entry_id)
                 decoded = {
                     (k.decode() if isinstance(k, bytes) else k): _decode_field(
                         v.decode() if isinstance(v, bytes) else v
                     )
-                    for k, v in fields.items()
+                    for k, v in fields.items()  # pyrefly: ignore[missing-attribute]
                 }
                 out.append((decoded_id, decoded))
         return out

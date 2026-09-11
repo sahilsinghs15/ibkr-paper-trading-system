@@ -72,14 +72,14 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         symbol=settings.trading_symbol,
         quantity=settings.order_quantity,
         order_type="MARKET",
-        committed_capital_provider=DatabaseCommittedCapitalProvider(AsyncSessionLocal),
+        committed_capital_provider=DatabaseCommittedCapitalProvider(AsyncSessionLocal),  # type: ignore[arg-type]
         model_blue_trade_book=DatabaseModelBlueTradeBook(AsyncSessionLocal),
         session_factory=AsyncSessionLocal,
         persistence=persistence,
         account_margin=account_margin,
         margin_rate_service=margin_rate_service,
     )
-    order_manager._live_pnl = LivePnlService(
+    order_manager._live_pnl = LivePnlService(  # type: ignore[assignment]
         AsyncSessionLocal, client, rate_limiter=rate_limiter
     )
     testing = os.environ.get("TRADINGAPP_TESTING") == "1"
@@ -134,8 +134,24 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     fastapi_app.state.order_manager = order_manager
     fastapi_app.state.account_margin = account_margin
 
+    from app.services.manual_callbacks import ManualExecutionListener
+    from app.services.manual_recovery import ManualTradingRecoveryService
     from app.services.recovery import RecoveryManager
     from app.services.worker_pool import ExecutionWorkerPool
+
+    # Manual trading callback listener and recovery
+    manual_listener = ManualExecutionListener(AsyncSessionLocal, client)
+    manual_listener.bind_loop(asyncio.get_running_loop())
+    client.register_listener(manual_listener)
+    fastapi_app.state.manual_execution_listener = manual_listener
+
+    manual_recovery = ManualTradingRecoveryService(AsyncSessionLocal, client)
+    fastapi_app.state.manual_recovery = manual_recovery
+    if not testing:
+        try:
+            await manual_recovery.run_startup_recovery()
+        except Exception:
+            logger.exception("Failed to execute manual trading startup recovery scanner.")
 
     # Run startup recovery scanner
     recovery_mgr = RecoveryManager(AsyncSessionLocal, order_manager)

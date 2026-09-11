@@ -118,19 +118,21 @@ async def test_ib_gateway_dynamic_port_configuration():
     # Mock settings with port 4002 (MAIN EC2 posture)
     mock_settings_4002 = Settings(ibkr_host="127.0.0.1", ibkr_port=4002)
 
-    with patch("app.services.system_monitor_service.get_settings", return_value=mock_settings_4002):
-        with patch("asyncio.open_connection", new_callable=AsyncMock) as mock_open:
-            mock_reader = AsyncMock()
-            mock_writer = AsyncMock()
-            mock_open.return_value = (mock_reader, mock_writer)
+    with (
+        patch("app.services.system_monitor_service.get_settings", return_value=mock_settings_4002),
+        patch("asyncio.open_connection", new_callable=AsyncMock) as mock_open,
+    ):
+        mock_reader = AsyncMock()
+        mock_writer = AsyncMock()
+        mock_open.return_value = (mock_reader, mock_writer)
 
-            res = await collect_system_monitor_data(session=None, tws_client=None, redis_client=None)
+        res = await collect_system_monitor_data(session=None, tws_client=None, redis_client=None)
 
-            # Check open_connection was called with 127.0.0.1:4002
-            mock_open.assert_any_call("127.0.0.1", 4002)
-            assert res.services.ib_gateway.port == 4002
-            assert res.services.ib_gateway.status == "RUNNING"
-            assert 4002 in res.network["open_ports"]
+        # Check open_connection was called with 127.0.0.1:4002
+        mock_open.assert_any_call("127.0.0.1", 4002)
+        assert res.services.ib_gateway.port == 4002
+        assert res.services.ib_gateway.status == "RUNNING"
+        assert 4002 in res.network["open_ports"]
 
 
 @pytest.mark.asyncio
@@ -140,16 +142,18 @@ async def test_ib_gateway_dynamic_port_7497():
 
     mock_settings_7497 = Settings(ibkr_host="127.0.0.1", ibkr_port=7497)
 
-    with patch("app.services.system_monitor_service.get_settings", return_value=mock_settings_7497):
-        with patch("asyncio.open_connection", new_callable=AsyncMock) as mock_open:
-            mock_reader = AsyncMock()
-            mock_writer = AsyncMock()
-            mock_open.return_value = (mock_reader, mock_writer)
+    with (
+        patch("app.services.system_monitor_service.get_settings", return_value=mock_settings_7497),
+        patch("asyncio.open_connection", new_callable=AsyncMock) as mock_open,
+    ):
+        mock_reader = AsyncMock()
+        mock_writer = AsyncMock()
+        mock_open.return_value = (mock_reader, mock_writer)
 
-            res = await collect_system_monitor_data(session=None, tws_client=None, redis_client=None)
+        res = await collect_system_monitor_data(session=None, tws_client=None, redis_client=None)
 
-            mock_open.assert_any_call("127.0.0.1", 7497)
-            assert res.services.ib_gateway.port == 7497
-            assert res.services.ib_gateway.status == "RUNNING"
-            assert 7497 in res.network["open_ports"]
+        mock_open.assert_any_call("127.0.0.1", 7497)
+        assert res.services.ib_gateway.port == 7497
+        assert res.services.ib_gateway.status == "RUNNING"
+        assert 7497 in res.network["open_ports"]
 

@@ -32,7 +32,7 @@ def _acct(ibkr: str, account_id: int = 1) -> AccountExecutionContext:
         total_margin=Decimal(100000),
         alloc_pct=Decimal(1),
         committed_notional=Decimal(10000),
-        pair_max_allocation_pct=Decimal("1"),
+        pair_max_allocation_pct=Decimal(1),
         pair_budget=Decimal(10000),
         target=Decimal(500),
         stop=Decimal(250),
@@ -234,12 +234,12 @@ async def test_one_starved_sibling_does_not_block_healthy() -> None:
     built: list[str] = []
 
     async def _build(signal, account=None):
-        built.append(account.ibkr_account)
+        built.append(account.ibkr_account)  # pyrefly: ignore[missing-attribute]
         return OrderIntent(
             signal_id="SIG-G",
             strategy_id="MODEL_BLUE",
             action=OrderAction.OPEN,
-            ibkr_account=account.ibkr_account,
+            ibkr_account=account.ibkr_account,  # pyrefly: ignore[missing-attribute]
             legs=[
                 OrderLeg(
                     symbol="AAPL",

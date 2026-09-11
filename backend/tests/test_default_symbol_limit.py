@@ -46,7 +46,7 @@ from app.services.position_close_service import SinglePairCloseService
 
 
 @pytest.fixture
-def client() -> TestClient:
+def client() -> TestClient:  # pyrefly: ignore[bad-return]
     with (
         patch("app.broker.ibkr.tws_client.TWSClient.connect_and_start", return_value=True),
         patch("app.broker.ibkr.tws_client.TWSClient.disconnect_clean"),
@@ -300,7 +300,7 @@ async def test_regressions_phases_1_2_3_remains_intact(
         acc_id = acc.id
 
         await session.execute(
-            PositionModel.__table__.insert().values(
+            PositionModel.__table__.insert().values(  # pyrefly: ignore[missing-attribute]
                 account_id=acc_id,
                 trade_id=trade_id,
                 strategy_id="model_blue",

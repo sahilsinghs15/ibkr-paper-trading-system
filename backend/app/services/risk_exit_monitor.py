@@ -289,7 +289,7 @@ class RiskExitMonitor:
                 if callable(getter):
                     snapshot = getter(row.account_id, row.trade_id)
             fresh = self._snapshot_fresh(snapshot, now_mono)
-            pnl = snapshot.pnl if snapshot is not None and fresh else ZERO
+            pnl = snapshot.pnl if snapshot is not None and fresh else ZERO  # pyrefly: ignore[missing-attribute]
             if not fresh:
                 time_only = evaluate_pair_exit(params, pnl=pnl, now=now)
                 if time_only is None or time_only.reason != REASON_PAIR_TIME_LIMIT:
@@ -321,7 +321,7 @@ class RiskExitMonitor:
                 if callable(getter):
                     snapshot = getter(account_id, pos.trade_id)
             if self._snapshot_fresh(snapshot, now_mono):
-                total += snapshot.pnl
+                total += snapshot.pnl  # type: ignore[union-attr]
                 continue
             live_pnl = getattr(pos, "live_pnl", None)
             pnl = ZERO if live_pnl is None else Decimal(str(live_pnl))

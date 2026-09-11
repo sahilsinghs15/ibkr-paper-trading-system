@@ -5,11 +5,11 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.identifiers import normalize_account
-
 from app.broker.ibkr.positions import BrokerPositionLine
+from app.core.identifiers import normalize_account
 from app.db.models.account import AccountModel
 from app.db.models.instrument import InstrumentModel
+from app.db.models.manual_order import ManualPositionModel
 from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
 from app.db.repositories.broker_position_repository import BrokerPositionRepository
@@ -86,14 +86,25 @@ async def collect_reconcile_positions(
     broker_lines = [_broker_line_from_row(row) for row in broker_rows]
 
     open_stmt = select(PositionModel).where(PositionModel.risk_state == "OPEN")
+    manual_open_stmt = select(ManualPositionModel).where(
+        ManualPositionModel.status == "OPEN"
+    )
     if target_account_id is not None:
         open_stmt = open_stmt.where(PositionModel.account_id == target_account_id)
+        manual_open_stmt = manual_open_stmt.where(
+            ManualPositionModel.account_id == target_account_id
+        )
     open_rows = list((await session.execute(open_stmt)).scalars().all())
+    manual_open_rows = list(
+        (await session.execute(manual_open_stmt)).scalars().all()
+    )
 
     instruments = list((await session.execute(select(InstrumentModel))).scalars().all())
     in_flight_accounts = await fetch_in_flight_accounts(session)
 
-    account_ids = {row.account_id for row in open_rows}
+    account_ids = {row.account_id for row in open_rows} | {
+        row.account_id for row in manual_open_rows
+    }
     order_rows: list[OrderModel] = []
     if account_ids:
         order_rows = list(
@@ -107,7 +118,7 @@ async def collect_reconcile_positions(
         )
     order_con_id_map = build_order_con_id_map(order_rows)
 
-    ledger_lines = build_ledger_net_lines(open_rows, instruments)
+    ledger_lines = build_ledger_net_lines(open_rows, instruments, manual_open_rows)
     diffs = classify_reconcile_diffs(
         broker_lines=broker_lines,
         ledger_lines=ledger_lines,
@@ -162,6 +173,8 @@ async def collect_reconcile_positions(
             broker_qty=diff.broker_qty,
             ledger_qty=diff.ledger_qty,
             in_flight=diff.in_flight,
+            engine_qty=diff.engine_qty,
+            manual_qty=diff.manual_qty,
         )
         for diff in diffs
     ]

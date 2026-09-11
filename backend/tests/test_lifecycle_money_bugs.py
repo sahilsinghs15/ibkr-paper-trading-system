@@ -93,7 +93,7 @@ async def test_exec_details_after_cancel_does_not_regress_terminal_order() -> No
     oms = OMSService(adapter=adapter)
     intent = _intent(100.0)
     order = await oms.submit_one_leg(intent, _pass_rms(intent), 0)
-    tws_id = int(order.ibkr_order_id)
+    tws_id = int(order.ibkr_order_id)  # pyrefly: ignore[bad-argument-type]
 
     # Basket timed out, cancel was sent, broker confirmed the cancel with nothing filled.
     adapter.on_order_status(
@@ -148,7 +148,7 @@ async def test_filled_status_without_quantity_does_not_block_real_fill() -> None
     oms = OMSService(adapter=adapter)
     intent = _intent(100.0)
     order = await oms.submit_one_leg(intent, _pass_rms(intent), 0)
-    tws_id = int(order.ibkr_order_id)
+    tws_id = int(order.ibkr_order_id)  # pyrefly: ignore[bad-argument-type]
 
     # openOrder arrives first, reporting a terminal status but no quantity.
     adapter.on_open_order(

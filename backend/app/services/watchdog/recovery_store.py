@@ -38,7 +38,7 @@ class RecoveryBudgetStore:
                 parsed: list[datetime] = []
                 for s in lst:
                     try:
-                        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                        dt = datetime.fromisoformat(s)
                         if dt.tzinfo is None:
                             dt = dt.replace(tzinfo=UTC)
                         # future timestamp check: > now+60s considered invalid (clock jump)
@@ -85,13 +85,13 @@ class RecoveryBudgetStore:
                 dir_fd = os.open(str(self.path.parent), os.O_DIRECTORY)
                 os.fsync(dir_fd)
                 os.close(dir_fd)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
         except Exception as exc:
             logger.error("Failed to persist recovery state: %s", exc)
             try:
                 os.unlink(tmp_path)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
             raise
 
@@ -102,7 +102,7 @@ class RecoveryBudgetStore:
         lst = state.get(service, [])
         lst.append(now)
         state[service] = lst
-        self.save(state)
+        self.save(state)  # type: ignore[arg-type]
 
     def get_attempts(self, service: str) -> list[datetime]:
         state = self.load()

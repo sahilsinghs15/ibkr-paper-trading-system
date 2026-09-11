@@ -317,7 +317,7 @@ async def _process_tradingview_webhook(
                 signal_id=signal_id,
                 trade_id=trade_id,
                 job_id=job_id_str,
-                duplicate=not created,
+                duplicate=not created,  # pyrefly: ignore[unbound-name]
             ),
         )
     except Exception:

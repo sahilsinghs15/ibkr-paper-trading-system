@@ -42,7 +42,7 @@ def _make_intent(
         OrderLeg(
             symbol=sym,
             side=side,
-            quantity=Decimal(str(qty)),
+            quantity=Decimal(str(qty)),  # pyrefly: ignore[bad-argument-type]
             price=Decimal(str(px)),
             contract_month="2026-09",
             instrument_type="STK",

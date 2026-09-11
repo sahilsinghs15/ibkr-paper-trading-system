@@ -275,7 +275,7 @@ class PositionRepository:
             stmt = stmt.where(PositionModel.trade_id == trade_id)
         result = await self._session.execute(stmt)
         await self._session.flush()
-        return int(result.rowcount or 0)
+        return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     async def update_exit_thresholds(
         self,

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.identifiers import normalize_account
 from app.db.models.account import AccountModel
 from app.db.models.instrument import InstrumentModel
+from app.db.models.manual_order import ManualPositionModel
 from app.db.repositories.broker_position_repository import BrokerPositionRepository
 from app.db.repositories.position_repository import PositionRepository
 from app.oms.models import OMSOrderStatus
@@ -168,6 +169,18 @@ class BrokerAlignService:
                 )
 
             open_rows = await PositionRepository(session).list_open()
+            manual_open_rows = list(
+                (
+                    await session.execute(
+                        select(ManualPositionModel).where(
+                            ManualPositionModel.status == "OPEN",
+                            ManualPositionModel.account_id == account_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
             instruments = list(
                 (await session.execute(select(InstrumentModel))).scalars().all()
             )
@@ -177,6 +190,7 @@ class BrokerAlignService:
                 account_id=account_id,
                 symbol=norm_symbol,
                 sec_type=norm_sec_type,
+                manual_open_rows=manual_open_rows,
             )
             target = ledger_net if ledger_net is not None else 0.0
 
@@ -351,7 +365,7 @@ class BrokerAlignService:
                 st = getattr(order, "status", None)
                 if st == OMSOrderStatus.FILLED or st == "FILLED":
                     return True
-                return bool(hasattr(st, "value") and st.value == "FILLED")
+                return bool(hasattr(st, "value") and st.value == "FILLED")  # type: ignore[union-attr]
 
             fill_orders = [o for o in orders if not getattr(o, "is_compensation", False)]
             is_fully_filled = bool(fill_orders) and all(_is_filled(o) for o in fill_orders)

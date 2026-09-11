@@ -21,7 +21,7 @@ from app.db.models.signal import SignalJobModel
 
 
 @pytest.fixture
-async def test_app() -> FastAPI:
+async def test_app() -> FastAPI:  # pyrefly: ignore[bad-return]
     """Create a test FastAPI application instance with pool-managed AsyncEngine."""
     settings = get_settings()
     engine = create_async_engine(

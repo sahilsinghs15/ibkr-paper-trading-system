@@ -1,3 +1,4 @@
 # Configuration for Pyrefly LSP in Antigravity IDE
 search-path = ["backend"]
 python-interpreter-path = "backend/.venv/bin/python"
+exclude = ["**/prototype/**"]

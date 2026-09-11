@@ -78,7 +78,7 @@ async def test_missing_ibkr_account_rejected_before_place_order() -> None:
 
     assert result.status == OMSOrderStatus.ERROR
     assert "MISSING_IBKR_ACCOUNT" in (result.error_message or "")
-    adapter._client.placeOrder.assert_not_called()
+    adapter._client.placeOrder.assert_not_called()  # pyrefly: ignore[missing-attribute]
 
 
 @pytest.mark.asyncio
@@ -90,7 +90,7 @@ async def test_unknown_managed_account_rejected() -> None:
 
     assert result.status == OMSOrderStatus.ERROR
     assert "UNMANAGED_ACCOUNT" in (result.error_message or "")
-    adapter._client.placeOrder.assert_not_called()
+    adapter._client.placeOrder.assert_not_called()  # pyrefly: ignore[missing-attribute]
 
 
 @pytest.mark.asyncio
@@ -100,13 +100,13 @@ async def test_listed_account_reaches_place_order() -> None:
     def ack(order_id: int, contract: Any, ib_order: Any) -> None:
         adapter.on_order_status(order_id, "Submitted", 0.0, 10.0, 0.0, 0, 0, 0.0, 1, "", 0.0)
 
-    adapter._client.placeOrder.side_effect = ack
+    adapter._client.placeOrder.side_effect = ack  # pyrefly: ignore[missing-attribute]
     order = _order(ibkr_account="dutest")
 
     result = await adapter.submit_order(order)
 
     assert result.status != OMSOrderStatus.ERROR
-    adapter._client.placeOrder.assert_called_once()
+    adapter._client.placeOrder.assert_called_once()  # pyrefly: ignore[missing-attribute]
 
 
 @pytest.mark.asyncio
@@ -118,4 +118,4 @@ async def test_empty_managed_set_while_connected_fails_closed() -> None:
 
     assert result.status == OMSOrderStatus.ERROR
     assert "UNMANAGED_ACCOUNT" in (result.error_message or "")
-    adapter._client.placeOrder.assert_not_called()
+    adapter._client.placeOrder.assert_not_called()  # pyrefly: ignore[missing-attribute]

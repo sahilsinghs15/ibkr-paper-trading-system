@@ -62,7 +62,7 @@ def _fmt_bytes(b: int | None) -> str:
     for unit in ["B", "KB", "MB", "GB", "TB"]:
         if abs(b) < 1024:
             return f"{b:.1f} {unit}"
-        b /= 1024
+        b /= 1024  # type: ignore[assignment]
     return f"{b:.1f} PB"
 
 
@@ -103,7 +103,7 @@ def build_status_message(
     try:
         now_et = now_utc.astimezone(ZoneInfo("America/New_York"))
         now_ist = now_utc.astimezone(ZoneInfo("Asia/Kolkata"))
-    except Exception:
+    except Exception:  # noqa: BLE001
         now_et = now_utc
         now_ist = now_utc
 
@@ -130,9 +130,8 @@ def build_status_message(
                 continue
             worst = "CRITICAL"
             break
-        if st in (ServiceState.DEGRADED, ServiceState.TRADING_BLOCKED, ServiceState.RECOVERING, ServiceState.VERIFYING):
-            if worst != "CRITICAL":
-                worst = "DEGRADED"
+        if st in (ServiceState.DEGRADED, ServiceState.TRADING_BLOCKED, ServiceState.RECOVERING, ServiceState.VERIFYING) and worst != "CRITICAL":
+            worst = "DEGRADED"
     # Resource worst
     if resource_monitor:
         for rtype in [ResourceType.CPU, ResourceType.MEMORY, ResourceType.STORAGE, ResourceType.INODES]:
@@ -162,7 +161,7 @@ def build_status_message(
     lines.append("<b>TIME</b>")
     try:
         lines.append(f"<code>{now_et.strftime('%H:%M:%S %Z')}</code> / <code>{now_utc.strftime('%H:%M:%S UTC')}</code> / <code>{now_ist.strftime('%H:%M:%S IST')}</code>")
-    except Exception:
+    except Exception:  # noqa: BLE001
         lines.append(f"<code>{now_utc.strftime('%H:%M:%S UTC')}</code>")
     lines.append("")
     lines.append("<b>MARKET</b>")
@@ -234,7 +233,7 @@ def build_status_message(
                         if pattern in cmd:
                             pid = p.info["pid"]
                             break
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S112
                         continue
                 if pid:
                     try:
@@ -243,11 +242,11 @@ def build_status_message(
                         mem = proc.memory_info().rss
                         create = datetime.fromtimestamp(proc.create_time()).astimezone().strftime("%H:%M")
                         lines.append(f"🟢 <b>{name}</b> — <code>RUNNING</code> PID:{pid} CPU:{cpu:.1f}% RSS:{_fmt_bytes(mem)} since {create}")
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         lines.append(f"🟢 <b>{name}</b> — <code>RUNNING</code> PID:{pid}")
                 else:
                     lines.append(f"🔴 <b>{name}</b> — <code>NOT FOUND</code>")
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
     lines.append("")
 
@@ -270,7 +269,7 @@ def build_status_message(
                     mount = metrics.extra.get("mount", "/") if metrics.extra else "/"
                     lines.append(f"{emoji} <b>Storage {mount}</b> — <code>{metrics.usage_percent:.1f}%</code> Used:{_fmt_bytes(metrics.used_bytes)} / {_fmt_bytes(metrics.total_bytes)} Free:{_fmt_bytes(metrics.available_bytes)}")
                 elif rtype == ResourceType.INODES:
-                    lines.append(f"{emoji} <b>Inodes {metrics.extra.get('mount','/')}</b> — <code>{metrics.usage_percent:.1f}%</code> Used:{metrics.used_bytes} / {metrics.total_bytes}")
+                    lines.append(f"{emoji} <b>Inodes {metrics.extra.get('mount','/')}</b> — <code>{metrics.usage_percent:.1f}%</code> Used:{metrics.used_bytes} / {metrics.total_bytes}")  # type: ignore[union-attr]
             else:
                 lines.append(f"⚪ <b>{rtype.value}</b> — <code>unavailable</code>")
     else:
@@ -282,7 +281,7 @@ def build_status_message(
             lines.append(f"🟢 <b>CPU</b> — <code>{cpu:.1f}%</code>")
             lines.append(f"🟢 <b>RAM</b> — <code>{vmem.percent:.1f}%</code> {_fmt_bytes(vmem.used)}/{_fmt_bytes(vmem.total)}")
             lines.append(f"🟢 <b>Storage /</b> — <code>{disk.percent:.1f}%</code> {_fmt_bytes(disk.used)}/{_fmt_bytes(disk.total)}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             lines.append(f"⚪ <b>Resources</b> — unavailable: {e}")
 
     lines.append("")
@@ -329,7 +328,7 @@ def build_status_message(
             has_alert = True
     if resource_monitor:
         for rtype in [ResourceType.CPU, ResourceType.MEMORY, ResourceType.STORAGE, ResourceType.INODES]:
-            st = resource_monitor.get_state(rtype)
+            st = resource_monitor.get_state(rtype)  # type: ignore[assignment]
             if st in (ResourceState.WARNING, ResourceState.CRITICAL):
                 m = resource_monitor.get_metrics(rtype)
                 pct = m.usage_percent if m else 0
@@ -347,7 +346,7 @@ def build_status_message(
         hrs = int((uptime % 86400) // 3600)
         lines.append("")
         lines.append(f"<code>{hostname} up {days}d {hrs}h | {platform.system()} {platform.release()}</code>")
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
 
     return "\n".join(lines)

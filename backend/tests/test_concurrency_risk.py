@@ -7,7 +7,8 @@ Verifies:
 3. Complete Failure-Mode Matrix: Missing or invalid risk parameters fail closed safely.
 """
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
+
 import pytest
 
 from app.rms.checks.duplicate import DuplicateCheck
@@ -24,7 +25,10 @@ from app.rms.models import (
     RMSOutcome,
     StrategyConfig,
 )
-from app.services.kill_switch import is_account_kill_switch_active, _arm_kill_switch_cache
+from app.services.kill_switch import (
+    _arm_kill_switch_cache,
+    is_account_kill_switch_active,
+)
 
 
 class TestConcurrencyAndExecutionBoundary:
@@ -82,7 +86,7 @@ class TestConcurrencyAndExecutionBoundary:
         )
 
         # Pipeline checks kill switch state before submission
-        ks_active = is_account_kill_switch_active(intent.account_id)
+        ks_active = is_account_kill_switch_active(intent.account_id)  # pyrefly: ignore[bad-argument-type]
         if not ks_active:
             await mock_broker_adapter.submit_order(intent)
 
@@ -104,7 +108,7 @@ class TestConcurrencyAndExecutionBoundary:
 
         res = check.evaluate(intent, ctx)
         assert res.outcome == RMSOutcome.REJECT
-        assert "DUPLICATE_SIGNAL" in res.reason
+        assert "DUPLICATE_SIGNAL" in res.reason  # pyrefly: ignore[not-iterable]
 
     def test_concurrency_position_limit_atomic_rejection(self):
         """Verify that when 2 workers process signals concurrently, the 3rd is rejected."""
@@ -113,20 +117,20 @@ class TestConcurrencyAndExecutionBoundary:
 
         # Worker A processes position 1
         ctx_a = RMSContext(strategy_configs={"model_blue": strat_cfg}, open_positions={(7, "model_blue"): 0})
-        intent_a = OrderIntent(signal_id="sig_a", strategy_id="model_blue", action=OrderAction.OPEN, intent_mode=ExecutionIntentMode.OPEN, account_id=7, legs=[OrderLeg(symbol="AAPL", side=OrderSide.BUY, quantity=5, price=Decimal("100"), contract_month="202609")])
+        intent_a = OrderIntent(signal_id="sig_a", strategy_id="model_blue", action=OrderAction.OPEN, intent_mode=ExecutionIntentMode.OPEN, account_id=7, legs=[OrderLeg(symbol="AAPL", side=OrderSide.BUY, quantity=5, price=Decimal(100), contract_month="202609")])
         assert pos_check.evaluate(intent_a, ctx_a).outcome == RMSOutcome.PASS
 
         # Worker B processes position 2
         ctx_b = RMSContext(strategy_configs={"model_blue": strat_cfg}, open_positions={(7, "model_blue"): 1})
-        intent_b = OrderIntent(signal_id="sig_b", strategy_id="model_blue", action=OrderAction.OPEN, intent_mode=ExecutionIntentMode.OPEN, account_id=7, legs=[OrderLeg(symbol="AAPL", side=OrderSide.BUY, quantity=5, price=Decimal("100"), contract_month="202609")])
+        intent_b = OrderIntent(signal_id="sig_b", strategy_id="model_blue", action=OrderAction.OPEN, intent_mode=ExecutionIntentMode.OPEN, account_id=7, legs=[OrderLeg(symbol="AAPL", side=OrderSide.BUY, quantity=5, price=Decimal(100), contract_month="202609")])
         assert pos_check.evaluate(intent_b, ctx_b).outcome == RMSOutcome.PASS
 
         # Worker C attempts position 3 -> REJECTED
         ctx_c = RMSContext(strategy_configs={"model_blue": strat_cfg}, open_positions={(7, "model_blue"): 2})
-        intent_c = OrderIntent(signal_id="sig_c", strategy_id="model_blue", action=OrderAction.OPEN, intent_mode=ExecutionIntentMode.OPEN, account_id=7, legs=[OrderLeg(symbol="AAPL", side=OrderSide.BUY, quantity=5, price=Decimal("100"), contract_month="202609")])
+        intent_c = OrderIntent(signal_id="sig_c", strategy_id="model_blue", action=OrderAction.OPEN, intent_mode=ExecutionIntentMode.OPEN, account_id=7, legs=[OrderLeg(symbol="AAPL", side=OrderSide.BUY, quantity=5, price=Decimal(100), contract_month="202609")])
         res_c = pos_check.evaluate(intent_c, ctx_c)
         assert res_c.outcome == RMSOutcome.REJECT
-        assert "OPEN_POSITION_LIMIT_REACHED" in res_c.reason
+        assert "OPEN_POSITION_LIMIT_REACHED" in res_c.reason  # pyrefly: ignore[not-iterable]
 
 
 class TestFailureModeMatrix:
@@ -135,24 +139,24 @@ class TestFailureModeMatrix:
     def test_missing_strategy_config(self):
         check = OpenPositionLimitCheck()
         ctx = RMSContext(strategy_configs={})
-        intent = OrderIntent(signal_id="s1", strategy_id="unknown_strat", action=OrderAction.OPEN, intent_mode=ExecutionIntentMode.OPEN, account_id=7, legs=[OrderLeg(symbol="AAPL", side=OrderSide.BUY, quantity=1, price=Decimal("100"), contract_month="202609")])
+        intent = OrderIntent(signal_id="s1", strategy_id="unknown_strat", action=OrderAction.OPEN, intent_mode=ExecutionIntentMode.OPEN, account_id=7, legs=[OrderLeg(symbol="AAPL", side=OrderSide.BUY, quantity=1, price=Decimal(100), contract_month="202609")])
         res = check.evaluate(intent, ctx)
         assert res.outcome == RMSOutcome.REJECT
-        assert "MISSING_STRATEGY_CONFIG" in res.reason
+        assert "MISSING_STRATEGY_CONFIG" in res.reason  # pyrefly: ignore[not-iterable]
 
     def test_missing_symbol_limit(self):
         check = MoneyPerStockCheck()
         ctx = RMSContext(default_symbol_limits={}, per_symbol_limits={})
-        intent = OrderIntent(signal_id="s2", strategy_id="model_blue", action=OrderAction.OPEN, intent_mode=ExecutionIntentMode.OPEN, account_id=7, legs=[OrderLeg(symbol="MSFT", side=OrderSide.BUY, quantity=1, price=Decimal("100"), contract_month="202609", notional=Decimal("100"))])
+        intent = OrderIntent(signal_id="s2", strategy_id="model_blue", action=OrderAction.OPEN, intent_mode=ExecutionIntentMode.OPEN, account_id=7, legs=[OrderLeg(symbol="MSFT", side=OrderSide.BUY, quantity=1, price=Decimal(100), contract_month="202609", notional=Decimal(100))])
         res = check.evaluate(intent, ctx)
         assert res.outcome == RMSOutcome.REJECT
-        assert "NO_SYMBOL_LIMIT_CONFIGURED" in res.reason
+        assert "NO_SYMBOL_LIMIT_CONFIGURED" in res.reason  # pyrefly: ignore[not-iterable]
 
     def test_zero_position_limit(self):
         check = OpenPositionLimitCheck()
         strat_cfg = StrategyConfig(strategy_id="model_blue", max_open_positions=0)
         ctx = RMSContext(strategy_configs={"model_blue": strat_cfg})
-        intent = OrderIntent(signal_id="s3", strategy_id="model_blue", action=OrderAction.OPEN, intent_mode=ExecutionIntentMode.OPEN, account_id=7, legs=[OrderLeg(symbol="AAPL", side=OrderSide.BUY, quantity=1, price=Decimal("100"), contract_month="202609")])
+        intent = OrderIntent(signal_id="s3", strategy_id="model_blue", action=OrderAction.OPEN, intent_mode=ExecutionIntentMode.OPEN, account_id=7, legs=[OrderLeg(symbol="AAPL", side=OrderSide.BUY, quantity=1, price=Decimal(100), contract_month="202609")])
         res = check.evaluate(intent, ctx)
         assert res.outcome == RMSOutcome.REJECT
-        assert "INVALID_MAX_POSITIONS_LIMIT" in res.reason
+        assert "INVALID_MAX_POSITIONS_LIMIT" in res.reason  # pyrefly: ignore[not-iterable]

@@ -70,9 +70,9 @@ class CreateAccountRequest(BaseModel):
 
     name: str = Field(..., min_length=1)
     ibkr_account: str = Field(..., min_length=1)
-    total_margin: Decimal = Field(..., gt=0)
+    total_margin: Decimal = Field(..., gt=Decimal(0))
     enabled: bool = True
-    default_symbol_limit: Decimal | None = Field(None, gt=0)
+    default_symbol_limit: Decimal | None = Field(None, gt=Decimal(0))
 
 
 class PatchAccountRequest(BaseModel):
@@ -80,9 +80,9 @@ class PatchAccountRequest(BaseModel):
 
     name: str | None = Field(None, min_length=1)
     ibkr_account: str | None = Field(None, min_length=1)
-    total_margin: Decimal | None = Field(None, gt=0)
+    total_margin: Decimal | None = Field(None, gt=Decimal(0))
     enabled: bool | None = None
-    default_symbol_limit: Decimal | None = Field(None, gt=0)
+    default_symbol_limit: Decimal | None = Field(None, gt=Decimal(0))
     daily_target: Decimal | None = None
     daily_stop: Decimal | None = None
     daily_target_unit: str | None = None
@@ -95,12 +95,12 @@ class CreateAllocationRequest(BaseModel):
     """Payload to assign a strategy allocation to an account."""
 
     strategy_id: str = Field(..., min_length=1)
-    alloc_pct: Decimal = Field(..., ge=0, le=1)
+    alloc_pct: Decimal = Field(..., ge=Decimal(0), le=Decimal(1))
     max_open_positions: int | None = Field(None, ge=0)
     target: Decimal = Field(Decimal("500.00"))
     stop: Decimal = Field(Decimal("-250.00"))
     time_limit: int = Field(3600, ge=0)
-    pair_max_allocation_pct: Decimal = Field(Decimal("0.10"), gt=0, le=1)
+    pair_max_allocation_pct: Decimal = Field(Decimal("0.10"), gt=Decimal(0), le=Decimal(1))
     target_unit: str = "ABSOLUTE"
     stop_unit: str = "ABSOLUTE"
     exit_automation_enabled: bool = False
@@ -118,10 +118,10 @@ class AccountDeleteCheckResponse(BaseModel):
 class PatchAllocationRequest(BaseModel):
     """Partial update for an allocation."""
 
-    alloc_pct: Decimal | None = Field(None, ge=0, le=1)
+    alloc_pct: Decimal | None = Field(None, ge=Decimal(0), le=Decimal(1))
     enabled: bool | None = None
     max_open_positions: int | None = Field(None, ge=0)
-    pair_max_allocation_pct: Decimal | None = Field(None, gt=0, le=1)
+    pair_max_allocation_pct: Decimal | None = Field(None, gt=Decimal(0), le=Decimal(1))
     target: Decimal | None = None
     stop: Decimal | None = None
     time_limit: int | None = Field(None, ge=0)
@@ -133,13 +133,13 @@ class PatchAllocationRequest(BaseModel):
 class PutSymbolLimitRequest(BaseModel):
     """Upsert per-symbol money limit."""
 
-    money_limit: Decimal = Field(..., gt=0)
+    money_limit: Decimal = Field(..., gt=Decimal(0))
 
 
 class PutDefaultSymbolLimitRequest(BaseModel):
     """Update account default symbol money limit."""
 
-    default_symbol_limit: Decimal = Field(..., gt=0)
+    default_symbol_limit: Decimal = Field(..., gt=Decimal(0))
 
 
 class ExecutionSettingsSchema(BaseModel):
@@ -187,14 +187,14 @@ class PatchMarginSettingsRequest(BaseModel):
 
     check_enabled: bool | None = None
     gate_basis: str | None = None
-    min_free_buffer: Decimal | None = Field(None, ge=0)
-    min_free_pct_of_netliq: Decimal | None = Field(None, ge=0, le=1)
+    min_free_buffer: Decimal | None = Field(None, ge=Decimal(0))
+    min_free_pct_of_netliq: Decimal | None = Field(None, ge=Decimal(0), le=Decimal(1))
     comfort_ratio: Decimal | None = None
     confirm_borderline: bool | None = None
     enforce_look_ahead: bool | None = None
     reject_on_stale_snapshot: bool | None = None
-    default_rate: Decimal | None = Field(None, gt=0, le=1)
-    rate_safety_multiplier: Decimal | None = Field(None, ge=1, le=2)
+    default_rate: Decimal | None = Field(None, gt=Decimal(0), le=Decimal(1))
+    rate_safety_multiplier: Decimal | None = Field(None, ge=Decimal(1), le=Decimal(2))
 
 
 class SquareOffResponse(BaseModel):

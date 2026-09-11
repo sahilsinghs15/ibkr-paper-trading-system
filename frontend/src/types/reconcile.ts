@@ -55,6 +55,8 @@ export type ReconcileDiffRow = {
   broker_qty: number | null
   ledger_qty: number | null
   in_flight: boolean
+  engine_qty?: number | null
+  manual_qty?: number | null
 }
 
 export type ReconcilePositionsResponse = {

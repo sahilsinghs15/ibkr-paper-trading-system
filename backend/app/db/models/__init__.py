@@ -1,6 +1,7 @@
 """Database ORM models package."""
 
 from app.db.models.account import AccountModel, PerSymbolLimitModel
+from app.db.models.account_loss_state import AccountLossStateModel
 from app.db.models.basket import BasketModel
 from app.db.models.broker_position import BrokerPositionModel, PositionReconcileRunModel
 from app.db.models.event import EventLogModel
@@ -9,6 +10,13 @@ from app.db.models.execution_claim import ExecutionClaimModel
 from app.db.models.execution_settings import ExecutionSettingsModel
 from app.db.models.instrument import InstrumentModel
 from app.db.models.kill_switch import KillSwitchOperationModel
+from app.db.models.manual_order import (
+    ManualAuditEventModel,
+    ManualExecutionModel,
+    ManualHaltStateModel,
+    ManualOrderModel,
+    ManualPositionModel,
+)
 from app.db.models.margin_rate import MarginRateModel
 from app.db.models.margin_settings import MarginSettingsModel
 from app.db.models.notification_read import (
@@ -17,13 +25,13 @@ from app.db.models.notification_read import (
 )
 from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
-from app.db.models.account_loss_state import AccountLossStateModel
-from app.db.models.trade_execution import TradeExecutionModel
 from app.db.models.signal import SignalModel
 from app.db.models.strategy import AllocationModel, StrategyModel
+from app.db.models.trade_execution import TradeExecutionModel
 from app.db.models.user import UserModel
 
 __all__ = [
+    "AccountLossStateModel",
     "AccountModel",
     "AllocationModel",
     "BasketModel",
@@ -34,16 +42,20 @@ __all__ = [
     "ExecutionSettingsModel",
     "InstrumentModel",
     "KillSwitchOperationModel",
+    "ManualAuditEventModel",
+    "ManualExecutionModel",
+    "ManualHaltStateModel",
+    "ManualOrderModel",
+    "ManualPositionModel",
     "MarginRateModel",
     "MarginSettingsModel",
     "OrderModel",
     "PerSymbolLimitModel",
-    "AccountLossStateModel",
-    "TradeExecutionModel",
     "PositionModel",
     "PositionReconcileRunModel",
     "SignalModel",
     "StrategyModel",
+    "TradeExecutionModel",
     "UserModel",
     "UserNotificationReadModel",
     "UserNotificationStateModel",

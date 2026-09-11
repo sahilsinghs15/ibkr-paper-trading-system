@@ -95,13 +95,13 @@ class ContractMonthCheck(BaseRMSCheck):
         if intent.action == OrderAction.OPEN:
             if context.rollover_checker is not None:
                 should_rollover = context.rollover_checker(
-                    first_month, context.current_time, context.rollover_window_days
+                    first_month, context.current_time, context.rollover_window_days  # type: ignore[arg-type]
                 )
             elif context.target_rollover_month is not None:
                 should_rollover = True
             else:
                 should_rollover = is_default_rollover_active(
-                    first_month, context.current_time, context.rollover_window_days
+                    first_month, context.current_time, context.rollover_window_days  # type: ignore[arg-type]
                 )
 
         if not should_rollover and not mismatched_legs:
@@ -115,9 +115,9 @@ class ContractMonthCheck(BaseRMSCheck):
         if context.target_rollover_month is not None:
             target_month = context.target_rollover_month
         elif should_rollover:
-            target_month = get_next_contract_month(first_month)
+            target_month = get_next_contract_month(first_month)  # type: ignore[arg-type]
         else:
-            target_month = first_month
+            target_month = first_month  # type: ignore[assignment]
 
         adjusted_legs: list[OrderLeg] = [
             replace(leg, contract_month=target_month) for leg in intent.legs

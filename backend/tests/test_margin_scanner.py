@@ -63,8 +63,8 @@ async def test_delta_only_skips_fresh_rows() -> None:
     ):
         counts = await scanner.run_scan(budget_sec=None)
     assert counts["planned"] == 1
-    assert scanner._adapter.probe_margin.await_count == 1
-    assert scanner._adapter.probe_margin.await_args.kwargs["side"] == "SELL"
+    assert scanner._adapter.probe_margin.await_count == 1  # pyrefly: ignore[missing-attribute]
+    assert scanner._adapter.probe_margin.await_args.kwargs["side"] == "SELL"  # pyrefly: ignore[missing-attribute]
 
 
 @pytest.mark.asyncio
@@ -79,11 +79,11 @@ async def test_both_sides_written_independently() -> None:
     ):
         counts = await scanner.run_scan(budget_sec=None)
     assert counts["written"] == 2
-    sides = {c.kwargs["side"] for c in scanner._rate_service.upsert_rate.await_args_list}
+    sides = {c.kwargs["side"] for c in scanner._rate_service.upsert_rate.await_args_list}  # pyrefly: ignore[missing-attribute]
     assert sides == {"BUY", "SELL"}
     assert all(
         c.kwargs["source"] == SOURCE_WHAT_IF
-        for c in scanner._rate_service.upsert_rate.await_args_list
+        for c in scanner._rate_service.upsert_rate.await_args_list  # pyrefly: ignore[missing-attribute]
     )
 
 
@@ -100,7 +100,7 @@ async def test_unknown_writes_no_row() -> None:
         counts = await scanner.run_scan(budget_sec=None)
     assert counts["unknown"] == 2
     assert counts["written"] == 0
-    scanner._rate_service.upsert_rate.assert_not_awaited()
+    scanner._rate_service.upsert_rate.assert_not_awaited()  # pyrefly: ignore[missing-attribute]
 
 
 @pytest.mark.asyncio
@@ -142,7 +142,7 @@ async def test_pace_respects_max_per_sec() -> None:
         await scanner.run_scan(budget_sec=None)
         elapsed = time.monotonic() - started
     assert elapsed >= 0.15
-    assert scanner._adapter.probe_margin.await_count == 2
+    assert scanner._adapter.probe_margin.await_count == 2  # pyrefly: ignore[missing-attribute]
 
 
 @pytest.mark.asyncio
@@ -156,7 +156,7 @@ async def test_skips_when_pool_busy() -> None:
     ):
         counts = await scanner.run_scan(budget_sec=None)
     assert counts["skipped"] == 2
-    scanner._adapter.probe_margin.assert_not_awaited()
+    scanner._adapter.probe_margin.assert_not_awaited()  # pyrefly: ignore[missing-attribute]
 
 
 @pytest.mark.asyncio
@@ -170,7 +170,7 @@ async def test_opens_no_market_data_subscriptions() -> None:
         patch.object(scanner, "_resolve", AsyncMock(return_value=MagicMock())),
     ):
         await scanner.run_scan(budget_sec=None)
-    scanner._adapter._client.reqMktData.assert_not_called()
+    scanner._adapter._client.reqMktData.assert_not_called()  # pyrefly: ignore[missing-attribute]
 
 
 @pytest.mark.asyncio

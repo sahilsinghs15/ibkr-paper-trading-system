@@ -13,7 +13,11 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes.health import router as health_router
 from app.api.routes.webhooks import router as webhooks_router
-from app.core.config import assert_webhook_auth_configured, get_settings
+from app.core.config import (
+    assert_webhook_auth_configured,
+    get_settings,
+    running_under_pytest,
+)
 from app.core.logger import setup_logging
 from app.db.session import AsyncSessionLocal
 
@@ -38,6 +42,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
 def create_ingest_app() -> FastAPI:
     """Factory for the webhook ingest FastAPI application."""
     settings = get_settings()
+    if not running_under_pytest():
+        assert_webhook_auth_configured(settings)
 
     fastapi_app = FastAPI(
         title=f"{settings.app_name} — Webhook Ingest",

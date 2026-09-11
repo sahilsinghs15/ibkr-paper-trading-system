@@ -32,7 +32,7 @@ def _postgres_host_port(settings: WatchdogSettings) -> tuple[str, int]:
         host = url.host or settings.postgres_host
         port = url.port or settings.postgres_port
         return host, int(port)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return settings.postgres_host, settings.postgres_port
 
 
@@ -52,14 +52,14 @@ def _tcp_open(host: str, port: int, timeout: float = 1.0) -> bool:
 
 async def _tcp_open_async(host: str, port: int, timeout: float = 1.0) -> bool:
     try:
-        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
+        _reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
         writer.close()
         try:
             await writer.wait_closed()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -104,9 +104,9 @@ def _find_pid(pattern: str) -> int | None:
                 cmd = " ".join(p.info.get("cmdline") or [])
                 if pattern in cmd or pattern in (p.info.get("name") or ""):
                     return int(p.info["pid"])
-            except Exception:
+            except Exception:  # noqa: BLE001, S112
                 continue
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
     return None
 
@@ -126,7 +126,7 @@ def _log_excerpt(path: Path, marker: str | None = None, max_chars: int = 400) ->
         lines = [ln for ln in excerpt.splitlines() if ln.strip()]
         tail = "\n".join(lines[-3:])
         return _sanitize(tail, max_len=max_chars) if tail else None
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -156,7 +156,6 @@ class GatewayHealthChecker(ServiceHealthChecker):
         if not tcp_ok:
             # distinguish Xvfb vs Gateway: check Xvfb display
             xvfb_pid = _find_pid("Xvfb :99")
-            xvfb_detail = None
             if xvfb_pid is None:
                 # check if Xvfb process missing at all
                 try:
@@ -180,7 +179,7 @@ class GatewayHealthChecker(ServiceHealthChecker):
                             trading_impact="Order execution is BLOCKED.",
                             operator_action="Inspect Xvfb + IBC + ib_gateway.log; systemd will restart ibgateway.service automatically when trading session is active. No action required outside trading hours.",
                         )
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
             return HealthResult(
                 service=ServiceName.GATEWAY,
@@ -217,7 +216,7 @@ class GatewayHealthChecker(ServiceHealthChecker):
                     else:
                         log_excerpt = None
                     break
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
         if missing_marker:
@@ -520,7 +519,7 @@ class DemoHealthChecker(ServiceHealthChecker):
                                 trading_impact="None — execution pipeline does not depend on Demo Streaming.",
                                 operator_action="systemd will restart demo-streaming.service; check Redis.",
                             )
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110
                         pass
                     return HealthResult(
                         service=ServiceName.DEMO,
@@ -665,7 +664,7 @@ class PostgresHealthChecker(ServiceHealthChecker):
             if engine is not None:
                 try:
                     await engine.dispose()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
 
 
@@ -714,7 +713,7 @@ class RedisHealthChecker(ServiceHealthChecker):
             finally:
                 try:
                     await r.aclose()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
         except TimeoutError:
             return HealthResult(

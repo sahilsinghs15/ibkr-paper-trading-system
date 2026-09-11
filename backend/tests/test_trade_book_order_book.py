@@ -244,13 +244,14 @@ async def test_trade_book_order_status_derived(session_factory) -> None:
         await session.commit()
         joined2, total2 = await repo.list_paginated_with_order_status(account_id=acc.id, page=1, page_size=10)
         assert total2 == 2
-        _, detached_st = [p for p in joined2 if p[0].exec_id == f"exec.det.{suffix}"][0]
+        _, detached_st = next(p for p in joined2 if p[0].exec_id == f"exec.det.{suffix}")
         assert detached_st is None
 
 
 @pytest.mark.asyncio
 async def test_trade_book_sync_current_only(session_factory):
     from unittest.mock import MagicMock as MM
+
     from app.db.models.account import AccountModel as AM
     from app.services.trade_book_sync_service import TradeBookSyncService
     client = MM()

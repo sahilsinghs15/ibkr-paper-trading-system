@@ -111,7 +111,7 @@ class ModelBlueSizer:
         if pair_budget is not None:
             budget = pair_budget
         else:
-            budget = self._committed_capital_provider.get_committed(
+            budget = self._committed_capital_provider.get_committed(  # type: ignore[assignment]
                 signal.strategy_id or ""
             )
         if budget is None or budget <= 0:
@@ -128,7 +128,7 @@ class ModelBlueSizer:
                 )
 
         weight_sum = sum(
-            (Decimal(str(abs(leg.weight))) for leg in signal.legs), Decimal(0)
+            (Decimal(str(abs(leg.weight))) for leg in signal.legs), Decimal(0)  # type: ignore[arg-type]
         )
         if abs(weight_sum - Decimal(1)) > WEIGHT_SUM_TOLERANCE:
             raise ModelBlueValidationError(
@@ -142,10 +142,10 @@ class ModelBlueSizer:
             self._size_leg(
                 symbol=leg.symbol,
                 instrument_type=leg.instrument_type,
-                weight=leg.weight,
+                weight=leg.weight,  # type: ignore[arg-type]
                 price=leg.price,
                 direction=signal.direction,
-                target_notional=budget * Decimal(str(abs(leg.weight))),
+                target_notional=budget * Decimal(str(abs(leg.weight))),  # type: ignore[arg-type]
             )
             for leg in signal.legs
         )
@@ -163,7 +163,7 @@ class ModelBlueSizer:
         self._validate_realised_ratio(
             sized, budget=budget, trade_id=signal.trade_id or signal.signal_id or ""
         )
-        return sized
+        return sized  # type: ignore[return-value]
 
     def _validate_realised_ratio(
         self,

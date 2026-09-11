@@ -63,6 +63,8 @@ class ReconcileDiffRow(BaseModel):
     broker_qty: float | None = None
     ledger_qty: float | None = None
     in_flight: bool = False
+    engine_qty: float | None = None
+    manual_qty: float | None = None
 
 
 class ReconcilePositionsResponse(BaseModel):

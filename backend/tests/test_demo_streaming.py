@@ -53,7 +53,7 @@ class FakeStream:
 
 
 def test_cfd_instrument_type_is_preserved() -> None:
-    rows = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=datetime.now(UTC))
+    rows = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=datetime.now(UTC))  # pyrefly: ignore[bad-argument-type]
     assert {row["symbol"]: row["instrument_type"] for row in rows} == {
         "SIL": "CFD",
         "GDX": "CFD",
@@ -117,11 +117,11 @@ async def test_bridge_does_not_replay_baseline_then_emits_close() -> None:
 
     stream = FakeStream()
     bridge = PositionBridge(session_factory=_Factory(), stream=stream, poll_interval=0.01)  # type: ignore[arg-type]
-    open_payload = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=datetime.now(UTC))[0]
+    open_payload = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=datetime.now(UTC))[0]  # pyrefly: ignore[bad-argument-type]
     closed_pos = _Pos()
     closed_pos.risk_state = "CLOSED"
     closed_pos.realised_pnl = Decimal("-48.0251")
-    closed_payload = position_leg_payloads(closed_pos, _Acct(), [], [], timestamp=datetime.now(UTC))[0]
+    closed_payload = position_leg_payloads(closed_pos, _Acct(), [], [], timestamp=datetime.now(UTC))[0]  # pyrefly: ignore[bad-argument-type]
 
     async def first(_session=None):
         return [open_payload]
@@ -156,10 +156,10 @@ async def test_bridge_emits_position_update_when_live_pnl_changes() -> None:
 
     stream = FakeStream()
     bridge = PositionBridge(session_factory=_Factory(), stream=stream, poll_interval=0.01)  # type: ignore[arg-type]
-    open_zero = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=datetime.now(UTC))[0]
+    open_zero = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=datetime.now(UTC))[0]  # pyrefly: ignore[bad-argument-type]
     updated_pos = _Pos()
     updated_pos.live_pnl = Decimal(492)
-    open_live = position_leg_payloads(updated_pos, _Acct(), [], [], timestamp=datetime.now(UTC))[0]
+    open_live = position_leg_payloads(updated_pos, _Acct(), [], [], timestamp=datetime.now(UTC))[0]  # pyrefly: ignore[bad-argument-type]
 
     async def first(_session=None):
         return [open_zero]
@@ -193,13 +193,13 @@ async def test_vanished_open_row_uses_closed_realised_pnl() -> None:
 
     stream = FakeStream()
     bridge = PositionBridge(session_factory=_Factory(), stream=stream, poll_interval=0.01)  # type: ignore[arg-type]
-    open_payload = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=datetime.now(UTC))[0]
+    open_payload = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=datetime.now(UTC))[0]  # pyrefly: ignore[bad-argument-type]
     closed_pos = _Pos()
     closed_pos.risk_state = "CLOSED"
     closed_pos.realised_pnl = Decimal("-48.0251")
     closed_pos.commission = Decimal("1.25")
     closed_pos.live_pnl = Decimal("-48.0251")
-    closed_payload = position_leg_payloads(closed_pos, _Acct(), [], [], timestamp=datetime.now(UTC))[0]
+    closed_payload = position_leg_payloads(closed_pos, _Acct(), [], [], timestamp=datetime.now(UTC))[0]  # pyrefly: ignore[bad-argument-type]
 
     async def first(_session=None):
         return [open_payload]
@@ -284,7 +284,7 @@ def test_open_position_leg_payload_realized_pnl_is_none() -> None:
     open_pos.realised_pnl = Decimal(0)
     open_pos.live_pnl = Decimal("125.40")
 
-    legs = position_leg_payloads(open_pos, _Acct(), [], [], timestamp=datetime.now(UTC))
+    legs = position_leg_payloads(open_pos, _Acct(), [], [], timestamp=datetime.now(UTC))  # pyrefly: ignore[bad-argument-type]
     assert legs[0]["unrealized_pnl"] == "125.40"
     assert legs[0]["realized_pnl"] is None
 
@@ -293,7 +293,7 @@ def test_open_position_leg_payload_realized_pnl_is_none() -> None:
     closed_pos.realised_pnl = Decimal("492.00")
     closed_pos.live_pnl = Decimal("492.00")
 
-    closed_legs = position_leg_payloads(closed_pos, _Acct(), [], [], timestamp=datetime.now(UTC))
+    closed_legs = position_leg_payloads(closed_pos, _Acct(), [], [], timestamp=datetime.now(UTC))  # pyrefly: ignore[bad-argument-type]
     assert closed_legs[0]["unrealized_pnl"] is None
     assert closed_legs[0]["realized_pnl"] == "492.00"
 
@@ -332,7 +332,7 @@ async def test_load_signals_account_filtering_query_safety() -> None:
     session.execute.return_value = mock_result
 
     res = await load_signals(session, account_id=1, ibkr_account="DU12345", return_dict=True)
-    assert res["total"] == 0
+    assert res["total"] == 0  # pyrefly: ignore[bad-index]
     assert session.execute.called
 
 
@@ -379,7 +379,7 @@ class _SigStub:
 
 
 def test_signal_with_no_orders_is_processing() -> None:
-    result = reconcile_signal_status(_SigStub(), [], [])
+    result = reconcile_signal_status(_SigStub(), [], [])  # pyrefly: ignore[bad-argument-type]
     assert result[0] == "PROCESSING"
     assert result[1] is True
     assert result[3] is None
@@ -409,7 +409,7 @@ def test_cross_basket_legs_do_not_report_filled() -> None:
             "is_compensation": False,
         },
     ]
-    result = reconcile_signal_status(_SigStub(), orders, [])
+    result = reconcile_signal_status(_SigStub(), orders, [])  # pyrefly: ignore[bad-argument-type]
     assert result[0] == "PROCESSING"
 
 
@@ -440,11 +440,11 @@ def test_processed_at_prefers_db_value_then_last_fill() -> None:
             "is_compensation": False,
         },
     ]
-    with_db = reconcile_signal_status(_SigStub(processed_at=db_ts, received_at=received), orders, [])
+    with_db = reconcile_signal_status(_SigStub(processed_at=db_ts, received_at=received), orders, [])  # pyrefly: ignore[bad-argument-type]
     assert with_db[0] == "ACCEPTED"
     assert with_db[3] == db_ts.isoformat()
 
-    without_db = reconcile_signal_status(_SigStub(received_at=received), orders, [])
+    without_db = reconcile_signal_status(_SigStub(received_at=received), orders, [])  # pyrefly: ignore[bad-argument-type]
     assert without_db[3] == "2026-08-21T10:45:00+00:00"
     assert without_db[3] != received.isoformat()
 
@@ -475,7 +475,7 @@ def test_filled_orders_are_accepted_despite_sibling_reject_reason() -> None:
         },
     ]
     result = reconcile_signal_status(
-        _SigStub(
+        _SigStub(  # pyrefly: ignore[bad-argument-type]
             status="REJECTED",
             reject_reason="Account U7211090: MODEL_BLUE_MIN_SHARE",
         ),
@@ -500,7 +500,7 @@ def test_reconcile_is_deterministic() -> None:
         }
     ]
     sig = _SigStub()
-    assert reconcile_signal_status(sig, orders, []) == reconcile_signal_status(sig, orders, [])
+    assert reconcile_signal_status(sig, orders, []) == reconcile_signal_status(sig, orders, [])  # pyrefly: ignore[bad-argument-type]
 
 
 def test_open_leg_quantity_ignores_inflight_close_order() -> None:
@@ -542,7 +542,7 @@ def test_open_leg_quantity_ignores_inflight_close_order() -> None:
             internal_order_id="trade:CLOSE:leg0",
         ),
     ]
-    legs = position_leg_payloads(_Pos(), _Acct(), baskets, orders, timestamp=datetime.now(UTC))
+    legs = position_leg_payloads(_Pos(), _Acct(), baskets, orders, timestamp=datetime.now(UTC))  # pyrefly: ignore[bad-argument-type]
     sil = next(leg for leg in legs if leg["symbol"] == "SIL")
     assert sil["filled_quantity"] == "275"
     assert sil["order_status"] == "FILLED"
@@ -642,15 +642,15 @@ async def test_pnl_coalesce_emits_one_leg_per_trade() -> None:
     stream = FakeStream()
     bridge = PositionBridge(
         session_factory=_Factory(),  # type: ignore[arg-type]
-        stream=stream,
+        stream=stream,  # pyrefly: ignore[bad-argument-type]
         poll_interval=0.01,
         pnl_emit_interval=5.0,
     )
     ts = datetime.now(UTC)
-    open_legs = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=ts)
+    open_legs = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=ts)  # pyrefly: ignore[bad-argument-type]
     updated = _Pos()
     updated.live_pnl = Decimal(492)
-    live_legs = position_leg_payloads(updated, _Acct(), [], [], timestamp=ts)
+    live_legs = position_leg_payloads(updated, _Acct(), [], [], timestamp=ts)  # pyrefly: ignore[bad-argument-type]
 
     async def baseline(_session=None):
         return open_legs
@@ -682,18 +682,18 @@ async def test_pnl_coalesce_respects_interval() -> None:
     stream = FakeStream()
     bridge = PositionBridge(
         session_factory=_Factory(),  # type: ignore[arg-type]
-        stream=stream,
+        stream=stream,  # pyrefly: ignore[bad-argument-type]
         poll_interval=0.01,
         pnl_emit_interval=60.0,
     )
     ts = datetime.now(UTC)
-    legs_v1 = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=ts)
+    legs_v1 = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=ts)  # pyrefly: ignore[bad-argument-type]
     pos_v2 = _Pos()
     pos_v2.live_pnl = Decimal(100)
-    legs_v2 = position_leg_payloads(pos_v2, _Acct(), [], [], timestamp=ts)
+    legs_v2 = position_leg_payloads(pos_v2, _Acct(), [], [], timestamp=ts)  # pyrefly: ignore[bad-argument-type]
     pos_v3 = _Pos()
     pos_v3.live_pnl = Decimal(200)
-    legs_v3 = position_leg_payloads(pos_v3, _Acct(), [], [], timestamp=ts)
+    legs_v3 = position_leg_payloads(pos_v3, _Acct(), [], [], timestamp=ts)  # pyrefly: ignore[bad-argument-type]
 
     async def collect_v1(_session=None):
         return legs_v1
@@ -731,12 +731,12 @@ async def test_structural_fill_change_emits_immediately() -> None:
     stream = FakeStream()
     bridge = PositionBridge(
         session_factory=_Factory(),  # type: ignore[arg-type]
-        stream=stream,
+        stream=stream,  # pyrefly: ignore[bad-argument-type]
         poll_interval=0.01,
         pnl_emit_interval=60.0,
     )
     ts = datetime.now(UTC)
-    partial = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=ts)
+    partial = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=ts)  # pyrefly: ignore[bad-argument-type]
     partial[0] = dict(partial[0])
     partial[0]["filled_quantity"] = "100"
 
@@ -744,7 +744,7 @@ async def test_structural_fill_change_emits_immediately() -> None:
         return partial
 
     async def filled(_session=None):
-        full = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=ts)
+        full = position_leg_payloads(_Pos(), _Acct(), [], [], timestamp=ts)  # pyrefly: ignore[bad-argument-type]
         full[0] = dict(full[0])
         full[0]["filled_quantity"] = "275"
         return full

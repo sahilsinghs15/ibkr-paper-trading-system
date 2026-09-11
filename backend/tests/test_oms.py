@@ -144,7 +144,7 @@ async def test_oms_accepts_rms_pass(
     assert res.order.quantity == 1
     assert res.order.ibkr_order_id == 100
     assert len(res.orders) == 1
-    mock_adapter._client.placeOrder.assert_called_once()
+    mock_adapter._client.placeOrder.assert_called_once()  # pyrefly: ignore[missing-attribute]
 
 
 @pytest.mark.asyncio
@@ -192,13 +192,13 @@ async def test_oms_submits_every_intent_leg(
     assert [o.side for o in res.orders] == [OrderSide.BUY, OrderSide.SELL]
     assert res.orders[0].parent_signal_id == "MBG-XLE-XOP-OPEN"
     assert res.orders[1].parent_signal_id == "MBG-XLE-XOP-OPEN"
-    assert mock_adapter._client.placeOrder.call_count == 2
+    assert mock_adapter._client.placeOrder.call_count == 2  # pyrefly: ignore[missing-attribute]
     submitted_symbols = [
-        call.args[1].symbol for call in mock_adapter._client.placeOrder.call_args_list
+        call.args[1].symbol for call in mock_adapter._client.placeOrder.call_args_list  # pyrefly: ignore[missing-attribute]
     ]
     assert submitted_symbols == ["XLE", "XOP"]
-    xle_ib = mock_adapter._client.placeOrder.call_args_list[0].args[2]
-    xop_ib = mock_adapter._client.placeOrder.call_args_list[1].args[2]
+    xle_ib = mock_adapter._client.placeOrder.call_args_list[0].args[2]  # pyrefly: ignore[missing-attribute]
+    xop_ib = mock_adapter._client.placeOrder.call_args_list[1].args[2]  # pyrefly: ignore[missing-attribute]
     assert xle_ib.totalQuantity == 399.4248
     assert xop_ib.totalQuantity == 93.0625
 
@@ -554,7 +554,7 @@ async def test_place_order_does_not_claim_submitted(
 ) -> None:
     oms = OMSService(adapter=mock_adapter)
     res = await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)
-    mock_adapter._client.placeOrder.assert_called_once()
+    mock_adapter._client.placeOrder.assert_called_once()  # pyrefly: ignore[missing-attribute]
     assert res.order.status == OMSOrderStatus.PENDING
     assert res.order.status is not OMSOrderStatus.SUBMITTED
 
@@ -643,7 +643,7 @@ async def test_api_error_321_is_error(
     oms = OMSService(adapter=mock_adapter)
     order = (await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)).order
     tws_id = int(order.ibkr_order_id)  # type: ignore[arg-type]
-    mock_adapter._client.get_request_type.return_value = "order"
+    mock_adapter._client.get_request_type.return_value = "order"  # pyrefly: ignore[missing-attribute]
     mock_adapter.on_error(reqId=tws_id, errorCode=321, errorString="Error 321: read-only API")
     stored = oms.get_order(order.internal_order_id)
     assert stored is not None
@@ -736,7 +736,7 @@ async def test_10243_does_not_overwrite_filled(
     mock_adapter.on_order_status(
         tws_id, "Filled", 1.0, 0.0, 25.0, 0, 0, 25.0, 1, "", 0.0
     )
-    assert oms.get_order(res.order.internal_order_id).status == OMSOrderStatus.FILLED
+    assert oms.get_order(res.order.internal_order_id).status == OMSOrderStatus.FILLED  # pyrefly: ignore[missing-attribute]
     mock_adapter.on_error(
         reqId=tws_id,
         errorCode=10243,
@@ -756,7 +756,7 @@ async def test_399_and_2109_are_non_terminal_warnings(
     oms = OMSService(adapter=mock_adapter)
     res = await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)
     tws_id = int(res.order.ibkr_order_id)  # type: ignore[arg-type]
-    mock_adapter._client.get_request_type.return_value = "order"
+    mock_adapter._client.get_request_type.return_value = "order"  # pyrefly: ignore[missing-attribute]
     mock_adapter.on_error(
         reqId=tws_id,
         errorCode=399,
@@ -776,7 +776,7 @@ async def test_399_and_2109_are_non_terminal_warnings(
     mock_adapter.on_order_status(
         tws_id, "Submitted", 0.0, 1.0, 0.0, 0, 0, 0.0, 1, "", 0.0
     )
-    assert oms.get_order(res.order.internal_order_id).status == OMSOrderStatus.SUBMITTED
+    assert oms.get_order(res.order.internal_order_id).status == OMSOrderStatus.SUBMITTED  # pyrefly: ignore[missing-attribute]
 
 
 @pytest.mark.asyncio
@@ -789,12 +789,12 @@ async def test_tws_error_attaches_to_already_rejected_order(
     oms = OMSService(adapter=mock_adapter)
     order = (await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)).order
     tws_id = int(order.ibkr_order_id)  # type: ignore[arg-type]
-    mock_adapter._client.get_request_type.return_value = "order"
+    mock_adapter._client.get_request_type.return_value = "order"  # pyrefly: ignore[missing-attribute]
     mock_adapter.on_order_status(
         tws_id, "Inactive", 0.0, float(order.quantity), 0.0, 0, 0, 0.0, 1, "", 0.0
     )
-    assert oms.get_order(order.internal_order_id).status == OMSOrderStatus.REJECTED
-    assert not oms.get_order(order.internal_order_id).error_message
+    assert oms.get_order(order.internal_order_id).status == OMSOrderStatus.REJECTED  # pyrefly: ignore[missing-attribute]
+    assert not oms.get_order(order.internal_order_id).error_message  # pyrefly: ignore[missing-attribute]
 
     mock_adapter.on_error(
         reqId=tws_id,
@@ -817,9 +817,9 @@ async def test_201_is_rejected_and_202_is_cancelled(
     oms = OMSService(adapter=mock_adapter)
     first = (await oms.submit_intent(intent=sample_intent, rms_result=pass_rms_result)).order
     tws_id = int(first.ibkr_order_id)  # type: ignore[arg-type]
-    mock_adapter._client.get_request_type.return_value = "order"
+    mock_adapter._client.get_request_type.return_value = "order"  # pyrefly: ignore[missing-attribute]
     mock_adapter.on_error(reqId=tws_id, errorCode=201, errorString="Order rejected")
-    assert oms.get_order(first.internal_order_id).status == OMSOrderStatus.REJECTED
+    assert oms.get_order(first.internal_order_id).status == OMSOrderStatus.REJECTED  # pyrefly: ignore[missing-attribute]
 
     intent2 = OrderIntent(
         signal_id="SIG_202",
@@ -838,7 +838,7 @@ async def test_201_is_rejected_and_202_is_cancelled(
     second = (await oms.submit_intent(intent=intent2, rms_result=rms2)).order
     tws2 = int(second.ibkr_order_id)  # type: ignore[arg-type]
     mock_adapter.on_error(reqId=tws2, errorCode=202, errorString="Order Canceled")
-    assert oms.get_order(second.internal_order_id).status == OMSOrderStatus.CANCELLED
+    assert oms.get_order(second.internal_order_id).status == OMSOrderStatus.CANCELLED  # pyrefly: ignore[missing-attribute]
 
 
 def test_adopt_renumbers_tws_id_via_perm_id(

@@ -67,7 +67,7 @@ class RedZoneReleaseService:
                     await asyncio.sleep(5)
             except asyncio.CancelledError:
                 break
-            except Exception:
+            except Exception:  # noqa: BLE001
                 await asyncio.sleep(10)
 
     async def _release_cycle(self) -> None:
@@ -83,7 +83,7 @@ class RedZoneReleaseService:
             try:
                 if not self._client.is_connected():
                     gateway_ok = False
-            except Exception:
+            except Exception:  # noqa: BLE001
                 gateway_ok = False
         if not gateway_ok:
             # missed window semantics: deferred jobs exist but gateway not ready during release window
@@ -175,11 +175,13 @@ class RedZoneReleaseService:
                 if job.account_scope is not None:
                     try:
                         account_id = int(job.account_scope)
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         account_id = None
                 if account_id is not None:
                     try:
-                        from app.services.kill_switch import is_account_kill_switch_active
+                        from app.services.kill_switch import (
+                            is_account_kill_switch_active,
+                        )
 
                         if is_account_kill_switch_active(account_id):
                             await repo.void_deferred_job(job.job_id, "VOID_KILLSWITCH")
@@ -223,7 +225,7 @@ class RedZoneReleaseService:
                                     cm_ym = y * 12 + m
                                     if now_ym > cm_ym:
                                         is_expired = True
-                                except Exception:
+                                except Exception:  # noqa: BLE001
                                     # malformed -> void as expired/invalid
                                     is_expired = True
                                     break
@@ -255,7 +257,7 @@ class RedZoneReleaseService:
                     .values(status="QUEUED", queued_at=now, deferred_session_count=cnt)
                 )
                 r = await session.execute(upd)
-                if r.rowcount:
+                if r.rowcount:  # type: ignore[attr-defined]
                     # restore signal business state to NEW (allows re-processing)
                     await session.execute(
                         update(SignalModel)
