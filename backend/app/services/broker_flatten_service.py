@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models.account import AccountModel
 from app.db.models.instrument import InstrumentModel
+from app.db.models.manual_order import ManualPositionModel
 from app.db.repositories.broker_position_repository import BrokerPositionRepository
 from app.oms.models import OMSOrderStatus
 from app.rms.models import (
@@ -145,6 +146,9 @@ class BrokerFlattenService:
                 account_id = account_row
 
             min_qty = 0.0
+            manual_open_rows: list[ManualPositionModel] = []
+            open_rows = []
+            instruments: list[InstrumentModel] = []
             if account_id is not None:
                 from app.db.repositories.position_repository import PositionRepository
 
@@ -152,12 +156,25 @@ class BrokerFlattenService:
                 instruments = list(
                     (await session.execute(select(InstrumentModel))).scalars().all()
                 )
+                manual_open_rows = list(
+                    (
+                        await session.execute(
+                            select(ManualPositionModel).where(
+                                ManualPositionModel.status == "OPEN",
+                                ManualPositionModel.account_id == account_id,
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
                 ledger_net = ledger_net_qty_for_symbol(
                     open_rows,
                     instruments,
                     account_id=account_id,
                     symbol=norm_symbol,
                     sec_type=norm_sec_type,
+                    manual_open_rows=manual_open_rows,
                 )
                 if ledger_net is not None:
                     min_qty = abs(ledger_net)
@@ -189,7 +206,7 @@ class BrokerFlattenService:
 
             flatten_keys: list = [flatten_inflight.broker_key(ibkr_account, con_id)]
             if account_id is not None:
-                for pos in open_rows:  # pyrefly: ignore[unbound-name]
+                for pos in open_rows:
                     if pos.account_id != account_id:
                         continue
                     symbols = {
@@ -198,6 +215,9 @@ class BrokerFlattenService:
                     }
                     if norm_symbol in symbols:
                         flatten_keys.append(flatten_inflight.ledger_key(account_id, pos.trade_id))
+                for mpos in manual_open_rows:
+                    if mpos.symbol.strip().upper() == norm_symbol:
+                        flatten_keys.append(flatten_inflight.ledger_key(account_id, mpos.trade_id))
 
         from app.services import flatten_inflight as _fi
 

@@ -387,6 +387,29 @@ class ManualExecutionListener:
             if perm_id and not order.perm_id:
                 order.perm_id = int(perm_id)
 
+            # 2a. Guard: CLOSED trade_id reuse must be rejected before execution insertion
+            # Check if position for this trade_id is already CLOSED — if so, reject without inserting execution
+            existing_pos = await pos_repo.get_by_trade_id(order.account_id, order.trade_id)
+            if existing_pos is not None and existing_pos.status == "CLOSED" and existing_pos.signed_qty == Decimal(0):
+                logger.warning(
+                    "Rejected execDetails for closed trade_id %s (exec_id=%s) — trade_id must not be reused",
+                    order.trade_id,
+                    raw_exec_id,
+                )
+                await audit_repo.record_event(
+                    account_id=order.account_id,
+                    action="MANUAL_POSITION_CLOSED_TRADE_ID_REUSE_REJECTED",
+                    payload={
+                        "internal_order_id": order.internal_order_id,
+                        "trade_id": order.trade_id,
+                        "exec_id": raw_exec_id,
+                        "quantity": str(shares),
+                        "price": str(price),
+                        "reason": f"trade_id '{order.trade_id}' was previously CLOSED and must not be reused",
+                    },
+                )
+                return order, False
+
             # 2. Idempotent execution insertion
             _exec_row, is_new = await exec_repo.record_execution_with_dedup(
                 manual_order_id=order.id,
@@ -410,18 +433,43 @@ class ManualExecutionListener:
                 return order, False
 
             # 3. Apply position mutation exactly once
-            pos, pnl_delta = await pos_repo.apply_execution(
-                account_id=order.account_id,
-                trade_id=order.trade_id,
-                symbol=order.symbol,
-                con_id=order.con_id,
-                sec_type=order.sec_type,
-                currency=order.currency,
-                side=side,
-                quantity=shares,
-                price=price,
-                commission=buffered_commission or Decimal(0),
-            )
+            try:
+                pos, pnl_delta = await pos_repo.apply_execution(
+                    account_id=order.account_id,
+                    trade_id=order.trade_id,
+                    symbol=order.symbol,
+                    con_id=order.con_id,
+                    sec_type=order.sec_type,
+                    currency=order.currency,
+                    side=side,
+                    quantity=shares,
+                    price=price,
+                    commission=buffered_commission or Decimal(0),
+                )
+            except ValueError as exc:
+                # Closed trade_id reuse rejected — execution already persisted via dedup above is kept
+                # (transaction will commit the execution row and audit before raising was incorrect)
+                # Here we catch the rejection, log audit via outer session and return without position mutation
+                logger.warning(
+                    "Rejected execDetails for closed trade_id %s: %s (exec_id=%s)",
+                    order.trade_id,
+                    exc,
+                    raw_exec_id,
+                )
+                await audit_repo.record_event(
+                    account_id=order.account_id,
+                    action="MANUAL_POSITION_CLOSED_TRADE_ID_REUSE_REJECTED",
+                    payload={
+                        "internal_order_id": order.internal_order_id,
+                        "trade_id": order.trade_id,
+                        "exec_id": raw_exec_id,
+                        "quantity": str(shares),
+                        "price": str(price),
+                        "reason": str(exc),
+                    },
+                )
+                # Keep order as-is; do not mutate position or promote status
+                return order, False
 
             # 4. Update order fill state
             all_execs = await exec_repo.list_for_order(order.id)

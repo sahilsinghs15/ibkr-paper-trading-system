@@ -548,7 +548,7 @@ async def test_validation_rules_reject_invalid_inputs(session_factory):
             assert r2.json()["valid"] is False
             assert "minimum tick" in r2.json()["errors"][0].lower()
 
-            # 14: STOP order type is rejected
+            # 14: STOP order type is rejected at schema level (contract now LIMIT|MARKET only)
             r3 = await client.post(
                 base_url,
                 json={
@@ -562,8 +562,8 @@ async def test_validation_rules_reject_invalid_inputs(session_factory):
                 },
                 headers=headers,
             )
-            assert r3.json()["valid"] is False
-            assert "stop order type is not executable" in r3.json()["errors"][0].lower()
+            assert r3.status_code == 422
+            # Pydantic rejects STOP before reaching service validation
     finally:
         app.dependency_overrides.clear()
 

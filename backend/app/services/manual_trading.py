@@ -327,27 +327,62 @@ class ManualTradingService:
         internal_order_id = f"MAN_{uuid.uuid4().hex[:12].upper()}"
         trade_id = request.trade_id.strip() if request.trade_id else f"TRD_{uuid.uuid4().hex[:12].upper()}"
 
-        order_row = await self._order_repo.create_order(
-            account_id=account.id,
-            ibkr_account=account.ibkr_account,
-            idempotency_key=idempotency_key,
-            internal_order_id=internal_order_id,
-            trade_id=trade_id,
-            symbol=request.symbol.strip().upper(),
-            side=request.side,
-            quantity=request.quantity,
-            order_type=request.order_type,
-            con_id=request.con_id,
-            sec_type="CFD",
-            exchange=request.exchange.strip().upper() or "SMART",
-            currency=request.currency.strip().upper() or "USD",
-            limit_price=request.limit_price,
-            tif=request.tif.strip().upper() or "DAY",
-            outside_rth=False,  # Enforce outsideRth=False strictly
-            user_id=current_user.id,
-            status="PENDING_SUBMIT",
-        )
-        await self._session.commit()
+        try:
+            order_row = await self._order_repo.create_order(
+                account_id=account.id,
+                ibkr_account=account.ibkr_account,
+                idempotency_key=idempotency_key,
+                internal_order_id=internal_order_id,
+                trade_id=trade_id,
+                symbol=request.symbol.strip().upper(),
+                side=request.side,
+                quantity=request.quantity,
+                order_type=request.order_type,
+                con_id=request.con_id,
+                sec_type="CFD",
+                exchange=request.exchange.strip().upper() or "SMART",
+                currency=request.currency.strip().upper() or "USD",
+                limit_price=request.limit_price,
+                tif=request.tif.strip().upper() or "DAY",
+                outside_rth=False,  # Enforce outsideRth=False strictly
+                user_id=current_user.id,
+                status="PENDING_SUBMIT",
+            )
+            await self._session.commit()
+        except Exception as exc:
+            # Handle concurrent idempotency race: UNIQUE(account_id, idempotency_key) violation
+            from sqlalchemy.exc import IntegrityError
+
+            await self._session.rollback()
+            if isinstance(exc, IntegrityError) or "uq_manual_orders_account_idempotency" in str(exc):
+                existing2 = await self._order_repo.get_by_idempotency_key(
+                    account_id=account.id, idempotency_key=idempotency_key
+                )
+                if existing2 is not None:
+                    is_same = (
+                        existing2.con_id == request.con_id
+                        and existing2.symbol == request.symbol.strip().upper()
+                        and existing2.side == request.side
+                        and existing2.quantity == request.quantity
+                        and existing2.order_type == request.order_type
+                        and existing2.limit_price == request.limit_price
+                    )
+                    if is_same:
+                        logger.info(
+                            "Concurrent idempotent replay (race) for manual order: account=%s key=%s",
+                            account.ibkr_account,
+                            idempotency_key,
+                        )
+                        return ManualOrderSubmitResponse(
+                            order=ManualOrderRead.model_validate(existing2),
+                            idempotent_replay=True,
+                            message="Order previously submitted (idempotent replay). No duplicate broker order placed.",
+                        )
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Idempotency conflict: key '{idempotency_key}' already used with different parameters.",
+                    ) from exc
+            raise
         await self._session.refresh(order_row)
 
         logger.info(

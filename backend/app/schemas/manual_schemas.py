@@ -226,7 +226,7 @@ class ManualOrderPreviewRequest(BaseModel):
     currency: str = Field(default="USD")
     side: Literal["BUY", "SELL"]
     quantity: Decimal = Field(..., gt=Decimal(0))
-    order_type: Literal["LIMIT", "MARKET", "STOP"]
+    order_type: Literal["LIMIT", "MARKET"]
     limit_price: Decimal | None = None
     tif: str = Field(default="DAY")
     outside_rth: bool = Field(default=False)
@@ -270,7 +270,7 @@ class ManualOrderSubmitRequest(BaseModel):
     currency: str = Field(default="USD")
     side: Literal["BUY", "SELL"]
     quantity: Decimal = Field(..., gt=Decimal(0))
-    order_type: Literal["LIMIT", "MARKET", "STOP"]
+    order_type: Literal["LIMIT", "MARKET"]
     limit_price: Decimal | None = None
     tif: str = Field(default="DAY")
     outside_rth: bool = Field(default=False)
@@ -287,7 +287,7 @@ class ManualOrderSubmitResponse(BaseModel):
 class ManualOrderCancelResponse(BaseModel):
     order: ManualOrderRead
     success: bool
-    status: str  # "CANCELLED" | "CANCELLED_LOCALLY" | "CANCEL_REQUESTED" | "ALREADY_CANCELLED"
+    status: str  # "CANCELLED" (local or already-cancelled idempotent) or "CANCEL_REQUESTED" (broker dispatch; final CANCELLED via callback)
     message: str
     broker_order_id: int | None = None
     perm_id: int | None = None

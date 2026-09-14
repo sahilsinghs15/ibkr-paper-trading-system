@@ -453,7 +453,35 @@ class ManualPositionRepository:
         current_avg = pos.avg_cost
         current_pnl = pos.realized_pnl
 
-        # If current_qty is 0 (previously closed position being reopened)
+        # Invariant: CLOSED trade_id must not be silently resurrected.
+        # If row is CLOSED (status == "CLOSED" and qty == 0), reject reuse.
+        if pos.status == "CLOSED" and current_qty == Decimal(0):
+            from app.db.repositories.manual_repository import (
+                ManualAuditRepository as _AuditRepo,
+            )
+
+            audit = _AuditRepo(self._session)
+            await audit.record_event(
+                account_id=account_id,
+                action="MANUAL_POSITION_CLOSED_TRADE_ID_REUSE_REJECTED",
+                request_id=trade_id,
+                payload={
+                    "trade_id": trade_id,
+                    "symbol": symbol,
+                    "con_id": con_id,
+                    "sec_type": sec_type,
+                    "side": side,
+                    "quantity": str(quantity),
+                    "price": str(price),
+                    "existing_status": pos.status,
+                    "reason": "trade_id was previously CLOSED and must not be reused; create a new trade_id",
+                },
+            )
+            raise ValueError(
+                f"trade_id '{trade_id}' was previously CLOSED and must not be reused; submit a new trade_id"
+            )
+
+        # If current_qty is 0 but status still OPEN (edge: previously flattened to 0 without CLOSED), reopen
         if current_qty == Decimal(0):
             pos.signed_qty = d
             pos.avg_cost = exec_price

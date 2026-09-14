@@ -46,7 +46,7 @@ class ManualOrderModel(Base):
         String(64), nullable=True, index=True
     )
     perm_id: Mapped[int | None] = mapped_column(
-        BigInteger, nullable=True, index=True
+        BigInteger, nullable=True
     )
 
     # Resolved contract details
@@ -131,6 +131,8 @@ class ManualOrderModel(Base):
         ),
         Index("ix_manual_orders_account_status", "account_id", "status"),
         Index("ix_manual_orders_account_created_at", "account_id", "created_at"),
+        Index("ix_manual_orders_perm_id", "perm_id"),
+        Index("ix_manual_orders_account_perm_id", "account_id", "perm_id"),
     )
 
 
@@ -277,6 +279,10 @@ class ManualAuditEventModel(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+
+    __table_args__ = (
+        Index("ix_manual_audit_events_account_action", "account_id", "action"),
     )
 
     account: Mapped["AccountModel"] = relationship("AccountModel")

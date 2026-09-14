@@ -126,7 +126,7 @@ export interface ManualOrderPreviewRequest {
   currency: string
   side: 'BUY' | 'SELL'
   quantity: number | string
-  order_type: 'LIMIT' | 'MARKET' | 'STOP'
+  order_type: 'LIMIT' | 'MARKET'
   limit_price?: number | string | null
   tif?: string
   outside_rth?: boolean
@@ -170,7 +170,7 @@ export interface ManualOrderSubmitRequest {
   currency: string
   side: 'BUY' | 'SELL'
   quantity: number | string
-  order_type: 'LIMIT' | 'MARKET' | 'STOP'
+  order_type: 'LIMIT' | 'MARKET'
   limit_price?: number | string | null
   tif?: string
   outside_rth?: boolean
@@ -227,7 +227,7 @@ export interface ManualOrderSubmitResponse {
 export interface ManualOrderCancelResponse {
   order: ManualOrderRead
   success: boolean
-  status: 'CANCELLED' | 'CANCELLED_LOCALLY' | 'CANCEL_REQUESTED' | 'ALREADY_CANCELLED'
+  status: 'CANCELLED' | 'CANCEL_REQUESTED'
   message: string
   broker_order_id?: number | string | null
   perm_id?: number | null
