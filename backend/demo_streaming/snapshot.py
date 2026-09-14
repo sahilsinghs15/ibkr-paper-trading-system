@@ -422,12 +422,32 @@ def manual_position_payload(
     account: AccountModel,
     timestamp: datetime,
 ) -> dict[str, Any]:
-    """Single-leg payload for a manual position, compatible with PositionLeg shape."""
+    """Single-leg payload for a manual position, compatible with PositionLeg shape. Live PnL via same LivePnlService mark."""
     signed_qty = manual_pos.signed_qty
     qty_str = _qty(signed_qty)
     side = _side(signed_qty)
-    # Manual has no live PnL stream; show realized only when closed, otherwise 0
-    # For OPEN manual, unrealized is not tracked, so show 0 or None
+    # Live PnL for manual uses same authoritative mark as engine, persisted via LivePnlService to manual_positions.live_pnl
+    live_pnl = getattr(manual_pos, "live_pnl", None)
+    # Determine mark: if live_pnl and qty and avg_cost, derive mark = avg_cost + live_pnl/qty ; else None
+    mark_price = None
+    unrealized = None
+    market_status = "UNAVAILABLE"
+    if live_pnl is not None and signed_qty not in (None, 0):
+        try:
+            # live_pnl = signed_qty * (mark - avg_cost) => mark = avg_cost + live_pnl/signed_qty
+            avg = manual_pos.avg_cost
+            if avg is not None:
+                mark_price = _dec(Decimal(str(avg)) + Decimal(str(live_pnl)) / Decimal(str(signed_qty)))
+                unrealized = _dec(Decimal(str(live_pnl)))
+                market_status = "LIVE" if live_pnl is not None else "UNAVAILABLE"
+        except Exception:
+            mark_price = None
+            unrealized = None
+            market_status = "UNAVAILABLE"
+    # If no live_pnl yet, try to use live_pnl directly as unrealized
+    if unrealized is None and live_pnl is not None:
+        unrealized = _dec(Decimal(str(live_pnl)))
+        market_status = "LIVE" if live_pnl is not None else "UNAVAILABLE"
     return {
         "timestamp": timestamp.isoformat(),
         "opened_at": manual_pos.opened_at.isoformat() if getattr(manual_pos, "opened_at", None) else timestamp.isoformat(),
@@ -443,9 +463,9 @@ def manual_position_payload(
         "quantity": qty_str,
         "filled_quantity": qty_str,
         "entry_price": _dec(manual_pos.avg_cost),
-        "last_price": None,
-        "mark_price": None,
-        "unrealized_pnl": None,
+        "last_price": mark_price,
+        "mark_price": mark_price,
+        "unrealized_pnl": unrealized,
         "realized_pnl": _dec(manual_pos.realized_pnl) if manual_pos.realized_pnl is not None else None,
         "commission": None,
         "status": manual_pos.status,
@@ -457,7 +477,7 @@ def manual_position_payload(
         "fill_timestamp": None,
         "closing_order_status": None,
         "closing_broker_order_id": None,
-        "market_data_status": "UNAVAILABLE",
+        "market_data_status": market_status,
         "connection_status": "OBSERVING_DB",
         "close_in_progress": False,
         "source": "manual",

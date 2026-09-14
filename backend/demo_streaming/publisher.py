@@ -17,6 +17,7 @@ from demo_streaming.snapshot import (
     load_manual_position_rows,
     load_orders,
     load_position_rows,
+    load_signals,
     manual_position_payload,
     pnl_fingerprint,
     position_leg_payloads,

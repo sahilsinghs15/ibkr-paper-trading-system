@@ -51,6 +51,7 @@ from demo_streaming.snapshot import (
     load_orders,
     load_pair_detail,
     load_position_rows,
+    load_signals,
     manual_position_payload,
     position_leg_payloads,
 )

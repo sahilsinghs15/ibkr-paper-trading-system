@@ -169,6 +169,7 @@ class ManualPositionRead(BaseModel):
     signed_qty: Decimal
     avg_cost: Decimal
     realized_pnl: Decimal
+    live_pnl: Decimal | None = None
     status: str  # OPEN | CLOSED
     source: Literal["manual"] = "manual"
     opened_at: datetime

@@ -658,6 +658,20 @@ class OrderManager:
             ]
         )
         self._live_pnl.hydrate_from_position_rows(open_rows, catalog=snapshot)
+        # Manual positions — same IBKR ticks, separate ledger, same LivePnlService
+        try:
+            from app.db.models.manual_order import ManualPositionModel
+
+            async with self._session_factory() as session:
+                manual_rows = list(
+                    (await session.execute(select(ManualPositionModel).where(ManualPositionModel.status == "OPEN"))).scalars().all()
+                )
+            if manual_rows:
+                self._live_pnl.hydrate_from_manual_position_rows(manual_rows, catalog=snapshot)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("Failed to hydrate manual live PnL")
 
     def _add_row_exposure(self, row) -> None:
         from app.core.identifiers import normalize_strategy_id
