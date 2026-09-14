@@ -227,7 +227,8 @@ class LivePnlService:
                 continue
             side = OrderSide.BUY if signed >= 0 else OrderSide.SELL
             qty = abs(signed)
-            # Use manual position's avg_cost as entry, and sec_type as instrument_type
+            # Reuse Main Engine mark semantics: manual CFD uses STK underlying for ticks, not CFD conId.
+            # Keep leg.con_id None so _request_ticks resolves underlying via catalog/market_data_conid + reroute.
             self.watch_open(
                 OrderIntent(
                     signal_id=row.trade_id,
@@ -239,7 +240,7 @@ class LivePnlService:
                             symbol=row.symbol,
                             side=side,
                             quantity=float(qty),
-                            price=float(row.avg_cost) if row.avg_cost is not None else 0.0,
+                            price=Decimal(str(row.avg_cost)) if row.avg_cost is not None else Decimal(0),
                             instrument_type=row.sec_type or "CFD",
                             leg_index=0,
                         )
@@ -680,6 +681,8 @@ class LivePnlService:
         )
 
         resolved = getattr(leg, "resolved", None)
+        # Proven Main Engine: CFD execution uses CFD contract, but MARK uses underlying STK contract.
+        # Never use CFD conId for market data — IBKR CFD has no native ticks (see docs/safety.md, frontend/ibkr-tws-price-streaming-guide).
         stk_con_id = stk_mark_con_id_from_resolved(resolved)
         if stk_con_id is None:
             stk_con_id = stk_mark_con_id_from_catalog(leg.symbol, self._catalog)

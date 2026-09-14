@@ -140,7 +140,7 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     from app.services.worker_pool import ExecutionWorkerPool
 
     # Manual trading callback listener and recovery
-    manual_listener = ManualExecutionListener(AsyncSessionLocal, client)
+    manual_listener = ManualExecutionListener(AsyncSessionLocal, client, live_pnl=order_manager._live_pnl)
     manual_listener.bind_loop(asyncio.get_running_loop())
     client.register_listener(manual_listener)
     fastapi_app.state.manual_execution_listener = manual_listener

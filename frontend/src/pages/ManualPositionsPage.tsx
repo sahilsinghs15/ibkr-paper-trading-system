@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { fetchManualPositions, type ManualPositionApiRow } from '../api/manualTradingApi'
 import { useActiveIbkrAccount } from '../hooks/useActiveIbkrAccount'
 import { normalizeIbkrAccount } from '../utils/activeAccount'
@@ -8,6 +8,7 @@ import { fmtPnl, fmtQty, fmtUsd, num, pnlClass } from '../utils/format'
 
 export function ManualPositionsPage() {
   const { ibkrAccount } = useParams<{ ibkrAccount: string }>()
+  const navigate = useNavigate()
   const activeAccount = useActiveIbkrAccount()
   const cleanAccount = normalizeIbkrAccount(ibkrAccount || activeAccount)
 
@@ -189,12 +190,13 @@ export function ManualPositionsPage() {
               <th style={{ padding: '10px' }}>UNREALIZED P&L</th>
               <th style={{ padding: '10px' }}>REALIZED P&L</th>
               <th style={{ padding: '10px' }}>STATUS</th>
+              <th style={{ padding: '10px', textAlign: 'right' }}>ACTION</th>
             </tr>
           </thead>
           <tbody>
             {positions.length === 0 ? (
               <tr>
-                <td colSpan={9} style={{ padding: '32px', textAlign: 'center', color: '#64748b' }}>
+                <td colSpan={10} style={{ padding: '32px', textAlign: 'center', color: '#64748b' }}>
                   {loading ? 'Loading manual positions...' : `No manual positions open for account ${cleanAccount}.`}
                 </td>
               </tr>
@@ -220,6 +222,18 @@ export function ManualPositionsPage() {
                     <td style={{ padding: '10px', fontFamily: 'monospace' }} className={unreal != null ? pnlClass(unreal) : ''}>{unreal != null ? fmtPnl(unreal) : hasMark ? '—' : <span style={{ color: 'var(--dim)' }}>MARK UNAVAILABLE</span>}</td>
                     <td style={{ padding: '10px', fontFamily: 'monospace' }} className={pnlClass(Number(p.realized_pnl))}>{fmtPnl(Number(p.realized_pnl))}</td>
                     <td style={{ padding: '10px' }}>{p.status}</td>
+                    <td style={{ padding: '10px', textAlign: 'right' }}>
+                      <button
+                        type="button"
+                        style={{ padding: '4px 8px', fontSize: '10px', fontWeight: 600, background: '#3b2d54', color: '#d8b4fe', border: '1px solid #7c3aed', borderRadius: 4, cursor: 'pointer' }}
+                        onClick={() => {
+                          const side = qty >= 0 ? 'SELL' : 'BUY'
+                          navigate(`/account/${cleanAccount}/manual-trade?close_symbol=${encodeURIComponent(p.symbol)}&close_side=${side}&close_qty=${absQty}&close_trade_id=${encodeURIComponent(String(p.trade_id))}`)
+                        }}
+                      >
+                        Close
+                      </button>
+                    </td>
                   </tr>
                 )
               })

@@ -60,10 +60,12 @@ class ManualExecutionListener:
         client: Any = None,
         *,
         loop: asyncio.AbstractEventLoop | None = None,
+        live_pnl: Any | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._client = client
         self._loop = loop
+        self._live_pnl = live_pnl
         self._pending_commissions: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
@@ -569,7 +571,45 @@ class ManualExecutionListener:
             except Exception:
                 logger.exception("Failed to mirror manual execution to Trade Book")
 
-            # 6. Audit event
+            # 6. Live PnL: watch new OPEN position immediately (no restart needed)
+            try:
+                live = getattr(self, "_live_pnl", None)
+                if live is not None and pos is not None:
+                    if getattr(pos, "status", None) == "CLOSED":
+                        live.unwatch(pos.account_id, pos.trade_id)
+                    elif getattr(pos, "status", None) == "OPEN":
+                        from app.rms.models import (
+                            OrderAction,
+                            OrderIntent,
+                            OrderLeg,
+                            OrderSide,
+                        )
+
+                        side_enum = OrderSide.BUY if pos.signed_qty is not None and pos.signed_qty >= 0 else OrderSide.SELL
+                        qty_abs = abs(float(pos.signed_qty)) if pos.signed_qty else float(shares)
+                        # Reuse Main Engine mark semantics: CFD leg -> STK underlying tick (no CFD conId)
+                        live.watch_open(
+                            OrderIntent(
+                                signal_id=pos.trade_id,
+                                strategy_id="manual",
+                                action=OrderAction.OPEN,
+                                account_id=pos.account_id,
+                                legs=[
+                                    OrderLeg(
+                                        symbol=pos.symbol,
+                                        side=side_enum,
+                                        quantity=qty_abs,
+                                        price=Decimal(str(pos.avg_cost)) if pos.avg_cost is not None else Decimal(str(price)),
+                                        instrument_type=pos.sec_type or "CFD",
+                                        leg_index=0,
+                                    )
+                                ],
+                            )
+                        )
+            except Exception:
+                logger.exception("Manual live PnL watch_open failed for trade_id=%s", getattr(pos, "trade_id", "?"))
+
+            # 7. Audit event
             await audit_repo.record_event(
                 account_id=order.account_id,
                 action="MANUAL_EXECUTION_RECEIVED",

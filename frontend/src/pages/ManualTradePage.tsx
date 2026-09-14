@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import {
   cancelManualOrder,
   fetchGatewayStatus,
   fetchManualOrders,
+  fetchManualPositions,
   previewManualOrder,
   searchCfdInstruments,
   submitManualOrder,
@@ -21,8 +22,14 @@ import { fmtPnl, pnlClass, num } from '../utils/format'
 
 export function ManualTradePage() {
   const { ibkrAccount } = useParams<{ ibkrAccount: string }>()
+  const [searchParams, setSearchParams] = useSearchParams()
   const activeAccount = useActiveIbkrAccount()
   const cleanAccount = normalizeIbkrAccount(ibkrAccount || activeAccount)
+  const closeSymbol = searchParams.get('close_symbol')
+  const closeSide = searchParams.get('close_side') as 'BUY' | 'SELL' | null
+  const closeQty = searchParams.get('close_qty')
+  const closeTradeId = searchParams.get('close_trade_id')
+  const isCloseMode = !!(closeSymbol && closeSide && closeQty)
 
   // ── Gateway status ────────────────────────────────────────────────
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatusResponse | null>(null)
@@ -46,6 +53,36 @@ export function ManualTradePage() {
   useEffect(() => {
     void loadGatewayStatus()
   }, [loadGatewayStatus])
+
+  // ── Close manual position prefill from Main Positions ─────────────
+  useEffect(() => {
+    if (!isCloseMode || !closeSymbol || !closeSide || !closeQty) return
+    setSearchSymbol(closeSymbol.toUpperCase())
+    setSide(closeSide)
+    setQuantity(closeQty)
+    setOrderType('MARKET')
+    setLimitPrice('')
+    // Try to resolve contract from manual positions for trade_id
+    if (closeTradeId && cleanAccount) {
+      fetchManualPositions(cleanAccount).then((res) => {
+        const pos = res.positions.find((p) => p.trade_id === closeTradeId)
+        if (pos) {
+          setSelectedContract({
+            con_id: pos.con_id,
+            symbol: pos.symbol,
+            sec_type: 'CFD',
+            exchange: 'SMART',
+            currency: pos.currency,
+            local_symbol: null,
+            trading_class: null,
+            min_tick: null,
+            primary_exchange: null,
+            long_name: null,
+          })
+        }
+      }).catch(() => {})
+    }
+  }, [isCloseMode, closeSymbol, closeSide, closeQty, closeTradeId, cleanAccount])
 
   // ── CFD discovery ─────────────────────────────────────────────────
   const [searchSymbol, setSearchSymbol] = useState('')
@@ -279,6 +316,12 @@ export function ManualTradePage() {
         </div>
       </div>
 
+      {isCloseMode && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', borderRadius: 6, background: 'var(--amber-bg, #2a2111)', border: '1px solid rgba(234,179,8,0.35)', color: 'var(--amber, #eab308)', fontSize: 12 }}>
+          <span><strong>CLOSE MODE</strong> · Closing {closeSymbol} {closeSide} {closeQty} ({closeTradeId}) — verify quantity and submit as {closeSide} MARKET to flatten.</span>
+          <button type="button" className="manual-btn" onClick={() => { setSearchParams({}, { replace: true }); setSelectedContract(null) }}>Exit Close Mode</button>
+        </div>
+      )}
       {/* Status bar */}
       <div className="manual-status-bar" role="status" aria-label="Connection status">
         <span className={`dot ${gatewayDotClass}`}><i />IBKR {gatewayDotText}</span>
