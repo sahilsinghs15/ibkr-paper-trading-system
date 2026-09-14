@@ -148,17 +148,22 @@ def test_frontend_no_advanced_diagnostics():
 
 
 def test_frontend_uses_uuid_not_counter():
-    """Frontend must use crypto.randomUUID not simple counter for idempotency."""
+    """Frontend must use crypto.randomUUID (via utils) not simple counter for idempotency."""
     import pathlib
     p = pathlib.Path(__file__).resolve().parents[2].parent / "frontend" / "src" / "pages" / "ManualTradePage.tsx"
     if not p.exists():
         p = pathlib.Path("/home/dev3/Documents/ibkr-paper-trading-system/frontend/src/pages/ManualTradePage.tsx")
     text = p.read_text()
-    assert "crypto.randomUUID" in text
-    assert "MAN_IDEM" in text
-    # Old counter pattern should not exist as primary generation
-    # Ensure we don't have simple clientSeq as sole generation
-    assert "genIdemKey" in text or "randomUUID" in text
+    assert "genManualIdemKey" in text
+    assert "MAN_IDEM" not in text or "crypto.randomUUID" not in text or "genIdemKey" in text
+    # Check utils file has proper fallback
+    q = pathlib.Path(__file__).resolve().parents[2].parent / "frontend" / "src" / "utils" / "manualIdempotency.ts"
+    if not q.exists():
+        q = pathlib.Path("/home/dev3/Documents/ibkr-paper-trading-system/frontend/src/utils/manualIdempotency.ts")
+    utext = q.read_text()
+    assert "crypto.randomUUID" in utext
+    assert "getRandomValues" in utext
+    assert "MAN_IDEM" in utext
 
 
 @pytest.mark.asyncio

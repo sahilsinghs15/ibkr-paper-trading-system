@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { genManualIdemKey } from './manualIdempotency'
 
 // Simple test runner without vitest

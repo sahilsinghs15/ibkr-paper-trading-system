@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   cancelManualOrder,
@@ -16,6 +16,8 @@ import {
 import { useActiveIbkrAccount } from '../hooks/useActiveIbkrAccount'
 import { normalizeIbkrAccount } from '../utils/activeAccount'
 import { genManualIdemKey } from '../utils/manualIdempotency'
+import { usePnlStore, groupLegs } from '../store/pnlStore'
+import { fmtPnl, pnlClass, num } from '../utils/format'
 
 export function ManualTradePage() {
   const { ibkrAccount } = useParams<{ ibkrAccount: string }>()
@@ -80,6 +82,19 @@ export function ManualTradePage() {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitResult, setSubmitResult] = useState<ManualOrderSubmitResponse | null>(null)
 
+  // ── Manual positions live PnL via same demo stream as main Positions (not a different API) ──
+  const activeLegs = usePnlStore((s) => s.active)
+  const manualTrades = useMemo(() => {
+    const filtered: Record<string, typeof activeLegs[string]> = {}
+    const want = (cleanAccount || '').trim().toUpperCase()
+    for (const [k, v] of Object.entries(activeLegs)) {
+      if (String(v.source || '').toLowerCase() !== 'manual') continue
+      if (want && String(v.ibkr_account || '').trim().toUpperCase() !== want) continue
+      filtered[k] = v
+    }
+    return groupLegs(filtered)
+  }, [activeLegs, cleanAccount])
+
   // ── Orders ────────────────────────────────────────────────────────
   const [orders, setOrders] = useState<ManualOrderRead[]>([])
   const [ordersLoading, setOrdersLoading] = useState(false)
@@ -104,11 +119,18 @@ export function ManualTradePage() {
     }
   }, [cleanAccount])
 
+  // Initial load on mount / account change
   useEffect(() => {
     void loadManualOrders()
+  }, [loadManualOrders])
+
+  // State-driven polling: only while any order is non-terminal
+  const hasActiveOrders = orders.some((o) => ["PENDING_SUBMIT", "SUBMITTED", "PARTIALLY_FILLED"].includes(o.status))
+  useEffect(() => {
+    if (!hasActiveOrders) return
     const t = setInterval(() => void loadManualOrders(), 5000)
     return () => clearInterval(t)
-  }, [loadManualOrders])
+  }, [hasActiveOrders, loadManualOrders])
 
   const handleCancelOrder = async (order: ManualOrderRead) => {
     if (!cleanAccount || cancellingOrderId !== null) return
@@ -471,24 +493,48 @@ export function ManualTradePage() {
         </div>
       </section>
 
-      {/* Positions + Executions (companion) */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
-        <section className="board" style={{ padding: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-            <h3 style={{ margin: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--dim)' }}>Manual positions</h3>
-            <Link to={`/account/${cleanAccount}/manual-trade/positions`} style={{ fontSize: 11, color: 'var(--muted)', textDecoration: 'none' }}>Full ledger →</Link>
-          </div>
+      {/* Positions + Executions — manual positions use same demo stream/PnL as main Positions, not a different API */}
+      <section className="board" style={{ padding: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <h3 style={{ margin: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--dim)' }}>Manual positions <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· live PnL via demo stream</span></h3>
+          <Link to={`/account/${cleanAccount}/manual-trade/positions`} style={{ fontSize: 11, color: 'var(--muted)', textDecoration: 'none' }}>Full ledger →</Link>
+        </div>
+        {manualTrades.size === 0 ? (
           <div style={{ fontSize: 11, color: 'var(--dim)', textAlign: 'center', padding: '14px', border: '1px dashed var(--line)', borderRadius: 4 }}>
-            Dedicated ledger isolated from engine. Open in full ledger for avg cost, realized P&L and alignment.
+            No open manual positions for {cleanAccount || '—'}. Isolated from engine.
           </div>
-        </section>
-        <section className="board" style={{ padding: 12 }}>
-          <h3 style={{ margin: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--dim)', marginBottom: 8 }}>Executions</h3>
-          <div style={{ fontSize: 11, color: 'var(--dim)', textAlign: 'center', padding: '14px', border: '1px dashed var(--line)', borderRadius: 4 }}>
-            Fills ingested via IBKR callbacks — deduplicated on <span style={{ color: 'var(--muted)', fontFamily: 'var(--mono)' }}>exec_id</span>. Listed per order in Open orders → Details.
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {Array.from(manualTrades.values()).map((legs) => {
+              const head = legs[0]
+              const qty = (head.quantity || head.filled_quantity || '0') as string
+              const pnl = head.unrealized_pnl
+              const pnlNum = pnl != null ? num(pnl) : null
+              return (
+                <div key={`${head.trade_id}-${head.symbol}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', background: '#0b0e14', border: '1px solid var(--line)', borderRadius: 4 }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 12 }}>{head.symbol}</span>
+                    <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 3, background: '#3b2d54', color: '#d8b4fe', border: '1px solid #7c3aed', fontWeight: 600 }}>MANUAL</span>
+                    <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--muted)' }}>{head.side} {qty}</span>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 600 }} className={pnlNum != null ? pnlClass(pnlNum) : ''}>
+                      {pnlNum != null ? fmtPnl(pnlNum) : '—'}
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--dim)' }}>{head.account_id} · {(head.trade_id || '').slice(0, 8)}</div>
+                  </div>
+                </div>
+              )
+            })}
           </div>
-        </section>
-      </div>
+        )}
+      </section>
+      <section className="board" style={{ padding: 12 }}>
+        <h3 style={{ margin: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--dim)', marginBottom: 8 }}>Executions</h3>
+        <div style={{ fontSize: 11, color: 'var(--dim)', textAlign: 'center', padding: '14px', border: '1px dashed var(--line)', borderRadius: 4 }}>
+          Fills ingested via IBKR callbacks — deduplicated on <span style={{ color: 'var(--muted)', fontFamily: 'var(--mono)' }}>exec_id</span>. Listed per order in Open orders → Details.
+        </div>
+      </section>
 
 
 

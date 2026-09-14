@@ -319,11 +319,17 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                       </div>
                     </td>
 
-                    {/* 4. PAIR */}
+                    {/* 4. PAIR — single-leg manual shows single badge */}
                     <td className="pair-cell">
                       <div className="pair-badges">
-                        <span className="badge-pair leg-a">{legA.symbol || '—'}</span>
-                        <span className="badge-pair leg-b">{legB.symbol || '—'}</span>
+                        {head.source === 'manual' && legs.length === 1 ? (
+                          <span className="badge-pair leg-a">{legA.symbol || '—'}</span>
+                        ) : (
+                          <>
+                            <span className="badge-pair leg-a">{legA.symbol || '—'}</span>
+                            <span className="badge-pair leg-b">{legB.symbol || '—'}</span>
+                          </>
+                        )}
                         {head.source === 'manual' ? (
                           <span
                             className="source-badge manual"
@@ -338,7 +344,7 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                               fontWeight: 600,
                             }}
                           >
-                            Manual Trading
+                            Manual
                           </span>
                         ) : (
                           <span
@@ -354,7 +360,7 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                               fontWeight: 500,
                             }}
                           >
-                            Engine Trading
+                            Engine
                           </span>
                         )}
                       </div>
@@ -381,31 +387,50 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                       )}
                     </td>
 
-                    {/* 5. EXPOSURE BALANCE */}
+                    {/* 5. EXPOSURE BALANCE — manual single-leg shows one line, no imbalance */}
                     <td className="exposure-cell">
-                      <div className="exposure-box">
-                        <div className="exp-legs">
-                          <div className="exp-leg leg-a">
-                            <span className="sym">{legA.symbol}</span>
-                            <div className="track">
-                              <div className="fill" style={{ width: `${Math.max(15, legAPct)}%` }} />
+                      {head.source === 'manual' && legs.length === 1 ? (
+                        <div className="exposure-box">
+                          <div className="exp-legs">
+                            <div className="exp-leg leg-a">
+                              <span className="sym">{legA.symbol}</span>
+                              <div className="track">
+                                <div className="fill" style={{ width: '100%' }} />
+                              </div>
+                              <span className="val">
+                                {fmtQty(legAQty)} / {fmtCompactCurrency(legANotional)}
+                              </span>
                             </div>
-                            <span className="val">
-                              {fmtQty(legAQty)} / {fmtCompactCurrency(legANotional)}
-                            </span>
                           </div>
-                          <div className="exp-leg leg-b">
-                            <span className="sym">{legB.symbol}</span>
-                            <div className="track">
-                              <div className="fill" style={{ width: `${Math.max(15, legBPct)}%` }} />
-                            </div>
-                            <span className="val">
-                              {fmtQty(legBQty)} / {fmtCompactCurrency(legBNotional)}
-                            </span>
-                          </div>
+                          <span className="badge" style={{ fontSize: '9px', background: '#3b2d54', color: '#d8b4fe', border: '1px solid #7c3aed' }}>
+                            {legAQty > 0 ? 'LONG' : 'SHORT'} {fmtQty(Math.abs(legAQty))}
+                          </span>
                         </div>
-                        <span className="imbalance-pill">{imbalanceText}</span>
-                      </div>
+                      ) : (
+                        <div className="exposure-box">
+                          <div className="exp-legs">
+                            <div className="exp-leg leg-a">
+                              <span className="sym">{legA.symbol}</span>
+                              <div className="track">
+                                <div className="fill" style={{ width: `${Math.max(15, legAPct)}%` }} />
+                              </div>
+                              <span className="val">
+                                {fmtQty(legAQty)} / {fmtCompactCurrency(legANotional)}
+                              </span>
+                            </div>
+                            <div className="exp-leg leg-b">
+                              <span className="sym">{legB.symbol}</span>
+                              <div className="track">
+                                <div className="fill" style={{ width: `${Math.max(15, legBPct)}%` }} />
+                              </div>
+                              <span className="val">
+                                {fmtQty(legBQty)} / {fmtCompactCurrency(legBNotional)}
+                              </span>
+                            </div>
+                          </div>
+                          <span className="imbalance-pill">{imbalanceText}</span>
+                        </div>
+                      )}
                     </td>
 
                     {/* 6. PL */}

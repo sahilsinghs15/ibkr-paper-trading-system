@@ -405,6 +405,65 @@ async def load_position_rows(session: AsyncSession) -> list[tuple[PositionModel,
     return [(row[0], row[1]) for row in result.all()]
 
 
+async def load_manual_position_rows(session: AsyncSession) -> list[tuple[Any, AccountModel]]:
+    """Load OPEN manual positions. Imported lazily to avoid circular deps."""
+    from app.db.models.manual_order import ManualPositionModel
+
+    result = await session.execute(
+        select(ManualPositionModel, AccountModel)
+        .join(AccountModel, AccountModel.id == ManualPositionModel.account_id)
+        .where(ManualPositionModel.status == "OPEN")
+    )
+    return [(row[0], row[1]) for row in result.all()]
+
+
+def manual_position_payload(
+    manual_pos: Any,
+    account: AccountModel,
+    timestamp: datetime,
+) -> dict[str, Any]:
+    """Single-leg payload for a manual position, compatible with PositionLeg shape."""
+    signed_qty = manual_pos.signed_qty
+    qty_str = _qty(signed_qty)
+    side = _side(signed_qty)
+    # Manual has no live PnL stream; show realized only when closed, otherwise 0
+    # For OPEN manual, unrealized is not tracked, so show 0 or None
+    return {
+        "timestamp": timestamp.isoformat(),
+        "opened_at": manual_pos.opened_at.isoformat() if getattr(manual_pos, "opened_at", None) else timestamp.isoformat(),
+        "closed_at": manual_pos.closed_at.isoformat() if getattr(manual_pos, "closed_at", None) else None,
+        "account_id": manual_pos.account_id,
+        "ibkr_account": account.ibkr_account,
+        "account_name": account.name,
+        "strategy_id": "manual",
+        "trade_id": manual_pos.trade_id,
+        "symbol": manual_pos.symbol,
+        "instrument_type": manual_pos.sec_type,
+        "side": side,
+        "quantity": qty_str,
+        "filled_quantity": qty_str,
+        "entry_price": _dec(manual_pos.avg_cost),
+        "last_price": None,
+        "mark_price": None,
+        "unrealized_pnl": None,
+        "realized_pnl": _dec(manual_pos.realized_pnl) if manual_pos.realized_pnl is not None else None,
+        "commission": None,
+        "status": manual_pos.status,
+        "basket_state": None,
+        "position_state": manual_pos.status,
+        "order_status": None,
+        "broker_order_id": None,
+        "fill_status": None,
+        "fill_timestamp": None,
+        "closing_order_status": None,
+        "closing_broker_order_id": None,
+        "market_data_status": "UNAVAILABLE",
+        "connection_status": "OBSERVING_DB",
+        "close_in_progress": False,
+        "source": "manual",
+    }
+
+
 async def load_closed_position_rows(
     session: AsyncSession, account_id: int | None = None
 ) -> list[tuple[PositionModel, AccountModel]]:
