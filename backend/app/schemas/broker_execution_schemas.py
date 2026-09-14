@@ -30,6 +30,7 @@ class BrokerExecutionLineSchema(BaseModel):
     commission_currency: str | None = Field(None, description="Commission currency")
     realized_pnl: float | None = Field(None, description="Realized PnL from execution")
     order_status: str | None = Field(None, description="Derived Order Book status (PENDING/SUBMITTED/etc) or null if detached")
+    source: str = Field("engine", description="Source ledger: engine or manual")
 
 
 class BrokerExecutionsResponse(BaseModel):
@@ -84,6 +85,7 @@ class OrderBookRowSchema(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     filled_at: datetime | None = None
+    source: str = "engine"
 
 
 class OrderBookResponse(BaseModel):

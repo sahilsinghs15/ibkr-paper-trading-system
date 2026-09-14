@@ -104,10 +104,11 @@ export function OrderBookPage() {
               <SortableTh sortKey="limit_price" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Limit</SortableTh>
               <SortableTh sortKey="status" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Status</SortableTh>
               <SortableTh sortKey="avg_fill" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Avg Fill</SortableTh>
+              <th>Source</th>
               <SortableTh sortKey="updated" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Updated</SortableTh>
             </tr></thead>
             <tbody>
-              {sorted.length === 0 ? <tr><td colSpan={13} className="trade-book-empty">No orders</td></tr> : sorted.map((r) => (
+              {sorted.length === 0 ? <tr><td colSpan={14} className="trade-book-empty">No orders</td></tr> : sorted.map((r) => (
                 <tr key={r.internal_order_id}>
                   <td className="mono">{fmtTime(r.created_at || '', tz, { withZone: true })}</td>
                   <td className="mono muted">{r.internal_order_id}</td>
@@ -121,6 +122,7 @@ export function OrderBookPage() {
                   <td className="mono">{r.limit_price != null ? fmtUsd(r.limit_price) : '—'}</td>
                   <td><span className={`trade-book-side ${statusClass(r.status)}`}>{r.status}</span></td>
                   <td className="mono">{r.avg_fill_price != null ? fmtUsd(r.avg_fill_price) : '—'}</td>
+                  <td>{r.source === 'manual' ? <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 3, background: '#3b2d54', color: '#d8b4fe', border: '1px solid #7c3aed' }}>MANUAL</span> : <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 3, background: '#1e293b', color: '#94a3b8', border: '1px solid #334155' }}>ENGINE</span>}</td>
                   <td className="mono">{fmtTime(r.updated_at || '', tz, { withZone: true })}</td>
                 </tr>
               ))}
