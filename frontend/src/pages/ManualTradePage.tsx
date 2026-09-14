@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   cancelManualOrder,
@@ -63,9 +63,11 @@ export function ManualTradePage() {
   const [tif, setTif] = useState('DAY')
 
   // ── Preview / submit ──────────────────────────────────────────────
-  const uid = useId().replace(/[^a-zA-Z0-9]/g, '')
-  const [clientSeq, setClientSeq] = useState(1)
-  const idempotencyKey = `MAN_IDEM_${uid}_${clientSeq}`
+  // Idempotency: one UUID per intentional order. New UUID only for new intent (contract/side/qty/type/price/tif change) or after successful submit.
+  const genIdemKey = () => `MAN_IDEM_${crypto.randomUUID().replace(/-/g, '').slice(0, 16).toUpperCase()}`
+  const [idemKey, setIdemKey] = useState<string>(() => genIdemKey())
+  const [lastIntentSig, setLastIntentSig] = useState<string | null>(null)
+  const currentIntentSig = `${selectedContract?.con_id ?? ''}|${selectedContract?.symbol ?? ''}|${side}|${quantity}|${orderType}|${limitPrice}|${tif}`
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewData, setPreviewData] = useState<ManualOrderPreviewResponse | null>(null)
@@ -140,7 +142,7 @@ export function ManualTradePage() {
     setSelectionError(null)
     if (c.sec_type !== 'CFD') { setSelectionError(`secType must be CFD (got ${c.sec_type})`); return }
     if (!c.con_id || c.con_id <= 0) { setSelectionError(`Invalid conId ${c.con_id}`); return }
-    setSelectedContract(c); setClientSeq((s) => s + 1); setSubmitResult(null); setSubmitError(null)
+    setSelectedContract(c); setSubmitResult(null); setSubmitError(null)
   }
 
   const handleClearContract = () => {
@@ -149,6 +151,10 @@ export function ManualTradePage() {
 
   const handleOpenPreview = async () => {
     if (!selectedContract || !cleanAccount) return
+    // New intent → new idempotency key. Same intent + reopen → reuse key for retry correlation.
+    if (currentIntentSig !== lastIntentSig) {
+      setIdemKey(genIdemKey()); setLastIntentSig(currentIntentSig)
+    }
     setIsPreviewOpen(true); setPreviewLoading(true); setPreviewError(null); setSubmitError(null)
     try {
       const data = await previewManualOrder(cleanAccount, {
@@ -169,14 +175,26 @@ export function ManualTradePage() {
     setSubmitLoading(true); setSubmitError(null)
     try {
       const res = await submitManualOrder(cleanAccount, {
-        idempotency_key: idempotencyKey, symbol: selectedContract.symbol, con_id: selectedContract.con_id, sec_type: 'CFD',
+        idempotency_key: idemKey, symbol: selectedContract.symbol, con_id: selectedContract.con_id, sec_type: 'CFD',
         exchange: selectedContract.exchange, currency: selectedContract.currency, side, quantity, order_type: orderType,
         limit_price: orderType === 'LIMIT' ? limitPrice : null, tif, outside_rth: false, min_tick: selectedContract.min_tick ?? null,
       })
       setSubmitResult(res); setIsPreviewOpen(false); void loadManualOrders()
+      // Success → rotate key for next intentional order. Keep lastIntentSig so next preview with same intent still generates new key after this.
+      setIdemKey(genIdemKey()); setLastIntentSig(null)
+      // Human-readable conflict handling: backend 409 detail already says conflict, surface it as generic.
+      if (res.idempotent_replay) {
+        // replay is success, no new key needed beyond rotation already done
+      }
     } catch (err: unknown) {
-      const ae = err as { response?: { data?: { detail?: string } } }
-      setSubmitError(ae?.response?.data?.detail || (err instanceof Error ? err.message : 'Submit failed'))
+      const ae = err as { response?: { data?: { detail?: string }; status?: number } }
+      const detail = ae?.response?.data?.detail || (err instanceof Error ? err.message : 'Submit failed')
+      // Hide internal key from operator
+      if (detail.includes('MAN_IDEM_')) {
+        setSubmitError('This order request has already been used. Please start a new order.')
+      } else {
+        setSubmitError(detail)
+      }
     } finally { setSubmitLoading(false) }
   }
 

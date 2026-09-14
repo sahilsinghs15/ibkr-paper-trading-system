@@ -305,6 +305,10 @@ class ManualTradingService:
                 and existing.quantity == request.quantity
                 and existing.order_type == request.order_type
                 and existing.limit_price == request.limit_price
+                and existing.tif == request.tif.strip().upper()
+                and existing.exchange == request.exchange.strip().upper()
+                and existing.currency == request.currency.strip().upper()
+                and existing.sec_type == request.sec_type.strip().upper()
             )
             if is_same_param:
                 logger.info(
@@ -326,7 +330,7 @@ class ManualTradingService:
                 )
                 raise HTTPException(
                     status_code=409,
-                    detail=f"Idempotency conflict: key '{idempotency_key}' already used with different parameters.",
+                    detail="This order request has already been used with different parameters. Please start a new order.",
                 )
 
         # 3. Create durable PENDING_SUBMIT record in PostgreSQL and COMMIT before broker call
@@ -372,6 +376,10 @@ class ManualTradingService:
                         and existing2.quantity == request.quantity
                         and existing2.order_type == request.order_type
                         and existing2.limit_price == request.limit_price
+                        and existing2.tif == request.tif.strip().upper()
+                        and existing2.exchange == request.exchange.strip().upper()
+                        and existing2.currency == request.currency.strip().upper()
+                        and existing2.sec_type == request.sec_type.strip().upper()
                     )
                     if is_same:
                         logger.info(
@@ -386,7 +394,7 @@ class ManualTradingService:
                         )
                     raise HTTPException(
                         status_code=409,
-                        detail=f"Idempotency conflict: key '{idempotency_key}' already used with different parameters.",
+                        detail="This order request has already been used with different parameters. Please start a new order.",
                     ) from exc
             raise
         await self._session.refresh(order_row)
