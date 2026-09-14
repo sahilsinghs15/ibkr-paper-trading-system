@@ -348,16 +348,18 @@ export function ManualTradePage() {
               <div className="manual-risk-row"><span>Notional</span><strong>{previewData.notional ? `${previewData.notional} ${previewData.currency}` : orderType==='MARKET' ? 'Market' : '—'}</strong></div>
               <div className="manual-risk-row"><span>Initial margin</span><strong>{previewData.init_margin_change ? `${previewData.init_margin_change} USD` : '—'}</strong></div>
               <div className="manual-risk-row"><span>Maintenance</span><strong>{previewData.maint_margin_change ? `${previewData.maint_margin_change} USD` : '—'}</strong></div>
-              <div style={{ fontSize: 10, color: 'var(--dim)', background: '#0b0e14', border: '1px solid var(--line)', borderRadius: 4, padding: '6px 8px' }}>
-                {previewData.margin_status === 'AVAILABLE' ? 'Margin probe via IBKR what-if' : `Margin: ${previewData.margin_status}`}
-              </div>
+              {previewData.margin_status === 'AVAILABLE' && <div style={{ fontSize: 10, color: 'var(--dim)', background: '#0b0e14', border: '1px solid var(--line)', borderRadius: 4, padding: '6px 8px' }}>Margin probe via IBKR what-if — check passed</div>}
+              {previewData.margin_status === 'SKIPPED' && <div style={{ fontSize: 10, color: 'var(--muted)', background: '#0b0e14', border: '1px solid var(--line)', borderRadius: 4, padding: '6px 8px' }}>Margin check not run — disabled by configuration. Order permitted under existing safety policy.</div>}
+              {previewData.margin_status === 'UNAVAILABLE' && <div style={{ fontSize: 10, color: 'var(--amber)', background: 'var(--amber-bg)', border: '1px solid rgba(224,179,76,0.2)', borderRadius: 4, padding: '6px 8px' }}>Margin check unavailable — order permitted under existing safety policy.</div>}
               {!previewData.valid && <div style={{ fontSize: 11, color: 'var(--red)', background: 'var(--red-bg)', border: '1px solid rgba(239,107,115,0.2)', padding: '6px 8px', borderRadius: 4 }}>{previewData.errors.join(' · ')}</div>}
-              {previewData.warnings.length>0 && <div style={{ fontSize: 11, color: 'var(--amber)', background: 'var(--amber-bg)', border: '1px solid rgba(224,179,76,0.2)', padding: '6px 8px', borderRadius: 4 }}>{previewData.warnings.join(' · ')}</div>}
+              {previewData.warnings.length>0 && previewData.margin_status !== 'SKIPPED' && <div style={{ fontSize: 11, color: 'var(--amber)', background: 'var(--amber-bg)', border: '1px solid rgba(224,179,76,0.2)', padding: '6px 8px', borderRadius: 4 }}>{previewData.warnings.join(' · ')}</div>}
             </div>
           ) : (
             <div style={{ fontSize: 11, color: 'var(--dim)', textAlign: 'center', padding: '18px 8px', border: '1px dashed var(--line)', borderRadius: 4 }}>Run preview to see notional and margin.</div>
           )}
-          {previewData?.valid && <div style={{ fontSize: 10, color: 'var(--green)' }}>✓ Safety gates passed</div>}
+          {previewData?.valid && previewData.margin_status === 'AVAILABLE' && <div style={{ fontSize: 10, color: 'var(--green)' }}>✓ Safety gates passed</div>}
+          {previewData?.valid && previewData.margin_status === 'SKIPPED' && <div style={{ fontSize: 10, color: 'var(--muted)' }}>✓ Safety gates passed · margin check not run</div>}
+          {previewData?.valid && previewData.margin_status === 'UNAVAILABLE' && <div style={{ fontSize: 10, color: 'var(--amber)' }}>✓ Safety gates passed · margin check unavailable</div>}
         </section>
       </div>
 
@@ -376,12 +378,12 @@ export function ManualTradePage() {
           <table className="manual-table">
             <thead>
               <tr>
-                <th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Filled</th><th>Price</th><th>Status</th><th>Action</th>
+                <th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Filled</th><th>Remaining</th><th>Price</th><th>Status</th><th>Action</th>
               </tr>
             </thead>
             <tbody>
               {orders.length === 0 ? (
-                <tr><td colSpan={8} style={{ padding: 18, textAlign: 'center', color: 'var(--dim)', fontSize: 11 }}>No manual orders for {cleanAccount || '—'}. Isolated from engine.</td></tr>
+                <tr><td colSpan={9} style={{ padding: 18, textAlign: 'center', color: 'var(--dim)', fontSize: 11 }}>No manual orders for {cleanAccount || '—'}. Isolated from engine.</td></tr>
               ) : orders.map((o) => {
                 const isCancellable = o.status === 'SUBMITTED' || o.status === 'PARTIALLY_FILLED' || o.status === 'PENDING_SUBMIT'
                 const filled = o.filled_quantity != null ? String(o.filled_quantity) : '0'
@@ -397,6 +399,7 @@ export function ManualTradePage() {
                       <td><span className={o.side === 'BUY' ? 'side-buy' : 'side-sell'} style={{ fontWeight: 700 }}>{o.side}</span></td>
                       <td style={{ fontFamily: 'var(--mono)' }}>{String(o.quantity)}</td>
                       <td style={{ fontFamily: 'var(--mono)', color: Number(filled)>0 ? 'var(--ink)' : 'var(--dim)' }}>{filled}</td>
+                      <td style={{ fontFamily: 'var(--mono)', color: 'var(--muted)' }}>{remaining}</td>
                       <td style={{ fontFamily: 'var(--mono)' }}>{price}</td>
                       <td>{statusBadge(o.status)}</td>
                       <td>
@@ -412,12 +415,12 @@ export function ManualTradePage() {
                     </tr>
                     {expanded && (
                       <tr key={`${o.id}-details`}>
-                        <td colSpan={8} style={{ background: '#0b0e14', padding: '10px 12px' }}>
+                        <td colSpan={9} style={{ background: '#0b0e14', padding: '10px 12px' }}>
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, fontSize: 11 }}>
                             <div><span style={{ color: 'var(--dim)' }}>Order</span><br /><span style={{ fontFamily: 'var(--mono)' }}>{o.internal_order_id}</span> <span style={{ color: 'var(--dim)' }}>· {o.trade_id}</span></div>
                             <div><span style={{ color: 'var(--dim)' }}>Broker</span><br /><span style={{ fontFamily: 'var(--mono)' }}>{o.broker_order_id ?? '—'}</span> <span style={{ color: 'var(--dim)' }}>· perm {o.perm_id ?? '—'}</span></div>
                             <div><span style={{ color: 'var(--dim)' }}>Contract</span><br /><span style={{ fontFamily: 'var(--mono)' }}>{o.con_id}</span> <span style={{ color: 'var(--muted)' }}>{o.exchange} · {o.currency}</span></div>
-                            <div><span style={{ color: 'var(--dim)' }}>Remaining</span><br /><span style={{ fontFamily: 'var(--mono)' }}>{remaining}</span> · {o.tif}</div>
+                            <div><span style={{ color: 'var(--dim)' }}>TIF</span><br /><span style={{ fontFamily: 'var(--mono)' }}>{o.tif}</span> · {o.order_type}</div>
                           </div>
                           {o.reject_reason && <div style={{ marginTop: 8, fontSize: 11, color: 'var(--red)' }}>{o.reject_reason}</div>}
                         </td>
@@ -450,18 +453,7 @@ export function ManualTradePage() {
         </section>
       </div>
 
-      {/* Advanced diagnostics — collapsed by default */}
-      <details className="manual-details">
-        <summary>Advanced diagnostics</summary>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, fontSize: 11 }}>
-          <div><div style={{ color: 'var(--dim)' }}>Gateway</div><div style={{ fontFamily: 'var(--mono)' }}>{gatewayStatus ? `${gatewayStatus.host}:${gatewayStatus.port} · ID ${gatewayStatus.client_id}` : '—'}</div></div>
-          <div><div style={{ color: 'var(--dim)' }}>Managed accounts</div><div style={{ fontFamily: 'var(--mono)' }}>{gatewayStatus?.managed_accounts.join(', ') || '—'}</div></div>
-          <div><div style={{ color: 'var(--dim)' }}>Connection time</div><div style={{ fontFamily: 'var(--mono)' }}>{gatewayStatus?.connection_time || '—'}</div></div>
-          <div><div style={{ color: 'var(--dim)' }}>Server version</div><div style={{ fontFamily: 'var(--mono)' }}>{gatewayStatus?.server_version ?? '—'}</div></div>
-          <div><div style={{ color: 'var(--dim)' }}>Selected contract</div><div style={{ fontFamily: 'var(--mono)' }}>{selectedContract ? `${selectedContract.symbol} ${selectedContract.con_id} · ${selectedContract.exchange}` : '—'}</div></div>
-          <div><div style={{ color: 'var(--dim)' }}>Idempotency</div><div style={{ fontFamily: 'var(--mono)', wordBreak: 'break-all' }}>{idempotencyKey}</div></div>
-        </div>
-      </details>
+
 
       {/* Preview modal */}
       {isPreviewOpen && (

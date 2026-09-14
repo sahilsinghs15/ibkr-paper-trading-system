@@ -151,13 +151,48 @@ class ManualExecutionListener:
         self._dispatch(self.handle_commission_report(commission_report=commissionReport))
 
     def on_error(self, reqId: int, errorCode: int, errorString: str) -> None:
-        """Handle error callback from TWSClient."""
+        """Handle error callback from TWSClient. Rejections update DB to REJECTED."""
         logger.warning(
             "ManualExecutionListener on_error: reqId=%d, code=%d, msg=%s",
             reqId,
             errorCode,
             errorString,
         )
+        # Informational warnings (2000-2999, or notable non-terminal) must not move terminal state
+        if 2000 <= errorCode < 3000 or errorCode in (10349, 2104, 2107, 2158, 399, 2109):
+            return
+        # Non-terminal codes that should not mark REJECTED (e.g. pacing 100)
+        if errorCode == 100:
+            return
+        self._dispatch(self.handle_error(reqId=reqId, errorCode=errorCode, errorString=errorString))
+
+    async def handle_error(self, reqId: int, errorCode: int, errorString: str) -> None:
+        """Persist broker rejection to DB: SUBMITTED -> REJECTED with reason."""
+        async with self._session_factory() as session, session.begin():
+            order_repo = ManualOrderRepository(session)
+            audit_repo = ManualAuditRepository(session)
+            order = await order_repo.get_by_broker_order_id(str(reqId))
+            if order is None:
+                return
+            if order.status in ("FILLED", "CANCELLED", "REJECTED", "ERROR"):
+                return
+            # Only real rejections should move to REJECTED; order still shows WORKING until then
+            await order_repo.update_status(
+                order.id,
+                status="REJECTED",
+                reject_reason=f"TWS Error {errorCode}: {errorString}",
+                completed_at=datetime.now(UTC),
+            )
+            await audit_repo.record_event(
+                account_id=order.account_id,
+                action="MANUAL_ORDER_REJECTED",
+                payload={
+                    "internal_order_id": order.internal_order_id,
+                    "broker_order_id": order.broker_order_id,
+                    "error_code": errorCode,
+                    "error_message": errorString,
+                },
+            )
 
     def on_connection_closed(self) -> None:
         """Handle connection drop from TWSClient."""

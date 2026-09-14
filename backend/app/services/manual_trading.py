@@ -207,9 +207,9 @@ class ManualTradingService:
 
         init_margin_change: Decimal | None = None
         maint_margin_change: Decimal | None = None
+        # Default when not probed
         margin_status = "SKIPPED"
 
-        # If order parameters are valid and connected, probe what-if margin
         if valid and connected and self._ibkr_adapter is not None:
             # Need a price for what-if probe. If market order and price is None, probe with a dummy price
             # or skip what-if
@@ -235,8 +235,14 @@ class ManualTradingService:
                     maint_margin_change = whatif_result.maint_margin_change
                     margin_status = "AVAILABLE"
                 else:
-                    margin_status = "UNAVAILABLE"
-                    warnings.append("What-if margin pre-check returned unavailable or timed out.")
+                    # Distinguish disabled (SKIPPED) vs genuine unavailable
+                    from app.core.config import get_settings as _get_settings
+
+                    if not _get_settings().margin_whatif_enabled:
+                        margin_status = "SKIPPED"
+                    else:
+                        margin_status = "UNAVAILABLE"
+                        warnings.append("What-if margin pre-check returned unavailable or timed out.")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Error during margin probe for %s: %s", request.symbol, exc)
                 margin_status = "UNAVAILABLE"
@@ -453,6 +459,9 @@ class ManualTradingService:
         ib_order.tif = request.tif.strip().upper() or "DAY"
         ib_order.outsideRth = False  # Strict enforcement
         ib_order.transmit = True
+        # CFD orders must not send eTradeOnly/firmQuoteOnly (defaults True in ibapi would cause 10268)
+        ib_order.eTradeOnly = False
+        ib_order.firmQuoteOnly = False
         ib_order.account = account.ibkr_account
         ib_order.orderRef = internal_order_id
 
