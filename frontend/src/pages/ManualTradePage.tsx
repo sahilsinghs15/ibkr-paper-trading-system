@@ -15,6 +15,7 @@ import {
 } from '../api/manualTradingApi'
 import { useActiveIbkrAccount } from '../hooks/useActiveIbkrAccount'
 import { normalizeIbkrAccount } from '../utils/activeAccount'
+import { genManualIdemKey } from '../utils/manualIdempotency'
 
 export function ManualTradePage() {
   const { ibkrAccount } = useParams<{ ibkrAccount: string }>()
@@ -64,8 +65,11 @@ export function ManualTradePage() {
 
   // ── Preview / submit ──────────────────────────────────────────────
   // Idempotency: one UUID per intentional order. New UUID only for new intent (contract/side/qty/type/price/tif change) or after successful submit.
-  const genIdemKey = () => `MAN_IDEM_${crypto.randomUUID().replace(/-/g, '').slice(0, 16).toUpperCase()}`
-  const [idemKey, setIdemKey] = useState<string>(() => genIdemKey())
+  // Uses browser-compatible generator that works on HTTP (fallback to getRandomValues).
+  const genIdemKey = genManualIdemKey
+  const [idemKey, setIdemKey] = useState<string>(() => {
+    try { return genIdemKey() } catch { return '' }
+  })
   const [lastIntentSig, setLastIntentSig] = useState<string | null>(null)
   const currentIntentSig = `${selectedContract?.con_id ?? ''}|${selectedContract?.symbol ?? ''}|${side}|${quantity}|${orderType}|${limitPrice}|${tif}`
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
@@ -153,7 +157,16 @@ export function ManualTradePage() {
     if (!selectedContract || !cleanAccount) return
     // New intent → new idempotency key. Same intent + reopen → reuse key for retry correlation.
     if (currentIntentSig !== lastIntentSig) {
-      setIdemKey(genIdemKey()); setLastIntentSig(currentIntentSig)
+      try {
+        const newKey = genIdemKey()
+        setIdemKey(newKey); setLastIntentSig(currentIntentSig)
+      } catch (e) {
+        setPreviewError((e as Error).message)
+        return
+      }
+    } else if (!idemKey) {
+      // No secure random at mount → try again
+      try { setIdemKey(genIdemKey()) } catch (e) { setPreviewError((e as Error).message); return }
     }
     setIsPreviewOpen(true); setPreviewLoading(true); setPreviewError(null); setSubmitError(null)
     try {
@@ -172,16 +185,22 @@ export function ManualTradePage() {
 
   const handleConfirmSubmit = async () => {
     if (!selectedContract || !cleanAccount || !previewData?.valid || submitLoading) return
+    // Ensure we have a key — handle race where preview just rotated but state not yet flushed
+    let submitKey = idemKey
+    if (!submitKey || currentIntentSig !== lastIntentSig) {
+      try { submitKey = genIdemKey(); setIdemKey(submitKey); setLastIntentSig(currentIntentSig) } catch (e) { setSubmitError((e as Error).message); return }
+    }
     setSubmitLoading(true); setSubmitError(null)
     try {
       const res = await submitManualOrder(cleanAccount, {
-        idempotency_key: idemKey, symbol: selectedContract.symbol, con_id: selectedContract.con_id, sec_type: 'CFD',
+        idempotency_key: submitKey, symbol: selectedContract.symbol, con_id: selectedContract.con_id, sec_type: 'CFD',
         exchange: selectedContract.exchange, currency: selectedContract.currency, side, quantity, order_type: orderType,
         limit_price: orderType === 'LIMIT' ? limitPrice : null, tif, outside_rth: false, min_tick: selectedContract.min_tick ?? null,
       })
       setSubmitResult(res); setIsPreviewOpen(false); void loadManualOrders()
       // Success → rotate key for next intentional order. Keep lastIntentSig so next preview with same intent still generates new key after this.
-      setIdemKey(genIdemKey()); setLastIntentSig(null)
+      try { setIdemKey(genIdemKey()); } catch { setIdemKey('') }
+      setLastIntentSig(null)
       // Human-readable conflict handling: backend 409 detail already says conflict, surface it as generic.
       if (res.idempotent_replay) {
         // replay is success, no new key needed beyond rotation already done
