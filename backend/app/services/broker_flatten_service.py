@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models.account import AccountModel
 from app.db.models.instrument import InstrumentModel
+from app.db.models.manual_order import ManualPositionModel
 from app.db.repositories.broker_position_repository import BrokerPositionRepository
 from app.oms.models import OMSOrderStatus
 from app.rms.models import (
@@ -145,6 +146,9 @@ class BrokerFlattenService:
                 account_id = account_row
 
             min_qty = 0.0
+            manual_open_rows: list[ManualPositionModel] = []
+            open_rows = []
+            instruments: list[InstrumentModel] = []
             if account_id is not None:
                 from app.db.repositories.position_repository import PositionRepository
 
@@ -152,12 +156,25 @@ class BrokerFlattenService:
                 instruments = list(
                     (await session.execute(select(InstrumentModel))).scalars().all()
                 )
+                manual_open_rows = list(
+                    (
+                        await session.execute(
+                            select(ManualPositionModel).where(
+                                ManualPositionModel.status == "OPEN",
+                                ManualPositionModel.account_id == account_id,
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
                 ledger_net = ledger_net_qty_for_symbol(
                     open_rows,
                     instruments,
                     account_id=account_id,
                     symbol=norm_symbol,
                     sec_type=norm_sec_type,
+                    manual_open_rows=manual_open_rows,
                 )
                 if ledger_net is not None:
                     min_qty = abs(ledger_net)
@@ -198,6 +215,9 @@ class BrokerFlattenService:
                     }
                     if norm_symbol in symbols:
                         flatten_keys.append(flatten_inflight.ledger_key(account_id, pos.trade_id))
+                for mpos in manual_open_rows:
+                    if mpos.symbol.strip().upper() == norm_symbol:
+                        flatten_keys.append(flatten_inflight.ledger_key(account_id, mpos.trade_id))
 
         from app.services import flatten_inflight as _fi
 
@@ -288,7 +308,7 @@ class BrokerFlattenService:
                 st = getattr(order, "status", None)
                 if st == OMSOrderStatus.FILLED or st == "FILLED":
                     return True
-                return bool(hasattr(st, "value") and st.value == "FILLED")
+                return bool(hasattr(st, "value") and st.value == "FILLED")  # type: ignore[union-attr]
 
             fill_orders = [o for o in orders if not getattr(o, "is_compensation", False)]
             is_fully_filled = bool(fill_orders) and all(_is_filled(o) for o in fill_orders)

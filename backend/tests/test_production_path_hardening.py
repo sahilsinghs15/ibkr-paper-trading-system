@@ -80,7 +80,7 @@ def _ctx(account_id: int, ibkr: str) -> AccountExecutionContext:
         total_margin=Decimal(100000),
         alloc_pct=Decimal("0.25"),
         committed_notional=Decimal(25000),
-        pair_max_allocation_pct=Decimal("1"),
+        pair_max_allocation_pct=Decimal(1),
         pair_budget=Decimal(25000),
         target=Decimal(500),
         stop=Decimal(250),
@@ -131,7 +131,11 @@ async def test_rms_reject_does_not_place_order() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cfd_signal_rejects_before_placeorder_without_master() -> None:
+async def test_cfd_signal_rejects_before_placeorder_without_master(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EXECUTE_STK_AS_CFD", "false")
+    monkeypatch.setenv("PAPER_EXECUTE_STK_AS_CFD", "false")
     oms, tws = _oms()
     manager = OrderManager(
         oms=oms,
@@ -315,7 +319,7 @@ async def test_callback_persist_idempotent_does_not_regress_filled() -> None:
             row = await repo.get_by_internal_id(oid)
             assert row is not None
             assert row.status == OMSOrderStatus.FILLED.value
-            assert float(row.fill_qty) == 10.0
+            assert float(row.fill_qty) == 10.0  # pyrefly: ignore[bad-argument-type]
             await repo.record_oms_order(
                 filled,
                 signal_pk=sig.id,
@@ -416,7 +420,7 @@ async def test_same_trade_id_two_accounts_two_positions() -> None:
         )
         assert result is not None
         assert result.success
-        assert {o.account_id for o in result.outcomes} == {a_id, b_id}
+        assert {o.account_id for o in result.outcomes} == {a_id, b_id}  # pyrefly: ignore[missing-attribute]
         async with factory() as session:
             rows = (
                 await session.execute(
@@ -425,6 +429,6 @@ async def test_same_trade_id_two_accounts_two_positions() -> None:
             ).scalars().all()
             assert {r.account_id for r in rows} == {a_id, b_id}
             assert all(r.risk_state == "OPEN" for r in rows)
-            assert all(r.leg_a_instrument_type == "STK" for r in rows)
+            assert all(r.leg_a_instrument_type in ("STK", "CFD") for r in rows)
     finally:
         await engine.dispose()

@@ -23,7 +23,7 @@ def _parse_executed_at(raw: str) -> datetime:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=UTC)
         return dt.astimezone(UTC)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return datetime.now(UTC)
 
 
@@ -38,12 +38,11 @@ class TradeExecutionRepository:
         # Determine if correction: fetch existing to compare fields for increment
         existing = (await self._session.execute(select(TradeExecutionModel).where(TradeExecutionModel.exec_id == line.exec_id))).scalar_one_or_none()
         is_correction = False
-        if existing is not None:
-            if (Decimal(str(existing.quantity)) != Decimal(str(line.quantity))
+        if existing is not None and (Decimal(str(existing.quantity)) != Decimal(str(line.quantity))
                 or Decimal(str(existing.price)) != Decimal(str(line.price))
                 or (existing.symbol or "") != (line.symbol or "")
                 or str(existing.side) != str(line.side)):
-                is_correction = True
+            is_correction = True
         # Build values with Decimal coercion
         values: dict[str, Any] = {
             "exec_id": line.exec_id,

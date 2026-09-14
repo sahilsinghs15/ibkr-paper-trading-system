@@ -53,10 +53,10 @@ def test_ingest_health_endpoint(ingest_client: TestClient) -> None:
 
 def test_ingest_lifespan_has_no_tws_client(ingest_client: TestClient) -> None:
     """Ingest app must not wire IBKR components."""
-    assert not hasattr(ingest_client.app.state, "client")
+    assert not hasattr(ingest_client.app.state, "client")  # pyrefly: ignore[missing-attribute]
     assert not hasattr(ingest_client.app.state, "order_manager")
     assert not hasattr(ingest_client.app.state, "worker_pool")
-    assert ingest_client.app.state.session_factory is not None
+    assert ingest_client.app.state.session_factory is not None  # pyrefly: ignore[missing-attribute]
 
 
 def test_trading_app_rejects_webhook_route(trading_client: TestClient) -> None:

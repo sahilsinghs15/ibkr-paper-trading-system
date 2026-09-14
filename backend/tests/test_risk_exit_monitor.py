@@ -201,7 +201,7 @@ def repo_patches(monkeypatch):
 
 def _monitor(*, accounts, allocations, live, closer, ks, shadow=False):
     return RiskExitMonitor(
-        FakeFactory(accounts, allocations),
+        FakeFactory(accounts, allocations),  # pyrefly: ignore[bad-argument-type]
         client=SimpleNamespace(is_connected=lambda: True),
         live_pnl=live,
         interval_sec=2.0,
@@ -209,7 +209,7 @@ def _monitor(*, accounts, allocations, live, closer, ks, shadow=False):
         max_retries=3,
         enabled=True,
         shadow_mode=shadow,
-        session_clock=FakeClock(),
+        session_clock=FakeClock(),  # pyrefly: ignore[bad-argument-type]
         pair_closer=closer,
         kill_switch=ks,
         now_fn=lambda: NOW,
@@ -293,8 +293,8 @@ async def test_stale_pnl_skips_pair_stop(repo_patches) -> None:
 async def test_account_stop_fires_with_stale_pair_fallback(
     repo_patches, caplog
 ) -> None:
-    pos_fresh = _position(trade_id="T1", live_pnl=Decimal("-50"))
-    pos_stale = _position(trade_id="T2", live_pnl=Decimal("-50"))
+    pos_fresh = _position(trade_id="T1", live_pnl=Decimal(-50))
+    pos_stale = _position(trade_id="T2", live_pnl=Decimal(-50))
     repo_patches["open_rows"] = [pos_fresh, pos_stale]
     repo_patches["realised"] = {1: Decimal(0)}
     closer = FakeCloser()
@@ -302,7 +302,7 @@ async def test_account_stop_fires_with_stale_pair_fallback(
     mon = _monitor(
         accounts=[_account(account_risk_enabled=True, daily_stop=Decimal(0))],
         allocations=[],
-        live=FakeLive({(1, "T1"): _fresh_snap(Decimal("-80"))}),
+        live=FakeLive({(1, "T1"): _fresh_snap(Decimal(-80))}),
         closer=closer,
         ks=ks,
     )

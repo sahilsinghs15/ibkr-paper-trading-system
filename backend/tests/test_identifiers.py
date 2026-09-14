@@ -105,8 +105,8 @@ def test_lowercase_inbound_symbol_hits_same_exposure_bucket() -> None:
     check = MoneyPerStockCheck()
     context = RMSContext(
         default_symbol_limits={},
-        per_symbol_limits={(1, "AAPL"): Decimal("500")},
-        symbol_exposures={(1, "AAPL"): Decimal("400")},
+        per_symbol_limits={(1, "AAPL"): Decimal(500)},
+        symbol_exposures={(1, "AAPL"): Decimal(400)},
     )
     result = check.evaluate(intent, context)
     assert result.outcome == RMSOutcome.REJECT

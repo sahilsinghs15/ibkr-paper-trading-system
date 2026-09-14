@@ -54,7 +54,7 @@ SIL_GDX_PAYLOAD = {
 
 
 @pytest.fixture
-async def db_factory() -> async_sessionmaker[AsyncSession]:
+async def db_factory() -> async_sessionmaker[AsyncSession]:  # pyrefly: ignore[bad-return]
     engine = create_engine_from_settings()
     factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
     try:

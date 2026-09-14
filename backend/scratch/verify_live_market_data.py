@@ -52,7 +52,7 @@ def run_live_verification_simulation() -> dict:
         leg = OrderLeg(
             symbol=sym,
             side=OrderSide.BUY if idx % 2 == 0 else OrderSide.SELL,
-            quantity=Decimal("100"),
+            quantity=Decimal("100"),  # pyrefly: ignore[bad-argument-type]
             price=Decimal("100.00"),
             contract_month="2026-09",
             instrument_type=stype,

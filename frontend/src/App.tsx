@@ -13,6 +13,8 @@ import { TradeBookPage } from './pages/TradeBookPage'
 import { OrderBookPage } from './pages/OrderBookPage'
 import { AuditLogsPage } from './pages/AuditLogsPage'
 import { IngestFeedPage } from './pages/IngestFeedPage'
+import { ManualTradePage } from './pages/ManualTradePage'
+import { ManualPositionsPage } from './pages/ManualPositionsPage'
 import { NotificationContainer } from './components/NotificationContainer'
 import { usePnlStream } from './hooks/usePnlStream'
 import { useSystemEvents } from './hooks/useSystemEvents'
@@ -120,6 +122,42 @@ function App() {
               <AccountScoped>
                 <OrderBookPage />
               </AccountScoped>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/account/:ibkrAccount/manual-trade"
+          element={
+            <ProtectedRoute>
+              <AccountScoped>
+                <ManualTradePage />
+              </AccountScoped>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/account/:ibkrAccount/manual-trade/positions"
+          element={
+            <ProtectedRoute>
+              <AccountScoped>
+                <ManualPositionsPage />
+              </AccountScoped>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/manual-trade"
+          element={
+            <ProtectedRoute>
+              <RedirectToAccount suffix="/manual-trade" />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/manual-trade/positions"
+          element={
+            <ProtectedRoute>
+              <RedirectToAccount suffix="/manual-trade/positions" />
             </ProtectedRoute>
           }
         />

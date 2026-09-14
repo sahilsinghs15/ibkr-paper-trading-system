@@ -141,7 +141,7 @@ def client_with_execution() -> Generator[TestClient, None, None]:
                     total_margin=Decimal(100000),
                     alloc_pct=Decimal(1),
                     committed_notional=_COMMITTED,
-                    pair_max_allocation_pct=Decimal("1"),
+                    pair_max_allocation_pct=Decimal(1),
                     pair_budget=_COMMITTED,
                     target=Decimal(500),
                     stop=Decimal(250),
@@ -188,7 +188,7 @@ async def _execute_signal_async(payload: dict[str, Any]) -> Any:
     now = datetime.now(UTC)
     req_id = str(uuid.uuid4())
     domain_signal = order_manager.parse_inbound_payload(
-        payload, timestamp=now, request_id=req_id, capture_data=None
+        payload, timestamp=now, request_id=req_id, capture_data=None  # pyrefly: ignore[bad-argument-type]
     )
     return await order_manager.process_signal_execution(domain_signal)
 
@@ -368,7 +368,7 @@ async def test_rms_rejection_blocks_model_blue_execution() -> None:
     req_id = str(uuid.uuid4())
     payload = {**XLE_XOP_OPEN, "trade_id": f"MBG-RMS-REJECT-{uuid.uuid4().hex[:6]}"}
     domain_signal = order_manager.parse_inbound_payload(
-        payload, timestamp=now, request_id=req_id, capture_data=None
+        payload, timestamp=now, request_id=req_id, capture_data=None  # pyrefly: ignore[bad-argument-type]
     )
     with pytest.raises(ValueError):
         await order_manager.process_signal_execution(domain_signal)

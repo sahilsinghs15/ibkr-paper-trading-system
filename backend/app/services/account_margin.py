@@ -26,24 +26,7 @@ from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-MARGIN_TAGS = ",".join(
-    [
-        "NetLiquidation",
-        "AvailableFunds",
-        "ExcessLiquidity",
-        "FullInitMarginReq",
-        "FullMaintMarginReq",
-        "BuyingPower",
-        "GrossPositionValue",
-        "TotalCashValue",
-        "Cushion",
-        "LookAheadInitMarginReq",
-        "LookAheadMaintMarginReq",
-        "LookAheadAvailableFunds",
-        "LookAheadExcessLiquidity",
-        "LookAheadNextChange",
-    ]
-)
+MARGIN_TAGS = "NetLiquidation,AvailableFunds,ExcessLiquidity,FullInitMarginReq,FullMaintMarginReq,BuyingPower,GrossPositionValue,TotalCashValue,Cushion,LookAheadInitMarginReq,LookAheadMaintMarginReq,LookAheadAvailableFunds,LookAheadExcessLiquidity,LookAheadNextChange"
 
 _DOUBLE_MAX = Decimal("1.7976931348623157E+308")
 _ACCOUNT_SUMMARY_REQ_START = 70000

@@ -83,8 +83,8 @@ async def test_emergency_flatten_passes_margin_check_at_zero_headroom():
             "DU12345": AccountMarginSnapshot(
                 ibkr_account="DU12345",
                 as_of=datetime.now(UTC),
-                available_funds=Decimal("0"),
-                net_liquidation=Decimal("1"),
+                available_funds=Decimal(0),
+                net_liquidation=Decimal(1),
                 max_age_sec=300,
             )
         },

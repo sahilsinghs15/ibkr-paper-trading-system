@@ -21,7 +21,7 @@ from app.services.watchdog.telegram import TelegramClient
 
 
 def _settings(**overrides):  # type: ignore[no-untyped-def]
-    defaults = dict(watchdog_interval_seconds=0.1, telegram_enabled=False, recovery_max_attempts=3, recovery_window_seconds=60, market_closed_enabled=False)
+    defaults = {"watchdog_interval_seconds": 0.1, "telegram_enabled": False, "recovery_max_attempts": 3, "recovery_window_seconds": 60, "market_closed_enabled": False}
     defaults.update(overrides)
     return WatchdogSettings(**defaults)
 

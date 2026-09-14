@@ -12,11 +12,13 @@ from app.core.config import Settings
 class TestTWSConnection:
     def test_default_configuration(self) -> None:
         """Verify settings default connection values."""
-        settings = Settings(_env_file=None)
-        assert settings.ibkr_host == "127.0.0.1"
-        assert settings.ibkr_port == 4001
-        assert settings.ibkr_client_id == 1
-        assert settings.ibkr_connection_timeout == 10
+        import os
+        with mock.patch.dict(os.environ, {}, clear=True):
+            settings = Settings(_env_file=None)
+            assert settings.ibkr_host == "127.0.0.1"
+            assert settings.ibkr_port == 4001
+            assert settings.ibkr_client_id == 1
+            assert settings.ibkr_connection_timeout == 10
 
     def test_custom_configuration(self) -> None:
         """Verify settings custom overrides."""

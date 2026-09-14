@@ -38,7 +38,7 @@ def _make_intent(
         OrderLeg(
             symbol=sym,
             side=OrderSide.BUY if idx == 0 else OrderSide.SELL,
-            quantity=Decimal(100),
+            quantity=Decimal(100),  # pyrefly: ignore[bad-argument-type]
             price=Decimal("150.00"),
             contract_month="2026-09",
             instrument_type="STK",
@@ -114,7 +114,7 @@ def test_3_tws_error_10167_tracks_health_status() -> None:
     intent = _make_intent("T-ERR-10167", symbols=["GS"])
 
     svc.watch_open(intent)
-    req_id = list(svc._by_req.keys())[0]
+    req_id = next(iter(svc._by_req.keys()))
 
     # Deliver TWS Error 10167
     svc.on_error(req_id, 10167, "Requested market data is not subscribed. Displaying delayed market data.")
@@ -139,7 +139,7 @@ def test_4_tws_error_354_tracks_health_status() -> None:
     intent = _make_intent("T-ERR-354", symbols=["XME"])
 
     svc.watch_open(intent)
-    req_id = list(svc._by_req.keys())[0]
+    req_id = next(iter(svc._by_req.keys()))
 
     # Deliver TWS Error 354
     svc.on_error(req_id, 354, "Requested market data is not subscribed.")
@@ -254,7 +254,7 @@ def test_9_tws_error_10089_tracks_health_status() -> None:
     intent = _make_intent("T-ERR-10089", symbols=["SIL"])
 
     svc.watch_open(intent)
-    req_id = list(svc._by_req.keys())[0]
+    req_id = next(iter(svc._by_req.keys()))
 
     # Deliver TWS Error 10089
     svc.on_error(
@@ -322,7 +322,7 @@ def test_11_cfd_positions_request_underlying_stk_market_data() -> None:
             OrderLeg(
                 symbol="SPY",
                 side=OrderSide.BUY,
-                quantity=Decimal(100),
+                quantity=Decimal(100),  # pyrefly: ignore[bad-argument-type]
                 price=Decimal("588.00"),
                 contract_month="2026-09",
                 instrument_type="CFD",
@@ -358,7 +358,7 @@ def test_12_error_10089_triggers_delayed_fallback() -> None:
     intent1 = _make_intent("T-DELAY-1", symbols=["SIL"])
 
     svc.watch_open(intent1)
-    req_id = list(svc._by_req.keys())[0]
+    req_id = next(iter(svc._by_req.keys()))
 
     # Deliver Error 10089
     svc.on_error(req_id, 10089, "Requested market data requires additional subscription for API.")
@@ -368,7 +368,7 @@ def test_12_error_10089_triggers_delayed_fallback() -> None:
 
     # Verify health status is DELAYED_FALLBACK, not NO_LIVE_ENTITLEMENT
     c_key = svc._req_to_contract.get(req_id)
-    assert svc._contract_health[c_key]["status"] == "DELAYED_FALLBACK"
+    assert svc._contract_health[c_key]["status"] == "DELAYED_FALLBACK"  # pyrefly: ignore[bad-index]
 
     # Verify NO cooldown was set (so subsequent watches can still subscribe)
     assert c_key not in svc._cooldowns
@@ -387,7 +387,7 @@ def test_12b_error_354_triggers_cooldown() -> None:
     intent1 = _make_intent("T-COOL-1", symbols=["XYZ"])
 
     svc.watch_open(intent1)
-    req_id = list(svc._by_req.keys())[0]
+    req_id = next(iter(svc._by_req.keys()))
 
     # Deliver Error 354 (no market data permission)
     svc.on_error(req_id, 354, "No market data permission.")
@@ -409,7 +409,7 @@ def test_13_reroute_mkt_data_req_subscribes_underlying() -> None:
     intent = _make_intent("T-REROUTE-1", symbols=["SPY"])
     svc.watch_open(intent)
 
-    initial_req_id = list(svc._by_req.keys())[0]
+    initial_req_id = next(iter(svc._by_req.keys()))
     initial_calls = client.reqMktData.call_count
 
     # Simulate IBKR issuing rerouteMktDataReq callback with underlying conId 756733
@@ -447,7 +447,7 @@ def test_13b_reroute_reuses_existing_underlying_subscription() -> None:
     svc._listeners_by_req[existing_req] = {listener_a}
     svc._legs[(7, trade_a)] = {
         "PAVE": (Decimal(26), Decimal("54.67")),
-        "FDN": (Decimal(-100), Decimal("10")),
+        "FDN": (Decimal(-100), Decimal(10)),
     }
     svc._marks[(7, trade_a, "PAVE")] = Decimal("54.50")
 
@@ -496,7 +496,7 @@ def test_14_preresolved_cfd_leg_overrides_to_stk_for_market_data() -> None:
     leg = OrderLeg(
         symbol="EWC",
         side=OrderSide.BUY,
-        quantity=Decimal(405),
+        quantity=Decimal(405),  # pyrefly: ignore[bad-argument-type]
         price=Decimal("61.71"),
         contract_month="2026-09",
         instrument_type="CFD",
@@ -643,7 +643,7 @@ def test_hydrate_seeds_last_persisted_pnl_not_fresh() -> None:
         leg_a_entry_mark=Decimal("54.67"),
         leg_b_symbol="SMH",
         leg_b_signed_qty=Decimal(-10),
-        leg_b_entry_mark=Decimal("300"),
+        leg_b_entry_mark=Decimal(300),
         leg_a_instrument_type="STK",
         leg_b_instrument_type="STK",
         live_pnl=Decimal("-42.50"),

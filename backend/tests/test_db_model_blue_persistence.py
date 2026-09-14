@@ -27,6 +27,7 @@ from app.oms.ibkr_adapter import IBKRExecutionAdapter
 from app.oms.oms_service import OMSService
 from app.rms import RMSContext, RMSEngine
 from app.rms.models import OrderSide, StrategyConfig
+from app.services.account_margin import AccountMarginSnapshot
 from app.services.model_blue.allocation import TemporarySettingsCommittedCapitalProvider
 from app.services.model_blue.db_allocation import DatabaseCommittedCapitalProvider
 from app.services.model_blue.db_trade_book import DatabaseModelBlueTradeBook
@@ -69,7 +70,7 @@ XLE_XOP_OPEN = {
 
 
 @pytest.fixture
-async def db_factory() -> async_sessionmaker[AsyncSession]:
+async def db_factory() -> async_sessionmaker[AsyncSession]:  # pyrefly: ignore[bad-return]
     engine = create_engine_from_settings()
     factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
     try:
@@ -148,7 +149,7 @@ def _static_router(account: AccountModel) -> StaticStrategyAccountRouter:
                 total_margin=account.total_margin,
                 alloc_pct=Decimal(1),
                 committed_notional=account.total_margin,
-                pair_max_allocation_pct=Decimal("1"),
+                pair_max_allocation_pct=Decimal(1),
                 pair_budget=account.total_margin,
                 target=Decimal("500.00"),
                 stop=Decimal("250.00"),
@@ -179,9 +180,20 @@ def _order_manager(
                     max_open_positions=10,
                     money_limit_per_symbol=Decimal(1_000_000),
                 )
+            },
+            margin_snapshots={
+                account.ibkr_account.upper(): AccountMarginSnapshot(
+                    ibkr_account=account.ibkr_account.upper(),
+                    as_of=datetime.now(UTC),
+                    available_funds=Decimal(10_000_000),
+                    net_liquidation=Decimal(20_000_000),
+                    max_age_sec=3600,
+                )
             }
+            if account is not None
+            else {},
         ),
-        committed_capital_provider=DatabaseCommittedCapitalProvider(
+        committed_capital_provider=DatabaseCommittedCapitalProvider(  # pyrefly: ignore[bad-argument-type]
             factory, account_id=account_id
         ),
         model_blue_trade_book=DatabaseModelBlueTradeBook(factory, account_id=account_id),

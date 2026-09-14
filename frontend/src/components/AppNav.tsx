@@ -44,6 +44,12 @@ export function AppNav() {
       >
         Inventory
       </NavLink>
+      <NavLink
+        to={effectiveAccount ? `${accountHome}/manual-trade` : '/accounts'}
+        className={({ isActive }) => (effectiveAccount && isActive ? 'on' : undefined)}
+      >
+        Manual Trading
+      </NavLink>
       {user?.role === 'admin' && (
         <NavLink
           to={effectiveAccount ? `${accountHome}/ingest` : '/accounts'}

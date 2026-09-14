@@ -53,7 +53,12 @@ except ImportError:
     from backend.app.db.session import AsyncSessionLocal, engine  # type: ignore
 
 
+STATE_FILE: Path | None = None
+
+
 def _get_state_file() -> Path:
+    if STATE_FILE is not None:
+        return Path(STATE_FILE)
     if "NOTIFY_STATE_FILE" in os.environ:
         return Path(os.environ["NOTIFY_STATE_FILE"])
     p = Path("/home/tradingapp/storage/state")
@@ -68,6 +73,29 @@ ALLOWED_SERVICES = {"ibgateway", "trading-backend", "demo-streaming", "webhook-i
 logger = logging.getLogger("notify-telegram")
 
 
+def _load_settings() -> Any:
+    try:
+        from app.services.watchdog.config import get_watchdog_settings
+
+        return get_watchdog_settings()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed loading watchdog settings: %s", exc)
+        return None
+
+
+def _market_closed_reason(today: Any) -> str:
+    weekday = getattr(today, "weekday", lambda: 0)()
+    if weekday == 5:
+        return "Saturday"
+    if weekday == 6:
+        return "Sunday"
+    if hasattr(session_clock, "get_holiday_reason"):
+        reason = session_clock.get_holiday_reason(today)
+        if reason:
+            return reason
+    return "Holiday"
+
+
 def _send(text: str) -> bool:
     try:
         token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -75,19 +103,14 @@ def _send(text: str) -> bool:
         enabled = os.environ.get("TELEGRAM_ENABLED", "").lower() in ("true", "1", "yes")
 
         if not (token and chat and enabled):
-            try:
-                from app.services.watchdog.config import get_watchdog_settings
-
-                settings = get_watchdog_settings()
-                if (
-                    settings is not None
-                    and getattr(settings, "telegram_enabled", False)
-                ):
-                    token = getattr(settings, "telegram_bot_token", token)
-                    chat = getattr(settings, "telegram_chat_id", chat)
-                    enabled = True
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("Failed loading watchdog settings: %s", exc)
+            settings = _load_settings()
+            if (
+                settings is not None
+                and getattr(settings, "telegram_enabled", False)
+            ):
+                token = getattr(settings, "telegram_bot_token", token)
+                chat = getattr(settings, "telegram_chat_id", chat)
+                enabled = True
 
         if not (enabled and token and chat):
             return False
@@ -155,7 +178,7 @@ def do_market_closed() -> int:
     if session_clock.is_trading_day(today_et):
         return 0
 
-    reason = session_clock.get_holiday_reason(today_et) or "Market Closed"
+    reason = _market_closed_reason(today_et) or "Market Closed"
     today_s = today_et.isoformat()
     text = f"📅 Market closed — {reason}"
     idempotency_key = f"market_closed:{today_s}"
@@ -258,7 +281,7 @@ def main(argv: list[str]) -> int:
                 "message",
                 f"{friendly_name} {'started' if cmd == 'start' else 'stopped'}",
             )
-            text = f"{icon} {friendly_msg}"
+            text = f"{icon} {svc} {'started' if cmd == 'start' else 'stopped'}"
 
             now_ts = int(time.time())
             inv_id = os.environ.get("INVOCATION_ID") or f"{now_ts}_{os.getpid()}"

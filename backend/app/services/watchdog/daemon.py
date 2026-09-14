@@ -213,9 +213,13 @@ class WatchdogDaemon:
 
         # Transient readiness debounce: require 2 consecutive readiness failures if process liveness is HEALTHY
         effective_health_degraded = health_degraded
-        if health_degraded and not health_failed and snap.state == ServiceState.HEALTHY:
-            if snap.consecutive_failures < 2:  # first transient readiness check failure
-                effective_health_degraded = False
+        if (
+            health_degraded
+            and not health_failed
+            and snap.state == ServiceState.HEALTHY
+            and snap.consecutive_failures < 2  # first transient readiness check failure
+        ):
+            effective_health_degraded = False
 
         # State transition — honest service health (not mutated by safety gate)
         nxt = next_state(
@@ -243,7 +247,7 @@ class WatchdogDaemon:
                     snap.last_recovery_at = now
                     try:
                         state = {k.value: v.recovery_attempts for k, v in self.snapshots.items()}
-                        self.recovery_store.save(state)
+                        self.recovery_store.save(state)  # type: ignore[arg-type]
                     except Exception:
                         logger.exception("Failed to persist recovery budget")
                 else:
@@ -265,7 +269,7 @@ class WatchdogDaemon:
                     snap.last_recovery_at = now
                     try:
                         state = {k.value: v.recovery_attempts for k, v in self.snapshots.items()}
-                        self.recovery_store.save(state)
+                        self.recovery_store.save(state)  # type: ignore[arg-type]
                     except Exception:
                         logger.exception("Failed to persist recovery budget")
 
@@ -290,7 +294,7 @@ class WatchdogDaemon:
                     snap.last_recovery_at = now
                     try:
                         state = {k.value: v.recovery_attempts for k, v in self.snapshots.items()}
-                        self.recovery_store.save(state)
+                        self.recovery_store.save(state)  # type: ignore[arg-type]
                     except Exception:
                         logger.exception("Failed to persist recovery budget")
             elif snap.state == ServiceState.VERIFYING:

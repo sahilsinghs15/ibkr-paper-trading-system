@@ -158,7 +158,7 @@ async def clear_account_kill_switch(
                 cleared_by=cleared_by,
             )
         )
-        count = int(result.rowcount or 0)
+        count = int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     _KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
     logger.warning(
@@ -465,7 +465,7 @@ class KillSwitchService:
                     OrderLeg(
                         symbol=pos.leg_a_symbol,
                         side=side,
-                        quantity=qty,
+                        quantity=qty,  # type: ignore[arg-type]
                         price=Decimal(0),
                         instrument_type=pos.leg_a_instrument_type or "STK",
                         leg_index=0,
@@ -480,7 +480,7 @@ class KillSwitchService:
                     OrderLeg(
                         symbol=pos.leg_b_symbol,
                         side=side,
-                        quantity=qty,
+                        quantity=qty,  # type: ignore[arg-type]
                         price=Decimal(0),
                         instrument_type=pos.leg_b_instrument_type or "STK",
                         leg_index=1,

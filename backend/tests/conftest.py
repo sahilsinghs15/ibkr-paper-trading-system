@@ -105,7 +105,7 @@ def _redirect_webhook_capture_dir(
 
 
 @pytest.fixture(autouse=True)
-def _clear_kill_switch_cache() -> None:
+def _clear_kill_switch_cache() -> None:  # pyrefly: ignore[bad-return]
     """Process-global kill-switch cache must not leak account ids across tests."""
     from app.services.kill_switch import _KILL_SWITCH_ACTIVE_ACCOUNTS
 
@@ -115,7 +115,7 @@ def _clear_kill_switch_cache() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clear_flatten_inflight() -> None:
+def _clear_flatten_inflight() -> None:  # pyrefly: ignore[bad-return]
     from app.services.flatten_inflight import _HELD
 
     _HELD.clear()

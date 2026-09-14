@@ -142,7 +142,7 @@ def test_put_symbol_limit_reloads_rms_context(
     )
     assert res.status_code == 200
     assert res.json()["symbol"] == "XLE"
-    om = client.app.state.order_manager
+    om = client.app.state.order_manager  # pyrefly: ignore[missing-attribute]
     assert om._rms_context.per_symbol_limits.get(
         (seeded_config["account_id"], "XLE")
     ) == Decimal("12345.67")
@@ -197,7 +197,7 @@ def test_margin_settings_roundtrip(client: TestClient) -> None:
     )
     assert patch.status_code == 200
     assert patch.json()["comfort_ratio"] in ("0.7500", "0.75")
-    assert client.app.state.order_manager._rms_context.margin_policy.comfort_ratio == Decimal(
+    assert client.app.state.order_manager._rms_context.margin_policy.comfort_ratio == Decimal(  # pyrefly: ignore[missing-attribute]
         "0.75"
     )
     again = client.get("/api/v1/config/margin")
@@ -364,7 +364,7 @@ async def test_delete_account_cleans_kill_switch_operations_and_cache(
 
         # Insert trading history for Account C
         await session.execute(
-            PositionModel.__table__.insert().values(
+            PositionModel.__table__.insert().values(  # pyrefly: ignore[missing-attribute]
                 account_id=id_c,
                 trade_id=f"HIST-{suffix}",
                 strategy_id="model_blue",

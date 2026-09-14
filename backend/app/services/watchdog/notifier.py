@@ -130,11 +130,11 @@ def _impact_for(service: ServiceName, event: NotificationEvent, hr: HealthResult
         ServiceName.POSTGRES: ("Database session queries failed.", "Order execution and webhook ingestion may be affected."),
         ServiceName.REDIS: ("Demo Streaming SSE pub/sub unavailable.", "None — execution pipeline is independent of Redis."),
     }
-    imp, trad = defaults.get(service, ("Service degraded.", None))
+    imp, trad = defaults.get(service, ("Service degraded.", None))  # type: ignore[assignment]
     return imp, trad
 
 
-def _is_success_detail(text: str) -> bool:
+def _is_success_detail(text: str) -> bool:  # type: ignore[return]
     """Return True if text represents a successful health check, never an error."""
     t = text.strip().lower()
     if t in ("healthy", "ok", "select 1 ok", "ping ok", "http 200", "http 200 → ok"):
@@ -268,7 +268,7 @@ def format_telegram_message(
         from zoneinfo import ZoneInfo
 
         now_et = ts.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M:%S ET")
-    except Exception:
+    except Exception:  # noqa: BLE001
         now_et = now
     what = None
     impact = None
@@ -276,7 +276,6 @@ def format_telegram_message(
     operator_action = None
     endpoint_url = None
     underlying_error_only = None
-    underlying = None
     pid = None
     log_excerpt = None
     log_marker = None
@@ -290,9 +289,9 @@ def format_telegram_message(
         # Do NOT use health.detail as error when status is HEALTHY — structured success
         from app.services.watchdog.models import HealthStatus as _HS
         if health.status != _HS.HEALTHY:
-            underlying = health.underlying_error or health.detail
+            pass
         else:
-            underlying = health.underlying_error  # None for healthy => no error
+            pass  # None for healthy => no error
         pid = health.pid
         log_excerpt = health.log_excerpt
         log_marker = health.log_marker
@@ -323,9 +322,8 @@ def format_telegram_message(
         if trading_impact is None:
             trading_impact = trading_impact_fallback
     # For TRADING_BLOCKED with healthy health but safety gate reason, clarify trading_impact
-    if event == NotificationEvent.TRADING_BLOCKED:
-        if not trading_impact or "READY" in (trading_impact or ""):
-            trading_impact = trading_status
+    if event == NotificationEvent.TRADING_BLOCKED and (not trading_impact or "READY" in (trading_impact or "")):
+        trading_impact = trading_status
     # DETAILS: separate service health from trading readiness
     # MARKET_CLOSED honest messaging
     if event == NotificationEvent.MARKET_CLOSED:
@@ -337,7 +335,7 @@ def format_telegram_message(
             what = f"{_display(service)} health check is passing, but trading remains blocked because safety gate has not been cleared: {reason_text}."
         else:
             if not what or what == "Trading safety gate failed.":
-                reason_text = snapshot.failure_reason or reason or health.underlying_error if health else "unknown"
+                reason_text = snapshot.failure_reason or reason or health.underlying_error if health else "unknown"  # type: ignore[assignment]
                 what = f"Trading safety gate failed: {reason_text}"
     if not what:
         if event == NotificationEvent.FAILURE:
@@ -376,7 +374,7 @@ def format_telegram_message(
         if attempt:
             recovery += f" Recovery attempt: {attempt}"
     else:
-        recovery = _recovery_owner(service) if event in (NotificationEvent.FAILURE, NotificationEvent.UNHEALTHY) else None
+        recovery = _recovery_owner(service) if event in (NotificationEvent.FAILURE, NotificationEvent.UNHEALTHY) else None  # type: ignore[assignment]
     if event == NotificationEvent.STOP:
         recovery = "Watchdog monitor stopped — no automatic recovery."
     emoji, header = _event_header(event)
@@ -564,7 +562,7 @@ def format_resource_alert(
     now = datetime.now(UTC)
     try:
         now_et = now.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M:%S ET")
-    except Exception:
+    except Exception:  # noqa: BLE001
         now_et = now.strftime("%H:%M:%S UTC")
 
     if is_recovery or state == "NORMAL":
@@ -582,7 +580,7 @@ def format_resource_alert(
         for unit in ["B", "KB", "MB", "GB", "TB"]:
             if abs(b) < 1024:
                 return f"{b:.1f} {unit}"
-            b /= 1024
+            b /= 1024  # type: ignore[assignment]
         return f"{b:.1f} PB"
 
     lines: list[str] = []
@@ -678,9 +676,7 @@ class NotificationDeduplicator:
         if last_ev is not None and last_ev != event:
             # Different event type — not a duplicate of same unchanged state
             return True
-        if now - last >= self.cooldown:
-            return True
-        return False
+        return now - last >= self.cooldown
 
     def mark_sent(self, service: ServiceName, event: NotificationEvent) -> None:
         self._last_sent[(service.value, event.value)] = time.monotonic()

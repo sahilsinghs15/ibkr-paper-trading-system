@@ -75,10 +75,9 @@ class TradeBookSyncService:
                 logger.exception("TradeBook fetch failed account=%s", ibkr)
                 return 0, True
             order_map = await self._resolve_order_map(account.id)
-            async with self._session_factory() as session:
-                async with session.begin():
-                    repo = TradeExecutionRepository(session)
-                    await repo.upsert_batch(result.lines, account_id=account.id, order_map=order_map or None)
+            async with self._session_factory() as session, session.begin():
+                repo = TradeExecutionRepository(session)
+                await repo.upsert_batch(result.lines, account_id=account.id, order_map=order_map or None)
             self._last_sync_at[account.id] = datetime.now(UTC)
             if not result.timed_out:
                 self._last_success_at[account.id] = datetime.now(UTC)

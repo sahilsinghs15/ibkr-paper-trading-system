@@ -75,7 +75,7 @@ async def session_factory():
 
 
 @pytest.fixture
-def client() -> TestClient:
+def client() -> TestClient:  # pyrefly: ignore[bad-return]
     with (
         patch("app.broker.ibkr.tws_client.TWSClient.connect_and_start", return_value=True),
         patch("app.broker.ibkr.tws_client.TWSClient.disconnect_clean"),
@@ -118,7 +118,7 @@ async def test_close_single_pair_success_and_isolation(
         pos_repo = PositionRepository(session)
         # Acc A Pair 1 (EWP/EWU)
         await pos_repo._session.execute(
-            PositionModel.__table__.insert().values(
+            PositionModel.__table__.insert().values(  # pyrefly: ignore[missing-attribute]
                 account_id=id_a,
                 trade_id=trade_1,
                 strategy_id="model_blue",
@@ -136,7 +136,7 @@ async def test_close_single_pair_success_and_isolation(
         )
         # Acc A Pair 2 (SPY/QQQ)
         await pos_repo._session.execute(
-            PositionModel.__table__.insert().values(
+            PositionModel.__table__.insert().values(  # pyrefly: ignore[missing-attribute]
                 account_id=id_a,
                 trade_id=trade_2,
                 strategy_id="model_blue",
@@ -154,7 +154,7 @@ async def test_close_single_pair_success_and_isolation(
         )
         # Acc B Pair 3 (EWP/EWU on Acc B)
         await pos_repo._session.execute(
-            PositionModel.__table__.insert().values(
+            PositionModel.__table__.insert().values(  # pyrefly: ignore[missing-attribute]
                 account_id=id_b,
                 trade_id=trade_b,
                 strategy_id="model_blue",
@@ -206,9 +206,9 @@ async def test_close_single_pair_success_and_isolation(
         p2 = await pos_repo.get_by_trade_id(trade_2, account_id=id_a)
         pb = await pos_repo.get_by_trade_id(trade_b, account_id=id_b)
 
-        assert p1.risk_state == "CLOSED"
-        assert p2.risk_state == "OPEN"
-        assert pb.risk_state == "OPEN"
+        assert p1.risk_state == "CLOSED"  # pyrefly: ignore[missing-attribute]
+        assert p2.risk_state == "OPEN"  # pyrefly: ignore[missing-attribute]
+        assert pb.risk_state == "OPEN"  # pyrefly: ignore[missing-attribute]
 
     # Verify Kill switch state was NOT activated
     assert is_account_kill_switch_active(id_a) is False
@@ -234,7 +234,7 @@ async def test_close_pair_unavailable_execution_dependency_fails_safely(
 
         pos_repo = PositionRepository(session)
         await pos_repo._session.execute(
-            PositionModel.__table__.insert().values(
+            PositionModel.__table__.insert().values(  # pyrefly: ignore[missing-attribute]
                 account_id=acc_id,
                 trade_id=trade_id,
                 strategy_id="model_blue",
@@ -302,7 +302,7 @@ async def test_cross_account_and_nonexistent_pair_api(
 
         pos_repo = PositionRepository(session)
         await pos_repo._session.execute(
-            PositionModel.__table__.insert().values(
+            PositionModel.__table__.insert().values(  # pyrefly: ignore[missing-attribute]
                 account_id=id_a,
                 trade_id=trade_a,
                 strategy_id="model_blue",
@@ -316,7 +316,7 @@ async def test_cross_account_and_nonexistent_pair_api(
             )
         )
         await pos_repo._session.execute(
-            PositionModel.__table__.insert().values(
+            PositionModel.__table__.insert().values(  # pyrefly: ignore[missing-attribute]
                 account_id=id_b,
                 trade_id=trade_b,
                 strategy_id="model_blue",
@@ -360,7 +360,7 @@ async def test_already_closed_pair_returns_400(
 
         pos_repo = PositionRepository(session)
         await pos_repo._session.execute(
-            PositionModel.__table__.insert().values(
+            PositionModel.__table__.insert().values(  # pyrefly: ignore[missing-attribute]
                 account_id=acc_id,
                 trade_id=trade_closed,
                 strategy_id="model_blue",
@@ -400,7 +400,7 @@ async def test_leg_targeting_and_reverse_orders(
         # Leg A: +100 (BUY) -> reverse order should be SELL 100
         # Leg B: -50 (SELL) -> reverse order should be BUY 50
         await pos_repo._session.execute(
-            PositionModel.__table__.insert().values(
+            PositionModel.__table__.insert().values(  # pyrefly: ignore[missing-attribute]
                 account_id=acc_id,
                 trade_id=trade_id,
                 strategy_id="model_blue",
@@ -469,7 +469,7 @@ async def test_partial_fill_handling(
 
         pos_repo = PositionRepository(session)
         await pos_repo._session.execute(
-            PositionModel.__table__.insert().values(
+            PositionModel.__table__.insert().values(  # pyrefly: ignore[missing-attribute]
                 account_id=acc_id,
                 trade_id=trade_id,
                 strategy_id="model_blue",
@@ -537,7 +537,7 @@ async def test_cancel_retry_close_persists_ledger(
 
         pos_repo = PositionRepository(session)
         await pos_repo._session.execute(
-            PositionModel.__table__.insert().values(
+            PositionModel.__table__.insert().values(  # pyrefly: ignore[missing-attribute]
                 account_id=acc_id,
                 trade_id=trade_id,
                 strategy_id="model_blue",
@@ -607,7 +607,7 @@ async def test_failed_close_preserves_open_position(
 
         pos_repo = PositionRepository(session)
         await pos_repo._session.execute(
-            PositionModel.__table__.insert().values(
+            PositionModel.__table__.insert().values(  # pyrefly: ignore[missing-attribute]
                 account_id=acc_id,
                 trade_id=trade_id,
                 strategy_id="model_blue",
@@ -658,7 +658,7 @@ async def test_duplicate_in_flight_close_requests_deduplicated(
 
         pos_repo = PositionRepository(session)
         await pos_repo._session.execute(
-            PositionModel.__table__.insert().values(
+            PositionModel.__table__.insert().values(  # pyrefly: ignore[missing-attribute]
                 account_id=acc_id,
                 trade_id=trade_id,
                 strategy_id="model_blue",

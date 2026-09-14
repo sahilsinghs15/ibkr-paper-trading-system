@@ -324,6 +324,39 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                       <div className="pair-badges">
                         <span className="badge-pair leg-a">{legA.symbol || '—'}</span>
                         <span className="badge-pair leg-b">{legB.symbol || '—'}</span>
+                        {head.source === 'manual' ? (
+                          <span
+                            className="source-badge manual"
+                            style={{
+                              fontSize: '10px',
+                              padding: '2px 6px',
+                              borderRadius: '3px',
+                              background: '#3b2d54',
+                              color: '#d8b4fe',
+                              border: '1px solid #7c3aed',
+                              marginLeft: '6px',
+                              fontWeight: 600,
+                            }}
+                          >
+                            Manual Trading
+                          </span>
+                        ) : (
+                          <span
+                            className="source-badge engine"
+                            style={{
+                              fontSize: '10px',
+                              padding: '2px 6px',
+                              borderRadius: '3px',
+                              background: '#1e293b',
+                              color: '#94a3b8',
+                              border: '1px solid #334155',
+                              marginLeft: '6px',
+                              fontWeight: 500,
+                            }}
+                          >
+                            Engine Trading
+                          </span>
+                        )}
                       </div>
                       {isRogue && (
                         <div className="rogue-badges-box">

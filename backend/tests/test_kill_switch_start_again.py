@@ -45,7 +45,7 @@ async def session_factory():
 
 
 @pytest.fixture
-def client() -> TestClient:
+def client() -> TestClient:  # pyrefly: ignore[bad-return]
     with (
         patch("app.broker.ibkr.tws_client.TWSClient.connect_and_start", return_value=True),
         patch("app.broker.ibkr.tws_client.TWSClient.disconnect_clean"),

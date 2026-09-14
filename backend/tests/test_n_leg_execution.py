@@ -192,7 +192,7 @@ async def test_2_generic_three_leg_intent() -> None:
     assert len(exec_res.orders) == 3
     assert [o.symbol for o in exec_res.orders] == ["L0", "L1", "L2"]
     assert len(submit_calls) == 3
-    assert adapter._client.placeOrder.call_count == 3
+    assert adapter._client.placeOrder.call_count == 3  # pyrefly: ignore[missing-attribute]
 
 
 @pytest.mark.asyncio
@@ -203,7 +203,7 @@ async def test_3_generic_five_leg_intent() -> None:
     assert len(exec_res.orders) == 5
     assert [o.symbol for o in exec_res.orders] == ["A", "B", "C", "D", "E"]
     assert len(submit_calls) == 5
-    assert adapter._client.placeOrder.call_count == 5
+    assert adapter._client.placeOrder.call_count == 5  # pyrefly: ignore[missing-attribute]
 
 
 @pytest.mark.asyncio

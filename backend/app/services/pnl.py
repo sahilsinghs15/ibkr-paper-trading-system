@@ -135,7 +135,7 @@ class LivePnlService:
         if self._rate_limiter is None:
             callback()
             return True
-        acquired = self._rate_limiter.try_acquire(PRIORITY_MARKET_DATA, request_type)
+        acquired = self._rate_limiter.try_acquire(PRIORITY_MARKET_DATA, request_type)  # type: ignore[attr-defined]
         if acquired is not None:
             callback()
             return True
@@ -157,7 +157,7 @@ class LivePnlService:
         import asyncio
 
         try:
-            self._loop = asyncio.get_running_loop()
+            self._loop = asyncio.get_running_loop()  # type: ignore[assignment]
         except RuntimeError:
             logger.warning(
                 "LivePnl watch_open: no running event loop; ticks will not persist"
@@ -696,7 +696,7 @@ class LivePnlService:
                 try:
                     details = req_details(contract, timeout=3.0)
                     if details:
-                        qualified_c = details[0].contract
+                        qualified_c = details[0].contract  # pyrefly: ignore[bad-index]
                         if getattr(qualified_c, "conId", 0):
                             contract.conId = qualified_c.conId
                         if getattr(qualified_c, "primaryExchange", None):
@@ -924,7 +924,7 @@ class LivePnlService:
                     loop = asyncio.get_running_loop()
                     loop.call_later(
                         wait,
-                        lambda ak=account_id, tid=trade_id: asyncio.create_task(
+                        lambda ak=account_id, tid=trade_id: asyncio.create_task(  # type: ignore[misc]
                             self._schedule_persist(ak, tid)
                         ),
                     )

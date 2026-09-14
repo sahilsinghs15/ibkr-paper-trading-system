@@ -150,7 +150,7 @@ class MarginPolicy:
 
     check_enabled: bool = False
     gate_basis: str = "available_funds"
-    min_free_buffer: Decimal = Decimal("0")
+    min_free_buffer: Decimal = Decimal(0)
     min_free_pct_of_netliq: Decimal = Decimal("0.05")
     comfort_ratio: Decimal = Decimal("0.80")
     confirm_borderline: bool = True

@@ -23,6 +23,7 @@ from app.core.identifiers import normalize_account
 from app.db.models.account import AccountModel
 from app.db.models.basket import BasketModel
 from app.db.models.instrument import InstrumentModel
+from app.db.models.manual_order import ManualOrderModel, ManualPositionModel
 from app.db.models.order import OrderModel
 from app.db.models.position import PositionModel
 from app.db.models.signal import JOB_STATUS_PROCESSING, SignalJobModel
@@ -53,6 +54,8 @@ class LedgerNetLine:
     sec_type: str
     signed_qty: Decimal
     con_ids: frozenset[int]
+    engine_qty: Decimal = Decimal(0)
+    manual_qty: Decimal = Decimal(0)
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,8 @@ class ReconcileDiff:
     broker_qty: float | None
     ledger_qty: float | None
     in_flight: bool
+    engine_qty: float | None = None
+    manual_qty: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -78,6 +83,8 @@ class ReconcileDiff:
             "broker_qty": self.broker_qty,
             "ledger_qty": self.ledger_qty,
             "in_flight": self.in_flight,
+            "engine_qty": self.engine_qty,
+            "manual_qty": self.manual_qty,
         }
 
 
@@ -164,14 +171,16 @@ def _resolve_diff_con_id(
 def build_ledger_net_lines(
     open_rows: list[PositionModel],
     instruments: list[InstrumentModel],
+    manual_open_rows: list[ManualPositionModel] | None = None,
 ) -> list[LedgerNetLine]:
-    """Net OPEN ledger qty per (account_id, symbol) from pair legs."""
+    """Net OPEN ledger qty per (account_id, symbol) from pair legs and manual positions."""
     symbol_to_conids: dict[tuple[str, str], set[int]] = defaultdict(set)
     for inst in instruments:
         key = (_norm_symbol(inst.symbol), _norm_sec_type(inst.sec_type))
         symbol_to_conids[key].add(inst.trade_conid)
 
-    nets: dict[tuple[int, str, str], Decimal] = defaultdict(lambda: Decimal(0))
+    engine_nets: dict[tuple[int, str, str], Decimal] = defaultdict(lambda: Decimal(0))
+    manual_nets: dict[tuple[int, str, str], Decimal] = defaultdict(lambda: Decimal(0))
 
     for row in open_rows:
         legs = [
@@ -191,11 +200,25 @@ def build_ledger_net_lines(
                 continue
             sec_type = _norm_sec_type(inst_type or "STK")
             net_key = (row.account_id, _norm_symbol(symbol), sec_type)
-            nets[net_key] += Decimal(str(signed_qty))
+            engine_nets[net_key] += Decimal(str(signed_qty))
 
+    if manual_open_rows:
+        for mpos in manual_open_rows:
+            if not mpos.symbol or mpos.signed_qty is None:
+                continue
+            sec_type = _norm_sec_type(mpos.sec_type or "CFD")
+            net_key = (mpos.account_id, _norm_symbol(mpos.symbol), sec_type)
+            manual_nets[net_key] += Decimal(str(mpos.signed_qty))
+            if mpos.con_id and int(mpos.con_id) > 0:
+                symbol_to_conids[(_norm_symbol(mpos.symbol), sec_type)].add(int(mpos.con_id))
+
+    all_keys = set(engine_nets.keys()) | set(manual_nets.keys())
     result: list[LedgerNetLine] = []
-    for (account_id, symbol, sec_type), qty in nets.items():
-        if abs(float(qty)) <= QTY_EPSILON:
+    for (account_id, symbol, sec_type) in sorted(all_keys):
+        eq = engine_nets.get((account_id, symbol, sec_type), Decimal(0))
+        mq = manual_nets.get((account_id, symbol, sec_type), Decimal(0))
+        total_qty = eq + mq
+        if abs(float(total_qty)) <= QTY_EPSILON:
             continue
         con_ids = _con_ids_for_symbol(symbol_to_conids, symbol, sec_type)
         result.append(
@@ -203,8 +226,10 @@ def build_ledger_net_lines(
                 account_id=account_id,
                 symbol=symbol,
                 sec_type=sec_type,
-                signed_qty=qty,
+                signed_qty=total_qty,
                 con_ids=frozenset(con_ids),
+                engine_qty=eq,
+                manual_qty=mq,
             )
         )
     return result
@@ -217,11 +242,12 @@ def ledger_net_qty_for_symbol(
     account_id: int,
     symbol: str,
     sec_type: str,
+    manual_open_rows: list[ManualPositionModel] | None = None,
 ) -> float | None:
     """Signed ledger net for one account/symbol, or None when no OPEN net."""
     norm_symbol = _norm_symbol(symbol)
     norm_sec_type = _norm_sec_type(sec_type)
-    for line in build_ledger_net_lines(open_rows, instruments):
+    for line in build_ledger_net_lines(open_rows, instruments, manual_open_rows):
         if (
             line.account_id == account_id
             and line.symbol == norm_symbol
@@ -289,6 +315,8 @@ def classify_reconcile_diffs(
             sum(line.quantity for line in broker_group) if broker_group else None
         )
         ledger_qty = float(ledger.signed_qty) if ledger is not None else None
+        engine_qty = float(ledger.engine_qty) if ledger is not None else None
+        manual_qty = float(ledger.manual_qty) if ledger is not None else None
         in_flight = account_id in in_flight_accounts
         ibkr_account = _resolve_ibkr_account(account_id, broker_group, account_to_ibkr)
         con_id = _resolve_diff_con_id(
@@ -313,6 +341,8 @@ def classify_reconcile_diffs(
                         broker_qty=broker_qty,
                         ledger_qty=ledger_qty,
                         in_flight=in_flight,
+                        engine_qty=engine_qty,
+                        manual_qty=manual_qty,
                     )
                 )
             else:
@@ -327,6 +357,8 @@ def classify_reconcile_diffs(
                         broker_qty=broker_qty,
                         ledger_qty=ledger_qty,
                         in_flight=in_flight,
+                        engine_qty=engine_qty,
+                        manual_qty=manual_qty,
                     )
                 )
         elif broker_qty is not None and ledger_qty is None:
@@ -341,6 +373,8 @@ def classify_reconcile_diffs(
                     broker_qty=broker_qty,
                     ledger_qty=None,
                     in_flight=in_flight,
+                    engine_qty=None,
+                    manual_qty=None,
                 )
             )
         elif broker_qty is None and ledger_qty is not None:
@@ -357,6 +391,8 @@ def classify_reconcile_diffs(
                     broker_qty=None,
                     ledger_qty=ledger_qty,
                     in_flight=in_flight,
+                    engine_qty=engine_qty,
+                    manual_qty=manual_qty,
                 )
             )
 
@@ -550,12 +586,25 @@ class PositionReconciler:
                 .scalars()
                 .all()
             )
+            manual_open_rows = list(
+                (
+                    await session.execute(
+                        select(ManualPositionModel).where(
+                            ManualPositionModel.status == "OPEN"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
             instruments = list(
                 (await session.execute(select(InstrumentModel))).scalars().all()
             )
             in_flight_accounts = await fetch_in_flight_accounts(session)
 
-            account_ids = {row.account_id for row in open_rows}
+            account_ids = {row.account_id for row in open_rows} | {
+                row.account_id for row in manual_open_rows
+            }
             order_rows: list[OrderModel] = []
             if account_ids:
                 order_rows = list(
@@ -571,7 +620,9 @@ class PositionReconciler:
                 )
             order_con_id_map = build_order_con_id_map(order_rows)
 
-            ledger_lines = build_ledger_net_lines(open_rows, instruments)
+            ledger_lines = build_ledger_net_lines(
+                open_rows, instruments, manual_open_rows
+            )
             diffs = classify_reconcile_diffs(
                 broker_lines=broker_lines,
                 ledger_lines=ledger_lines,
@@ -754,7 +805,7 @@ class PositionReconciler:
 
 
 async def fetch_in_flight_accounts(session: AsyncSession) -> set[int]:
-    """Accounts with active baskets or processing signal jobs."""
+    """Accounts with active baskets, processing signal jobs, or active manual orders."""
     basket_rows = (
         (
             await session.execute(
@@ -777,7 +828,20 @@ async def fetch_in_flight_accounts(session: AsyncSession) -> set[int]:
         .scalars()
         .all()
     )
-    accounts: set[int] = set(basket_rows)
+    manual_order_rows = (
+        (
+            await session.execute(
+                select(ManualOrderModel.account_id).where(
+                    ManualOrderModel.status.in_(
+                        ["PENDING_SUBMIT", "SUBMITTED", "PARTIALLY_FILLED"]
+                    )
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    accounts: set[int] = set(basket_rows) | set(manual_order_rows)
     for scope in job_rows:
         if scope is None:
             continue

@@ -33,7 +33,7 @@ def _margin_impact_from_order(order: OMSOrder) -> Decimal | None:
         return None
     try:
         value = Decimal(str(raw))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     if value < 0:
         return None
@@ -85,7 +85,7 @@ class OrderRepository:
             if order.intent.legs:
                 idx = order.leg_index if order.leg_index is not None else 0
                 if 0 <= idx < len(order.intent.legs) and order.intent.legs[idx].instrument_type:
-                    itype = order.intent.legs[idx].instrument_type
+                    itype = order.intent.legs[idx].instrument_type  # type: ignore[assignment]
             ibkr_contract = f"{order.symbol}-{itype}-SMART-USD"
         limit_price = order.limit_price if order.limit_price is not None else Decimal(0)
         qty = Decimal(str(order.quantity))
@@ -151,9 +151,9 @@ class OrderRepository:
             "is_compensation": values["is_compensation"],
         }
         if "margin_impact" in values:
-            update["margin_impact"] = values["margin_impact"]
+            update["margin_impact"] = values["margin_impact"]  # pyrefly: ignore[bad-assignment]
         if persist_filled_at is not None:
-            update["filled_at"] = persist_filled_at
+            update["filled_at"] = persist_filled_at  # pyrefly: ignore[bad-assignment]
         if basket_id is not None:
             update["basket_id"] = basket_id
         if comp_of is not None:

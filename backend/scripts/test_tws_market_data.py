@@ -8,7 +8,7 @@ import time
 from app.broker.ibkr.tws_client import TWSClient
 from app.core.config import get_settings
 from app.core.logger import setup_logging
-from app.market_data.ibkr_market_data import IBKRMarketDataAdapter
+from app.market_data.ibkr_market_data import IBKRMarketDataAdapter  # pyrefly: ignore[missing-import]
 
 # Configure logging to stdout
 setup_logging(level="INFO")

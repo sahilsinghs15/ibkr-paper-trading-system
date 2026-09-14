@@ -157,7 +157,7 @@ def format_canonical_notification(
             tv = float(thresh)
             realised_str = f"${rv:,.2f}"
             thresh_str = f"${tv:,.2f}"
-        except Exception:
+        except Exception:  # noqa: BLE001
             realised_str = str(realised)
             thresh_str = str(thresh)
         title = "Loss threshold breached"

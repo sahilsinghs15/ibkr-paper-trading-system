@@ -206,7 +206,7 @@ class IBKRExecutionAdapter:
                 value = allocate()
             except RuntimeError:
                 raise
-            except Exception:
+            except Exception:  # noqa: BLE001
                 value = None
             if isinstance(value, int):
                 return value
@@ -232,7 +232,7 @@ class IBKRExecutionAdapter:
         """Convert internal OMSOrder to IBKR IBOrder model."""
         ib_order = IBOrder()
         ib_order.action = "BUY" if order.side == OrderSide.BUY else "SELL"
-        ib_order.totalQuantity = float(order.quantity)
+        ib_order.totalQuantity = float(order.quantity)  # pyrefly: ignore[bad-assignment]
 
         order_type_upper = (order.order_type or "LIMIT").upper()
         if order_type_upper == "LIMIT":
@@ -250,7 +250,7 @@ class IBKRExecutionAdapter:
         ib_order.firmQuoteOnly = False
         # Red Zone safety: normal orders must not trade outside RTH
         is_emergency = order.intent.intent_mode == ExecutionIntentMode.EMERGENCY_FLATTEN
-        ib_order.outsideRth = False if not is_emergency else False
+        ib_order.outsideRth = False
         # Explicitly enforce outsideRth False for normal orders
         if not is_emergency:
             ib_order.outsideRth = False
@@ -356,7 +356,7 @@ class IBKRExecutionAdapter:
         tws_order_id = self._get_next_tws_order_id()
         ib_order = IBOrder()
         ib_order.action = "BUY" if str(side).upper() == "BUY" else "SELL"
-        ib_order.totalQuantity = float(quantity)
+        ib_order.totalQuantity = float(quantity)  # pyrefly: ignore[bad-assignment]
         ib_order.orderType = "LMT"
         ib_order.lmtPrice = float(price)
         ib_order.transmit = True
@@ -609,7 +609,7 @@ class IBKRExecutionAdapter:
                 req_open()
             req_exec = getattr(self._client, "reqExecutions", None)
             if callable(req_exec):
-                from ibapi.execution import (
+                from ibapi.execution import (  # type: ignore[import-untyped]
                     ExecutionFilter,  # type: ignore[import-untyped]
                 )
 
@@ -1071,7 +1071,7 @@ class IBKRExecutionAdapter:
                 candidate = Decimal(str(raw_pnl))
                 if candidate.is_finite() and abs(candidate) < Decimal("1e12"):
                     realized = candidate
-            except Exception:
+            except Exception:  # noqa: BLE001
                 realized = None
         logger.info(
             "IBKR commissionReport callback: exec_id=%s, commission=%s %s",
@@ -1114,6 +1114,8 @@ class IBKRExecutionAdapter:
     _ORDER_REJECTION_CODES = frozenset({200, 201, 10147, 10148, 10243})
 
     def _is_non_terminal_tws_warning(self, errorCode: int) -> bool:
+        if errorCode in self._ORDER_REJECTION_CODES:
+            return False
         return (
             errorCode in self._NON_TERMINAL_WARNING_CODES
             or (errorCode >= 2000 and errorCode < 3000)

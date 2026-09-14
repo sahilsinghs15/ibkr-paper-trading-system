@@ -148,7 +148,7 @@ def get_holiday_reason(d: date) -> str:
 
             ts = pd.Timestamp(d)
             if not cal.is_session(ts):
-                h = cal.regular_holidays.holidays(ts, ts, return_name=True)
+                h = cal.regular_holidays.holidays(ts, ts, return_name=True)  # pyrefly: ignore[missing-attribute]
                 if not h.empty:
                     name = str(h.iloc[0]).strip()
                     if name == "July 4th":

@@ -45,7 +45,7 @@ async def collect_critical_baskets(
         for order in orders:
             if order.is_compensation:
                 continue
-            symbol, sec_type, _ex, _cur, con_id = parse_ibkr_contract(order.ibkr_contract)
+            _symbol, sec_type, _ex, _cur, con_id = parse_ibkr_contract(order.ibkr_contract)
             legs.append(
                 CriticalBasketLegRow(
                     leg=order.leg,

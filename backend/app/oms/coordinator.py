@@ -450,7 +450,7 @@ class BasketCoordinator:
         for order in working:
             try:
                 await self._oms.cancel_order(order.internal_order_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("Cancel failed for %s: %s", order.internal_order_id, exc)
                 basket.state = BasketState.CRITICAL
                 await self._fail_critical(basket, intent, submitted, [], signal_pk)
@@ -701,7 +701,7 @@ class BasketCoordinator:
         for order in working:
             try:
                 await self._oms.cancel_order(order.internal_order_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("Cancel failed for %s: %s", order.internal_order_id, exc)
                 return False
         await self._wait_terminals(working, timeout=self._cancel_timeout)
@@ -796,7 +796,7 @@ class BasketCoordinator:
                     continue
                 self._retry_ids.add(retry_key)
                 retry_intent = self._retry_intent(intent, orig_leg, remaining, index, attempt)
-                rms_result = self._rms_engine.evaluate(retry_intent, self._rms_context)
+                rms_result = self._rms_engine.evaluate(retry_intent, self._rms_context)  # type: ignore[arg-type, union-attr]
                 rate_limited = False
                 if rms_result.outcome != RMSOutcome.PASS:
                     rms_blocked.add(index)
@@ -913,7 +913,7 @@ class BasketCoordinator:
         px = orig_leg.price
         retry_leg = replace(
             orig_leg,
-            quantity=qty,
+            quantity=qty,  # type: ignore[arg-type]
             notional=qty * px,
             leg_index=index,
         )
@@ -971,7 +971,7 @@ class BasketCoordinator:
                     OrderLeg(
                         symbol=orig_leg.symbol,
                         side=reverse,
-                        quantity=Decimal(str(cum_filled)),
+                        quantity=Decimal(str(cum_filled)),  # type: ignore[arg-type]
                         price=price if isinstance(price, Decimal) else Decimal(str(price)),
                         contract_month=orig_leg.contract_month,
                         instrument_type=orig_leg.instrument_type,

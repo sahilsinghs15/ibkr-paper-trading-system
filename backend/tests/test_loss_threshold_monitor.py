@@ -8,8 +8,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.db.models.account import AccountModel
-from app.db.models.account_loss_state import AccountLossStateModel
-from app.db.models.position import PositionModel
 from app.models.model_blue_trade import OpenModelBlueTrade, OpenModelBlueTradeLeg
 from app.rms.models import OrderSide
 
@@ -80,7 +78,7 @@ async def test_exact_at_threshold_alert(session_factory):
         row.closed_at = datetime.now(UTC)
         await session.commit()
         mon = LossThresholdMonitor(session_factory)
-        with patch("app.services.loss_threshold_monitor.send_canonical_telegram", new=AsyncMock(return_value=True)) as mock:
+        with patch("app.services.loss_threshold_monitor.send_canonical_telegram", new=AsyncMock(return_value=True)):
             res = await mon.evaluate_account(acc.id)
             assert res is not None
             # let telegram task run
@@ -97,9 +95,10 @@ async def test_repeated_while_breached_only_one(session_factory):
         await session.commit()
         await session.refresh(acc)
         trade = OpenModelBlueTrade(trade_id=f"T{suffix}", strategy_id="model_blue", direction=0, legs=(_leg("AAPL", OrderSide.BUY, Decimal(1), Decimal(100)), _leg("MSFT", OrderSide.SELL, Decimal(1), Decimal(100))))
-        from app.db.repositories.position_repository import PositionRepository
+        from sqlalchemy import select
+
         from app.db.models.event import EventLogModel
-        from sqlalchemy import select, func
+        from app.db.repositories.position_repository import PositionRepository
         repo = PositionRepository(session)
         row = await repo.open_trade(trade, account_id=acc.id, target=Decimal(500), stop=Decimal(-250), time_limit=3600)
         row.realised_pnl = Decimal(-600)
@@ -154,8 +153,9 @@ async def test_recovery_resets_and_second_crossing(session_factory):
             res = await mon.evaluate_account(acc.id)
             await asyncio.sleep(0.05)
             assert res is not None
-        from app.db.models.event import EventLogModel
         from sqlalchemy import select
+
+        from app.db.models.event import EventLogModel
         events = list((await session.execute(select(EventLogModel).where(EventLogModel.kind == "LOSS_THRESHOLD_BREACHED"))).scalars().all())
         mine = [e for e in events if str(e.detail.get("account_id")) == str(acc.id)]
         assert len(mine) == 2
@@ -213,8 +213,9 @@ async def test_concurrent_no_duplicate(session_factory):
         with patch("app.services.loss_threshold_monitor.send_canonical_telegram", new=AsyncMock(return_value=True)):
             await asyncio.gather(*(mon.evaluate_account(acc.id) for _ in range(5)))
             await asyncio.sleep(0.1)
-        from app.db.models.event import EventLogModel
         from sqlalchemy import select
+
+        from app.db.models.event import EventLogModel
         events = list((await session.execute(select(EventLogModel).where(EventLogModel.kind == "LOSS_THRESHOLD_BREACHED"))).scalars().all())
         mine = [e for e in events if str(e.detail.get("account_id")) == str(acc.id)]
         assert len(mine) == 1
@@ -247,8 +248,9 @@ async def test_account_isolation(session_factory):
             await mon.evaluate_account(a.id)
             await mon.evaluate_account(b.id)
             await asyncio.sleep(0.1)
-        from app.db.models.event import EventLogModel
         from sqlalchemy import select
+
+        from app.db.models.event import EventLogModel
         events = list((await session.execute(select(EventLogModel).where(EventLogModel.kind == "LOSS_THRESHOLD_BREACHED"))).scalars().all())
         mine_a = [e for e in events if str(e.detail.get("account_id")) == str(a.id)]
         mine_b = [e for e in events if str(e.detail.get("account_id")) == str(b.id)]

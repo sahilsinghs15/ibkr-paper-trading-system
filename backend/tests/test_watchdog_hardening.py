@@ -234,7 +234,7 @@ def test_pid_change_no_false_failure():
     snap = daemon.snapshots[ServiceName.BACKEND]
     snap.state = ServiceState.HEALTHY
     hr1 = HealthResult(service=ServiceName.BACKEND, status=HealthStatus.HEALTHY, detail="HTTP 200", reason="healthy", host="127.0.0.1", port=8001, pid=1000)
-    hr2 = HealthResult(service=ServiceName.BACKEND, status=HealthStatus.HEALTHY, detail="HTTP 200", reason="healthy", host="127.0.0.1", port=8001, pid=1001)
+    HealthResult(service=ServiceName.BACKEND, status=HealthStatus.HEALTHY, detail="HTTP 200", reason="healthy", host="127.0.0.1", port=8001, pid=1001)
     snap.last_health = hr1
     # next check with different pid but healthy -> state stays HEALTHY, no failure event
     nxt = next_state(snap, health_failed=False, health_degraded=False)
@@ -376,7 +376,7 @@ def test_process_manager_individual_control():
     _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
     if str(_SCRIPTS_DIR) not in sys.path:
         sys.path.insert(0, str(_SCRIPTS_DIR))
-    import process_manager as pm
+    import process_manager as pm  # pyrefly: ignore[missing-import]
     sup = pm.Supervisor(enabled=frozenset({"gateway", "backend", "webhook"}))
     # Verify each ManagedProcess exists and can be controlled individually
     assert hasattr(sup, "gateway") and hasattr(sup, "webhook") and hasattr(sup, "fastapi")
@@ -394,7 +394,7 @@ def test_demo_restart_once_per_epoch(tmp_path, monkeypatch):
     _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
     if str(_SCRIPTS_DIR) not in sys.path:
         sys.path.insert(0, str(_SCRIPTS_DIR))
-    import process_manager as pm
+    import process_manager as pm  # pyrefly: ignore[missing-import]
     trigger = tmp_path / "restart_demo.trigger"
     monkeypatch.setattr(pm, "DEMO_RESTART_TRIGGER_FILE", trigger)
     sup = pm.Supervisor(enabled=frozenset({"fastapi"}))
@@ -428,7 +428,7 @@ def test_backend_manual_restart_isolation(tmp_path, monkeypatch):
     _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
     if str(_SCRIPTS_DIR) not in sys.path:
         sys.path.insert(0, str(_SCRIPTS_DIR))
-    import process_manager as pm
+    import process_manager as pm  # pyrefly: ignore[missing-import]
     trigger = tmp_path / "restart_backend.trigger"
     demo_trigger = tmp_path / "restart_demo.trigger"
     monkeypatch.setattr(pm, "BACKEND_RESTART_TRIGGER_FILE", trigger)
@@ -440,7 +440,6 @@ def test_backend_manual_restart_isolation(tmp_path, monkeypatch):
     monkeypatch.setattr(sup.fastapi, "is_alive", lambda: True)
     # Mock _restart to track calls
     calls = []
-    orig_restart = sup._restart
     def mock_restart(proc, also_restart=None, count_against_budget=True):
         calls.append(proc.name)
         return True
@@ -460,7 +459,7 @@ def test_backend_restart_via_trigger_file(tmp_path, monkeypatch):
     _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
     if str(_SCRIPTS_DIR) not in sys.path:
         sys.path.insert(0, str(_SCRIPTS_DIR))
-    import process_manager as pm
+    import process_manager as pm  # pyrefly: ignore[missing-import]
     trigger = tmp_path / "restart_backend.trigger"
     demo_trigger = tmp_path / "restart_demo.trigger"
     monkeypatch.setattr(pm, "BACKEND_RESTART_TRIGGER_FILE", trigger)
@@ -481,7 +480,7 @@ def test_webhook_restart_isolation(tmp_path, monkeypatch):
     _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
     if str(_SCRIPTS_DIR) not in sys.path:
         sys.path.insert(0, str(_SCRIPTS_DIR))
-    import process_manager as pm
+    import process_manager as pm  # pyrefly: ignore[missing-import]
     sup = pm.Supervisor(enabled=frozenset({"webhook", "fastapi", "gateway"}))
     # Simulate webhook down
     monkeypatch.setattr(sup.webhook, "is_alive", lambda: False)
@@ -552,31 +551,31 @@ def test_resource_cpu_hysteresis():
     # Normal -> warning
     mon._cpu_percent_fn = lambda: 85.0
     results = mon.check_all()
-    cpu_res = [r for r in results if r.type == ResourceType.CPU][0]
+    cpu_res = next(r for r in results if r.type == ResourceType.CPU)
     assert cpu_res.state == ResourceState.WARNING
     assert cpu_res.is_transition is True
     # Remains high (82%) → no transition (still warning, no spam)
     mon._cpu_percent_fn = lambda: 82.0
     results = mon.check_all()
-    cpu_res = [r for r in results if r.type == ResourceType.CPU][0]
+    cpu_res = next(r for r in results if r.type == ResourceType.CPU)
     assert cpu_res.state == ResourceState.WARNING
     assert cpu_res.is_transition is False
     # Goes critical
     mon._cpu_percent_fn = lambda: 95.0
     results = mon.check_all()
-    cpu_res = [r for r in results if r.type == ResourceType.CPU][0]
+    cpu_res = next(r for r in results if r.type == ResourceType.CPU)
     assert cpu_res.state == ResourceState.CRITICAL
     assert cpu_res.is_transition is True
     # Stays critical (92%) → no transition
     mon._cpu_percent_fn = lambda: 92.0
     results = mon.check_all()
-    cpu_res = [r for r in results if r.type == ResourceType.CPU][0]
+    cpu_res = next(r for r in results if r.type == ResourceType.CPU)
     assert cpu_res.state == ResourceState.CRITICAL
     assert cpu_res.is_transition is False
     # Recovery below 75%
     mon._cpu_percent_fn = lambda: 60.0
     results = mon.check_all()
-    cpu_res = [r for r in results if r.type == ResourceType.CPU][0]
+    cpu_res = next(r for r in results if r.type == ResourceType.CPU)
     assert cpu_res.state == ResourceState.NORMAL
     assert cpu_res.is_transition is True
 
@@ -805,7 +804,7 @@ def test_webhook_market_closed_action_does_not_reference_process_manager():
 def test_backend_market_closed_message_is_expected():
     hr = HealthResult(service=ServiceName.BACKEND, status=HealthStatus.HEALTHY, detail="Healthy (market closed, TWS expected unavailable)", reason="healthy_market_closed", host="127.0.0.1", port=8001, what_happened="Trading Backend is running 24/7; TWS connectivity is unavailable because IB Gateway is intentionally stopped outside the trading session.")
     snap = ServiceSnapshot(service=ServiceName.BACKEND, state=ServiceState.HEALTHY, last_health=hr)
-    text = format_telegram_message(ServiceName.BACKEND, NotificationEvent.MARKET_CLOSED if False else NotificationEvent.START, snap, host="127.0.0.1", port=8001, health=hr)
+    format_telegram_message(ServiceName.BACKEND, NotificationEvent.MARKET_CLOSED if False else NotificationEvent.START, snap, host="127.0.0.1", port=8001, health=hr)
     # For market closed, backend should be HEALTHY/HEALTH CONFIRMED, not MARKET_CLOSED, but message should explain TWS
     # Instead test via status
     from app.services.watchdog.resources import ResourceMonitor

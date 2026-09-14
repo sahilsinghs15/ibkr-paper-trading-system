@@ -353,7 +353,7 @@ class SignalJobRepository:
             .on_conflict_do_nothing(index_elements=["idempotency_key"])
         )
         res = await self._session.execute(stmt)
-        if res.rowcount > 0:
+        if res.rowcount > 0:  # type: ignore[attr-defined]
             job = await self.get_by_idempotency_key(idempotency_key)
             assert job is not None
             return job, True
@@ -376,7 +376,10 @@ class SignalJobRepository:
         )
 
     def _claim_in_flight_exists(self):
-        from app.db.models.execution_claim import CLAIM_STATE_CLAIMED, ExecutionClaimModel
+        from app.db.models.execution_claim import (
+            CLAIM_STATE_CLAIMED,
+            ExecutionClaimModel,
+        )
 
         return (
             select(literal(1))
@@ -417,7 +420,9 @@ class SignalJobRepository:
         ).scalar_one()
         if int(sibling_count or 0) > 0:
             return True
-        from app.db.repositories.execution_claim_repository import ExecutionClaimRepository
+        from app.db.repositories.execution_claim_repository import (
+            ExecutionClaimRepository,
+        )
 
         claim_repo = ExecutionClaimRepository(self._session)
         if await claim_repo.has_claimed(job.strategy_id, job.signal_id):
@@ -550,7 +555,7 @@ class SignalJobRepository:
         stmt = update(SignalJobModel).where(*predicates).values(**values)
         res = await self._session.execute(stmt)
         await self._session.flush()
-        return int(res.rowcount or 0)
+        return int(res.rowcount or 0)  # type: ignore[attr-defined]
 
     async def heartbeat_lease(
         self, job_id: Any, worker_id: str, lease_duration_sec: float = 30.0
@@ -572,7 +577,7 @@ class SignalJobRepository:
             .values(lease_expires_at=lease_until)
         )
         res = await self._session.execute(stmt)
-        return bool(res.rowcount)
+        return bool(res.rowcount)  # type: ignore[attr-defined]
 
     async def reclaim_stale_jobs(self, max_attempts: int = 3) -> dict[str, int]:
         """Reclaim jobs whose worker lease expired.
@@ -584,7 +589,9 @@ class SignalJobRepository:
         Dead-letter only when there is no orders row and no live CLAIMED claim.
         """
         now = datetime.now(UTC)
-        from app.db.repositories.execution_claim_repository import ExecutionClaimRepository
+        from app.db.repositories.execution_claim_repository import (
+            ExecutionClaimRepository,
+        )
 
         claim_repo = ExecutionClaimRepository(self._session)
         expired_over_max = list(
@@ -638,7 +645,7 @@ class SignalJobRepository:
             )
         )
         res_quarantine = await self._session.execute(stmt_quarantine)
-        quarantined += int(res_quarantine.rowcount or 0)
+        quarantined += int(res_quarantine.rowcount or 0)  # type: ignore[attr-defined]
 
         stmt_requeue = (
             update(SignalJobModel)
@@ -658,7 +665,7 @@ class SignalJobRepository:
         return {
             "dead_lettered": dead_lettered,
             "quarantined": quarantined,
-            "requeued": int(res_requeue.rowcount or 0),
+            "requeued": int(res_requeue.rowcount or 0),  # type: ignore[attr-defined]
         }
 
     async def count_orders_emitted(self, strategy_id: str, signal_id: str) -> int:
@@ -761,7 +768,7 @@ class SignalJobRepository:
                 )
             )
             r = await self._session.execute(upd)
-            if r.rowcount:
+            if r.rowcount:  # type: ignore[attr-defined]
                 job = await self._session.get(SignalJobModel, jid)
                 if job is not None:
                     claimed.append(job)

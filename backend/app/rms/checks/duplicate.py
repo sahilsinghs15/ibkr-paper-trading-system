@@ -1,7 +1,14 @@
 """CHECK 2 — DUPLICATE check implementation."""
 
 from app.rms.checks.base import BaseRMSCheck
-from app.rms.models import CheckResult, OrderAction, OrderIntent, RMSContext, RMSOutcome, duplicate_lookup_key
+from app.rms.models import (
+    CheckResult,
+    OrderAction,
+    OrderIntent,
+    RMSContext,
+    RMSOutcome,
+    duplicate_lookup_key,
+)
 
 
 class DuplicateCheck(BaseRMSCheck):

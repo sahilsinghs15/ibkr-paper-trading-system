@@ -17,7 +17,7 @@ Main FastAPI (`app.main`) does **not** serve any frontend. The dashboard is serv
 
 - `index.html` — `#root`, loads `/src/main.tsx`
 - `main.tsx` — `BrowserRouter` + `QueryClientProvider` + `<App />`
-- `App.tsx` — routes `/` (positions) and `/settings`
+- `App.tsx` — routes `/` (positions), `/settings` (account-scoped `/account/:ibkrAccount/settings`), `/account/:ibkrAccount/reconcile` (Inventory), `/account/:ibkrAccount/trade-book` (Trade Book), `/account/:ibkrAccount/ingest` (Ingest Feed), `/account/:ibkrAccount/manual-trade*` (Manual Trading) with unauthenticated redirects (`/manual-trade*` → account-scoped)
 
 ### `src/` layout
 
@@ -30,12 +30,17 @@ Main FastAPI (`app.main`) does **not** serve any frontend. The dashboard is serv
 - `types/brokerExecution.ts` — broker execution snapshot types
 - `types/position.ts` — demo stream payload types
 - `pages/AccountSettingsPage.tsx` — **routed** Settings UI (`/account/:ibkrAccount/settings`; `/settings` redirects). `SettingsPage.tsx` exists but is **not mounted**.
+- `pages/ManualTradePage.tsx` — **Manual Trading** ticket: account-scoped order entry (`/account/:ibkrAccount/manual-trade`), Gateway status (`/manual/gateway-status`), CFD instrument discovery, preview/risk modal, durable `POST /manual/orders` with idempotency, open-orders table (poll 5s), cancellation (single-flight, terminal guard), `perm_id` column, `normalizeIbkrAccount`
+- `pages/ManualPositionsPage.tsx` — **Manual Positions** ledger (`/account/:ibkrAccount/manual-trade/positions`), `GET /manual/positions` source=manual only
+- `api/manualTradingApi.ts` — axios client for `/api/v1/manual/*` (gateway, CFD search, preview/submit/list/cancel, positions) + TypeScript contracts (`ManualOrderRead` incl `perm_id`, `ManualOrderCancelResponse` `CANCELLED|CANCEL_REQUESTED`)
+- `hooks/useActiveIbkrAccount.ts` — shared active-account resolution (used by Manual Trading)
 - `api/marginApi.ts` — axios client for `/api/v1/margin/accounts*`
 - `types/margin.ts` — live snapshot + `MarginSettings` types
 - `types/config.ts` — config API types (includes margin policy schemas)
 - `store/pnlStore.ts` — Zustand active/closed leg maps + stream state
 - `hooks/usePnlStream.ts` — `GET /demo/positions` + `EventSource("/demo/stream")` (positions route only)
 - `utils/format.ts` — USD/PnL/time/instrument helpers
+- `utils/activeAccount.ts` — `normalizeIbkrAccount`/`ibkrAccountFromPath` helpers (Manual Trading, Settings)
 - `components/` — `DashboardHeader`, `AppNav`, `Kpis`, `OpenPositionsTable`, `ClosedPositionsTable`, `CriticalIncidentsBanner`, `PairDetailModal`, `ClosePairModal`
 - `api/criticalBasketsApi.ts` — axios client for `/api/v1/baskets/critical`
 - `types/criticalBaskets.ts` — critical incident API types

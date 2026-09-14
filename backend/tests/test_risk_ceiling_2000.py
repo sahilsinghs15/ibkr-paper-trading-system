@@ -9,8 +9,8 @@ Verifies:
 5. Retry policy disabling paper retries on live ports (4001, 7496).
 """
 from decimal import Decimal
-import pytest
 
+from app.oms.retry_policy import paper_retry_ports_allowed
 from app.rms.checks.money_per_stock import MoneyPerStockCheck
 from app.rms.checks.position_limit import OpenPositionLimitCheck
 from app.rms.models import (
@@ -23,7 +23,6 @@ from app.rms.models import (
     RMSOutcome,
     StrategyConfig,
 )
-from app.oms.retry_policy import paper_retry_ports_allowed
 
 
 class TestRiskCeilingPolicy:
@@ -69,7 +68,7 @@ class TestRiskCeilingPolicy:
         ctx.open_positions[(7, "model_blue")] = 2
         res2 = check.evaluate(intent, ctx)
         assert res2.outcome == RMSOutcome.REJECT
-        assert "OPEN_POSITION_LIMIT_REACHED" in res2.reason
+        assert "OPEN_POSITION_LIMIT_REACHED" in res2.reason  # pyrefly: ignore[not-iterable]
 
     def test_money_per_stock_check_pass_and_reject(self):
         check = MoneyPerStockCheck()
@@ -101,7 +100,7 @@ class TestRiskCeilingPolicy:
         )
         res2 = check.evaluate(intent2, ctx)
         assert res2.outcome == RMSOutcome.REJECT
-        assert "MONEY_LIMIT_EXCEEDED" in res2.reason
+        assert "MONEY_LIMIT_EXCEEDED" in res2.reason  # pyrefly: ignore[not-iterable]
 
     def test_money_per_stock_fails_closed_when_unconfigured(self):
         check = MoneyPerStockCheck()
@@ -120,7 +119,7 @@ class TestRiskCeilingPolicy:
         )
         res = check.evaluate(intent, ctx)
         assert res.outcome == RMSOutcome.REJECT
-        assert "NO_SYMBOL_LIMIT_CONFIGURED" in res.reason
+        assert "NO_SYMBOL_LIMIT_CONFIGURED" in res.reason  # pyrefly: ignore[not-iterable]
 
     def test_live_port_retry_policy_disabled(self):
         # Live Gateway port 4001 / TWS port 7496 must disable paper unhedged retries

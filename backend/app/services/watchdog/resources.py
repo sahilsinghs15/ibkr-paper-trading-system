@@ -96,7 +96,7 @@ def _resolve_storage_mount() -> Path:
         try:
             if p.exists():
                 return p
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
     return Path("/")
 
@@ -131,7 +131,7 @@ class ResourceMonitor:
         usage = float(usage) if usage is not None else 0.0
         try:
             load1, load5, load15 = os.getloadavg()
-        except Exception:
+        except Exception:  # noqa: BLE001
             load1, load5, load15 = 0.0, 0.0, 0.0
         cpu_count = psutil.cpu_count() or 1
         # Top CPU processes (high-signal, not noisy — keep lightweight, top 3)
@@ -158,8 +158,8 @@ class ResourceMonitor:
                     })
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
-            top_procs = sorted(top_procs, key=lambda x: x["cpu_percent"], reverse=True)[:3]
-        except Exception:
+            top_procs = sorted(top_procs, key=lambda x: x["cpu_percent"], reverse=True)[:3]  # type: ignore[arg-type, return-value]
+        except Exception:  # noqa: BLE001
             top_procs = []
         return ResourceMetrics(
             type=ResourceType.CPU,
@@ -213,10 +213,10 @@ class ResourceMonitor:
                 usage_percent=percent,
                 total_bytes=total,  # misuse for inode count, but for reporting
                 used_bytes=used_inodes,
-                available_bytes=free_inodes if 'free_inodes' in locals() else avail,
+                available_bytes=free_inodes if 'free_inodes' in locals() else avail,  # pyrefly: ignore[unbound-name]
                 extra={"mount": str(mount)},
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("Inode check failed for %s: %s", mount, exc)
             return None
 
@@ -260,7 +260,7 @@ class ResourceMonitor:
                 elif rtype == ResourceType.STORAGE:
                     metrics = self._collect_storage()
                 elif rtype == ResourceType.INODES:
-                    metrics = self._collect_inodes()
+                    metrics = self._collect_inodes()  # type: ignore[assignment]
                     if metrics is None:
                         continue
                 else:
@@ -272,8 +272,8 @@ class ResourceMonitor:
                 if is_trans:
                     self._states[rtype] = new_state
                 results.append(ResourceResult(type=rtype, state=new_state, metrics=metrics, is_transition=is_trans, previous_state=prev if is_trans else None))
-            except Exception as exc:
-                logger.exception("Resource check failed for %s: %s", rtype.value, exc)
+            except Exception:
+                logger.exception("Resource check failed for %s", rtype.value)
         return results
 
     def check_if_due(self) -> bool:

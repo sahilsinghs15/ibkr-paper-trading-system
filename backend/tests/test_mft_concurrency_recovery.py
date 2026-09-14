@@ -10,7 +10,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models.signal import (
-    JOB_STATUS_CLAIMED,
     JOB_STATUS_DEAD_LETTER,
     JOB_STATUS_PROCESSING,
     JOB_STATUS_QUEUED,
@@ -215,8 +214,8 @@ async def test_concurrent_opens_cannot_both_pass_model_value_ceiling():
         oms=None,
         rms_context=RMSContext(
             market_value_check_enabled=True,
-            model_value_limit={key: Decimal("10000")},
-            model_value_used={key: Decimal("9000")},
+            model_value_limit={key: Decimal(10000)},  # pyrefly: ignore[bad-assignment]
+            model_value_used={key: Decimal(9000)},  # pyrefly: ignore[bad-assignment]
         ),
     )
 
@@ -245,8 +244,8 @@ async def test_concurrent_opens_cannot_both_pass_model_value_ceiling():
             result = ModelMarketValueCheck().evaluate(intent, mgr._rms_context)
             if result.outcome == RMSOutcome.PASS:
                 value_key = model_value_key(intent)
-                mgr._rms_context.model_value_used[value_key] = (
-                    mgr._rms_context.model_value_used.get(value_key, Decimal(0))
+                mgr._rms_context.model_value_used[value_key] = (  # pyrefly: ignore[unsupported-operation]
+                    mgr._rms_context.model_value_used.get(value_key, Decimal(0))  # pyrefly: ignore[no-matching-overload]
                     + intent_market_value(intent)
                 )
             outcomes.append(result.outcome)

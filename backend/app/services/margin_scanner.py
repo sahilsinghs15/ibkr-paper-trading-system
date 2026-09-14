@@ -311,7 +311,7 @@ class MarginScanner:
                     raw_type = str(leg.get("instrument_type") or "STK")
                     try:
                         itype = ibkr_sec_type(raw_type)
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         itype = "STK"
                     symbols.add((token, itype))
         if not enabled:

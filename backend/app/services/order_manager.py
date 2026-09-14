@@ -20,11 +20,6 @@ from app.accounts.router import DatabaseStrategyAccountRouter, StrategyAccountRo
 from app.core.config import get_settings
 from app.core.identifiers import normalize_symbol
 from app.core.logger import bind_log_context, get_log_context
-from app.services.account_reject_reason import (
-    collect_fanout_reject_reasons,
-    format_account_reject_reason,
-    merge_account_reject_reasons,
-)
 from app.db.models.account import AccountModel, PerSymbolLimitModel
 from app.db.repositories.event_repository import EventRepository
 from app.db.repositories.execution_claim_repository import (
@@ -39,7 +34,6 @@ from app.db.repositories.signal_repository import (
     SignalRepository,
     persist_signal_id_for,
 )
-from app.rms.models import ExecutionIntentMode
 from app.models.signal import Signal, SignalType
 from app.oms.basket import BasketState
 from app.oms.coordinator import BasketCoordinator
@@ -69,6 +63,7 @@ from app.rms.margin_estimate import (
 from app.rms.market_value import intent_market_value, position_row_market_value
 from app.rms.models import (
     CheckResult,
+    ExecutionIntentMode,
     OrderAction,
     OrderIntent,
     OrderLeg,
@@ -83,6 +78,11 @@ from app.rms.models import (
 )
 from app.rms.models import (
     OrderSide as RMSOrderSide,
+)
+from app.services.account_reject_reason import (
+    collect_fanout_reject_reasons,
+    format_account_reject_reason,
+    merge_account_reject_reasons,
 )
 from app.services.model_blue.allocation import CommittedCapitalProvider
 from app.services.model_blue.parser import MODEL_BLUE_STRATEGY_ID
@@ -202,7 +202,10 @@ class OrderManager:
         if self._session_factory is None:
             return
         from app.core.identifiers import normalize_strategy_id
-        from app.services.kill_switch import KillSwitchService, hydrate_kill_switch_cache
+        from app.services.kill_switch import (
+            KillSwitchService,
+            hydrate_kill_switch_cache,
+        )
 
         # M25: kill-switch cache first, own try, before critical recovery.
         try:
@@ -547,7 +550,7 @@ class OrderManager:
         adapter = getattr(self._oms, "_adapter", None)
         probe = getattr(adapter, "probe_margin", None)
         if not callable(probe):
-            raise ValueError("MARGIN_PROBE_UNKNOWN: no whatIf adapter available.")
+            raise ValueError("MARGIN_PROBE_UNKNOWN: no whatIf adapter available.")  # noqa: TRY004
 
         from app.instruments.resolver import ibkr_contract_from_resolved
 
@@ -558,7 +561,7 @@ class OrderManager:
                     f"MARGIN_PROBE_UNKNOWN: {leg.symbol} has no resolved contract."
                 )
             contract = ibkr_contract_from_resolved(leg.resolved)
-            result = await probe(
+            result = await probe(  # pyrefly: ignore[not-async]
                 contract=contract,
                 side=leg.side.value,
                 quantity=leg.quantity,
@@ -726,10 +729,11 @@ class OrderManager:
         # Emergency flatten intents bypass red zone; signals that map to emergency mode
         # are identified via intent_mode if available via raw payload hint; default false for normal signals
         # Actual emergency flatten path sets intent_mode explicitly; check signal raw payload marker
-        if getattr(signal, "raw_payload", None) and isinstance(signal.raw_payload, dict):
-            if signal.raw_payload.get("intent_mode") == ExecutionIntentMode.EMERGENCY_FLATTEN.value:
-                return True
-        return False
+        return bool(
+            getattr(signal, "raw_payload", None)
+            and isinstance(signal.raw_payload, dict)
+            and signal.raw_payload.get("intent_mode") == ExecutionIntentMode.EMERGENCY_FLATTEN.value
+        )
 
     async def process_signal_execution(
         self, signal: Signal, *, account_scope: str | None = None
@@ -762,7 +766,8 @@ class OrderManager:
                     )
                     # return deferred result; worker will park durably
                     from app.oms.models import ExecutionResult as ER
-                    from app.rms.models import RMSResult as RR, RMSOutcome
+                    from app.rms.models import RMSOutcome
+                    from app.rms.models import RMSResult as RR
 
                     dummy_rms = RR(
                         outcome=RMSOutcome.REJECT,
@@ -773,11 +778,13 @@ class OrderManager:
                         check_results=[],
                     )
                     # Build minimal order for result wrapper
-                    from app.oms.models import OMSOrder as OO, OMSOrderStatus
-                    from app.rms.models import OrderIntent as OI, OrderAction, OrderLeg, OrderSide
+                    from app.oms.models import OMSOrder as OO
+                    from app.oms.models import OMSOrderStatus
+                    from app.rms.models import OrderAction, OrderLeg, OrderSide
+                    from app.rms.models import OrderIntent as OI
 
                     dummy_intent = OI(
-                        signal_id=signal.signal_id,
+                        signal_id=signal.signal_id,  # type: ignore[arg-type]
                         strategy_id=signal.strategy_id or self._strategy_id,
                         action=OrderAction.OPEN,
                         legs=[OrderLeg(symbol="DEFERRED", side=OrderSide.BUY, quantity=0, price=Decimal(0))],
@@ -791,7 +798,7 @@ class OrderManager:
                         status=OMSOrderStatus.ERROR,
                         error_message="DEFERRED_RED_ZONE",
                     )
-                    er = ER(
+                    ER(
                         order=dummy_order,
                         rms_result=dummy_rms,
                         success=False,
@@ -1274,7 +1281,7 @@ class OrderManager:
                 from types import SimpleNamespace
 
                 self._assert_account_has_free_margin(
-                    SimpleNamespace(ibkr_account=intent.ibkr_account)
+                    SimpleNamespace(ibkr_account=intent.ibkr_account)  # type: ignore[arg-type]
                 )
             return await self._evaluate_and_submit_locked(
                 intent, signal, handler=handler, inbound_pk=inbound_pk
@@ -1841,7 +1848,7 @@ class OrderManager:
         catalog = getattr(self, "_instrument_catalog", None)
         if catalog is None:
             return None
-        rows = []
+        rows = []  # type: ignore[var-annotated]
         for symbol, raw_type in leg_specs:
             if not symbol:
                 continue

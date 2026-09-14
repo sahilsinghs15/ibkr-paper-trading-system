@@ -106,7 +106,7 @@ class ModelBlueStrategy(StrategyHandler):
             open_legs = tuple(
                 OpenModelBlueTradeLeg(
                     symbol=leg.symbol,
-                    instrument_type=leg.instrument_type,
+                    instrument_type=leg.instrument_type,  # type: ignore[arg-type]
                     side=leg.side,
                     quantity=Decimal(str(leg.quantity)),
                     price=leg.price,
@@ -156,7 +156,7 @@ class ModelBlueStrategy(StrategyHandler):
         if existing is not None:
             raise ModelBlueValidationError(
                 f"TRADE_ID_NOT_UNIQUE: trade_id '{trade_id}' already exists for "
-                f"account_id={account_id} (risk_state={existing.risk_state}); "
+                f"account_id={account_id} (risk_state={existing.risk_state}); "  # type: ignore[attr-defined]
                 "refusing to open again."
             )
 

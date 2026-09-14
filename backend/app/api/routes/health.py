@@ -31,10 +31,9 @@ async def get_readiness(request: Request) -> dict[str, str]:
                 await session.execute(text("SELECT 1"))
         # trading only: check TWS client
         client = getattr(request.app.state, "client", None) or getattr(request.app.state, "tws_client", None)
-        if client is not None and hasattr(client, "is_connected"):
+        if client is not None and hasattr(client, "is_connected") and not client.is_connected():
             # if disconnected, still return degraded but not 500 — readiness reflects it
-            if not client.is_connected():
-                return {"status": "degraded", "reason": "tws_disconnected"}
+            return {"status": "degraded", "reason": "tws_disconnected"}
         return {"status": "ok"}
     except Exception as exc:  # noqa: BLE001
         return {"status": "degraded", "reason": str(exc)[:200]}

@@ -81,15 +81,15 @@ class TestSystemEventsApi:
             monkeypatch.setenv("TRADINGAPP_TESTING", "1")
 
             # 2. Authenticated request returns relevant kinds, filtering out SIGNAL_PROCESSED
-            resp = await client.get("/demo/system-events", headers=auth_headers)
+            resp = await client.get(f"/demo/system-events?since_id={ev1.id - 1}", headers=auth_headers)  # pyrefly: ignore[missing-attribute]
             assert resp.status_code == 200
             data = resp.json()
             assert isinstance(data, list)
             returned_ids = [e["id"] for e in data]
-            assert ev1.id in returned_ids
-            assert ev2.id in returned_ids
-            assert ev4.id in returned_ids
-            assert ev3.id not in returned_ids  # Non-system event filtered out!
+            assert ev1.id in returned_ids  # pyrefly: ignore[missing-attribute]
+            assert ev2.id in returned_ids  # pyrefly: ignore[missing-attribute]
+            assert ev4.id in returned_ids  # pyrefly: ignore[missing-attribute]
+            assert ev3.id not in returned_ids  # Non-system event filtered out!  # pyrefly: ignore[missing-attribute]
 
             # 3. Test since_id filtering
             since_resp = await client.get(f"/demo/system-events?since_id={ev2.id}", headers=auth_headers)
@@ -123,7 +123,7 @@ class TestSystemEventsApi:
         # Cleanup
         async with AsyncSessionLocal() as session:
             for ev in (ev1, ev2, ev3, ev4):
-                to_del = await session.get(EventLogModel, ev.id)
+                to_del = await session.get(EventLogModel, ev.id)  # pyrefly: ignore[missing-attribute]
                 if to_del:
                     await session.delete(to_del)
             to_del_user = await session.get(UserModel, user.id)

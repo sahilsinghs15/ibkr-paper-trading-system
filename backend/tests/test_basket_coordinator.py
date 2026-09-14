@@ -441,7 +441,7 @@ async def test_persisted_fills_and_no_open_position_on_incomplete() -> None:
             assert orders
             filled = [o for o in orders if o.symbol == "XLE" and not o.is_compensation]
             comps = [o for o in orders if o.is_compensation]
-            assert filled[0].fill_qty == Decimal("100.0000") or float(filled[0].fill_qty) == 100.0
+            assert filled[0].fill_qty == Decimal("100.0000") or float(filled[0].fill_qty) == 100.0  # pyrefly: ignore[bad-argument-type]
             assert filled[0].status == OMSOrderStatus.FILLED.value
             assert filled[0].broker_order_id is not None
             assert comps
@@ -542,12 +542,12 @@ async def test_both_legs_partial_compensates_actual_quantities() -> None:
 @pytest.mark.asyncio
 async def test_cancel_acknowledgement_failure_is_critical() -> None:
     oms, adapter, _script = _wired(PlaceScript(["fill", "pending"]))
-    adapter._client.cancelOrder.side_effect = RuntimeError("cancel ack failed")
+    adapter._client.cancelOrder.side_effect = RuntimeError("cancel ack failed")  # pyrefly: ignore[missing-attribute]
     intent = _intent(["XLE", "XOP"], trade_id="T-CANCEL-FAIL", account_id=11)
     result = await _coord(oms).execute(intent, _pass(intent), order_type="MARKET")
     assert result.state == BasketState.CRITICAL
     assert result.success is False
-    assert oms._adapter._client.cancelOrder.side_effect is not None
+    assert oms._adapter._client.cancelOrder.side_effect is not None  # pyrefly: ignore[missing-attribute]
 
 
 @pytest.mark.asyncio
