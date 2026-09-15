@@ -67,7 +67,7 @@ class TradeBookSyncService:
             return 0, False
         async with lock:
             if not self._client.is_connected():
-                logger.info("TradeBook sync skip account=%s gateway down", ibkr)
+                logger.debug("TradeBook sync skip account=%s gateway down", ibkr)
                 return 0, False
             try:
                 result = await self._current.fetch(ibkr_account=ibkr)
@@ -85,6 +85,9 @@ class TradeBookSyncService:
             return len(result.lines), result.timed_out
 
     async def sync_all_once(self) -> None:
+        if not self._client.is_connected():
+            logger.debug("TradeBook sync skipped — IBKR gateway is disconnected")
+            return
         accounts = await self._get_accounts()
         for acc in accounts:
             try:

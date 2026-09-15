@@ -88,7 +88,7 @@ class MarginScanner:
             except Exception:
                 logger.exception("MarginScanner background scan failed")
             try:
-                await asyncio.sleep(float(settings.margin_rate_refresh_sec))
+                await asyncio.sleep(settings.margin_rate_refresh_sec)
             except asyncio.CancelledError:
                 break
 
@@ -192,7 +192,7 @@ class MarginScanner:
 
     async def _pace(self) -> None:
         settings = get_settings()
-        min_interval = 1.0 / float(settings.margin_scan_max_per_sec)
+        min_interval = 1.0 / settings.margin_scan_max_per_sec
         now = time.monotonic()
         wait = min_interval - (now - self._last_probe_mono)
         if wait > 0:

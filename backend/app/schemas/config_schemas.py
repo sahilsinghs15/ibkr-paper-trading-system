@@ -206,6 +206,8 @@ class SquareOffResponse(BaseModel):
     trade_ids: list[str] = Field(default_factory=list)
     operation_id: str | None = None
     status: str | None = None
+    scope: str = "ENGINE_POSITION_FLATTEN"
+    error: str | None = None
 
 
 class KillSwitchClearResponse(BaseModel):

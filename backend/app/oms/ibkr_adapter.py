@@ -348,7 +348,7 @@ class IBKRExecutionAdapter:
         wait_timeout = (
             float(timeout)
             if timeout is not None
-            else float(settings.margin_whatif_timeout_sec)
+            else settings.margin_whatif_timeout_sec
         )
         if self._rate_limiter is not None:
             await self._rate_limiter.acquire(PRIORITY_DIAGNOSTIC, "whatIfOrder")

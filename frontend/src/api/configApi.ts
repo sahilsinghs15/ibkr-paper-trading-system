@@ -85,25 +85,39 @@ export async function resumeTrading(
   return data
 }
 
-export async function squareOffAccountPositions(
-  accountId: number,
-): Promise<{
+export interface SquareOffResult {
   account_id: number
   ibkr_account: string
   squared_off_count: number
   trade_ids: string[]
   operation_id?: string
   status?: string
-}> {
-  const { data } = await axios.post<{
-    account_id: number
-    ibkr_account: string
-    squared_off_count: number
-    trade_ids: string[]
-    operation_id?: string
-    status?: string
-  }>(`${base}/accounts/${accountId}/square-off`)
+  scope?: string
+  error?: string
+}
+
+export async function squareOffEnginePositions(
+  accountId: number,
+): Promise<SquareOffResult> {
+  const { data } = await axios.post<SquareOffResult>(
+    `${base}/accounts/${accountId}/square-off?scope=engine`,
+  )
   return data
+}
+
+export async function squareOffEntireAccount(
+  accountId: number,
+): Promise<SquareOffResult> {
+  const { data } = await axios.post<SquareOffResult>(
+    `${base}/accounts/${accountId}/square-off-account`,
+  )
+  return data
+}
+
+export async function squareOffAccountPositions(
+  accountId: number,
+): Promise<SquareOffResult> {
+  return squareOffEnginePositions(accountId)
 }
 
 export async function createAccount(payload: CreateAccountPayload): Promise<AccountConfig> {

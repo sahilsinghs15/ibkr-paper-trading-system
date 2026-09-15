@@ -59,7 +59,7 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         host=settings.ibkr_host,
         port=settings.ibkr_port,
         client_id=settings.ibkr_client_id,
-        timeout=float(settings.ibkr_connection_timeout),
+        timeout=settings.ibkr_connection_timeout,
         rate_limiter=rate_limiter,
     )
     oms = OMSService(adapter=ibkr_adapter)
@@ -110,7 +110,7 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         host=settings.ibkr_host,
         port=settings.ibkr_port,
         client_id=settings.ibkr_client_id,
-        timeout=float(settings.ibkr_connection_timeout),
+        timeout=settings.ibkr_connection_timeout,
     )
     if not success:
         logger.warning(
@@ -121,6 +121,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
             await order_manager.hydrate_live_pnl()
         except Exception:
             logger.exception("Failed to re-subscribe live P&L for open positions.")
+
+    if not testing:
         try:
             account_margin.start()
         except Exception:
@@ -171,7 +173,7 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     if settings.margin_scan_enabled and success and not testing:
         try:
             await margin_scanner.run_scan(
-                budget_sec=float(settings.margin_scan_startup_budget_sec)
+                budget_sec=settings.margin_scan_startup_budget_sec
             )
             await order_manager.reload_margin_rates()
         except Exception:
@@ -211,11 +213,11 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         client=client,
         live_pnl=order_manager._live_pnl,
         order_manager=order_manager,
-        interval_sec=float(settings.risk_exit_interval_sec),
-        max_pnl_staleness_sec=float(settings.risk_exit_max_pnl_staleness_sec),
-        max_retries=int(settings.risk_exit_max_retries),
-        enabled=bool(settings.risk_exit_monitor_enabled),
-        shadow_mode=bool(settings.risk_exit_shadow_mode),
+        interval_sec=settings.risk_exit_interval_sec,
+        max_pnl_staleness_sec=settings.risk_exit_max_pnl_staleness_sec,
+        max_retries=settings.risk_exit_max_retries,
+        enabled=settings.risk_exit_monitor_enabled,
+        shadow_mode=settings.risk_exit_shadow_mode,
     )
     if not testing:
         await risk_exit_monitor.start()

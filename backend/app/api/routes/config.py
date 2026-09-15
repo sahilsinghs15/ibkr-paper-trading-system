@@ -2,7 +2,7 @@
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -204,11 +204,12 @@ async def get_account_by_identifier(
     "/accounts/{account_id}/square-off",
     response_model=SquareOffResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Emergency Kill Switch: Square off all open positions for account",
+    summary="Emergency Kill Switch: Square off open engine positions for account",
 )
 async def square_off_account_positions(
     account_id: int,
     request: Request,
+    scope: str | None = Query("engine", description="Flatten scope: 'engine' or 'account'"),
     session: AsyncSession = Depends(get_db_session),
     current_user: UserModel = Depends(require_authenticated_user),
 ) -> SquareOffResponse:
@@ -217,6 +218,9 @@ async def square_off_account_positions(
     account = await svc.get_account(account_id)
     if account is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    if scope == "account":
+        return await square_off_entire_ibkr_account(account_id, request, session, current_user)
 
     order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
     session_factory = getattr(request.app.state, "session_factory", None)
@@ -237,6 +241,23 @@ async def square_off_account_positions(
     if created_new:
         await kill_switch_svc.execute_flatten_operation_background(op.operation_id)
 
+    from app.db.repositories.event_repository import EventRepository
+
+    await EventRepository(session).append(
+        process="kill_switch",
+        kind="ENGINE_POSITION_FLATTEN",
+        detail={
+            "account_id": account_id,
+            "ibkr_account": account.ibkr_account,
+            "operation_id": str(op.operation_id),
+            "requested_by": "operator",
+            "initial_position_count": op.initial_position_count,
+            "scope": "ENGINE_POSITION_FLATTEN",
+        },
+        idempotency_key=f"engine_position_flatten:{op.operation_id}",
+    )
+    await session.commit()
+
     return SquareOffResponse(
         account_id=account.id,
         ibkr_account=account.ibkr_account,
@@ -244,6 +265,86 @@ async def square_off_account_positions(
         trade_ids=[],
         operation_id=str(op.operation_id),
         status=op.status,
+        scope="ENGINE_POSITION_FLATTEN",
+    )
+
+
+@router.post(
+    "/accounts/{account_id}/square-off-account",
+    response_model=SquareOffResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Emergency Kill Switch: Flatten all broker positions for account at IBKR",
+)
+async def square_off_entire_ibkr_account(
+    account_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
+) -> SquareOffResponse:
+    """Flatten all positions held in the IBKR account via existing flatten_gateway_positions path.
+
+    Also arms the account kill switch so new OPEN signals are immediately blocked.
+    """
+    _check_account_authorization(current_user, account_id=account_id)
+    svc = AccountStrategyConfigService(session)
+    account = await svc.get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Session factory is unavailable.",
+        )
+
+    order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
+    kill_switch_svc = KillSwitchService(
+        session_factory=session_factory,
+        order_manager=order_manager,
+    )
+
+    # Arm account kill switch so OPEN signals stay blocked
+    op, _ = await kill_switch_svc.arm_account_kill_switch_only(
+        account_id=account_id, requested_by="operator_account_flatten"
+    )
+
+    from app.db.repositories.event_repository import EventRepository
+
+    await EventRepository(session).append(
+        process="kill_switch",
+        kind="ACCOUNT_POSITION_FLATTEN",
+        detail={
+            "account_id": account_id,
+            "ibkr_account": account.ibkr_account,
+            "operation_id": str(op.operation_id),
+            "requested_by": "operator",
+            "scope": "ACCOUNT_POSITION_FLATTEN",
+        },
+        idempotency_key=f"account_position_flatten:{op.operation_id}",
+    )
+    await session.commit()
+
+    import asyncio
+
+    from scripts.oms.flatten_gateway_positions import run_flatten_gateway_positions
+
+    res = await asyncio.to_thread(
+        run_flatten_gateway_positions,
+        account=account.ibkr_account,
+        sec_type="CFD",
+        apply=True,
+    )
+
+    return SquareOffResponse(
+        account_id=account.id,
+        ibkr_account=account.ibkr_account,
+        squared_off_count=res.get("submitted", 0),
+        trade_ids=[],
+        operation_id=str(op.operation_id),
+        status="COMPLETE" if res.get("success") else "UNRESOLVED",
+        scope="ACCOUNT_POSITION_FLATTEN",
+        error=res.get("error"),
     )
 
 

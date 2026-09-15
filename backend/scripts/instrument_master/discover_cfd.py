@@ -33,7 +33,7 @@ async def _run(
         host=host,
         port=port,
         client_id=client_id,
-        timeout=float(settings.ibkr_connection_timeout),
+        timeout=settings.ibkr_connection_timeout,
     )
     if not connected:
         print("FAILURE: could not connect to TWS/Gateway", file=sys.stderr)

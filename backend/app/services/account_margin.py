@@ -163,12 +163,12 @@ class AccountMarginService:
         self._max_age_sec = (
             int(max_age_sec)
             if max_age_sec is not None
-            else int(settings.margin_snapshot_max_age_sec)
+            else settings.margin_snapshot_max_age_sec
         )
         self._refresh_sec = (
             int(refresh_sec)
             if refresh_sec is not None
-            else int(settings.margin_snapshot_refresh_sec)
+            else settings.margin_snapshot_refresh_sec
         )
         self._lock = threading.Lock()
         self._next_req_id = _ACCOUNT_SUMMARY_REQ_START
@@ -274,6 +274,12 @@ class AccountMarginService:
             self._started = False
         logger.info("AccountMarginService resubscribing after reconnect")
         self.start()
+
+    def on_next_valid_id(self, orderId: int) -> None:
+        """Callback when TWS completes handshake (nextValidId)."""
+        if not self._started and self._client.is_connected():
+            logger.info("AccountMarginService starting on nextValidId event")
+            self.start()
 
     def on_error(self, reqId: int, errorCode: int, errorString: str) -> None:
         with self._lock:
