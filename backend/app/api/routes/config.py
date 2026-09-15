@@ -2,6 +2,8 @@
 
 import logging
 
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -378,14 +380,29 @@ async def clear_account_kill_switch_endpoint(
             detail="Session factory is unavailable.",
         )
 
+    from app.db.repositories.event_repository import EventRepository
     from app.services.kill_switch import (
         clear_account_kill_switch,
         is_account_kill_switch_active,
     )
 
     cleared = await clear_account_kill_switch(
-        session_factory, account_id, cleared_by="operator"
+        session_factory, account_id, cleared_by=getattr(current_user, "email", "operator")
     )
+    await EventRepository(session).append(
+        process="kill_switch",
+        kind="KILL_SWITCH_CLEARED",
+        detail={
+            "account_id": account_id,
+            "ibkr_account": account.ibkr_account,
+            "operations_cleared": cleared,
+            "cleared_by": getattr(current_user, "email", "operator"),
+            "scope": "KILL_SWITCH_CLEARED",
+            "source": "frontend",
+        },
+    )
+    await session.commit()
+
     return KillSwitchClearResponse(
         account_id=account_id,
         ibkr_account=account.ibkr_account,
@@ -784,22 +801,52 @@ async def patch_account(
         and not has_loss
     ):
         raise HTTPException(status_code=400, detail="No fields to update.")
-    kwargs: dict = {
-        "name": body.name,
-        "ibkr_account": body.ibkr_account,
-        "total_margin": body.total_margin,
-        "enabled": body.enabled,
-        "default_symbol_limit": body.default_symbol_limit,
-        "daily_target": body.daily_target,
-        "daily_stop": body.daily_stop,
-        "daily_target_unit": body.daily_target_unit,
-        "daily_stop_unit": body.daily_stop_unit,
-        "account_risk_enabled": body.account_risk_enabled,
-    }
-    if has_loss:
-        kwargs["loss_threshold"] = body.loss_threshold
+    kwargs: dict = {}
+    for field_name in body.model_fields_set:
+        val = getattr(body, field_name, None)
+        if val is not None or field_name == "loss_threshold":
+            kwargs[field_name] = val
+
+    old_values: dict[str, str | None] = {}
+    for k in kwargs.keys():
+        old_val = getattr(account, k, None)
+        old_values[k] = str(old_val) if old_val is not None else None
+
     try:
         await svc.update_account(account, **kwargs)
+        changes: dict[str, dict[str, str | None]] = {}
+        for k, old_v in old_values.items():
+            new_val = getattr(account, k, None)
+            new_v_str = str(new_val) if new_val is not None else None
+
+            def _are_equal(a: str | None, b: str | None) -> bool:
+                if a == b:
+                    return True
+                if a is None or b is None:
+                    return False
+                try:
+                    return Decimal(a) == Decimal(b)
+                except (ValueError, TypeError, ArithmeticError):
+                    return False
+
+            if not _are_equal(old_v, new_v_str):
+                changes[k] = {"previous": old_v, "new": new_v_str}
+
+        if changes:
+            from app.db.repositories.event_repository import EventRepository
+            await EventRepository(session).append(
+                process="config",
+                kind="ACCOUNT_SETTINGS_CHANGED",
+                detail={
+                    "account_id": account_id,
+                    "ibkr_account": account.ibkr_account,
+                    "setting": ", ".join(changes.keys()),
+                    "changes": changes,
+                    "source": "frontend",
+                    "operator": getattr(current_user, "email", "operator"),
+                },
+            )
+
         await session.commit()
     except AllocationConfigError as exc:
         await session.rollback()
@@ -992,6 +1039,19 @@ async def patch_allocation(
             stop_unit=body.stop_unit,
             exit_automation_enabled=body.exit_automation_enabled,
         )
+        from app.db.repositories.event_repository import EventRepository
+        await EventRepository(session).append(
+            process="config",
+            kind="ACCOUNT_SETTINGS_CHANGED",
+            detail={
+                "account_id": allocation.account_id,
+                "allocation_id": allocation_id,
+                "strategy_id": allocation.strategy_id,
+                "setting": "strategy_allocation",
+                "source": "frontend",
+                "operator": getattr(current_user, "email", "operator"),
+            },
+        )
         await session.commit()
     except AllocationConfigError as exc:
         await session.rollback()
@@ -1028,6 +1088,19 @@ async def put_symbol_limit(
             symbol=symbol,
             money_limit=body.money_limit,
         )
+        from app.db.repositories.event_repository import EventRepository
+        await EventRepository(session).append(
+            process="config",
+            kind="ACCOUNT_SETTINGS_CHANGED",
+            detail={
+                "account_id": account_id,
+                "setting": f"symbol_limit:{symbol}",
+                "symbol": symbol,
+                "new_limit": str(body.money_limit),
+                "source": "frontend",
+                "operator": getattr(current_user, "email", "operator"),
+            },
+        )
         await session.commit()
     except AllocationConfigError as exc:
         await session.rollback()
@@ -1060,7 +1133,23 @@ async def put_default_symbol_limit(
     if account is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
     try:
+        old_limit = account.default_symbol_limit
         await svc.update_account(account, default_symbol_limit=body.default_symbol_limit)
+        from app.db.repositories.event_repository import EventRepository
+        await EventRepository(session).append(
+            process="config",
+            kind="ACCOUNT_SETTINGS_CHANGED",
+            detail={
+                "account_id": account_id,
+                "ibkr_account": account.ibkr_account,
+                "setting": "default_symbol_limit",
+                "changes": {
+                    "default_symbol_limit": {"previous": str(old_limit), "new": str(body.default_symbol_limit)}
+                },
+                "source": "frontend",
+                "operator": getattr(current_user, "email", "operator"),
+            },
+        )
         await session.commit()
     except AllocationConfigError as exc:
         await session.rollback()

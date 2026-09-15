@@ -80,7 +80,7 @@ export function ManualTradePage() {
             long_name: null,
           })
         }
-      }).catch(() => {})
+      }).catch(() => { })
     }
   }, [isCloseMode, closeSymbol, closeSide, closeQty, closeTradeId, cleanAccount])
 
@@ -383,7 +383,7 @@ export function ManualTradePage() {
           )}
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 280, overflowY: 'auto' }}>
-            {candidates.length > 0 && <div style={{ fontSize: 10, color: 'var(--dim)', fontWeight: 700, letterSpacing: '0.06em' }}>{candidates.length} candidate{candidates.length>1?'s':''} — select one</div>}
+            {candidates.length > 0 && <div style={{ fontSize: 10, color: 'var(--dim)', fontWeight: 700, letterSpacing: '0.06em' }}>{candidates.length} candidate{candidates.length > 1 ? 's' : ''} — select one</div>}
             {candidates.map((c) => {
               const sel = selectedContract?.con_id === c.con_id
               return (
@@ -439,7 +439,7 @@ export function ManualTradePage() {
           <button type="button" className="manual-btn manual-btn-primary" style={{ width: '100%', padding: '10px', fontWeight: 700 }} onClick={() => void handleOpenPreview()} disabled={!isFormComplete}>
             Preview order
           </button>
-          {!isFormComplete && <span style={{ fontSize: 10, color: 'var(--dim)', textAlign: 'center' }}>Select contract and enter quantity{orderType==='LIMIT' ? ' + limit price' : ''}</span>}
+          {!isFormComplete && <span style={{ fontSize: 10, color: 'var(--dim)', textAlign: 'center' }}>Select contract and enter quantity{orderType === 'LIMIT' ? ' + limit price' : ''}</span>}
         </section>
 
         {/* Risk */}
@@ -447,14 +447,14 @@ export function ManualTradePage() {
           <h3>Risk <span>· preview</span></h3>
           {previewData ? (
             <div className="manual-risk-grid">
-              <div className="manual-risk-row"><span>Notional</span><strong>{previewData.notional ? `${previewData.notional} ${previewData.currency}` : orderType==='MARKET' ? 'Market' : '—'}</strong></div>
+              <div className="manual-risk-row"><span>Notional</span><strong>{previewData.notional ? `${previewData.notional} ${previewData.currency}` : orderType === 'MARKET' ? 'Market' : '—'}</strong></div>
               <div className="manual-risk-row"><span>Initial margin</span><strong>{previewData.init_margin_change ? `${previewData.init_margin_change} USD` : '—'}</strong></div>
               <div className="manual-risk-row"><span>Maintenance</span><strong>{previewData.maint_margin_change ? `${previewData.maint_margin_change} USD` : '—'}</strong></div>
               {previewData.margin_status === 'AVAILABLE' && <div style={{ fontSize: 10, color: 'var(--dim)', background: '#0b0e14', border: '1px solid var(--line)', borderRadius: 4, padding: '6px 8px' }}>Margin probe via IBKR what-if — check passed</div>}
               {previewData.margin_status === 'SKIPPED' && <div style={{ fontSize: 10, color: 'var(--muted)', background: '#0b0e14', border: '1px solid var(--line)', borderRadius: 4, padding: '6px 8px' }}>Margin check not run — disabled by configuration. Order permitted under existing safety policy.</div>}
               {previewData.margin_status === 'UNAVAILABLE' && <div style={{ fontSize: 10, color: 'var(--amber)', background: 'var(--amber-bg)', border: '1px solid rgba(224,179,76,0.2)', borderRadius: 4, padding: '6px 8px' }}>Margin check unavailable — order permitted under existing safety policy.</div>}
               {!previewData.valid && <div style={{ fontSize: 11, color: 'var(--red)', background: 'var(--red-bg)', border: '1px solid rgba(239,107,115,0.2)', padding: '6px 8px', borderRadius: 4 }}>{previewData.errors.join(' · ')}</div>}
-              {previewData.warnings.length>0 && previewData.margin_status !== 'SKIPPED' && <div style={{ fontSize: 11, color: 'var(--amber)', background: 'var(--amber-bg)', border: '1px solid rgba(224,179,76,0.2)', padding: '6px 8px', borderRadius: 4 }}>{previewData.warnings.join(' · ')}</div>}
+              {previewData.warnings.length > 0 && previewData.margin_status !== 'SKIPPED' && <div style={{ fontSize: 11, color: 'var(--amber)', background: 'var(--amber-bg)', border: '1px solid rgba(224,179,76,0.2)', padding: '6px 8px', borderRadius: 4 }}>{previewData.warnings.join(' · ')}</div>}
             </div>
           ) : (
             <div style={{ fontSize: 11, color: 'var(--dim)', textAlign: 'center', padding: '18px 8px', border: '1px dashed var(--line)', borderRadius: 4 }}>Run preview to see notional and margin.</div>
@@ -500,7 +500,7 @@ export function ManualTradePage() {
                       <td style={{ fontWeight: 700, fontFamily: 'var(--mono)' }}>{o.symbol}</td>
                       <td><span className={o.side === 'BUY' ? 'side-buy' : 'side-sell'} style={{ fontWeight: 700 }}>{o.side}</span></td>
                       <td style={{ fontFamily: 'var(--mono)' }}>{String(o.quantity)}</td>
-                      <td style={{ fontFamily: 'var(--mono)', color: Number(filled)>0 ? 'var(--ink)' : 'var(--dim)' }}>{filled}</td>
+                      <td style={{ fontFamily: 'var(--mono)', color: Number(filled) > 0 ? 'var(--ink)' : 'var(--dim)' }}>{filled}</td>
                       <td style={{ fontFamily: 'var(--mono)', color: 'var(--muted)' }}>{remaining}</td>
                       <td style={{ fontFamily: 'var(--mono)' }}>{price}</td>
                       <td>{statusBadge(o.status)}</td>
@@ -539,7 +539,7 @@ export function ManualTradePage() {
       {/* Positions + Executions — manual positions use same demo stream/PnL as main Positions, not a different API */}
       <section className="board" style={{ padding: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <h3 style={{ margin: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--dim)' }}>Manual positions <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· live PnL via demo stream</span></h3>
+          <h3 style={{ margin: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--dim)' }}>Manual positions <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· live PnL</span></h3>
           <Link to={`/account/${cleanAccount}/manual-trade/positions`} style={{ fontSize: 11, color: 'var(--muted)', textDecoration: 'none' }}>Full ledger →</Link>
         </div>
         {manualTrades.size === 0 ? (
@@ -600,11 +600,11 @@ export function ManualTradePage() {
                       <ul style={{ margin: 0, paddingLeft: 16 }}>{previewData.errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
                     </div>
                   ) : <div style={{ padding: '6px 10px', background: 'var(--green-bg)', border: '1px solid rgba(62,207,142,0.25)', color: 'var(--green)', fontSize: 11, borderRadius: 4 }}>Safety gates passed</div>}
-                  {previewData.warnings.length>0 && <div style={{ padding: '6px 10px', background: 'var(--amber-bg)', border: '1px solid rgba(224,179,76,0.25)', color: 'var(--amber)', fontSize: 11, borderRadius: 4 }}>{previewData.warnings.join(' · ')}</div>}
+                  {previewData.warnings.length > 0 && <div style={{ padding: '6px 10px', background: 'var(--amber-bg)', border: '1px solid rgba(224,179,76,0.25)', color: 'var(--amber)', fontSize: 11, borderRadius: 4 }}>{previewData.warnings.join(' · ')}</div>}
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, fontSize: 12, background: '#0b0e14', border: '1px solid var(--line)', borderRadius: 4, padding: 12 }}>
                     <div><span style={{ color: 'var(--dim)' }}>Account</span><br /><strong style={{ fontFamily: 'var(--mono)' }}>{cleanAccount}</strong></div>
                     <div><span style={{ color: 'var(--dim)' }}>Contract</span><br /><strong>{previewData.symbol} · {previewData.exchange}</strong></div>
-                    <div><span style={{ color: 'var(--dim)' }}>Side</span><br /><strong style={{ color: previewData.side==='BUY'?'var(--green)':'var(--red)' }}>{previewData.side}</strong> · {String(previewData.quantity)}</div>
+                    <div><span style={{ color: 'var(--dim)' }}>Side</span><br /><strong style={{ color: previewData.side === 'BUY' ? 'var(--green)' : 'var(--red)' }}>{previewData.side}</strong> · {String(previewData.quantity)}</div>
                     <div><span style={{ color: 'var(--dim)' }}>Type</span><br /><strong>{previewData.order_type} {previewData.limit_price ? `@ ${previewData.limit_price}` : ''}</strong> · {previewData.con_id}</div>
                     <div style={{ gridColumn: 'span 2', borderTop: '1px solid var(--line)', paddingTop: 8, display: 'flex', justifyContent: 'space-between' }}>
                       <span style={{ color: 'var(--dim)' }}>Notional</span><strong style={{ fontFamily: 'var(--mono)' }}>{previewData.notional ? `${previewData.notional} ${previewData.currency}` : 'Market'}</strong>
@@ -633,12 +633,12 @@ export function ManualTradePage() {
             </div>
             <div className="manual-modal-body">
               <div style={{ fontSize: 12 }}>
-                <div><span style={{ color: 'var(--dim)' }}>Order</span> <strong style={{ fontFamily: 'var(--mono)' }}>{cancelConfirm.internal_order_id}</strong> · <span className={cancelConfirm.side==='BUY'?'side-buy':'side-sell'} style={{ fontWeight: 700 }}>{cancelConfirm.side}</span> {String(cancelConfirm.quantity)} {cancelConfirm.symbol}</div>
-                <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>Broker {cancelConfirm.broker_order_id ?? '—'} · Status {cancelConfirm.status} · Filled {String(cancelConfirm.filled_quantity ?? 0)} · Remaining {(() => { try { return String(Number(cancelConfirm.quantity)-Number(cancelConfirm.filled_quantity ?? 0)) } catch { return '—' } })()}</div>
+                <div><span style={{ color: 'var(--dim)' }}>Order</span> <strong style={{ fontFamily: 'var(--mono)' }}>{cancelConfirm.internal_order_id}</strong> · <span className={cancelConfirm.side === 'BUY' ? 'side-buy' : 'side-sell'} style={{ fontWeight: 700 }}>{cancelConfirm.side}</span> {String(cancelConfirm.quantity)} {cancelConfirm.symbol}</div>
+                <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>Broker {cancelConfirm.broker_order_id ?? '—'} · Status {cancelConfirm.status} · Filled {String(cancelConfirm.filled_quantity ?? 0)} · Remaining {(() => { try { return String(Number(cancelConfirm.quantity) - Number(cancelConfirm.filled_quantity ?? 0)) } catch { return '—' } })()}</div>
               </div>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                 <button type="button" className="manual-btn" onClick={() => setCancelConfirm(null)}>Keep order</button>
-                <button type="button" className="manual-btn manual-btn-danger" onClick={() => void handleCancelOrder(cancelConfirm)} disabled={cancellingOrderId!==null}>Cancel order</button>
+                <button type="button" className="manual-btn manual-btn-danger" onClick={() => void handleCancelOrder(cancelConfirm)} disabled={cancellingOrderId !== null}>Cancel order</button>
               </div>
             </div>
           </div>

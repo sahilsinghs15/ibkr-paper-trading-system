@@ -10,9 +10,10 @@ from app.db.models.event import EventLogModel
 AUDIT_CATEGORIES: dict[str, list[str]] = {
     "orders": ["basket", "oms", "execution"],
     "signals": ["webhook"],
-    "risk": ["rms", "risk_exit", "red_zone", "worker"],
+    "risk": ["rms", "risk_exit", "red_zone", "worker", "kill_switch"],
     "reconcile": ["reconcile"],
     "positions": ["position"],
+    "config": ["config", "operator"],
     "system": ["systemd", "system", "session_clock", "watchdog"],
 }
 

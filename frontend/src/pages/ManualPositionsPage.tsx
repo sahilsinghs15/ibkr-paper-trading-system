@@ -79,11 +79,9 @@ export function ManualPositionsPage() {
       <div className="section-h" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
         <div>
           <h1 style={{ fontSize: '24px', fontWeight: 700, margin: 0, color: '#f8fafc' }}>
-            MANUAL POSITIONS (ISOLATED LEDGER)
+            MANUAL POSITIONS
           </h1>
-          <span style={{ fontSize: '13px', color: '#94a3b8' }}>
-            ACCOUNT: <strong style={{ color: '#38bdf8' }}>{cleanAccount || 'NONE'}</strong> · AUTHORITATIVE SOURCE = &quot;manual&quot;
-          </span>
+
         </div>
         <div style={{ display: 'flex', gap: '12px' }}>
           <button

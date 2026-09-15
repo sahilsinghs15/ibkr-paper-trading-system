@@ -393,6 +393,26 @@ class BrokerAlignService:
                 norm_symbol,
                 status,
             )
+            from app.db.repositories.event_repository import EventRepository
+
+            async with self._session_factory() as session:
+                await EventRepository(session).append(
+                    process="reconcile",
+                    kind="RECONCILE_ALIGN_COMPLETED" if success else "RECONCILE_ALIGN_FAILED",
+                    detail={
+                        "account_id": account_id,
+                        "ibkr_account": ibkr_account,
+                        "symbol": norm_symbol,
+                        "sec_type": norm_sec_type,
+                        "con_id": con_id,
+                        "side": side_label,
+                        "quantity": trade_qty,
+                        "status": status,
+                        "message": message,
+                    },
+                )
+                await session.commit()
+
             return FlattenBrokerPositionResponse(
                 ibkr_account=ibkr_account,
                 account_id=account_id,

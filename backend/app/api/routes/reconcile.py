@@ -3,6 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_authenticated_user
@@ -133,6 +134,34 @@ async def align_broker_position_line(
             status_code=503,
             detail="Session factory is unavailable.",
         )
+
+    async with session_factory() as session:
+        from app.db.models.account import AccountModel
+        from app.db.repositories.event_repository import EventRepository
+
+        norm_acc = normalize_account(body.ibkr_account)
+        acc_row = (
+            await session.execute(
+                select(AccountModel.id).where(AccountModel.ibkr_account == norm_acc)
+            )
+        ).scalar_one_or_none()
+
+        await EventRepository(session).append(
+            process="reconcile",
+            kind="FIX_BUTTON_CLICKED",
+            detail={
+                "account_id": acc_row,
+                "ibkr_account": body.ibkr_account.strip(),
+                "target": "POSITION_MISMATCH",
+                "symbol": body.symbol.strip(),
+                "sec_type": body.sec_type.strip(),
+                "con_id": body.con_id,
+                "source": "frontend",
+                "operator": getattr(current_user, "email", "operator"),
+                "action": f"Align {body.symbol.strip()} broker line to ledger",
+            },
+        )
+        await session.commit()
 
     svc = BrokerAlignService(session_factory=session_factory, order_manager=order_manager)
     return await svc.align_line(
