@@ -398,20 +398,102 @@ class ManualExecutionListener:
                 if acc_id_row is not None:
                     account_id = acc_id_row
 
-            # 1. Correlate to manual order
+            # 1. Correlate to manual order — strict, contract-validated, no symbol-only fallback
+            # Order identity vs trade identity: trade_id is position lot, order identities are broker_order_id/perm_id/orderRef
+            # Must not attach KIE execution to SMH order via broker_order_id alone (see prod bug: MAN_6D SMH 10 filled 30 via KIE 20@63)
+            def _contract_matches(ord_row: ManualOrderModel, exec_contract: Any) -> bool:
+                if exec_contract is None:
+                    return True
+                # Defensive: MagicMock in tests returns MagicMock for any attribute, must not be treated as real value
+                try:
+                    c_con = getattr(exec_contract, "conId", None)
+                    if isinstance(c_con, int) and c_con != 0 and c_con != int(ord_row.con_id):
+                        return False
+                    # If conId is str digit, check as well
+                    if isinstance(c_con, str) and c_con.strip().isdigit() and int(c_con) != int(ord_row.con_id):
+                        return False
+                except Exception:
+                    pass
+                try:
+                    c_sym = getattr(exec_contract, "symbol", None)
+                    if isinstance(c_sym, str) and c_sym.strip() and c_sym.strip().upper() != str(ord_row.symbol).strip().upper():
+                        return False
+                except Exception:
+                    pass
+                try:
+                    c_sec = getattr(exec_contract, "secType", None)
+                    if isinstance(c_sec, str) and c_sec.strip() and c_sec.strip().upper() != str(ord_row.sec_type).strip().upper():
+                        return False
+                except Exception:
+                    pass
+                return True
+
+            def _perm_matches(ord_row: ManualOrderModel, exec_perm: Any) -> bool:
+                try:
+                    if exec_perm is None:
+                        return True
+                    # MagicMock handling: only real int/str digits
+                    if isinstance(exec_perm, int) and exec_perm == 0:
+                        return True
+                    if isinstance(exec_perm, str) and exec_perm.strip() in ("", "0"):
+                        return True
+                    # If exec_perm is MagicMock or other non-int, treat as no perm
+                    if not isinstance(exec_perm, (int, str)):
+                        return True
+                    exec_perm_int = int(str(exec_perm).strip())
+                    if exec_perm_int == 0:
+                        return True
+                    if ord_row.perm_id is None:
+                        return True  # first fill captures perm
+                    return int(ord_row.perm_id) == exec_perm_int
+                except Exception:
+                    return True
+
             order: ManualOrderModel | None = None
-            if tws_order_id is not None and int(tws_order_id) > 0:
-                order = await order_repo.get_by_broker_order_id(str(tws_order_id), account_id=account_id)
-            if order is None and order_ref:
-                order = await order_repo.get_by_internal_id(order_ref)
+            # 1a. Strongest: orderRef/internal_order_id (unique, CFD contract-consistent)
+            if order_ref:
+                cand = await order_repo.get_by_internal_id(order_ref)
+                if cand is not None and cand.account_id == (account_id or cand.account_id):
+                    if acct_number and acct_number != cand.ibkr_account.strip().upper():
+                        pass
+                    elif not _contract_matches(cand, contract):
+                        logger.warning(
+                            "orderRef %s matched order %s but contract mismatch (order %s vs exec %s %s) — rejecting correlation",
+                            order_ref, cand.internal_order_id, cand.symbol, getattr(contract, "symbol", "?"), getattr(contract, "conId", "?"),
+                        )
+                    elif not _perm_matches(cand, perm_id):
+                        logger.warning("orderRef %s perm mismatch %s vs %s — rejecting", order_ref, cand.perm_id, perm_id)
+                    else:
+                        order = cand
+            # 1b. PermId with account + contract
             if order is None and perm_id is not None and int(perm_id) > 0:
-                order = await order_repo.get_by_perm_id(int(perm_id), account_id=account_id)
+                cand = await order_repo.get_by_perm_id(int(perm_id), account_id=account_id)
+                if cand is not None:
+                    if not _contract_matches(cand, contract):
+                        logger.warning("perm_id %s contract mismatch — rejecting", perm_id)
+                    else:
+                        order = cand
+            # 1c. Broker order id with account + contract + perm validation (not symbol-only)
+            if order is None and tws_order_id is not None and int(tws_order_id) > 0:
+                cand = await order_repo.get_by_broker_order_id(str(tws_order_id), account_id=account_id)
+                if cand is not None:
+                    if not _contract_matches(cand, contract):
+                        logger.warning(
+                            "broker_order_id %s matched order %s but contract mismatch (order %s vs exec %s) — rejecting correlation, will not attach KIE exec to SMH order",
+                            tws_order_id, cand.internal_order_id, cand.symbol, getattr(contract, "symbol", "?"),
+                        )
+                        cand = None
+                    elif not _perm_matches(cand, perm_id):
+                        logger.warning("broker_order_id %s perm mismatch %s vs %s — rejecting", tws_order_id, cand.perm_id, perm_id)
+                        cand = None
+                    else:
+                        order = cand
 
             if order is None:
-                # Not a manual order (e.g. Engine order, handled by IBKRExecutionAdapter)
+                # Not a manual order (e.g. Engine order, handled by IBKRExecutionAdapter) or contract mismatch
                 return None, False
 
-            # Verify account isolation
+            # Verify account isolation (strict)
             if acct_number and acct_number != order.ibkr_account.strip().upper():
                 logger.error(
                     "Account mismatch in execDetails: order account=%s, callback account=%s",
