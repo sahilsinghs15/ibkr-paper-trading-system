@@ -110,7 +110,7 @@ export function ManualTradePage() {
     try { return genIdemKey() } catch { return '' }
   })
   const [lastIntentSig, setLastIntentSig] = useState<string | null>(null)
-  const currentIntentSig = `${selectedContract?.con_id ?? ''}|${selectedContract?.symbol ?? ''}|${side}|${quantity}|${orderType}|${limitPrice}|${tif}`
+  const currentIntentSig = `${selectedContract?.con_id ?? ''}|${selectedContract?.symbol ?? ''}|${side}|${quantity}|${orderType}|${limitPrice}|${tif}|${closeTradeId ?? ''}`
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewData, setPreviewData] = useState<ManualOrderPreviewResponse | null>(null)
@@ -234,6 +234,7 @@ export function ManualTradePage() {
         exchange: selectedContract.exchange, currency: selectedContract.currency,
         side, quantity, order_type: orderType, limit_price: orderType === 'LIMIT' ? limitPrice : null,
         tif, outside_rth: false, min_tick: selectedContract.min_tick ?? null,
+        trade_id: isCloseMode && closeTradeId ? closeTradeId : null,
       })
       setPreviewData(data)
     } catch (err: unknown) {
@@ -255,6 +256,7 @@ export function ManualTradePage() {
         idempotency_key: submitKey, symbol: selectedContract.symbol, con_id: selectedContract.con_id, sec_type: 'CFD',
         exchange: selectedContract.exchange, currency: selectedContract.currency, side, quantity, order_type: orderType,
         limit_price: orderType === 'LIMIT' ? limitPrice : null, tif, outside_rth: false, min_tick: selectedContract.min_tick ?? null,
+        trade_id: isCloseMode && closeTradeId ? closeTradeId : null,
       })
       setSubmitResult(res); setIsPreviewOpen(false); void loadManualOrders()
       // Success → rotate key for next intentional order. Keep lastIntentSig so next preview with same intent still generates new key after this.

@@ -298,6 +298,11 @@ class ManualTradingService:
         )
         if existing is not None:
             # Check for identical parameters (idempotent replay) vs conflict
+            # Trade_id is the close intent carrier: same symbol/qty but different trade_id = different position close target
+            # For new OPEN orders trade_id is auto-generated (TRD_...), so a replay with no explicit trade_id should still match.
+            req_trade_id = (request.trade_id or "").strip()
+            existing_trade_id = (existing.trade_id or "").strip()
+            trade_id_match = (not req_trade_id) or (existing_trade_id == req_trade_id)
             is_same_param = (
                 existing.con_id == request.con_id
                 and existing.symbol == request.symbol.strip().upper()
@@ -309,6 +314,7 @@ class ManualTradingService:
                 and existing.exchange == request.exchange.strip().upper()
                 and existing.currency == request.currency.strip().upper()
                 and existing.sec_type == request.sec_type.strip().upper()
+                and trade_id_match
             )
             if is_same_param:
                 logger.info(
@@ -369,6 +375,9 @@ class ManualTradingService:
                     account_id=account.id, idempotency_key=idempotency_key
                 )
                 if existing2 is not None:
+                    req_trade_id2 = (request.trade_id or "").strip()
+                    existing_trade_id2 = (existing2.trade_id or "").strip()
+                    trade_id_match2 = (not req_trade_id2) or (existing_trade_id2 == req_trade_id2)
                     is_same = (
                         existing2.con_id == request.con_id
                         and existing2.symbol == request.symbol.strip().upper()
@@ -380,6 +389,7 @@ class ManualTradingService:
                         and existing2.exchange == request.exchange.strip().upper()
                         and existing2.currency == request.currency.strip().upper()
                         and existing2.sec_type == request.sec_type.strip().upper()
+                        and trade_id_match2
                     )
                     if is_same:
                         logger.info(
