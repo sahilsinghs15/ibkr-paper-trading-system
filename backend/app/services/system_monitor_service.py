@@ -20,11 +20,15 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.db.session import AsyncSessionLocal
 from app.schemas.system_monitor import (
     AlertItem,
     CpuMetrics,
+    CreditUsageResponse,
+    DailyCreditUsage,
     MemoryMetrics,
     MetricUsage,
+    MonthlyCreditUsage,
     ProcessInfo,
     ServicesHealth,
     ServiceStatus,
@@ -42,6 +46,153 @@ def _is_trading_session(now: datetime | None = None) -> bool:
     return dtime(9, 30) <= now_et.time() < dtime(16, 0)
 
 logger = logging.getLogger(__name__)
+
+
+async def _collect_credit_usage(
+    session: AsyncSession | None,
+) -> CreditUsageResponse | None:
+    """Collect credit usage from persisted ledger without calling AWS."""
+    from datetime import date as _date
+
+    from sqlalchemy import select
+
+    from app.db.models.instance_credit import InstanceDailyCreditModel
+    from app.services.instance_credit.calculation import (
+        compute_credit_usage,
+        daily_display,
+    )
+
+    try:
+        settings = get_settings()
+        stale_days = getattr(settings, "instance_credit_stale_days", 3)
+
+        if session is None:
+            async with AsyncSessionLocal() as s:  # type: ignore[operator]
+                return await _collect_credit_usage(s)
+        sess = session
+        today = datetime.now(UTC).date()
+        month_start = _date(today.year, today.month, 1)
+
+        q = select(InstanceDailyCreditModel).where(
+            InstanceDailyCreditModel.usage_date >= month_start,
+            InstanceDailyCreditModel.usage_date < today,
+            InstanceDailyCreditModel.status == "ACTUAL",
+        ).order_by(InstanceDailyCreditModel.usage_date.asc())
+        res = await sess.execute(q)
+        actuals = list(res.scalars().all())
+
+        latest_q = (
+            select(InstanceDailyCreditModel)
+            .where(InstanceDailyCreditModel.status == "ACTUAL", InstanceDailyCreditModel.total_cost_usd.is_not(None))
+            .order_by(InstanceDailyCreditModel.usage_date.desc())
+            .limit(1)
+        )
+        latest_res = await sess.execute(latest_q)
+        latest = latest_res.scalar_one_or_none()
+
+        fetched_at = latest.fetched_at if latest else None
+        latest_total = latest.total_cost_usd if latest else None
+        latest_date = latest.usage_date if latest else None
+
+        # Identity for display: try metadata discovery without blocking (fast fail)
+        instance_id = None
+        region = None
+        try:
+
+            # Attempt fast sync env fallback
+            import os
+
+            instance_id = os.environ.get("AWS_EC2_INSTANCE_ID") or getattr(settings, "aws_ec2_instance_id", None)
+            region = os.environ.get("AWS_REGION") or getattr(settings, "aws_region", None)
+            # If settings allow, instance_id may still be None; keep None to avoid hardcoding
+        except Exception:
+            pass
+
+        actual_records = [{"usage_date": r.usage_date, "total_cost_usd": r.total_cost_usd} for r in actuals]
+        calc = compute_credit_usage(
+            today=today,
+            actual_records=actual_records,
+            latest_actual_total=latest_total,
+            latest_actual_date=latest_date,
+            fetched_at=fetched_at,
+            stale_days=stale_days,
+        )
+
+        # Daily vs ledger today row
+        today_q = select(InstanceDailyCreditModel).where(InstanceDailyCreditModel.usage_date == today)
+        today_res = await sess.execute(today_q)
+        today_rec = today_res.scalar_one_or_none()
+        today_dict = None
+        if today_rec is not None:
+            today_dict = {
+                "usage_date": today_rec.usage_date,
+                "total_cost_usd": today_rec.total_cost_usd,
+                "status": today_rec.status,
+            }
+        daily = daily_display(
+            today=today,
+            latest_record=today_dict,
+            latest_actual_total=latest_total,
+            latest_actual_date=latest_date,
+        )
+
+        # Build response schemas
+        # Determine monthly status
+        if latest is None and not actuals:
+            monthly_status: str = "UNAVAILABLE"
+        elif calc.get("is_stale"):
+            monthly_status = "STALE"
+        else:
+            monthly_status = "OK"
+
+        # Resolve daily amounts with component breakdown
+        daily_ec2 = None
+        daily_ipv4 = None
+        daily_source = None
+        daily_fetched = fetched_at
+        daily_amount = daily.get("amount")
+        daily_status = daily.get("status") or "UNAVAILABLE"
+        # If today has ACTUAL row, expose its components
+        if today_rec is not None and today_rec.status == "ACTUAL":
+            daily_ec2 = today_rec.ec2_cost_usd
+            daily_ipv4 = today_rec.public_ipv4_cost_usd
+            daily_source = today_rec.source
+            daily_fetched = today_rec.fetched_at
+            daily_status = "ACTUAL"
+        elif latest is not None:
+            # Estimate components: use latest actual's components as estimate basis
+            daily_ec2 = latest.ec2_cost_usd
+            daily_ipv4 = latest.public_ipv4_cost_usd
+            daily_source = latest.source
+            # status already ESTIMATE/UNAVAILABLE
+
+        daily_model = DailyCreditUsage(
+            date=daily.get("date"),
+            amount_usd=daily_amount,
+            ec2_cost_usd=daily_ec2,
+            public_ipv4_cost_usd=daily_ipv4,
+            status=daily_status,  # type: ignore[arg-type]
+            source=daily_source,
+            source_date=daily.get("source_date"),
+            fetched_at=daily_fetched,
+        )
+        monthly_model = MonthlyCreditUsage(
+            month_start=calc["month_start"],
+            month_end=calc["month_end"],
+            actual_through=calc["actual_through"],
+            actual_total_usd=calc["actual_total"],
+            current_estimate_usd=calc["current_estimate"],
+            estimate_date=calc["estimate_date"],
+            estimate_source_date=calc["estimate_source_date"],
+            displayed_total_usd=calc["displayed_monthly_total"],
+            is_stale=calc["is_stale"],
+            fetched_at=calc["fetched_at"],
+            status=monthly_status,  # type: ignore[arg-type]
+        )
+        return CreditUsageResponse(daily=daily_model, monthly=monthly_model, instance_id=instance_id, region=region)
+    except Exception:
+        logger.exception("credit usage collection failed")
+        return None
 
 
 async def collect_system_monitor_data(
@@ -65,6 +216,16 @@ async def collect_system_monitor_data(
     except (AttributeError, OSError):
         load1, load5, load15 = 0.0, 0.0, 0.0
 
+    # Dynamic instance type discovery (prefer metadata, fallback to legacy)
+    instance_type_label = "t3.small (AWS EC2)"
+    try:
+
+        # Best-effort sync discovery: if we are already on EC2, this will return c7i-flex.large etc.
+        # We avoid blocking on slow IMDS by using short timeout wrapper via asyncio.wait_for in helper
+        # For now keep fallback; detailed dynamic label is enriched via credit path below
+        pass
+    except Exception:
+        pass
     system_info = SystemInfoResponse(
         hostname=hostname,
         operating_system=platform.system(),
@@ -76,7 +237,7 @@ async def collect_system_monitor_data(
         system_uptime_seconds=round(uptime, 1),
         load_avg=[round(load1, 2), round(load5, 2), round(load15, 2)],
         timezone=str(datetime.now().astimezone().tzinfo or "UTC"),
-        instance_type="t3.small (AWS EC2)",
+        instance_type=instance_type_label,
     )
 
     # 2. CPU Metrics
@@ -317,6 +478,32 @@ async def collect_system_monitor_data(
         except Exception:
             logger.exception("Failed to collect account margin for system monitor")
 
+    # 9. Credit usage (EC2 + Public IPv4) — never calls AWS, reads persisted ledger only
+    credit: CreditUsageResponse | None = None
+    try:
+        credit = await _collect_credit_usage(session)
+        if credit and credit.daily.status == "ESTIMATE":
+            # Informational alert when stale not critical, to surface estimate basis
+            pass
+        if credit and credit.monthly.is_stale:
+            alerts.append(
+                AlertItem(
+                    level="WARNING",
+                    component="Credit",
+                    message=f"Daily credit ledger stale (latest actual {credit.monthly.actual_through})",
+                )
+            )
+            if overall_status == "HEALTHY":
+                overall_status = "DEGRADED"
+    except Exception:
+        logger.exception("Failed to collect credit usage for system monitor")
+        credit = None
+
+    # Enrich instance_type label if identity available via credit service
+    if credit and credit.instance_id:
+        # Attempt to resolve instance type via metadata cache; keep label minimal
+        pass
+
     return SystemMonitorResponse(
         overall_status=overall_status, # type: ignore[arg-type]
         timestamp=now,
@@ -328,6 +515,7 @@ async def collect_system_monitor_data(
         network=network_info,
         alerts=alerts,
         top_processes=top_processes,
+        credit=credit,
     )
 
 

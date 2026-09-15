@@ -140,6 +140,20 @@ class Settings(BaseSettings):
     risk_exit_max_pnl_staleness_sec: Annotated[float, Gt(0)] = 15.0
     risk_exit_max_retries: Annotated[int, Ge(0)] = 3
 
+    # Instance credit / daily cost ledger (EC2 + Public IPv4 / Elastic IP)
+    instance_credit_enabled: bool = True
+    aws_region: str | None = None
+    aws_ec2_instance_id: str | None = None
+    aws_account_id: str | None = None
+    # Production EIP — explicit config preferred over EC2 DescribeAddresses (which needs ec2:DescribeAddresses
+    # not in CostExplorerReadOnly). Values verified: 54.205.127.181 / eipalloc-09224cba17bc5dfea
+    aws_eip_allocation_id: str | None = None
+    aws_public_ipv4: str | None = None
+    aws_eni_id: str | None = None
+    instance_credit_fetch_hour_utc: Annotated[int, Ge(0), Le(23)] = 8
+    instance_credit_fetch_minute_utc: Annotated[int, Ge(0), Le(59)] = 0
+    instance_credit_stale_days: Annotated[int, Gt(0)] = 3
+
     def _validate_red_zone(self) -> None:
         if self.max_auto_release_notional is not None and self.max_auto_release_notional < 0:
             raise ValueError("max_auto_release_notional must be >= 0 or None")

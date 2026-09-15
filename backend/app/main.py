@@ -236,6 +236,13 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     if not testing:
         await trade_book_sync.start()
 
+    from app.services.instance_credit.scheduler import InstanceCreditScheduler
+
+    instance_credit_scheduler = InstanceCreditScheduler(AsyncSessionLocal)
+    fastapi_app.state.instance_credit_scheduler = instance_credit_scheduler
+    if not testing:
+        await instance_credit_scheduler.start()
+
     if not testing:
         try:
             await critical_recovery.enqueue_all_critical()
@@ -265,6 +272,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     yield
 
     logger.info("Shutting down paper-trading application...")
+    if hasattr(fastapi_app.state, "instance_credit_scheduler"):
+        await fastapi_app.state.instance_credit_scheduler.stop()
     if hasattr(fastapi_app.state, "loss_monitor"):
         await fastapi_app.state.loss_monitor.stop()
     if hasattr(fastapi_app.state, "trade_book_sync"):

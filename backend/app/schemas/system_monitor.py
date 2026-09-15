@@ -1,6 +1,10 @@
 """Pydantic schemas for the System Monitor API."""
 
+from __future__ import annotations
+
+from datetime import date as _date
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -88,6 +92,46 @@ class SystemInfoResponse(BaseModel):
     instance_type: str = "t3.small (AWS EC2)"
 
 
+class DailyCreditUsage(BaseModel):
+    """Daily instance cost (ESTIMATE for current day, ACTUAL for completed)."""
+
+    date: _date | None = Field(None, description="Usage date (UTC)")
+    amount_usd: Decimal | None = Field(None, description="Total daily cost (EC2 + Public IPv4)")
+    ec2_cost_usd: Decimal | None = Field(None, description="EC2 component")
+    public_ipv4_cost_usd: Decimal | None = Field(None, description="Public IPv4 component")
+    status: Literal["ACTUAL", "ESTIMATE", "UNAVAILABLE", "STALE", "FAILED"] = Field(
+        ..., description="ACTUAL=Cost Explorer, ESTIMATE=latest actual carried forward"
+    )
+    source: str | None = Field(None, description="CE source API")
+    source_date: _date | None = Field(None, description="Estimate source date (latest actual)")
+    fetched_at: datetime | None = Field(None, description="Last successful AWS fetch")
+
+
+class MonthlyCreditUsage(BaseModel):
+    """Monthly aggregation derived from persisted daily ledger + current-day estimate."""
+
+    month_start: _date = Field(..., description="First day of current month (inclusive)")
+    month_end: _date = Field(..., description="Current date (inclusive)")
+    actual_through: _date | None = Field(None, description="Latest ACTUAL date included")
+    actual_total_usd: Decimal = Field(..., description="SUM(actual completed-day totals)")
+    current_estimate_usd: Decimal | None = Field(None, description="Today ESTIMATE (latest actual)")
+    estimate_date: _date | None = Field(None, description="Date for which estimate applies (today)")
+    estimate_source_date: _date | None = Field(None, description="Actual date used as estimate basis")
+    displayed_total_usd: Decimal | None = Field(None, description="actual_total + estimate (shown in UI)")
+    is_stale: bool = Field(False, description="True if latest actual older than threshold")
+    fetched_at: datetime | None = Field(None, description="Last successful AWS fetch timestamp")
+    status: Literal["OK", "STALE", "UNAVAILABLE"] = Field(..., description="Ledger freshness")
+
+
+class CreditUsageResponse(BaseModel):
+    """Credit usage container for System Monitor."""
+
+    daily: DailyCreditUsage
+    monthly: MonthlyCreditUsage
+    instance_id: str | None = Field(None, description="EC2 instance identity (if discovered)")
+    region: str | None = Field(None, description="AWS region")
+
+
 class SystemMonitorResponse(BaseModel):
     """Root response model for GET /api/v1/system-monitor."""
     overall_status: Literal["HEALTHY", "DEGRADED", "CRITICAL", "MARKET_CLOSED"]
@@ -100,5 +144,6 @@ class SystemMonitorResponse(BaseModel):
     network: dict[str, Any]
     alerts: list[AlertItem]
     top_processes: list[ProcessInfo]
+    credit: CreditUsageResponse | None = Field(None, description="Instance credit usage (EC2 + Public IPv4)")
 
     model_config = ConfigDict(frozen=True)
