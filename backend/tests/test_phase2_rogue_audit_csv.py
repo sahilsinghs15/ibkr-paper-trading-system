@@ -141,7 +141,9 @@ async def test_rogue_trade_detection_deduplication_and_resolution(
         return_value=(sweep_1_broker_lines, False)
     )
 
-    reconciler = PositionReconciler(session_factory, client, interval_sec=9999.0)
+    reconciler = PositionReconciler(
+        session_factory, client, interval_sec=9999.0, rogue_confirm_sweeps=1
+    )
 
     # First sweep -> Detect all three rogue conditions
     with patch(
@@ -337,7 +339,9 @@ async def test_rogue_restart_behavior(
     )
 
     # Fresh reconciler instance representing process restart
-    reconciler = PositionReconciler(session_factory, client, interval_sec=9999.0)
+    reconciler = PositionReconciler(
+        session_factory, client, interval_sec=9999.0, rogue_confirm_sweeps=1
+    )
 
     with patch(
         "app.services.position_reconciler.send_canonical_telegram",
@@ -412,7 +416,9 @@ async def test_multi_account_isolation(
     ]
     client.request_positions_async = AsyncMock(return_value=(lines, False))
 
-    reconciler = PositionReconciler(session_factory, client, interval_sec=9999.0)
+    reconciler = PositionReconciler(
+        session_factory, client, interval_sec=9999.0, rogue_confirm_sweeps=1
+    )
     with patch(
         "app.services.position_reconciler.send_canonical_telegram",
         new_callable=AsyncMock,
@@ -423,6 +429,174 @@ async def test_multi_account_isolation(
     keys = list(reconciler._active_rogue_keys.keys())
     assert (acc1_name, "TSLA", "STK", MISMATCH_BROKER_ORPHAN) in keys
     assert (acc2_name, "TSLA", "STK", MISMATCH_BROKER_ORPHAN) in keys
+
+
+@pytest.mark.asyncio
+async def test_rogue_requires_confirm_sweeps_before_telegram(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """One-sweep mismatches must not Telegram; second consecutive sweep confirms."""
+    uid = uuid4().hex[:6]
+    ibkr_account = f"DU{uid}"
+
+    async with session_factory() as session:
+        acc = AccountModel(
+            name=f"Acc {uid}",
+            ibkr_account=ibkr_account,
+            total_margin=Decimal(100000),
+            enabled=True,
+        )
+        session.add(acc)
+        await session.commit()
+
+    client = MagicMock()
+    client.is_connected.return_value = True
+    orphan_lines = [
+        _broker_line(
+            account=ibkr_account, symbol="TSLA", sec_type="STK", qty=20.0, con_id=103
+        )
+    ]
+    client.request_positions_async = AsyncMock(return_value=(orphan_lines, False))
+
+    reconciler = PositionReconciler(
+        session_factory, client, interval_sec=9999.0, rogue_confirm_sweeps=2
+    )
+
+    with patch(
+        "app.services.position_reconciler.send_canonical_telegram",
+        new_callable=AsyncMock,
+    ) as mock_tg:
+        await reconciler.run_once()
+        acc_calls = [
+            c
+            for c in mock_tg.call_args_list
+            if c[0][1].get("ibkr_account") == ibkr_account
+        ]
+        assert acc_calls == []
+        assert (ibkr_account, "TSLA", "STK", MISMATCH_BROKER_ORPHAN) not in (
+            reconciler._active_rogue_keys or {}
+        )
+        assert (ibkr_account, "TSLA", "STK", MISMATCH_BROKER_ORPHAN) in (
+            reconciler._pending_rogue_streaks
+        )
+
+    with patch(
+        "app.services.position_reconciler.send_canonical_telegram",
+        new_callable=AsyncMock,
+    ) as mock_tg:
+        await reconciler.run_once()
+        acc_calls = [
+            c
+            for c in mock_tg.call_args_list
+            if c[0][1].get("ibkr_account") == ibkr_account
+        ]
+        assert len(acc_calls) == 1
+        assert acc_calls[0][0][0] == "ROGUE_TRADE_DETECTED"
+        assert (ibkr_account, "TSLA", "STK", MISMATCH_BROKER_ORPHAN) in (
+            reconciler._active_rogue_keys or {}
+        )
+
+
+@pytest.mark.asyncio
+async def test_rogue_skips_in_flight_and_one_sweep_noise(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """In-flight mismatches never alert; a single-sweep orphan that clears is silent."""
+    uid = uuid4().hex[:6]
+    ibkr_account = f"DU{uid}"
+
+    async with session_factory() as session:
+        from app.db.models.basket import BasketModel
+
+        acc = AccountModel(
+            name=f"Acc {uid}",
+            ibkr_account=ibkr_account,
+            total_margin=Decimal(100000),
+            enabled=True,
+        )
+        session.add(acc)
+        await session.flush()
+        session.add(
+            BasketModel(
+                account_id=acc.id,
+                trade_id=f"T_{uid}",
+                strategy_id="model_blue",
+                action="OPEN",
+                state="EXECUTING",
+                intended_leg_count=2,
+            )
+        )
+        await session.commit()
+
+    client = MagicMock()
+    client.is_connected.return_value = True
+    orphan_lines = [
+        _broker_line(
+            account=ibkr_account, symbol="JPM", sec_type="CFD", qty=-3.0, con_id=55
+        )
+    ]
+    client.request_positions_async = AsyncMock(return_value=(orphan_lines, False))
+
+    reconciler = PositionReconciler(
+        session_factory, client, interval_sec=9999.0, rogue_confirm_sweeps=1
+    )
+
+    with patch(
+        "app.services.position_reconciler.send_canonical_telegram",
+        new_callable=AsyncMock,
+    ) as mock_tg:
+        await reconciler.run_once()
+        acc_calls = [
+            c
+            for c in mock_tg.call_args_list
+            if c[0][1].get("ibkr_account") == ibkr_account
+        ]
+        assert acc_calls == []
+        assert (ibkr_account, "JPM", "CFD", MISMATCH_BROKER_ORPHAN) not in (
+            reconciler._active_rogue_keys or {}
+        )
+        assert (ibkr_account, "JPM", "CFD", MISMATCH_BROKER_ORPHAN) not in (
+            reconciler._pending_rogue_streaks
+        )
+
+    # Clear in-flight basket; orphan appears for one sweep then vanishes — still no alert
+    async with session_factory() as session:
+        from app.db.models.basket import BasketModel
+        from sqlalchemy import delete
+
+        await session.execute(
+            delete(BasketModel).where(BasketModel.trade_id == f"T_{uid}")
+        )
+        await session.commit()
+
+    reconciler2 = PositionReconciler(
+        session_factory, client, interval_sec=9999.0, rogue_confirm_sweeps=2
+    )
+    with patch(
+        "app.services.position_reconciler.send_canonical_telegram",
+        new_callable=AsyncMock,
+    ) as mock_tg:
+        await reconciler2.run_once()
+        acc_calls = [
+            c
+            for c in mock_tg.call_args_list
+            if c[0][1].get("ibkr_account") == ibkr_account
+        ]
+        assert acc_calls == []
+        client.request_positions_async = AsyncMock(return_value=([], False))
+        await reconciler2.run_once()
+        acc_calls = [
+            c
+            for c in mock_tg.call_args_list
+            if c[0][1].get("ibkr_account") == ibkr_account
+        ]
+        assert acc_calls == []
+        assert (ibkr_account, "JPM", "CFD", MISMATCH_BROKER_ORPHAN) not in (
+            reconciler2._active_rogue_keys or {}
+        )
+        assert (ibkr_account, "JPM", "CFD", MISMATCH_BROKER_ORPHAN) not in (
+            reconciler2._pending_rogue_streaks
+        )
 
 
 @pytest.mark.asyncio

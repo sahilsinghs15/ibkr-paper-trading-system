@@ -508,7 +508,9 @@ async def test_full_reconcile_sweep_and_rogue_lifecycle(
     ]
     mock_client.request_positions_async = AsyncMock(return_value=(sweep_1_lines, False))
 
-    reconciler = PositionReconciler(session_factory, mock_client, interval_sec=9999.0)
+    reconciler = PositionReconciler(
+        session_factory, mock_client, interval_sec=9999.0, rogue_confirm_sweeps=1
+    )
 
     # First sweep: MUST BE MATCH, ZERO rogue events for this account!
     with patch(
