@@ -13,6 +13,7 @@ from app.rms.models import OrderSide
 
 RISK_STATE_OPEN = "OPEN"
 RISK_STATE_CLOSED = "CLOSED"
+RISK_STATE_FLATTENED_PENDING_PRICE = "FLATTENED_PENDING_PRICE"
 EXIT_UNIT_ABSOLUTE = "ABSOLUTE"
 
 
@@ -197,7 +198,15 @@ class PositionRepository:
         exit_reason: str | None = None,
     ) -> PositionModel:
         # Row-level lock per AGENTS.md: mutations must use SELECT ... FOR UPDATE
+        # Accept both OPEN and FLATTENED_PENDING_PRICE (account-flatten pending)
         row = await self.get_open_by_trade_id(trade_id, account_id=account_id, for_update=True)
+        if row is None:
+            # Try pending price state
+            stmt = select(PositionModel).where(PositionModel.trade_id == trade_id, PositionModel.risk_state == RISK_STATE_FLATTENED_PENDING_PRICE)
+            if account_id is not None:
+                stmt = stmt.where(PositionModel.account_id == account_id)
+            stmt = stmt.with_for_update()
+            row = (await self._session.execute(stmt)).scalars().first()
         if row is None:
             # Idempotent duplicate finalization: already CLOSED in this or another TX.
             # Return existing closed row instead of raising, to make concurrent retries safe.
