@@ -67,7 +67,7 @@ def _find_instrument(
         if (
             inst.symbol.strip().upper() == norm_symbol
             and inst.sec_type.strip().upper() == norm_sec_type
-            and int(inst.trade_conid) == con_id
+            and inst.trade_conid == con_id
         ):
             return inst
     for inst in instruments:
@@ -227,7 +227,7 @@ class BrokerAlignService:
             order_action = _align_action(current, target)
 
             if snapshot is not None:
-                resolved_con_id = int(snapshot.con_id)
+                resolved_con_id = snapshot.con_id
                 snapshot_exchange = snapshot.exchange or None
                 snapshot_currency = snapshot.currency or None
             else:
@@ -243,11 +243,11 @@ class BrokerAlignService:
                     con_id=con_id,
                 )
                 if instrument is None:
-                    resolved_con_id = int(con_id)
+                    resolved_con_id = con_id
                     snapshot_exchange = "SMART"
                     snapshot_currency = "USD"
                 else:
-                    resolved_con_id = int(instrument.trade_conid)
+                    resolved_con_id = instrument.trade_conid
                     if resolved_con_id != con_id:
                         raise HTTPException(
                             status_code=400,

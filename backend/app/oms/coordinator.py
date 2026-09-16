@@ -197,7 +197,7 @@ class BasketCoordinator:
     ) -> None:
         policy.validate()
         self._retry_policy = policy
-        self._fill_timeout = float(policy.square_off_after_sec)
+        self._fill_timeout = policy.square_off_after_sec
         self._paper_retries_allowed = paper_retries_allowed
         logger.info(
             "Execution retry policy applied: enabled=%s timeout=%.1fs retries=%d "
@@ -377,7 +377,7 @@ class BasketCoordinator:
                 "internal_order_id": o.internal_order_id,
                 "symbol": o.symbol,
                 "status": o.status.value,
-                "intended_qty": float(intent.legs[o.leg_index].quantity)
+                "intended_qty": intent.legs[o.leg_index].quantity
                 if o.leg_index is not None and o.leg_index < len(intent.legs)
                 else None,
                 "filled_qty": o.filled_quantity,
@@ -621,7 +621,7 @@ class BasketCoordinator:
 
     def _filled_qty_for_leg(self, index: int, orders: list[OMSOrder]) -> float:
         return sum(
-            float(o.filled_quantity)
+            o.filled_quantity
             for o in orders
             if o.leg_index == index and not o.is_compensation
         )
@@ -629,7 +629,7 @@ class BasketCoordinator:
     def _basket_complete(self, intent: OrderIntent, orders: list[OMSOrder]) -> bool:
         for index, leg in enumerate(intent.legs):
             filled = self._filled_qty_for_leg(index, orders)
-            if filled + _FILL_EPS < float(leg.quantity):
+            if filled + _FILL_EPS < leg.quantity:
                 return False
         return True
 
@@ -784,7 +784,7 @@ class BasketCoordinator:
                 if index in rms_blocked:
                     continue
                 filled = self._filled_qty_for_leg(index, submitted + created)
-                remaining = float(orig_leg.quantity) - filled
+                remaining = orig_leg.quantity - filled
                 if remaining <= _FILL_EPS:
                     continue
                 retry_key = f"{intent.account_id}:{intent.signal_id}:{index}:{attempt}"

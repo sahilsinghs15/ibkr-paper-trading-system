@@ -456,7 +456,7 @@ class WatchdogDaemon:
                         if not text or not chat_id:
                             continue
                         # Restrict to configured chat_id if set
-                        expected_chat = str(self.settings.telegram_chat_id or "")
+                        expected_chat = self.settings.telegram_chat_id or ""
                         if expected_chat and chat_id != expected_chat:
                             continue
                         if text.split()[0] in ("/status", "/status@"+ (self.telegram.bot_token.split(":")[0] if self.telegram.bot_token else "")):

@@ -147,7 +147,7 @@ class PlaceScript:
             self.cancel_ids.append(order_id)
             with adapter._lock:
                 tracked = adapter._orders_by_tws_id.get(order_id)
-            filled = float(tracked.filled_quantity) if tracked else 0.0
+            filled = tracked.filled_quantity if tracked else 0.0
             remaining = max(0.0, (tracked.quantity if tracked else 0.0) - filled)
             px = float(tracked.average_fill_price or 0) if tracked and tracked.average_fill_price else 0.0
             adapter.on_order_status(

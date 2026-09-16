@@ -74,11 +74,11 @@ class RiskExitMonitor:
         self._client = client
         self._live_pnl = live_pnl
         self._order_manager = order_manager
-        self._interval_sec = float(interval_sec)
-        self._max_pnl_staleness_sec = float(max_pnl_staleness_sec)
-        self._max_retries = int(max_retries)
-        self._enabled = bool(enabled)
-        self._shadow_mode = bool(shadow_mode)
+        self._interval_sec = interval_sec
+        self._max_pnl_staleness_sec = max_pnl_staleness_sec
+        self._max_retries = max_retries
+        self._enabled = enabled
+        self._shadow_mode = shadow_mode
         self._clock = session_clock or get_session_clock()
         self._pair_closer = pair_closer or SinglePairCloseService(
             session_factory, order_manager
@@ -272,7 +272,7 @@ class RiskExitMonitor:
             params = PairExitParams(
                 target=row.target,
                 stop=row.stop,
-                time_limit=int(row.time_limit),
+                time_limit=row.time_limit,
                 target_unit=getattr(row, "target_unit", None) or "ABSOLUTE",
                 stop_unit=getattr(row, "stop_unit", None) or "ABSOLUTE",
                 opened_at=row.opened_at,

@@ -113,7 +113,7 @@ def is_trading_day(d: date) -> bool:
             import pandas as pd  # type: ignore
 
             ts = pd.Timestamp(d)
-            return bool(cal.is_session(ts))
+            return cal.is_session(ts)
         except Exception:  # noqa: BLE001
             logger.debug("Failed checking session in exchange_calendars for %s", d)
 

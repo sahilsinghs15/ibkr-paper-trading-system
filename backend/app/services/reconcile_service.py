@@ -132,7 +132,7 @@ async def collect_reconcile_positions(
     broker_positions = [
         BrokerPositionSnapshotRow(
             ibkr_account=row.ibkr_account,
-            con_id=int(row.con_id),
+            con_id=row.con_id,
             account_id=row.account_id,
             symbol=row.symbol,
             sec_type=row.sec_type,

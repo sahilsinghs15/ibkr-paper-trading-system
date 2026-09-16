@@ -121,7 +121,7 @@ def evaluate_pair_exit(
             opened = opened.replace(tzinfo=now.tzinfo)
         elif opened.tzinfo is not None and now.tzinfo is None:
             now = now.replace(tzinfo=opened.tzinfo)
-        if now >= opened + timedelta(seconds=int(params.time_limit)):
+        if now >= opened + timedelta(seconds=params.time_limit):
             return ExitDecision(
                 reason=REASON_PAIR_TIME_LIMIT,
                 threshold=Decimal(params.time_limit),

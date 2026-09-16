@@ -347,7 +347,7 @@ class OrderManager:
                     policy = ExecutionRetryPolicy(
                         enabled=row.enabled,
                         square_off_after_sec=float(row.square_off_after_sec),
-                        max_retries=int(row.max_retries),
+                        max_retries=row.max_retries,
                         retry_interval_sec=float(row.retry_interval_sec),
                         retry_window_sec=float(row.retry_window_sec),
                     )
@@ -681,7 +681,7 @@ class OrderManager:
                     if ibkr_sec_type(
                         getattr(m, "sec_type", None) or "CFD"
                     ) == "CFD" and getattr(m, "symbol", None):
-                        symbols.append(str(m.symbol))
+                        symbols.append(m.symbol)
                 except InstrumentResolutionError:
                     continue
             if symbols:
@@ -694,9 +694,9 @@ class OrderManager:
         snapshot = await self._instrument_snapshot_for_legs(
             [
                 (
-                    str(row.leg_a_symbol) if row.leg_a_symbol else None,
+                    row.leg_a_symbol if row.leg_a_symbol else None,
                     (
-                        str(row.leg_a_instrument_type)
+                        row.leg_a_instrument_type
                         if getattr(row, "leg_a_instrument_type", None)
                         else None
                     ),
@@ -705,9 +705,9 @@ class OrderManager:
             ]
             + [
                 (
-                    str(row.leg_b_symbol) if row.leg_b_symbol else None,
+                    row.leg_b_symbol if row.leg_b_symbol else None,
                     (
-                        str(row.leg_b_instrument_type)
+                        row.leg_b_instrument_type
                         if getattr(row, "leg_b_instrument_type", None)
                         else None
                     ),
@@ -717,8 +717,8 @@ class OrderManager:
             ]
             + [
                 (
-                    str(m.symbol) if getattr(m, "symbol", None) else None,
-                    str(m.sec_type) if getattr(m, "sec_type", None) else None,
+                    m.symbol if getattr(m, "symbol", None) else None,
+                    m.sec_type if getattr(m, "sec_type", None) else None,
                 )
                 for m in manual_rows
                 if getattr(m, "symbol", None)
@@ -951,13 +951,13 @@ class OrderManager:
                 None,
                 str(exc),
                 account_id=int(account_scope)
-                if account_scope and str(account_scope).strip().isdigit()
+                if account_scope and account_scope.strip().isdigit()
                 else None,
             )
             # Prefer IBKR account label when scope is a numeric account_id.
             if (
                 account_scope
-                and str(account_scope).strip().isdigit()
+                and account_scope.strip().isdigit()
                 and self._session_factory is not None
             ):
                 try:
@@ -965,8 +965,7 @@ class OrderManager:
                         acc = (
                             await session.execute(
                                 select(AccountModel).where(
-                                    AccountModel.id == int(str(account_scope).strip())
-                                )
+                                    AccountModel.id == str(account_scope).strip()                            )
                             )
                         ).scalar_one_or_none()
                         if acc is not None:
@@ -1210,11 +1209,11 @@ class OrderManager:
                 "MISSING_SYMBOL: Signal payload does not specify a valid symbol/ticker."
             )
 
-        action_val = str(signal.action or "OPEN").upper()
+        action_val = (signal.action or "OPEN").upper()
         order_action = OrderAction.CLOSE if action_val == "CLOSE" else OrderAction.OPEN
 
         if signal.side:
-            side_str = str(signal.side).upper()
+            side_str = signal.side.upper()
             rms_side = (
                 RMSOrderSide.SELL if side_str in ("SELL", "SHORT") else RMSOrderSide.BUY
             )
@@ -1636,7 +1635,7 @@ class OrderManager:
             if not matching:
                 filled_legs.append(leg)
                 continue
-            qty = sum(float(o.filled_quantity) for o in matching)
+            qty = sum(o.filled_quantity for o in matching)
             weighted_num = Decimal(0)
             weighted_den = Decimal(0)
             px = leg.price
@@ -1855,7 +1854,7 @@ class OrderManager:
                     status=status,
                     reject_reason=reject_reason,
                 )
-                action = str(signal.action or "").upper()
+                action = (signal.action or "").upper()
                 received_kind = (
                     "CLOSE_SIGNAL_RECEIVED" if action == "CLOSE" else "SIGNAL_RECEIVED"
                 )

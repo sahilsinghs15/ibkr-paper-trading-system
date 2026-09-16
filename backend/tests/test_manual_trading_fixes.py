@@ -84,7 +84,7 @@ class _MockCancelTWS:
         self.cancelled: list[int] = []
         self.placed: list[tuple[int, Any, Any]] = []
     def is_connected(self): return self._connected
-    def cancelOrder(self, oid: int): self.cancelled.append(int(oid))
+    def cancelOrder(self, oid: int): self.cancelled.append(oid)
     def placeOrder(self, oid, c, o): self.placed.append((oid, c, o))
 
 
@@ -137,7 +137,8 @@ async def test_concurrent_same_idempotency_exactly_one_placeorder(session_factor
 
     async def _one_submit():
         async with session_factory() as sess:
-            svc = ManualTradingService(sess, client=mock_client, ibkr_adapter=_MockWhatIfAdapter())
+            from typing import Any, cast
+            svc = ManualTradingService(sess, client=cast(Any, mock_client), ibkr_adapter=cast(Any, _MockWhatIfAdapter()))
             # re-fetch account/user inside session
             acc2 = (await sess.execute(select(AccountModel).where(AccountModel.id == acc_id))).scalar_one()
             user2 = (await sess.execute(select(UserModel).where(UserModel.id == user_id))).scalar_one()

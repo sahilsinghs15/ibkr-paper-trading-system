@@ -17,8 +17,8 @@ def _to_record(row: InstrumentModel) -> InstrumentRecord:
     return InstrumentRecord(
         symbol=row.symbol,
         sec_type=row.sec_type,
-        trade_conid=int(row.trade_conid),
-        market_data_conid=int(row.market_data_conid) if row.market_data_conid else None,
+        trade_conid=row.trade_conid,
+        market_data_conid=row.market_data_conid if row.market_data_conid else None,
         exchange=row.exchange,
         currency=row.currency,
         multiplier=row.multiplier,
@@ -67,11 +67,11 @@ class InstrumentRepository:
             raise ValueError(
                 f"UNSUPPORTED_SEC_TYPE: this upsert is for verified CFD rows, got {record.sec_type}."
             )
-        md = int(record.market_data_conid or record.trade_conid)
+        md = record.market_data_conid or record.trade_conid
         values = {
             "symbol": record.symbol,
             "sec_type": record.sec_type,
-            "trade_conid": int(record.trade_conid),
+            "trade_conid": record.trade_conid,
             "market_data_conid": md,
             "underlying_exchange": record.underlying_exchange or record.exchange,
             "exchange": record.exchange,

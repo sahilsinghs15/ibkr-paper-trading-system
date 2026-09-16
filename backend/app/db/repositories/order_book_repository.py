@@ -37,7 +37,7 @@ class OrderBookRepository:
         if date_to is not None:
             base = base.where(OrderModel.created_at <= date_to)
         total_res = await self._session.execute(select(func.count()).select_from(base.subquery()))
-        total = int(total_res.scalar_one())
+        total = total_res.scalar_one()
         col = getattr(OrderModel, sort, OrderModel.updated_at)
         if direction.lower() == "asc":
             base = base.order_by(col.asc(), OrderModel.id.asc())

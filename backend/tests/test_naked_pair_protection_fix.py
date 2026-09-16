@@ -245,7 +245,7 @@ async def test_4_genuine_naked_exposure_compensates_net_exposure() -> None:
     # Verify compensation was generated for net filled exposure of Leg 1 (300 EWU), NOT requested (546)
     assert len(compensation_orders) == 2
     comp_ewu = next(c for c in compensation_orders if c.symbol == "EWU")
-    assert float(comp_ewu.quantity) == 300.0
+    assert comp_ewu.quantity == 300.0
 
 
 # ---------------------------------------------------------------------------

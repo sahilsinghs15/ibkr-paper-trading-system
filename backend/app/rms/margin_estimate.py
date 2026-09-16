@@ -43,7 +43,7 @@ def rate_for(
     policy: MarginPolicy,
 ) -> tuple[Decimal, str]:
     """Return (rate, source) for one leg. Unknown symbols use default_rate."""
-    side_key = side.value if isinstance(side, OrderSide) else str(side).upper()
+    side_key = side.value if isinstance(side, OrderSide) else side.upper()
     itype = (instrument_type or "STK").strip().upper() or "STK"
     key = (symbol.strip().upper(), itype, side_key)
     stored = rates.get(key)

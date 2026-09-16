@@ -220,8 +220,8 @@ def build_ledger_net_lines(
             sec_type = _norm_sec_type(mpos.sec_type or "CFD")
             net_key = (mpos.account_id, _norm_symbol(mpos.symbol), sec_type)
             manual_nets[net_key] += Decimal(str(mpos.signed_qty))
-            if mpos.con_id and int(mpos.con_id) > 0:
-                symbol_to_conids[(_norm_symbol(mpos.symbol), sec_type)].add(int(mpos.con_id))
+            if mpos.con_id and mpos.con_id > 0:
+                symbol_to_conids[(_norm_symbol(mpos.symbol), sec_type)].add(mpos.con_id)
 
     all_keys = set(engine_nets.keys()) | set(manual_nets.keys())
     result: list[LedgerNetLine] = []
@@ -428,7 +428,7 @@ class PositionReconciler:
         self._interval_sec = interval_sec
         self._request_timeout_sec = request_timeout_sec
         self._after_sweep = after_sweep
-        self._rogue_confirm_sweeps = max(1, int(rogue_confirm_sweeps))
+        self._rogue_confirm_sweeps = max(1, rogue_confirm_sweeps)
         self._task: asyncio.Task | None = None
         self._running = False
         self._sweep_lock = asyncio.Lock()

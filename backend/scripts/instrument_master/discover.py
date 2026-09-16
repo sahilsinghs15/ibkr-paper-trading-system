@@ -638,8 +638,8 @@ def discover_instruments(
         else:
             normalized_seeds.append(
                 SeedRecord(
-                    symbol=str(s).strip(),
-                    raw_symbol=str(s).strip(),
+                    symbol=s.strip(),
+                    raw_symbol=s.strip(),
                     security_name="",
                     listing_exchange="SMART",
                     is_etf=False,

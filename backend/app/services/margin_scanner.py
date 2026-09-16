@@ -108,7 +108,7 @@ class MarginScanner:
             return {"planned": 0, "probed": 0, "written": 0, "unknown": 0, "skipped": 0}
 
         deadline = (
-            time.monotonic() + float(budget_sec) if budget_sec is not None else None
+            time.monotonic() + budget_sec if budget_sec is not None else None
         )
         working = await self._working_set()
         prices = await self._prices_for(working)
@@ -264,8 +264,8 @@ class MarginScanner:
             sec_type=row.sec_type,
             exchange=row.exchange,
             currency=row.currency,
-            con_id=int(row.trade_conid) if row.trade_conid else None,
-            market_data_con_id=int(row.market_data_conid) if row.market_data_conid else None,
+            con_id=row.trade_conid if row.trade_conid else None,
+            market_data_con_id=row.market_data_conid if row.market_data_conid else None,
             multiplier=row.multiplier,
             primary_exchange=row.underlying_exchange,
             size_increment=row.size_increment,

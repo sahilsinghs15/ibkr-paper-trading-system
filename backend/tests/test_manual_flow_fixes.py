@@ -2,6 +2,7 @@
 
 import uuid
 from decimal import Decimal
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -127,7 +128,8 @@ async def test_preview_margin_skipped_when_disabled(session_factory, monkeypatch
     from app.schemas.manual_schemas import GatewayEnvironmentMode, ManualOrderPreviewRequest
     async with session_factory() as session:
         acc_obj = (await session.execute(select(AccountModel).where(AccountModel.ibkr_account==acc_code))).scalar_one()
-        svc = ManualTradingService(session, client=mock_client, ibkr_adapter=MockAdapterWhatIf(unknown=True))
+        from typing import Any, cast
+        svc = ManualTradingService(session, client=cast(Any, mock_client), ibkr_adapter=cast(Any, MockAdapterWhatIf(unknown=True)))
         with patch("app.core.config.get_settings", return_value=mock_settings):
             req = ManualOrderPreviewRequest(symbol="AAPL", con_id=120549942, sec_type="CFD", exchange="SMART", currency="USD", side="BUY", quantity=Decimal("10"), order_type="MARKET")
             resp = await svc.preview_order(acc_obj, req, GatewayEnvironmentMode.UNKNOWN)
@@ -229,7 +231,7 @@ async def test_same_key_different_params_returns_409(session_factory, field, alt
     from app.api.deps import get_db_session as G
     app.dependency_overrides[G] = _ov
     key = f"MAN_IDEM_{uuid.uuid4().hex[:16].upper()}"
-    base = {"idempotency_key": key, "symbol": "AAPL", "con_id": 120549942, "sec_type": "CFD", "exchange": "SMART", "currency": "USD", "side": "BUY", "quantity": "10", "order_type": "MARKET", "tif": "DAY", "limit_price": None}
+    base: dict[str, Any] = {"idempotency_key": key, "symbol": "AAPL", "con_id": 120549942, "sec_type": "CFD", "exchange": "SMART", "currency": "USD", "side": "BUY", "quantity": "10", "order_type": "MARKET", "tif": "DAY", "limit_price": None}
     # For LIMIT test, need limit_price
     if alter == "LIMIT":
         base["order_type"] = "LIMIT"

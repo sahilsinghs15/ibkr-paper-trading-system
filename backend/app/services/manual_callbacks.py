@@ -407,22 +407,22 @@ class ManualExecutionListener:
                 # Defensive: MagicMock in tests returns MagicMock for any attribute, must not be treated as real value
                 try:
                     c_con = getattr(exec_contract, "conId", None)
-                    if isinstance(c_con, int) and c_con != 0 and c_con != int(ord_row.con_id):
+                    if isinstance(c_con, int) and c_con != 0 and c_con != ord_row.con_id:
                         return False
                     # If conId is str digit, check as well
-                    if isinstance(c_con, str) and c_con.strip().isdigit() and int(c_con) != int(ord_row.con_id):
+                    if isinstance(c_con, str) and c_con.strip().isdigit() and c_con != ord_row.con_id:
                         return False
                 except Exception:
                     pass
                 try:
                     c_sym = getattr(exec_contract, "symbol", None)
-                    if isinstance(c_sym, str) and c_sym.strip() and c_sym.strip().upper() != str(ord_row.symbol).strip().upper():
+                    if isinstance(c_sym, str) and c_sym.strip() and c_sym.strip().upper() != ord_row.symbol.strip().upper():
                         return False
                 except Exception:
                     pass
                 try:
                     c_sec = getattr(exec_contract, "secType", None)
-                    if isinstance(c_sec, str) and c_sec.strip() and c_sec.strip().upper() != str(ord_row.sec_type).strip().upper():
+                    if isinstance(c_sec, str) and c_sec.strip() and c_sec.strip().upper() != ord_row.sec_type.strip().upper():
                         return False
                 except Exception:
                     pass
@@ -445,7 +445,7 @@ class ManualExecutionListener:
                         return True
                     if ord_row.perm_id is None:
                         return True  # first fill captures perm
-                    return int(ord_row.perm_id) == exec_perm_int
+                    return ord_row.perm_id == exec_perm_int
                 except Exception:
                     return True
 

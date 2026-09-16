@@ -35,7 +35,7 @@ SIGNAL_STATUS_REJECTED = "REJECTED"
 def persist_signal_id_for(signal: Signal) -> str:
     """Stable ``signals.signal_id``: OPEN uses trade_id; CLOSE uses ``{trade_id}:CLOSE``."""
     trade_id = (signal.trade_id or signal.signal_id or "").strip()
-    action = str(signal.action or "").upper()
+    action = (signal.action or "").upper()
     if action == "CLOSE" and trade_id and not trade_id.endswith(":CLOSE"):
         return f"{trade_id}:CLOSE"
     return trade_id
@@ -76,7 +76,7 @@ def _reconstruct_payload(signal: Signal) -> dict[str, Any]:
         )
     return {
         "strategy": signal.strategy_id,
-        "action": str(signal.action or "").upper() or None,
+        "action": (signal.action or "").upper() or None,
         "trade_id": signal.trade_id or signal.signal_id,
         "direction": signal.direction,
         "market": signal.market,
@@ -101,9 +101,9 @@ def _audit_values(
     if signal.direction is not None:
         side = str(signal.direction)
     elif signal.side:
-        side = str(signal.side)
+        side = signal.side
     elif signal.legs:
-        sides = [str(leg.payload_side or "") for leg in signal.legs if leg.payload_side]
+        sides = [leg.payload_side or "" for leg in signal.legs if leg.payload_side]
         side = ":".join(sides) if sides else "N/A"
     else:
         side = "N/A"
@@ -117,7 +117,7 @@ def _audit_values(
         "strategy_id": signal.strategy_id or "",
         "signal_id": persist_signal_id,
         "trade_id": signal.trade_id or persist_signal_id.replace(":CLOSE", ""),
-        "action": str(signal.action or "").upper(),
+        "action": (signal.action or "").upper(),
         "pair": pair or (signal.symbol or "N/A"),
         "side": side or "N/A",
         "ref_price_a": price_a,
@@ -418,7 +418,7 @@ class SignalJobRepository:
                 )
             )
         ).scalar_one()
-        if int(sibling_count or 0) > 0:
+        if (sibling_count or 0) > 0:
             return True
         from app.db.repositories.execution_claim_repository import (
             ExecutionClaimRepository,
@@ -463,7 +463,7 @@ class SignalJobRepository:
             if job.trade_id:
                 await self._session.execute(
                     text("SELECT pg_advisory_xact_lock(hashtext(:tid))"),
-                    {"tid": str(job.trade_id)},
+                    {"tid": job.trade_id},
                 )
                 if await self._trade_blocked_after_lock(job):
                     skipped.append(candidate_id)
@@ -687,7 +687,7 @@ class SignalJobRepository:
             )
         )
         res = await self._session.execute(stmt)
-        return int(res.scalar_one() or 0)
+        return res.scalar_one() or 0
 
     # --- Red Zone deferral ---
 

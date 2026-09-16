@@ -123,11 +123,11 @@ class FlattenListener:
             row = self.submitted.get(orderId)
             if row is None:
                 return
-            row.status = str(status)
+            row.status = status
             row.filled = float(filled or 0)
             row.remaining = float(remaining or 0)
             if avgFillPrice:
-                row.avg_price = float(avgFillPrice)
+                row.avg_price = avgFillPrice
 
     def on_error(self, reqId: int, errorCode: int, errorString: str) -> None:
         if 2000 <= errorCode < 3000:
@@ -275,7 +275,7 @@ def run_flatten_gateway_positions(
     target_port = port if port is not None else settings.ibkr_port
     target_account = account.strip() if account and account.strip() else None
     target_sec_type = (
-        None if sec_type and str(sec_type).upper() == "ALL" else (str(sec_type).upper() if sec_type else None)
+        None if sec_type and sec_type.upper() == "ALL" else (sec_type.upper() if sec_type else None)
     )
 
     if client_id == settings.ibkr_client_id:

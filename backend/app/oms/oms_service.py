@@ -237,7 +237,7 @@ class OMSService:
                 intent=intent,
                 symbol=leg.symbol,
                 side=leg.side,
-                quantity=float(leg.quantity),
+                quantity=leg.quantity,
                 limit_price=price,
                 order_type=order_type,
                 status=OMSOrderStatus.REJECTED,
@@ -256,7 +256,7 @@ class OMSService:
             intent=replace(intent, legs=list(intent.legs)),
             symbol=leg.symbol,
             side=leg.side,
-            quantity=float(leg.quantity),
+            quantity=leg.quantity,
             limit_price=price,
             order_type=order_type,
             status=OMSOrderStatus.PENDING,
@@ -338,7 +338,7 @@ class OMSService:
         primary_leg = intent.legs[0] if intent.legs else None
         symbol = primary_leg.symbol if primary_leg else "UNKNOWN"
         side = primary_leg.side if primary_leg else None
-        qty = float(primary_leg.quantity) if primary_leg else 0.0
+        qty = primary_leg.quantity if primary_leg else 0.0
 
         internal_id = override_internal_id or f"ORD-REJ-{intent.signal_id}"
         order = OMSOrder(

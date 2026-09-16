@@ -178,7 +178,7 @@ class PositionRepository:
             time_limit=time_limit,
             target_unit=target_unit or EXIT_UNIT_ABSOLUTE,
             stop_unit=stop_unit or EXIT_UNIT_ABSOLUTE,
-            exit_automation_enabled=bool(exit_automation_enabled),
+            exit_automation_enabled=exit_automation_enabled,
             risk_state=RISK_STATE_OPEN,
         )
         self._session.add(row)

@@ -86,7 +86,7 @@ class ModelBlueStrategy(StrategyHandler):
         signal: Signal,
         account: AccountExecutionContext | None = None,
     ) -> OrderIntent:
-        action_val = str(signal.action or "").upper()
+        action_val = (signal.action or "").upper()
         if action_val == "CLOSE":
             return await self._build_close_intent(signal, account)
         if action_val == "OPEN":

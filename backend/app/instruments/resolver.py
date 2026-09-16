@@ -419,7 +419,7 @@ def _resolve_cfd(
 def _optional_con_id(raw: int | None) -> int | None:
     if raw is None:
         return None
-    value = int(raw)
+    value = raw
     if value <= 0:
         return None
     return value

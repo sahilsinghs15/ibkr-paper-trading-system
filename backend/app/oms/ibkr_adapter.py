@@ -55,7 +55,7 @@ class WhatIfResult:
 def _usable_price(raw: float, fallback: Decimal | None = None) -> Decimal | None:
     """Ignore IBKR UNSET (DBL_MAX) and non-finite prices from orderStatus."""
     try:
-        value = float(raw)
+        value = raw
     except (TypeError, ValueError):
         value = 0.0
     if math.isfinite(value) and 0 < value < _MAX_SANE_PRICE:
@@ -130,7 +130,7 @@ class IBKRExecutionAdapter:
     def set_managed_accounts(self, accounts: list[str] | frozenset[str]) -> None:
         """Test helper: seed gateway managedAccounts without a live IBKR session."""
         self._managed_accounts_override = frozenset(
-            code.strip().upper() for code in accounts if code and str(code).strip()
+            code.strip().upper() for code in accounts if code and code.strip()
         )
 
     def _managed_accounts_set(self) -> frozenset[str]:
@@ -143,7 +143,7 @@ class IBKRExecutionAdapter:
 
     def _validate_ibkr_account(self, order: OMSOrder) -> bool:
         account = order.intent.ibkr_account
-        if not account or not str(account).strip():
+        if not account or not account.strip():
             order.status = OMSOrderStatus.ERROR
             order.error_message = (
                 "MISSING_IBKR_ACCOUNT: ibkr_account is required before placeOrder"
@@ -156,7 +156,7 @@ class IBKRExecutionAdapter:
                 "UNMANAGED_ACCOUNT: managedAccounts not yet received from gateway"
             )
             return False
-        normalized = str(account).strip().upper()
+        normalized = account.strip().upper()
         if normalized not in managed:
             order.status = OMSOrderStatus.ERROR
             order.error_message = (
@@ -232,7 +232,7 @@ class IBKRExecutionAdapter:
         """Convert internal OMSOrder to IBKR IBOrder model."""
         ib_order = IBOrder()
         ib_order.action = "BUY" if order.side == OrderSide.BUY else "SELL"
-        ib_order.totalQuantity = float(order.quantity)  # pyrefly: ignore[bad-assignment]
+        ib_order.totalQuantity = order.quantity  # pyrefly: ignore[bad-assignment]
 
         order_type_upper = (order.order_type or "LIMIT").upper()
         if order_type_upper == "LIMIT":
@@ -346,7 +346,7 @@ class IBKRExecutionAdapter:
             raise ConnectionError("Cannot probe margin: TWS is not connected.")
 
         wait_timeout = (
-            float(timeout)
+            timeout
             if timeout is not None
             else settings.margin_whatif_timeout_sec
         )
@@ -355,7 +355,7 @@ class IBKRExecutionAdapter:
 
         tws_order_id = self._get_next_tws_order_id()
         ib_order = IBOrder()
-        ib_order.action = "BUY" if str(side).upper() == "BUY" else "SELL"
+        ib_order.action = "BUY" if side.upper() == "BUY" else "SELL"
         ib_order.totalQuantity = float(quantity)  # pyrefly: ignore[bad-assignment]
         ib_order.orderType = "LMT"
         ib_order.lmtPrice = float(price)
@@ -510,7 +510,7 @@ class IBKRExecutionAdapter:
     def _normalize_broker_side(raw: str | None) -> str | None:
         if not raw:
             return None
-        upper = str(raw).strip().upper()
+        upper = raw.strip().upper()
         if upper in ("BOT", "BUY"):
             return "BUY"
         if upper in ("SLD", "SELL"):
@@ -543,7 +543,7 @@ class IBKRExecutionAdapter:
 
         if perm_id:
             for order in self._orders_by_internal_id.values():
-                if order.perm_id == int(perm_id):
+                if order.perm_id == perm_id:
                     self._bind_tws_id_locked(order, tws_id)
                     logger.info(
                         "Adopted tws_id=%d onto internal_id=%s via permId=%d",
@@ -563,7 +563,7 @@ class IBKRExecutionAdapter:
                     continue
                 if order.side.value.upper() != norm_side:
                     continue
-                if abs(float(order.quantity) - float(qty)) > 1e-6:
+                if abs(order.quantity - qty) > 1e-6:
                     continue
                 candidates.append(order)
             if len(candidates) == 1:
@@ -725,9 +725,9 @@ class IBKRExecutionAdapter:
             return
 
         if qty_filled is not None:
-            order.filled_quantity = max(order.filled_quantity, float(qty_filled))
+            order.filled_quantity = max(order.filled_quantity, qty_filled)
         if qty_remaining is not None:
-            order.remaining_quantity = float(qty_remaining)
+            order.remaining_quantity = qty_remaining
 
         filled = order.filled_quantity
         remaining = order.remaining_quantity
@@ -785,12 +785,12 @@ class IBKRExecutionAdapter:
     ) -> None:
         """Handle orderStatus callback from TWSClient."""
         now = datetime.now(UTC)
-        qty_filled = float(filled)
-        qty_remaining = float(remaining)
+        qty_filled = filled
+        qty_remaining = remaining
         with self._lock:
             order = self._resolve_order_for_tws_callback_locked(
                 orderId,
-                perm_id=int(permId) if permId else None,
+                perm_id=permId if permId else None,
                 side=None,
                 qty=(qty_filled + qty_remaining) if (qty_filled or qty_remaining) else None,
             )
@@ -800,7 +800,7 @@ class IBKRExecutionAdapter:
             if order.timestamps.order_status_received_at is None:
                 order.timestamps.order_status_received_at = now
             if permId:
-                order.perm_id = int(permId)
+                order.perm_id = permId
 
             mapped_status = self._map_ib_status(status)
 
@@ -1140,7 +1140,7 @@ class IBKRExecutionAdapter:
         msg = self._format_tws_error_message(errorCode, errorString)
         if not msg:
             return False
-        if order.error_message and str(order.error_message).strip():
+        if order.error_message and order.error_message.strip():
             return False
         order.error_message = msg
         if order.status not in self._TERMINAL_STATUSES:

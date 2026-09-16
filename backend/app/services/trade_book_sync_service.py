@@ -28,7 +28,7 @@ class TradeBookSyncService:
     ) -> None:
         self._session_factory = session_factory
         self._client = client
-        self._interval = float(interval_sec)
+        self._interval = interval_sec
         self._locks: dict[int, asyncio.Lock] = {}
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()

@@ -95,7 +95,7 @@ class ModelBlueSizer:
             raise ModelBlueValidationError(
                 "MODEL_BLUE_STRATEGY_MISMATCH: sizer only accepts model_blue."
             )
-        if str(signal.action).upper() != "OPEN":
+        if signal.action.upper() != "OPEN":
             raise ModelBlueValidationError(
                 "MODEL_BLUE_INVALID_ACTION: sizer does not size CLOSE signals."
             )
