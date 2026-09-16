@@ -20,6 +20,7 @@ const SORT_EXTRACTORS: Record<string, (r: OrderBookRow) => unknown> = {
   limit_price: (r) => r.limit_price,
   status: (r) => r.status,
   avg_fill: (r) => r.avg_fill_price,
+  source: (r) => r.source,
   updated: (r) => new Date(r.updated_at || '').getTime(),
 }
 
@@ -104,7 +105,7 @@ export function OrderBookPage() {
               <SortableTh sortKey="limit_price" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Limit</SortableTh>
               <SortableTh sortKey="status" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Status</SortableTh>
               <SortableTh sortKey="avg_fill" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Avg Fill</SortableTh>
-              <th>Source</th>
+              <SortableTh sortKey="source" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Source</SortableTh>
               <SortableTh sortKey="updated" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Updated</SortableTh>
             </tr></thead>
             <tbody>
