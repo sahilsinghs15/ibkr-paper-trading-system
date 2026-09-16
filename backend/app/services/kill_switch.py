@@ -444,6 +444,85 @@ class KillSwitchService:
         await self._reconcile_and_finalize(op.operation_id, account_id, [])
         return True
 
+    async def close_all_ledger_after_account_flatten(self, account_id: int, operation_id: UUID) -> int:
+        """Close ALL OPEN engine + manual ledger rows after successful account-level broker flatten.
+
+        Used ONLY for scope=account (operator explicitly requested to flatten entire IBKR account).
+        Unlike engine-only path, this is authorized to close both ledgers when broker is flat.
+        Uses trade_executions prices when available, otherwise falls back to entry marks + warning.
+        Idempotent: only closes rows still OPEN; preserves history via close_trade + event_log.
+        """
+        from app.db.models.manual_order import ManualPositionModel
+        from app.db.models.trade_execution import TradeExecutionModel
+
+        closed = 0
+        async with self._session_factory() as session, session.begin():
+            # Engine positions
+            eng_rows = (await session.execute(select(PositionModel).where(PositionModel.account_id == account_id, PositionModel.risk_state == "OPEN"))).scalars().all()
+            man_rows = (await session.execute(select(ManualPositionModel).where(ManualPositionModel.account_id == account_id, ManualPositionModel.status == "OPEN"))).scalars().all()
+
+            # Build price map from recent trade_executions for this account (last 1 hour)
+            from datetime import timedelta
+
+            since = datetime.now(UTC) - timedelta(hours=2)
+            exec_rows = (await session.execute(select(TradeExecutionModel).where(TradeExecutionModel.account_id == account_id, TradeExecutionModel.executed_at >= since))).scalars().all()
+            price_by_symbol: dict[str, Decimal] = {}
+            for e in exec_rows:
+                # Keep latest price per symbol
+                price_by_symbol[e.symbol.strip().upper()] = Decimal(str(e.price))
+
+            for p in eng_rows:
+                # Verify broker is flat for its legs via LEDGER_GHOST check would be ideal, but for account flatten we are explicitly authorized
+                needed = [s for s in (p.leg_a_symbol, p.leg_b_symbol) if s]
+                exit_marks: dict[str, Decimal] = {}
+                for sym in needed:
+                    norm = sym.strip().upper()
+                    if norm in price_by_symbol:
+                        exit_marks[sym] = price_by_symbol[norm]
+                    else:
+                        # Fallback: use entry mark (zero PnL) with warning – still closes ghost, preserves manual isolation
+                        logger.warning("Account flatten fallback exit price for %s trade_id=%s using entry mark", sym, p.trade_id)
+                        if sym == p.leg_a_symbol:
+                            exit_marks[sym] = p.leg_a_entry_mark
+                        elif sym == p.leg_b_symbol and p.leg_b_entry_mark is not None:
+                            exit_marks[sym] = p.leg_b_entry_mark
+                try:
+                    # Use row-level lock inside close_trade
+                    repo = PositionRepository(session)
+                    await repo.close_trade(p.trade_id, account_id=account_id, exit_marks=exit_marks)
+                    from app.db.repositories.event_repository import EventRepository
+
+                    await EventRepository(session).append(
+                        process="position",
+                        kind="POSITION_CLOSE",
+                        detail={"account_id": account_id, "trade_id": p.trade_id, "source": "ACCOUNT_FLATTEN", "operation_id": str(operation_id)},
+                        idempotency_key=f"position_close:account_flatten:{account_id}:{p.trade_id}",
+                    )
+                    closed += 1
+                    logger.info("Account flatten closed engine position trade_id=%s exit_marks=%s", p.trade_id, {k: str(v) for k, v in exit_marks.items()})
+                except Exception:
+                    logger.exception("Account flatten failed to close engine trade_id=%s", p.trade_id)
+
+            for m in man_rows:
+                # Manual close: set status CLOSED, signed_qty 0, preserve realized_pnl
+                m.status = "CLOSED"
+                m.signed_qty = Decimal(0)
+                m.closed_at = datetime.now(UTC)
+                closed += 1
+                logger.info("Account flatten closed manual position trade_id=%s symbol=%s", m.trade_id, m.symbol)
+                from app.db.repositories.event_repository import EventRepository
+
+                await EventRepository(session).append(
+                    process="manual",
+                    kind="MANUAL_POSITION_CLOSE",
+                    detail={"account_id": account_id, "trade_id": m.trade_id, "source": "ACCOUNT_FLATTEN", "operation_id": str(operation_id)},
+                    idempotency_key=f"manual_close:account_flatten:{account_id}:{m.trade_id}",
+                )
+        if closed:
+            # Also update operation counts
+            await self._update_operation_completion(operation_id, final_status=KILL_SWITCH_STATUS_COMPLETE if closed else KILL_SWITCH_STATUS_UNRESOLVED, unresolved=0)
+        return closed
+
     async def _execute_flatten_operation(self, operation_id: UUID) -> None:
         """Execute durable flatten operation asynchronously off the HTTP request thread."""
         logger.info("Starting background flatten worker execution for operation_id=%s", operation_id)

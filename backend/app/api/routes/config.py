@@ -338,13 +338,31 @@ async def square_off_entire_ibkr_account(
         apply=True,
     )
 
+    # If broker flatten succeeded, also close ledger ghosts for this account (engine+manual)
+    # This is the correct accounting path for scope=account – operator explicitly authorized
+    # to flatten entire IBKR account, so ledger must converge to broker-flat.
+    if res.get("success"):
+        try:
+            closed = await kill_switch_svc.close_all_ledger_after_account_flatten(account_id, op.operation_id)
+            logger.info("Account flatten ledger close: account_id=%s closed=%s", account_id, closed)
+        except Exception:
+            logger.exception("Account flatten ledger close failed account_id=%s", account_id)
+
+    # Re-read operation status after potential ledger close
+    from sqlalchemy import select as _select
+    from app.db.models.kill_switch import KillSwitchOperationModel as _KSO
+
+    async with session_factory() as _s:
+        _op_row = await _s.get(_KSO, op.operation_id)
+        _status = _op_row.status if _op_row else ("COMPLETE" if res.get("success") else "UNRESOLVED")
+
     return SquareOffResponse(
         account_id=account.id,
         ibkr_account=account.ibkr_account,
         squared_off_count=res.get("submitted", 0),
         trade_ids=[],
         operation_id=str(op.operation_id),
-        status="COMPLETE" if res.get("success") else "UNRESOLVED",
+        status=_status,
         scope="ACCOUNT_POSITION_FLATTEN",
         error=res.get("error"),
     )
