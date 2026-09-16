@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import {
   cancelManualOrder,
@@ -19,6 +19,7 @@ import { normalizeIbkrAccount } from '../utils/activeAccount'
 import { genManualIdemKey } from '../utils/manualIdempotency'
 import { usePnlStore, groupLegs } from '../store/pnlStore'
 import { fmtPnl, pnlClass, num } from '../utils/format'
+import { Pagination } from '../components/Pagination'
 
 export function ManualTradePage() {
   const { ibkrAccount } = useParams<{ ibkrAccount: string }>()
@@ -132,42 +133,78 @@ export function ManualTradePage() {
     return groupLegs(filtered)
   }, [activeLegs, cleanAccount])
 
+  // ── Positions pagination (client-side over live PnL store) ──
+  const POSITIONS_PAGE_SIZE = 10
+  const [positionsPage, setPositionsPage] = useState(1)
+  const positionsTotal = manualTrades.size
+  const paginatedPositionEntries = useMemo(() => {
+    const all = Array.from(manualTrades.entries())
+    const start = (positionsPage - 1) * POSITIONS_PAGE_SIZE
+    return all.slice(start, start + POSITIONS_PAGE_SIZE)
+  }, [manualTrades, positionsPage])
+
+  useEffect(() => {
+    setPositionsPage(1)
+  }, [cleanAccount])
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(positionsTotal / POSITIONS_PAGE_SIZE))
+    if (positionsPage > totalPages) setPositionsPage(totalPages)
+  }, [positionsTotal, positionsPage])
+
   // ── Orders ────────────────────────────────────────────────────────
+  const ORDERS_PAGE_SIZE = 10
   const [orders, setOrders] = useState<ManualOrderRead[]>([])
   const [ordersLoading, setOrdersLoading] = useState(false)
   const [ordersError, setOrdersError] = useState<string | null>(null)
+  const [ordersTotal, setOrdersTotal] = useState(0)
+  const [ordersPage, setOrdersPage] = useState(1)
+  const ordersRequestIdRef = useRef(0)
   const [cancellingOrderId, setCancellingOrderId] = useState<number | null>(null)
   const [cancelFeedback, setCancelFeedback] = useState<{ orderId: number; message: string; isError: boolean } | null>(null)
   const [cancelConfirm, setCancelConfirm] = useState<ManualOrderRead | null>(null)
   const [expandedOrderId, setExpandedOrderId] = useState<number | null>(null)
 
-  const loadManualOrders = useCallback(async () => {
+  const loadManualOrders = useCallback(async (page: number) => {
     if (!cleanAccount) return
+    const requestId = ++ordersRequestIdRef.current
     try {
       setOrdersLoading(true)
       setOrdersError(null)
-      const res = await fetchManualOrders(cleanAccount)
+      const offset = (page - 1) * ORDERS_PAGE_SIZE
+      const res = await fetchManualOrders(cleanAccount, undefined, ORDERS_PAGE_SIZE, offset)
+      if (requestId !== ordersRequestIdRef.current) return
       setOrders(res.orders)
+      setOrdersTotal(res.total)
+      // Clamp page if total shrank (e.g., after cancel or close)
+      const totalPages = Math.max(1, Math.ceil(res.total / ORDERS_PAGE_SIZE))
+      if (page > totalPages) setOrdersPage(totalPages)
     } catch (err: unknown) {
       const ae = err as { response?: { data?: { detail?: string } } }
+      if (requestId !== ordersRequestIdRef.current) return
       setOrdersError(ae?.response?.data?.detail || (err instanceof Error ? err.message : 'Failed to fetch orders'))
     } finally {
-      setOrdersLoading(false)
+      if (requestId === ordersRequestIdRef.current) setOrdersLoading(false)
     }
   }, [cleanAccount])
 
-  // Initial load on mount / account change
+  // Reset to page 1 when account changes
   useEffect(() => {
-    void loadManualOrders()
-  }, [loadManualOrders])
+    setOrdersPage(1)
+  }, [cleanAccount])
 
-  // State-driven polling: only while any order is non-terminal
+  // Fetch when page or account changes
+  useEffect(() => {
+    void loadManualOrders(ordersPage)
+  }, [loadManualOrders, ordersPage])
+
+  // State-driven polling: only while any order is non-terminal (poll current page)
   const hasActiveOrders = orders.some((o) => ["PENDING_SUBMIT", "SUBMITTED", "PARTIALLY_FILLED"].includes(o.status))
   useEffect(() => {
     if (!hasActiveOrders) return
-    const t = setInterval(() => void loadManualOrders(), 5000)
+    const t = setInterval(() => void loadManualOrders(ordersPage), 5000)
     return () => clearInterval(t)
-  }, [hasActiveOrders, loadManualOrders])
+  }, [hasActiveOrders, loadManualOrders, ordersPage])
 
   const handleCancelOrder = async (order: ManualOrderRead) => {
     if (!cleanAccount || cancellingOrderId !== null) return
@@ -177,7 +214,7 @@ export function ManualTradePage() {
     try {
       const res = await cancelManualOrder(cleanAccount, order.id)
       setCancelFeedback({ orderId: order.id, message: res.message || 'Cancellation sent.', isError: !res.success })
-      await loadManualOrders()
+      await loadManualOrders(ordersPage)
     } catch (err: unknown) {
       const ae = err as { response?: { data?: { detail?: string } } }
       setCancelFeedback({ orderId: order.id, message: ae?.response?.data?.detail || (err instanceof Error ? err.message : 'Cancel failed'), isError: true })
@@ -258,7 +295,7 @@ export function ManualTradePage() {
         limit_price: orderType === 'LIMIT' ? limitPrice : null, tif, outside_rth: false, min_tick: selectedContract.min_tick ?? null,
         trade_id: isCloseMode && closeTradeId ? closeTradeId : null,
       })
-      setSubmitResult(res); setIsPreviewOpen(false); void loadManualOrders()
+      setSubmitResult(res); setIsPreviewOpen(false); setOrdersPage(1); void loadManualOrders(1)
       // Success → rotate key for next intentional order. Keep lastIntentSig so next preview with same intent still generates new key after this.
       try { setIdemKey(genIdemKey()); } catch { setIdemKey('') }
       setLastIntentSig(null)
@@ -466,18 +503,18 @@ export function ManualTradePage() {
         </section>
       </div>
 
-      {/* Open orders */}
-      <section className="board" style={{ overflow: 'hidden' }}>
+      {/* Open orders — fixed height with pagination */}
+      <section className="board" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 420 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderBottom: '1px solid var(--line)' }}>
-          <h3 style={{ margin: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--dim)' }}>Manual Orders <span style={{ color: 'var(--muted)', fontWeight: 400 }}>{orders.length}</span></h3>
+          <h3 style={{ margin: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--dim)' }}>Manual Orders <span style={{ color: 'var(--muted)', fontWeight: 400 }}>{ordersTotal}</span></h3>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             {ordersLoading && <span style={{ fontSize: 11, color: 'var(--muted)' }}>Updating…</span>}
-            <button type="button" className="manual-btn" onClick={() => void loadManualOrders()} disabled={ordersLoading}>Refresh</button>
+            <button type="button" className="manual-btn" onClick={() => void loadManualOrders(ordersPage)} disabled={ordersLoading}>Refresh</button>
           </div>
         </div>
         {ordersError && <div style={{ margin: 12, padding: '8px 12px', background: 'var(--red-bg)', color: 'var(--red)', fontSize: 11, borderRadius: 4 }}>{ordersError}</div>}
         {cancelFeedback && <div style={{ margin: '0 12px', padding: '6px 10px', fontSize: 11, borderRadius: 4, background: cancelFeedback.isError ? 'var(--red-bg)' : 'var(--green-bg)', color: cancelFeedback.isError ? 'var(--red)' : 'var(--green)' }}>{cancelFeedback.message}</div>}
-        <div className="manual-table-wrap" style={{ border: 'none', borderRadius: 0 }}>
+        <div className="manual-table-wrap" style={{ flex: 1, display: 'flex', flexDirection: 'column', border: 'none', borderRadius: 0, minHeight: 320 }}>
           <table className="manual-table">
             <thead>
               <tr>
@@ -534,11 +571,18 @@ export function ManualTradePage() {
               })}
             </tbody>
           </table>
+          {/* Ensure stable height: pad with empty rows when fewer than page size */}
+          {orders.length > 0 && orders.length < ORDERS_PAGE_SIZE && (
+            <div style={{ flex: 1, minHeight: (ORDERS_PAGE_SIZE - orders.length) * 36 }} />
+          )}
+        </div>
+        <div style={{ padding: '8px 12px', borderTop: '1px solid var(--line)', background: 'var(--panel-2)', display: 'flex', justifyContent: 'flex-end' }}>
+          <Pagination currentPage={ordersPage} totalItems={ordersTotal} pageSize={ORDERS_PAGE_SIZE} onPageChange={setOrdersPage} />
         </div>
       </section>
 
-      {/* Positions + Executions — manual positions use same demo stream/PnL as main Positions, not a different API */}
-      <section className="board" style={{ padding: 12 }}>
+      {/* Manual positions — fixed height with pagination */}
+      <section className="board" style={{ padding: 12, display: 'flex', flexDirection: 'column', minHeight: 380 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <h3 style={{ margin: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--dim)' }}>Manual positions <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· live PnL</span></h3>
           <Link to={`/account/${cleanAccount}/manual-trade/positions`} style={{ fontSize: 11, color: 'var(--muted)', textDecoration: 'none' }}>Full ledger →</Link>
@@ -548,8 +592,8 @@ export function ManualTradePage() {
             No open manual positions for {cleanAccount || '—'}. Isolated from engine.
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {Array.from(manualTrades.values()).map((legs) => {
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
+            {paginatedPositionEntries.map(([, legs]) => {
               const head = legs[0]
               const qty = (head.quantity || head.filled_quantity || '0') as string
               const pnl = head.unrealized_pnl
@@ -572,15 +616,12 @@ export function ManualTradePage() {
             })}
           </div>
         )}
+        {manualTrades.size > 0 && (
+          <div style={{ marginTop: 12, paddingTop: 8, borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'flex-end' }}>
+            <Pagination currentPage={positionsPage} totalItems={positionsTotal} pageSize={POSITIONS_PAGE_SIZE} onPageChange={setPositionsPage} />
+          </div>
+        )}
       </section>
-      <section className="board" style={{ padding: 12 }}>
-        <h3 style={{ margin: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--dim)', marginBottom: 8 }}>Executions</h3>
-        <div style={{ fontSize: 11, color: 'var(--dim)', textAlign: 'center', padding: '14px', border: '1px dashed var(--line)', borderRadius: 4 }}>
-          Fills ingested via IBKR callbacks — deduplicated on <span style={{ color: 'var(--muted)', fontFamily: 'var(--mono)' }}>exec_id</span>. Listed per order in Open orders → Details.
-        </div>
-      </section>
-
-
 
       {/* Preview modal */}
       {isPreviewOpen && (
