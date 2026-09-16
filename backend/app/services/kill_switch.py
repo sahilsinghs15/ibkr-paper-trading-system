@@ -369,13 +369,94 @@ class KillSwitchService:
             )
             await self.execute_flatten_operation_background(op.operation_id)
 
+    async def retry_unresolved_operations(self) -> int:
+        """Durable eventual-convergence retry for UNRESOLVED ops.
+
+        Called periodically from PositionReconciler.after_sweep (every 30s) and
+        at startup. If a previous Tier2 saw INCOMPLETE_EXIT_MARKS because
+        execution arrived after Tier2, this will re-run Tier2 and close the
+        engine ledger when fills are now eligible. Idempotent and safe to call
+        concurrently; reuses existing _reconcile_and_finalize logic which only
+        mutates via PositionRepository.close_trade (row-level lock, idempotent
+        via risk_state check).
+        """
+        retried = 0
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(KillSwitchOperationModel).where(
+                    KillSwitchOperationModel.status == KILL_SWITCH_STATUS_UNRESOLVED
+                )
+            )
+            unresolved_ops = list(result.scalars().all())
+        for op in unresolved_ops:
+            # Skip if already being flattened
+            if op.operation_id in self._in_flight and not self._in_flight[op.operation_id].done():
+                continue
+            logger.info(
+                "Retrying UNRESOLVED kill-switch operation_id=%s account_id=%s",
+                op.operation_id,
+                op.account_id,
+            )
+            try:
+                await self._reconcile_and_finalize(op.operation_id, op.account_id, [])
+                retried += 1
+            except Exception:
+                logger.exception(
+                    "Retry of UNRESOLVED kill-switch operation_id=%s failed",
+                    op.operation_id,
+                )
+        if retried:
+            logger.info("Kill switch retry sweep completed: retried=%d", retried)
+        return retried
+
+    async def attempt_finalize_for_account(self, account_id: int) -> bool:
+        """Re-run Tier2 for a single account when a new execution arrives.
+
+        Can be called from execution persistence path to achieve sub-30s
+        convergence without waiting for the periodic sweep. Safe to call
+        outside the periodic loop; checks _in_flight to avoid overlapping
+        Tier2 runs.
+        """
+        # Find latest UNRESOLVED or RECONCILING operation for this account
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(KillSwitchOperationModel)
+                .where(
+                    KillSwitchOperationModel.account_id == account_id,
+                    KillSwitchOperationModel.status.in_(
+                        (KILL_SWITCH_STATUS_UNRESOLVED, KILL_SWITCH_STATUS_RECONCILING)
+                    ),
+                )
+                .order_by(KillSwitchOperationModel.created_at.desc())
+                .limit(1)
+            )
+            op = result.scalars().first()
+        if op is None:
+            return False
+        if op.operation_id in self._in_flight and not self._in_flight[op.operation_id].done():
+            return False
+        logger.info(
+            "Execution-triggered kill-switch finalize: account_id=%s operation_id=%s status=%s",
+            account_id,
+            op.operation_id,
+            op.status,
+        )
+        await self._reconcile_and_finalize(op.operation_id, account_id, [])
+        return True
+
     async def _execute_flatten_operation(self, operation_id: UUID) -> None:
         """Execute durable flatten operation asynchronously off the HTTP request thread."""
         logger.info("Starting background flatten worker execution for operation_id=%s", operation_id)
 
         async with self._session_factory() as session, session.begin():
-            op = await session.get(KillSwitchOperationModel, operation_id)
-            if op is None or op.status in (KILL_SWITCH_STATUS_COMPLETE, KILL_SWITCH_STATUS_UNRESOLVED):
+            # Lock operation row to prevent concurrent flatten workers for same op
+            result = await session.execute(
+                select(KillSwitchOperationModel)
+                .where(KillSwitchOperationModel.operation_id == operation_id)
+                .with_for_update()
+            )
+            op = result.scalars().first()
+            if op is None or op.status in (KILL_SWITCH_STATUS_COMPLETE, KILL_SWITCH_STATUS_UNRESOLVED, KILL_SWITCH_STATUS_CLEARED):
                 return
             op.status = KILL_SWITCH_STATUS_FLATTENING
 
@@ -388,8 +469,48 @@ class KillSwitchService:
             open_positions = pos_result.scalars().all()
 
         if not open_positions:
+            logger.info(
+                "Kill Switch flatten: no OPEN engine positions for account_id=%s operation_id=%s",
+                op.account_id,
+                operation_id,
+            )
             await self._update_operation_completion(operation_id, final_status=KILL_SWITCH_STATUS_COMPLETE, unresolved=0)
             return
+
+        # Observability: log exactly which engine positions are selected and why manual excluded
+        for p in open_positions:
+            logger.info(
+                "Kill Switch engine position selected: account_id=%s trade_id=%s strategy=%s leg_a=%s qty=%s leg_b=%s qty=%s source=ENGINE ledger=positions",
+                p.account_id,
+                p.trade_id,
+                p.strategy_id,
+                p.leg_a_symbol,
+                p.leg_a_signed_qty,
+                p.leg_b_symbol,
+                p.leg_b_signed_qty,
+            )
+        # Explicitly verify manual ledger is NOT flattened — count manual OPEN for audit
+        try:
+            async with self._session_factory() as _ms:
+                from sqlalchemy import select as _sel
+                from app.db.models.manual_order import ManualPositionModel
+
+                _mres = await _ms.execute(
+                    _sel(ManualPositionModel).where(
+                        ManualPositionModel.account_id == op.account_id,
+                        ManualPositionModel.status == "OPEN",
+                    )
+                )
+                _manual_open = _mres.scalars().all()
+                if _manual_open:
+                    logger.info(
+                        "Kill Switch manual positions preserved: account_id=%s manual_open_count=%d symbols=%s (engine flatten scope)",
+                        op.account_id,
+                        len(_manual_open),
+                        [(m.symbol, str(m.signed_qty), m.trade_id) for m in _manual_open],
+                    )
+        except Exception:
+            logger.exception("Kill Switch manual audit log failed account_id=%s", op.account_id)
 
         baskets_coord = getattr(self._order_manager, "_baskets", None) if self._order_manager else None
 
@@ -454,6 +575,16 @@ class KillSwitchService:
         pos: PositionModel,
         baskets_coord: Any | None,
     ) -> bool:
+        logger.info(
+            "Kill Switch close authorized: account_id=%s trade_id=%s ibkr_account=%s leg_a=%s qty=%s leg_b=%s qty=%s ownership=ENGINE",
+            account_id,
+            pos.trade_id,
+            ibkr_account,
+            pos.leg_a_symbol,
+            pos.leg_a_signed_qty,
+            pos.leg_b_symbol,
+            pos.leg_b_signed_qty,
+        )
         async with self._semaphore:
             legs: list[OrderLeg] = []
 
@@ -499,6 +630,13 @@ class KillSwitchService:
                 ibkr_account=ibkr_account,
                 intent_mode=ExecutionIntentMode.EMERGENCY_FLATTEN,
             )
+            logger.info(
+                "Kill Switch close order submitting: account_id=%s trade_id=%s close_qty=%s legs=%s",
+                account_id,
+                pos.trade_id,
+                [(leg.symbol, leg.side.value if hasattr(leg.side, "value") else str(leg.side), str(leg.quantity)) for leg in legs],
+                len(legs),
+            )
 
             if baskets_coord is not None:
                 if self._order_manager is not None:
@@ -515,6 +653,13 @@ class KillSwitchService:
                     res = await baskets_coord.execute(close_intent, rms_pass, order_type="MARKET")
                     success = getattr(res, "success", False)
                     orders = getattr(res, "orders", [])
+                    logger.info(
+                        "Kill Switch broker submission result: trade_id=%s success=%s orders=%d filled=%s",
+                        pos.trade_id,
+                        success,
+                        len(orders) if orders else 0,
+                        [(o.internal_order_id, o.status.value if hasattr(o.status, "value") else str(o.status), str(getattr(o, "filled_quantity", ""))) for o in (orders or [])],
+                    )
                     if orders:
                         await self._persist_flatten_close_if_filled(
                             account_id, pos.trade_id, orders
@@ -523,6 +668,12 @@ class KillSwitchService:
                 except Exception:
                     logger.exception("Failed to execute position reduction for trade_id=%s", pos.trade_id)
                     return False
+            # No basket coordinator (e.g. in tests) — still log authorized close qty for audit
+            logger.warning(
+                "Kill Switch no basket coordinator: trade_id=%s close would have been %s (not submitted)",
+                pos.trade_id,
+                [(leg.symbol, leg.side.value if hasattr(leg.side, "value") else str(leg.side), str(leg.quantity)) for leg in legs],
+            )
             return True
 
     async def _persist_flatten_close_if_filled(
@@ -545,13 +696,43 @@ class KillSwitchService:
 
         fill_orders = [o for o in orders if not getattr(o, "is_compensation", False)]
         if not fill_orders:
+            logger.info(
+                "Kill Switch skip persist close: no fill_orders account_id=%s trade_id=%s orders=%d",
+                account_id,
+                trade_id,
+                len(orders),
+            )
             return False
 
         async with self._session_factory() as session, session.begin():
             pos_repo = PositionRepository(session)
             p_row = await pos_repo.get_open_by_trade_id(trade_id, account_id=account_id)
             if p_row is None:
+                logger.info(
+                    "Kill Switch skip persist close: no OPEN row account_id=%s trade_id=%s",
+                    account_id,
+                    trade_id,
+                )
                 return False
+            # Diagnostic: log authorized vs filled quantities per leg
+            try:
+                from app.services.model_blue.persistence import _filled_qty_by_symbol
+
+                filled_by_symbol_dbg = _filled_qty_by_symbol(fill_orders)
+                logger.info(
+                    "Kill Switch persist close check: account_id=%s trade_id=%s leg_a=%s qty=%s leg_b=%s qty=%s filled_by_symbol=%s orders=%s",
+                    account_id,
+                    trade_id,
+                    p_row.leg_a_symbol,
+                    p_row.leg_a_signed_qty,
+                    p_row.leg_b_symbol,
+                    p_row.leg_b_signed_qty,
+                    {k: str(v) for k, v in filled_by_symbol_dbg.items()},
+                    [(o.internal_order_id, str(getattr(o, "filled_quantity", None)), o.status.value if hasattr(o.status, "value") else o.status) for o in fill_orders],
+                )
+            except Exception:
+                logger.exception("Kill Switch diagnostic log failed trade_id=%s", trade_id)
+
             if not close_fills_match_open(
                 trade_id=trade_id,
                 leg_a_symbol=p_row.leg_a_symbol,
@@ -569,11 +750,37 @@ class KillSwitchService:
                 return False
             exit_marks = _exit_marks_from_orders(fill_orders)
             needed = [s for s in (p_row.leg_a_symbol, p_row.leg_b_symbol) if s]
+            # Fallback: if exit marks missing (e.g. order.average_fill_price not yet set),
+            # try executions table weighted avg as secondary source before skipping.
+            if any(symbol not in exit_marks for symbol in needed):
+                # Attempt DB fallback via executions for this trade's orders
+                try:
+                    from app.db.repositories.execution_repository import ExecutionRepository
+                    from app.oms.models import executions_weighted_average
+
+                    # Build fallback marks from order executions dict if present
+                    for o in fill_orders:
+                        ex = getattr(o, "executions", None) or {}
+                        if ex and o.symbol not in exit_marks:
+                            derived = executions_weighted_average(ex)
+                            if derived is not None:
+                                exit_marks[o.symbol] = derived
+                except Exception:
+                    logger.exception("Kill Switch exit marks fallback failed trade_id=%s", trade_id)
+            if any(symbol not in exit_marks for symbol in needed):
+                # Last fallback: use last_fill_price if available
+                for o in fill_orders:
+                    if o.symbol not in exit_marks and getattr(o, "last_fill_price", None) is not None:
+                        try:
+                            exit_marks[o.symbol] = o.last_fill_price  # type: ignore[assignment]
+                        except Exception:
+                            continue
             if any(symbol not in exit_marks for symbol in needed):
                 logger.warning(
-                    "INCOMPLETE_EXIT_MARKS: skip KS persist close trade_id=%s missing=%s",
+                    "INCOMPLETE_EXIT_MARKS: skip KS persist close trade_id=%s missing=%s exit_marks_keys=%s",
                     trade_id,
                     [s for s in needed if s not in exit_marks],
+                    list(exit_marks.keys()),
                 )
                 return False
             comm = _commission_from_orders(fill_orders)
@@ -590,13 +797,16 @@ class KillSwitchService:
                     "account_id": account_id,
                     "trade_id": trade_id,
                     "source": "KILL_SWITCH",
+                    "exit_marks": {k: str(v) for k, v in exit_marks.items()},
+                    "filled_orders": [o.internal_order_id for o in fill_orders],
                 },
                 idempotency_key=f"position_close:kill_switch:{account_id}:{trade_id}",
             )
             logger.info(
-                "Kill Switch persisted position close: account_id=%d trade_id=%s",
+                "Kill Switch persisted position close: account_id=%d trade_id=%s exit_marks=%s",
                 account_id,
                 trade_id,
+                {k: str(v) for k, v in exit_marks.items()},
             )
 
         live = getattr(self._order_manager, "_live_pnl", None)
@@ -607,15 +817,27 @@ class KillSwitchService:
     async def _reconcile_and_finalize(
         self, operation_id: UUID, account_id: int, results: list[Any]
     ) -> None:
-        """Reconcile final exposure from database and broker state before setting operation COMPLETE."""
+        """Reconcile final exposure from database and broker state before setting operation COMPLETE.
+
+        Tier 2 auto-repair: for any engine OPEN row whose KILLSWITCH close orders are FILLED
+        in the DB with matching qty, close the ledger. Manual positions (manual_positions)
+        are intentionally NOT inspected here — engine flatten must never mutate manual ledger.
+        """
         # Tier 2 Reconciliation: Auto-repair any open positions whose close orders filled in DB
         async with self._session_factory() as session, session.begin():
             pos_repo = PositionRepository(session)
+            from app.db.repositories.execution_repository import ExecutionRepository
             from app.db.repositories.order_repository import OrderRepository
             order_repo = OrderRepository(session)
+            exec_repo = ExecutionRepository(session)
             open_positions = await pos_repo.list_open()
             account_open = [p for p in open_positions if p.account_id == account_id]
-
+            logger.info(
+                "Kill Switch Tier2 reconcile: account_id=%s open_engine_positions=%d operation_id=%s",
+                account_id,
+                len(account_open),
+                operation_id,
+            )
             for pos in account_open:
                 pos_orders: list[Any] = []
                 seen_oids: set[str] = set()
@@ -627,60 +849,120 @@ class KillSwitchService:
                         seen_oids.add(key)
                         pos_orders.append(row)
                 close_orders = [o for o in pos_orders if _is_kill_switch_close_order(o)]
-                if close_orders:
-                    filled_close = [o for o in close_orders if o.status == "FILLED"]
-                    req_legs = 2 if pos.leg_b_symbol else 1
-                    if len(filled_close) >= req_legs:
-                        exit_marks = {}
-                        filled_by_symbol: dict[str, Decimal] = {}
-                        for co in filled_close:
-                            if co.fill_price is not None and co.symbol:
-                                exit_marks[co.symbol] = Decimal(str(co.fill_price))
-                            qty = Decimal(str(
-                                getattr(co, "fill_qty", None)
-                                or getattr(co, "filled_quantity", None)
-                                or 0
-                            ))
-                            if co.symbol and qty > 0:
-                                filled_by_symbol[co.symbol] = (
-                                    filled_by_symbol.get(co.symbol, Decimal(0)) + qty
-                                )
-                        needed = [s for s in (pos.leg_a_symbol, pos.leg_b_symbol) if s]
-                        if any(symbol not in exit_marks for symbol in needed):
-                            logger.warning(
-                                "INCOMPLETE_EXIT_MARKS: skip KS reconcile close trade_id=%s missing=%s",
-                                pos.trade_id,
-                                [s for s in needed if s not in exit_marks],
-                            )
-                            continue
-                        from app.services.model_blue.parser import (
-                            ModelBlueValidationError,
-                        )
-                        from app.services.model_blue.persistence import (
-                            assert_close_qty_matches_open,
-                        )
+                if not close_orders:
+                    logger.info(
+                        "Kill Switch Tier2 skip: no close orders for trade_id=%s account_id=%s",
+                        pos.trade_id,
+                        account_id,
+                    )
+                    continue
+                filled_close = [o for o in close_orders if o.status == "FILLED"]
+                req_legs = 2 if pos.leg_b_symbol else 1
+                logger.info(
+                    "Kill Switch Tier2 candidate: trade_id=%s close_orders=%d filled_close=%d req_legs=%d filled_ids=%s",
+                    pos.trade_id,
+                    len(close_orders),
+                    len(filled_close),
+                    req_legs,
+                    [o.internal_order_id for o in filled_close],
+                )
+                if len(filled_close) >= req_legs:
+                    exit_marks: dict[str, Decimal] = {}
+                    filled_by_symbol: dict[str, Decimal] = {}
+                    for co in filled_close:
+                        if co.fill_price is not None and co.symbol:
+                            exit_marks[co.symbol] = Decimal(str(co.fill_price))
+                        # Execution table fallback for fill_price
+                        if co.symbol and co.symbol not in exit_marks:
+                            try:
+                                exec_rows = await exec_repo.list_by_internal_order_id(co.internal_order_id)
+                                if exec_rows:
+                                    from app.db.repositories.execution_repository import weighted_average_price
 
-                        try:
-                            assert_close_qty_matches_open(
-                                trade_id=pos.trade_id,
-                                leg_a_symbol=pos.leg_a_symbol,
-                                leg_a_signed_qty=pos.leg_a_signed_qty,
-                                leg_b_symbol=pos.leg_b_symbol,
-                                leg_b_signed_qty=pos.leg_b_signed_qty,
-                                filled_by_symbol=filled_by_symbol,
+                                    wavg = weighted_average_price(exec_rows)
+                                    if wavg is not None:
+                                        exit_marks[co.symbol] = wavg
+                            except Exception:
+                                logger.exception("Kill Switch exec fallback failed trade_id=%s", pos.trade_id)
+                        qty = Decimal(str(
+                            getattr(co, "fill_qty", None)
+                            or getattr(co, "filled_quantity", None)
+                            or 0
+                        ))
+                        # Fallback quantity from executions if order fill_qty is 0
+                        if qty <= 0:
+                            try:
+                                exec_rows = await exec_repo.list_by_internal_order_id(co.internal_order_id)
+                                qty = sum((Decimal(str(r.quantity)) for r in exec_rows), Decimal(0))
+                            except Exception:
+                                qty = Decimal(0)
+                        if co.symbol and qty > 0:
+                            filled_by_symbol[co.symbol] = (
+                                filled_by_symbol.get(co.symbol, Decimal(0)) + qty
                             )
-                        except ModelBlueValidationError as exc:
-                            logger.warning("Skip KS reconcile close: %s", exc)
-                            continue
-                        await pos_repo.close_trade(
+                    needed = [s for s in (pos.leg_a_symbol, pos.leg_b_symbol) if s]
+                    # If still missing exit marks, try executions again for each needed symbol
+                    for sym in needed:
+                        if sym not in exit_marks:
+                            for co in filled_close:
+                                if co.symbol == sym:
+                                    try:
+                                        exec_rows = await exec_repo.list_by_internal_order_id(co.internal_order_id)
+                                        if exec_rows:
+                                            from app.db.repositories.execution_repository import weighted_average_price
+
+                                            wavg = weighted_average_price(exec_rows)
+                                            if wavg is not None:
+                                                exit_marks[sym] = wavg
+                                                break
+                                    except Exception:
+                                        continue
+                    if any(symbol not in exit_marks for symbol in needed):
+                        logger.warning(
+                            "INCOMPLETE_EXIT_MARKS: skip KS reconcile close trade_id=%s missing=%s exit_marks=%s filled_by_symbol=%s",
                             pos.trade_id,
-                            account_id=account_id,
-                            exit_marks=exit_marks,
+                            [s for s in needed if s not in exit_marks],
+                            list(exit_marks.keys()),
+                            {k: str(v) for k, v in filled_by_symbol.items()},
                         )
-                        logger.info(
-                            "Reconciled stale position to CLOSED during Kill Switch: trade_id=%s",
-                            pos.trade_id,
+                        continue
+                    from app.services.model_blue.parser import (
+                        ModelBlueValidationError,
+                    )
+                    from app.services.model_blue.persistence import (
+                        assert_close_qty_matches_open,
+                    )
+
+                    try:
+                        assert_close_qty_matches_open(
+                            trade_id=pos.trade_id,
+                            leg_a_symbol=pos.leg_a_symbol,
+                            leg_a_signed_qty=pos.leg_a_signed_qty,
+                            leg_b_symbol=pos.leg_b_symbol,
+                            leg_b_signed_qty=pos.leg_b_signed_qty,
+                            filled_by_symbol=filled_by_symbol,
                         )
+                    except ModelBlueValidationError as exc:
+                        logger.warning("Skip KS reconcile close: %s filled_by_symbol=%s", exc, filled_by_symbol)
+                        continue
+                    await pos_repo.close_trade(
+                        pos.trade_id,
+                        account_id=account_id,
+                        exit_marks=exit_marks,
+                    )
+                    logger.info(
+                        "Reconciled stale position to CLOSED during Kill Switch: trade_id=%s exit_marks=%s filled_by_symbol=%s",
+                        pos.trade_id,
+                        {k: str(v) for k, v in exit_marks.items()},
+                        {k: str(v) for k, v in filled_by_symbol.items()},
+                    )
+                else:
+                    logger.info(
+                        "Kill Switch Tier2 skip: insufficient filled legs trade_id=%s filled=%d req=%d",
+                        pos.trade_id,
+                        len(filled_close),
+                        req_legs,
+                    )
 
         async with self._session_factory() as session:
             remaining_positions = await PositionRepository(session).list_open()
@@ -717,8 +999,26 @@ class KillSwitchService:
         self, operation_id: UUID, final_status: str, unresolved: int
     ) -> None:
         async with self._session_factory() as session, session.begin():
-            op = await session.get(KillSwitchOperationModel, operation_id)
+            # Lock row to prevent stale worker overwriting newer COMPLETE with UNRESOLVED (last-writer-wins)
+            result = await session.execute(
+                select(KillSwitchOperationModel)
+                .where(KillSwitchOperationModel.operation_id == operation_id)
+                .with_for_update()
+            )
+            op = result.scalars().first()
             if op is not None:
+                # Terminal state protection: COMPLETE must never regress to UNRESOLVED/FLATTENING
+                if op.status == KILL_SWITCH_STATUS_COMPLETE and final_status != KILL_SWITCH_STATUS_COMPLETE:
+                    logger.warning(
+                        "Kill Switch stale worker attempted regression: operation_id=%s current=%s attempted=%s — blocked",
+                        operation_id,
+                        op.status,
+                        final_status,
+                    )
+                    return
+                # CLEARED is operator disarm, never regress
+                if op.status == KILL_SWITCH_STATUS_CLEARED:
+                    return
                 op.status = final_status
                 op.unresolved_count = unresolved
                 op.flattened_count = max(0, op.initial_position_count - unresolved)

@@ -77,7 +77,7 @@ class PositionRepository:
         return rows[0] if rows else None
 
     async def get_open_by_trade_id(
-        self, trade_id: str, *, account_id: int | None = None
+        self, trade_id: str, *, account_id: int | None = None, for_update: bool = False
     ) -> PositionModel | None:
         stmt = select(PositionModel).where(
             PositionModel.trade_id == trade_id,
@@ -85,6 +85,8 @@ class PositionRepository:
         )
         if account_id is not None:
             stmt = stmt.where(PositionModel.account_id == account_id)
+        if for_update:
+            stmt = stmt.with_for_update()
         result = await self._session.execute(stmt)
         rows = list(result.scalars().all())
         if len(rows) > 1:
@@ -194,8 +196,14 @@ class PositionRepository:
         commission: Decimal | None = None,
         exit_reason: str | None = None,
     ) -> PositionModel:
-        row = await self.get_open_by_trade_id(trade_id, account_id=account_id)
+        # Row-level lock per AGENTS.md: mutations must use SELECT ... FOR UPDATE
+        row = await self.get_open_by_trade_id(trade_id, account_id=account_id, for_update=True)
         if row is None:
+            # Idempotent duplicate finalization: already CLOSED in this or another TX.
+            # Return existing closed row instead of raising, to make concurrent retries safe.
+            existing = await self.get_by_trade_id(trade_id, account_id=account_id)
+            if existing is not None and existing.risk_state == RISK_STATE_CLOSED:
+                return existing
             raise KeyError(trade_id)
         needed: list[str] = []
         if row.leg_a_symbol:

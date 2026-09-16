@@ -233,8 +233,10 @@ class OrderManager:
                 session_factory=self._session_factory, order_manager=self
             )
             await ks.resume_incomplete_flattens()
+            # Also retry UNRESOLVED finalizations that may have missed execution arrival
+            await ks.retry_unresolved_operations()
         except Exception:
-            logger.exception("Failed to resume incomplete kill-switch flatten workers.")
+            logger.exception("Failed to resume/ retry kill-switch flatten workers.")
 
         async with self._session_factory() as session:
             processed = await SignalRepository(session).list_processed_open_keys()
@@ -399,9 +401,28 @@ class OrderManager:
         )
 
     async def after_reconcile_sweep(self) -> None:
-        """Reload rates then re-seed model_value_used from open positions."""
+        """Reload rates then re-seed model_value_used from open positions.
+
+        Also retries any UNRESOLVED kill-switch operations whose executions
+        arrived after Tier2 (eventual-convergence guarantee). This is the
+        durable mechanism that wakes the system after T10: execution row
+        arrives after Tier2 returns, next 30s reconciler sweep calls this
+        and re-runs Tier2 via KillSwitchService.retry_unresolved_operations.
+        """
         await self.reload_margin_rates()
         await self._reseed_model_value_used()
+        # Eventual ledger convergence for kill-switch: retry UNRESOLVED ops
+        # whose close fills may now be persistently available.
+        if self._session_factory is not None:
+            try:
+                from app.services.kill_switch import KillSwitchService
+
+                ks = KillSwitchService(
+                    session_factory=self._session_factory, order_manager=self
+                )
+                await ks.retry_unresolved_operations()
+            except Exception:
+                logger.exception("Kill switch UNRESOLVED retry after reconcile sweep failed")
 
     async def _reseed_model_value_used(self) -> None:
         """Rebuild model_value_used from open positions under the exposure locks."""
