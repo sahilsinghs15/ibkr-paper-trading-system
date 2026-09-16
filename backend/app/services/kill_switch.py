@@ -470,49 +470,72 @@ class KillSwitchService:
                 broker_qty_by_symbol[b.symbol.strip().upper()] += Decimal(str(b.signed_qty))
 
             # Recent trade_executions for price + quantity verification (last 2h)
+            # For account-flatten we have NO per-trade order linkage (separate TWSClient), so we must use
+            # AGGREGATE verification to avoid double-counting same execution for two trades sharing a symbol.
             from datetime import timedelta
 
             since = datetime.now(UTC) - timedelta(hours=2)
             exec_rows = (await session.execute(select(TradeExecutionModel).where(TradeExecutionModel.account_id == account_id, TradeExecutionModel.executed_at >= since))).scalars().all()
-            # Price: latest per symbol
-            price_by_symbol: dict[str, Decimal] = {}
-            # Quantity: sum per symbol
+            # Weighted average price per symbol and total qty per symbol
             exec_qty_by_symbol: dict[str, Decimal] = defaultdict(lambda: Decimal(0))
+            exec_notional_by_symbol: dict[str, Decimal] = defaultdict(lambda: Decimal(0))
             for e in exec_rows:
                 norm = e.symbol.strip().upper()
-                price_by_symbol[norm] = Decimal(str(e.price))
-                exec_qty_by_symbol[norm] += Decimal(str(e.quantity)).copy_abs()
+                qty = Decimal(str(e.quantity)).copy_abs()
+                exec_qty_by_symbol[norm] += qty
+                exec_notional_by_symbol[norm] += qty * Decimal(str(e.price))
+            price_by_symbol: dict[str, Decimal] = {}
+            for sym, qty in exec_qty_by_symbol.items():
+                if qty > 0:
+                    price_by_symbol[sym] = exec_notional_by_symbol[sym] / qty
 
-            # Engine: only close if BOTH legs broker-flat (qty 0) and execution qty covers leg qty and price available
+            # Aggregate ledger qty per symbol for all OPEN engine trades
+            ledger_qty_by_symbol: dict[str, Decimal] = defaultdict(lambda: Decimal(0))
+            for p in eng_rows:
+                for sym, qty in [(p.leg_a_symbol, abs(p.leg_a_signed_qty)), (p.leg_b_symbol, abs(p.leg_b_signed_qty) if p.leg_b_symbol and p.leg_b_signed_qty else None)]:
+                    if sym and qty is not None:
+                        ledger_qty_by_symbol[sym.strip().upper()] += Decimal(str(qty))
+            for m in man_rows:
+                ledger_qty_by_symbol[m.symbol.strip().upper()] += abs(Decimal(str(m.signed_qty)))
+
+            # Global broker-flat check: if ANY symbol that appears in ledger still has broker qty !=0, we cannot safely close any trade that touches that symbol.
+            # Instead we compute per-symbol aggregate pass/fail and only close trades whose ALL legs pass.
+            symbol_pass: dict[str, bool] = {}
+            for sym in set(ledger_qty_by_symbol.keys()) | set(broker_qty_by_symbol.keys()) | set(exec_qty_by_symbol.keys()):
+                broker_qty = broker_qty_by_symbol.get(sym, Decimal(0))
+                if broker_qty != 0:
+                    symbol_pass[sym] = False
+                elif ledger_qty_by_symbol.get(sym, Decimal(0)) == 0:
+                    symbol_pass[sym] = True
+                else:
+                    # Need execution qty >= ledger qty and price available
+                    if sym not in price_by_symbol:
+                        symbol_pass[sym] = False
+                    elif exec_qty_by_symbol.get(sym, Decimal(0)) + Decimal("0.0001") < ledger_qty_by_symbol.get(sym, Decimal(0)):
+                        symbol_pass[sym] = False
+                    else:
+                        symbol_pass[sym] = True
+            # Log aggregate decision
+            logger.info(
+                "Account flatten aggregate check: ledger_qty=%s exec_qty=%s broker_qty=%s symbol_pass=%s",
+                {k: str(v) for k, v in ledger_qty_by_symbol.items()},
+                {k: str(v) for k, v in exec_qty_by_symbol.items()},
+                {k: str(v) for k, v in broker_qty_by_symbol.items()},
+                symbol_pass,
+            )
+
+            # Engine: only close if ALL legs for that trade have symbol_pass True
             for p in eng_rows:
                 needed = [s for s in (p.leg_a_symbol, p.leg_b_symbol) if s]
-                # Broker-flat check per leg
-                broker_still_open = any(broker_qty_by_symbol.get(s.strip().upper(), Decimal(0)) != 0 for s in needed)
-                if broker_still_open:
+                if not needed:
+                    continue
+                if not all(symbol_pass.get(s.strip().upper(), False) for s in needed):
                     logger.warning(
-                        "Account flatten skip ledger close: broker still OPEN for trade_id=%s needed=%s broker_qty=%s",
+                        "Account flatten skip ledger close: aggregate check failed for trade_id=%s needed=%s symbol_pass=%s",
                         p.trade_id,
                         needed,
-                        {s: str(broker_qty_by_symbol.get(s.strip().upper(), Decimal(0))) for s in needed},
+                        {s: symbol_pass.get(s.strip().upper(), False) for s in needed},
                     )
-                    continue
-                # Execution evidence check per leg
-                leg_qtys = {p.leg_a_symbol.strip().upper(): abs(p.leg_a_signed_qty), p.leg_b_symbol.strip().upper(): abs(p.leg_b_signed_qty) if p.leg_b_symbol and p.leg_b_signed_qty else None}
-                # Verify each needed symbol has execution qty >= leg qty and price
-                missing_price = [s for s in needed if s.strip().upper() not in price_by_symbol]
-                if missing_price:
-                    logger.warning("Account flatten skip: missing execution price for trade_id=%s missing=%s", p.trade_id, missing_price)
-                    continue
-                insufficient_qty = []
-                for sym in needed:
-                    norm = sym.strip().upper()
-                    required = leg_qtys.get(norm)
-                    if required is None:
-                        continue
-                    if exec_qty_by_symbol.get(norm, Decimal(0)) < required - Decimal("0.0001"):
-                        insufficient_qty.append(f"{sym} need {required} have {exec_qty_by_symbol.get(norm, Decimal(0))}")
-                if insufficient_qty:
-                    logger.warning("Account flatten skip: insufficient execution qty for trade_id=%s %s", p.trade_id, insufficient_qty)
                     continue
                 exit_marks = {sym: price_by_symbol[sym.strip().upper()] for sym in needed}
                 try:
@@ -531,15 +554,11 @@ class KillSwitchService:
                 except Exception:
                     logger.exception("Account flatten failed to close engine trade_id=%s", p.trade_id)
 
-            # Manual: only close if broker shows flat for that symbol
+            # Manual: only close if aggregate symbol_pass true (broker flat + exec covers total ledger for that symbol)
             for m in man_rows:
                 norm = m.symbol.strip().upper()
-                if broker_qty_by_symbol.get(norm, Decimal(0)) != 0:
-                    logger.warning("Account flatten skip manual: broker still OPEN symbol=%s qty=%s trade_id=%s", m.symbol, broker_qty_by_symbol.get(norm), m.trade_id)
-                    continue
-                # Require execution qty covering manual qty
-                if exec_qty_by_symbol.get(norm, Decimal(0)) < abs(m.signed_qty) - Decimal("0.0001"):
-                    logger.warning("Account flatten skip manual: insufficient exec qty symbol=%s need %s have %s", m.symbol, abs(m.signed_qty), exec_qty_by_symbol.get(norm))
+                if not symbol_pass.get(norm, False):
+                    logger.warning("Account flatten skip manual: aggregate check failed symbol=%s trade_id=%s", m.symbol, m.trade_id)
                     continue
                 m.status = "CLOSED"
                 m.signed_qty = Decimal(0)
