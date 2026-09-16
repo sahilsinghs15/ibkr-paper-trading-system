@@ -22,6 +22,7 @@ const EXECUTION_SORT_EXTRACTORS: Record<string, (row: BrokerExecutionLine) => un
   exec_id: (row) => row.exec_id,
   broker_order_id: (row) => row.broker_order_id,
   order_status: (row) => row.order_status || '',
+  source: (row) => (row as unknown as { source?: string }).source || '',
 }
 
 function defaultSort(a: BrokerExecutionLine, b: BrokerExecutionLine): number {
@@ -207,7 +208,7 @@ export function TradeBookPage() {
                 <SortableTh sortKey="exec_id" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Exec ID</SortableTh>
                 <SortableTh sortKey="broker_order_id" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Broker Order ID</SortableTh>
                 <SortableTh sortKey="order_status" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Order Status</SortableTh>
-                <th>Source</th>
+                <SortableTh sortKey="source" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Source</SortableTh>
               </tr>
             </thead>
             <tbody>
