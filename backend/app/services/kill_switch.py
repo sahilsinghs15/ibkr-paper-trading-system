@@ -338,7 +338,7 @@ class KillSwitchService:
         return operation, True
 
     async def _capture_flatten_snapshot(
-        self, session: AsyncSession, operation: KillSwitchOperationModel, eng_rows: list[PositionModel], man_rows: list[Any]
+        self, session: AsyncSession, operation: KillSwitchOperationModel, eng_rows: Any, man_rows: Any
     ) -> None:
         """Capture snapshot of ledger positions at flatten initiation (account scope)."""
         from app.db.models.kill_switch_snapshot import KillSwitchFlattenSnapshotModel
@@ -455,7 +455,9 @@ class KillSwitchService:
                 continue
             # Determine if this is account-flatten snapshot-based operation
             async with self._session_factory() as s:
-                from app.db.models.kill_switch_snapshot import KillSwitchFlattenSnapshotModel
+                from app.db.models.kill_switch_snapshot import (
+                    KillSwitchFlattenSnapshotModel,
+                )
 
                 has_snapshot = (
                     await s.execute(
@@ -519,13 +521,15 @@ class KillSwitchService:
         3. Executions grouped by symbol/con_id, weighted-avg price, FIFO allocation across snapshot.
         4. If broker flat but price missing → FLATTENED_PENDING_PRICE, not OPEN, and will be retried.
         """
+        from collections import defaultdict
+
         from app.db.models.broker_position import BrokerPositionModel
         from app.db.models.kill_switch_snapshot import KillSwitchFlattenSnapshotModel
         from app.db.models.manual_order import ManualPositionModel
         from app.db.models.trade_execution import TradeExecutionModel
-        from collections import defaultdict
-
-        from app.db.repositories.position_repository import RISK_STATE_FLATTENED_PENDING_PRICE
+        from app.db.repositories.position_repository import (
+            RISK_STATE_FLATTENED_PENDING_PRICE,
+        )
 
         closed = 0
         pending = 0
@@ -616,10 +620,11 @@ class KillSwitchService:
             for snap in snap_rows:
                 if snap.position_type == "engine":
                     needed_syms = [s for s in (snap.leg_a_symbol, snap.leg_b_symbol) if s]
-                    needed_qtys = {
-                        snap.leg_a_symbol.strip().upper(): abs(Decimal(str(snap.leg_a_signed_qty))) if snap.leg_a_symbol and snap.leg_a_signed_qty else None,
-                        snap.leg_b_symbol.strip().upper(): abs(Decimal(str(snap.leg_b_signed_qty))) if snap.leg_b_symbol and snap.leg_b_signed_qty else None,
-                    }
+                    needed_qtys: dict[str, Decimal | None] = {}
+                    if snap.leg_a_symbol and snap.leg_a_signed_qty is not None:
+                        needed_qtys[snap.leg_a_symbol.strip().upper()] = abs(Decimal(str(snap.leg_a_signed_qty)))
+                    if snap.leg_b_symbol and snap.leg_b_signed_qty is not None:
+                        needed_qtys[snap.leg_b_symbol.strip().upper()] = abs(Decimal(str(snap.leg_b_signed_qty)))
                     # Broker-flat check per leg
                     if any(broker_qty_by_symbol.get(s.strip().upper(), Decimal(0)) != 0 for s in needed_syms):
                         logger.info("Account flatten skip (broker not flat) trade_id=%s needed=%s", snap.trade_id, needed_syms)
@@ -789,6 +794,7 @@ class KillSwitchService:
         try:
             async with self._session_factory() as _ms:
                 from sqlalchemy import select as _sel
+
                 from app.db.models.manual_order import ManualPositionModel
 
                 _mres = await _ms.execute(
@@ -1051,7 +1057,6 @@ class KillSwitchService:
             if any(symbol not in exit_marks for symbol in needed):
                 # Attempt DB fallback via executions for this trade's orders
                 try:
-                    from app.db.repositories.execution_repository import ExecutionRepository
                     from app.oms.models import executions_weighted_average
 
                     # Build fallback marks from order executions dict if present
@@ -1070,6 +1075,7 @@ class KillSwitchService:
                         try:
                             exit_marks[o.symbol] = o.last_fill_price  # type: ignore[assignment]
                         except Exception:
+                            logger.exception("Failed to set exit mark from last_fill_price for %s", o.symbol)
                             continue
             if any(symbol not in exit_marks for symbol in needed):
                 logger.warning(
@@ -1173,7 +1179,9 @@ class KillSwitchService:
                             try:
                                 exec_rows = await exec_repo.list_by_internal_order_id(co.internal_order_id)
                                 if exec_rows:
-                                    from app.db.repositories.execution_repository import weighted_average_price
+                                    from app.db.repositories.execution_repository import (
+                                        weighted_average_price,
+                                    )
 
                                     wavg = weighted_average_price(exec_rows)
                                     if wavg is not None:
@@ -1191,6 +1199,7 @@ class KillSwitchService:
                                 exec_rows = await exec_repo.list_by_internal_order_id(co.internal_order_id)
                                 qty = sum((Decimal(str(r.quantity)) for r in exec_rows), Decimal(0))
                             except Exception:
+                                logger.exception("Failed to get exec qty for %s", co.internal_order_id)
                                 qty = Decimal(0)
                         if co.symbol and qty > 0:
                             filled_by_symbol[co.symbol] = (
@@ -1205,13 +1214,16 @@ class KillSwitchService:
                                     try:
                                         exec_rows = await exec_repo.list_by_internal_order_id(co.internal_order_id)
                                         if exec_rows:
-                                            from app.db.repositories.execution_repository import weighted_average_price
+                                            from app.db.repositories.execution_repository import (
+                                                weighted_average_price,
+                                            )
 
                                             wavg = weighted_average_price(exec_rows)
                                             if wavg is not None:
                                                 exit_marks[sym] = wavg
                                                 break
                                     except Exception:
+                                        logger.exception("Failed to get exit mark for %s", sym)
                                         continue
                     if any(symbol not in exit_marks for symbol in needed):
                         logger.warning(
