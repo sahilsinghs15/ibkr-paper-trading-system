@@ -311,7 +311,6 @@ export function ManualTradePage() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <Link to={`/account/${cleanAccount}/manual-trade/positions`} className="manual-btn">Positions</Link>
           <button type="button" className="manual-btn" onClick={() => void loadGatewayStatus()} disabled={gatewayLoading}>
             {gatewayLoading ? 'Checking…' : 'Refresh'}
           </button>
@@ -470,7 +469,7 @@ export function ManualTradePage() {
       {/* Open orders */}
       <section className="board" style={{ overflow: 'hidden' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderBottom: '1px solid var(--line)' }}>
-          <h3 style={{ margin: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--dim)' }}>Open orders <span style={{ color: 'var(--muted)', fontWeight: 400 }}>{orders.length}</span></h3>
+          <h3 style={{ margin: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--dim)' }}>Manual Orders <span style={{ color: 'var(--muted)', fontWeight: 400 }}>{orders.length}</span></h3>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             {ordersLoading && <span style={{ fontSize: 11, color: 'var(--muted)' }}>Updating…</span>}
             <button type="button" className="manual-btn" onClick={() => void loadManualOrders()} disabled={ordersLoading}>Refresh</button>
