@@ -445,49 +445,77 @@ class KillSwitchService:
         return True
 
     async def close_all_ledger_after_account_flatten(self, account_id: int, operation_id: UUID) -> int:
-        """Close ALL OPEN engine + manual ledger rows after successful account-level broker flatten.
+        """Close ledger rows after successful account-level broker flatten, ONLY with broker-flat verification.
 
-        Used ONLY for scope=account (operator explicitly requested to flatten entire IBKR account).
-        Unlike engine-only path, this is authorized to close both ledgers when broker is flat.
-        Uses trade_executions prices when available, otherwise falls back to entry marks + warning.
-        Idempotent: only closes rows still OPEN; preserves history via close_trade + event_log.
+        Safety invariant: NEVER create BROKER OPEN + LEDGER CLOSED. For account flatten,
+        ledger may only be closed for a position whose legs' broker symbols are now flat
+        (verified via broker_positions) AND whose execution quantities match.
+        If broker still shows quantity for a symbol, that position stays OPEN/UNRESOLVED.
+        If execution price missing for a leg, that position stays UNRESOLVED (no entry-mark fallback).
         """
+        from app.db.models.broker_position import BrokerPositionModel
         from app.db.models.manual_order import ManualPositionModel
         from app.db.models.trade_execution import TradeExecutionModel
+        from collections import defaultdict
 
         closed = 0
         async with self._session_factory() as session, session.begin():
-            # Engine positions
             eng_rows = (await session.execute(select(PositionModel).where(PositionModel.account_id == account_id, PositionModel.risk_state == "OPEN"))).scalars().all()
             man_rows = (await session.execute(select(ManualPositionModel).where(ManualPositionModel.account_id == account_id, ManualPositionModel.status == "OPEN"))).scalars().all()
 
-            # Build price map from recent trade_executions for this account (last 1 hour)
+            # Broker snapshot for this account – authoritative external reality
+            broker_rows = (await session.execute(select(BrokerPositionModel).where(BrokerPositionModel.account_id == account_id))).scalars().all()
+            broker_qty_by_symbol: dict[str, Decimal] = defaultdict(lambda: Decimal(0))
+            for b in broker_rows:
+                broker_qty_by_symbol[b.symbol.strip().upper()] += Decimal(str(b.signed_qty))
+
+            # Recent trade_executions for price + quantity verification (last 2h)
             from datetime import timedelta
 
             since = datetime.now(UTC) - timedelta(hours=2)
             exec_rows = (await session.execute(select(TradeExecutionModel).where(TradeExecutionModel.account_id == account_id, TradeExecutionModel.executed_at >= since))).scalars().all()
+            # Price: latest per symbol
             price_by_symbol: dict[str, Decimal] = {}
+            # Quantity: sum per symbol
+            exec_qty_by_symbol: dict[str, Decimal] = defaultdict(lambda: Decimal(0))
             for e in exec_rows:
-                # Keep latest price per symbol
-                price_by_symbol[e.symbol.strip().upper()] = Decimal(str(e.price))
+                norm = e.symbol.strip().upper()
+                price_by_symbol[norm] = Decimal(str(e.price))
+                exec_qty_by_symbol[norm] += Decimal(str(e.quantity)).copy_abs()
 
+            # Engine: only close if BOTH legs broker-flat (qty 0) and execution qty covers leg qty and price available
             for p in eng_rows:
-                # Verify broker is flat for its legs via LEDGER_GHOST check would be ideal, but for account flatten we are explicitly authorized
                 needed = [s for s in (p.leg_a_symbol, p.leg_b_symbol) if s]
-                exit_marks: dict[str, Decimal] = {}
+                # Broker-flat check per leg
+                broker_still_open = any(broker_qty_by_symbol.get(s.strip().upper(), Decimal(0)) != 0 for s in needed)
+                if broker_still_open:
+                    logger.warning(
+                        "Account flatten skip ledger close: broker still OPEN for trade_id=%s needed=%s broker_qty=%s",
+                        p.trade_id,
+                        needed,
+                        {s: str(broker_qty_by_symbol.get(s.strip().upper(), Decimal(0))) for s in needed},
+                    )
+                    continue
+                # Execution evidence check per leg
+                leg_qtys = {p.leg_a_symbol.strip().upper(): abs(p.leg_a_signed_qty), p.leg_b_symbol.strip().upper(): abs(p.leg_b_signed_qty) if p.leg_b_symbol and p.leg_b_signed_qty else None}
+                # Verify each needed symbol has execution qty >= leg qty and price
+                missing_price = [s for s in needed if s.strip().upper() not in price_by_symbol]
+                if missing_price:
+                    logger.warning("Account flatten skip: missing execution price for trade_id=%s missing=%s", p.trade_id, missing_price)
+                    continue
+                insufficient_qty = []
                 for sym in needed:
                     norm = sym.strip().upper()
-                    if norm in price_by_symbol:
-                        exit_marks[sym] = price_by_symbol[norm]
-                    else:
-                        # Fallback: use entry mark (zero PnL) with warning – still closes ghost, preserves manual isolation
-                        logger.warning("Account flatten fallback exit price for %s trade_id=%s using entry mark", sym, p.trade_id)
-                        if sym == p.leg_a_symbol:
-                            exit_marks[sym] = p.leg_a_entry_mark
-                        elif sym == p.leg_b_symbol and p.leg_b_entry_mark is not None:
-                            exit_marks[sym] = p.leg_b_entry_mark
+                    required = leg_qtys.get(norm)
+                    if required is None:
+                        continue
+                    if exec_qty_by_symbol.get(norm, Decimal(0)) < required - Decimal("0.0001"):
+                        insufficient_qty.append(f"{sym} need {required} have {exec_qty_by_symbol.get(norm, Decimal(0))}")
+                if insufficient_qty:
+                    logger.warning("Account flatten skip: insufficient execution qty for trade_id=%s %s", p.trade_id, insufficient_qty)
+                    continue
+                exit_marks = {sym: price_by_symbol[sym.strip().upper()] for sym in needed}
                 try:
-                    # Use row-level lock inside close_trade
                     repo = PositionRepository(session)
                     await repo.close_trade(p.trade_id, account_id=account_id, exit_marks=exit_marks)
                     from app.db.repositories.event_repository import EventRepository
@@ -495,7 +523,7 @@ class KillSwitchService:
                     await EventRepository(session).append(
                         process="position",
                         kind="POSITION_CLOSE",
-                        detail={"account_id": account_id, "trade_id": p.trade_id, "source": "ACCOUNT_FLATTEN", "operation_id": str(operation_id)},
+                        detail={"account_id": account_id, "trade_id": p.trade_id, "source": "ACCOUNT_FLATTEN", "operation_id": str(operation_id), "exit_marks": {k: str(v) for k, v in exit_marks.items()}},
                         idempotency_key=f"position_close:account_flatten:{account_id}:{p.trade_id}",
                     )
                     closed += 1
@@ -503,8 +531,16 @@ class KillSwitchService:
                 except Exception:
                     logger.exception("Account flatten failed to close engine trade_id=%s", p.trade_id)
 
+            # Manual: only close if broker shows flat for that symbol
             for m in man_rows:
-                # Manual close: set status CLOSED, signed_qty 0, preserve realized_pnl
+                norm = m.symbol.strip().upper()
+                if broker_qty_by_symbol.get(norm, Decimal(0)) != 0:
+                    logger.warning("Account flatten skip manual: broker still OPEN symbol=%s qty=%s trade_id=%s", m.symbol, broker_qty_by_symbol.get(norm), m.trade_id)
+                    continue
+                # Require execution qty covering manual qty
+                if exec_qty_by_symbol.get(norm, Decimal(0)) < abs(m.signed_qty) - Decimal("0.0001"):
+                    logger.warning("Account flatten skip manual: insufficient exec qty symbol=%s need %s have %s", m.symbol, abs(m.signed_qty), exec_qty_by_symbol.get(norm))
+                    continue
                 m.status = "CLOSED"
                 m.signed_qty = Decimal(0)
                 m.closed_at = datetime.now(UTC)
@@ -518,9 +554,24 @@ class KillSwitchService:
                     detail={"account_id": account_id, "trade_id": m.trade_id, "source": "ACCOUNT_FLATTEN", "operation_id": str(operation_id)},
                     idempotency_key=f"manual_close:account_flatten:{account_id}:{m.trade_id}",
                 )
+            # Update operation: if any positions remain OPEN, keep UNRESOLVED, else COMPLETE
+            remaining_eng = len([p for p in eng_rows if p.risk_state == "OPEN"])  # after closes, need re-query
+            # Re-query to get actual remaining
+            remaining_eng_rows = (await session.execute(select(PositionModel).where(PositionModel.account_id == account_id, PositionModel.risk_state == "OPEN"))).scalars().all()
+            remaining_man_rows = (await session.execute(select(ManualPositionModel).where(ManualPositionModel.account_id == account_id, ManualPositionModel.status == "OPEN"))).scalars().all()
+            remaining = len(remaining_eng_rows) + len(remaining_man_rows)
         if closed:
-            # Also update operation counts
-            await self._update_operation_completion(operation_id, final_status=KILL_SWITCH_STATUS_COMPLETE if closed else KILL_SWITCH_STATUS_UNRESOLVED, unresolved=0)
+            # Determine final status based on remaining, not just closed count
+            final = KILL_SWITCH_STATUS_COMPLETE if remaining == 0 else KILL_SWITCH_STATUS_UNRESOLVED
+            await self._update_operation_completion(operation_id, final_status=final, unresolved=remaining)
+            logger.info("Account flatten ledger close done: closed=%s remaining=%s final=%s", closed, remaining, final)
+        else:
+            # No positions closed – ensure operation reflects UNRESOLVED if broker still has positions
+            # Check broker still has positions
+            async with self._session_factory() as s:
+                br = (await s.execute(select(BrokerPositionModel).where(BrokerPositionModel.account_id == account_id))).scalars().all()
+                if br:
+                    await self._update_operation_completion(operation_id, final_status=KILL_SWITCH_STATUS_UNRESOLVED, unresolved=len(br))
         return closed
 
     async def _execute_flatten_operation(self, operation_id: UUID) -> None:
