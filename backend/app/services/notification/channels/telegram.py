@@ -92,19 +92,23 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         title = (logical.title or "").strip()
         first_char = title[0] if title else ""
 
+        escaped_title = html.escape(title)
+        escaped_msg = (
+            html.escape(logical.message or "")
+            .replace("&lt;pre&gt;", "<pre>")
+            .replace("&lt;/pre&gt;", "</pre>")
+            .replace("&lt;code&gt;", "<code>")
+            .replace("&lt;/code&gt;", "</code>")
+        )
+
         # If title already starts with an icon, do not duplicate
         if first_char in ("🟢", "🔴", "⚠️", "🚨", "ℹ️", "📅"):
-            escaped_title = html.escape(title)
-            escaped_msg = html.escape(logical.message or "")
             if escaped_msg and escaped_msg != escaped_title:
-                return f"<b>{escaped_title}</b>\n{escaped_msg}"
+                return f"<b>{escaped_title}</b>\n\n{escaped_msg}"
             return f"<b>{escaped_title}</b>"
 
-        escaped_title = html.escape(title)
-        escaped_msg = html.escape(logical.message or "")
-
         if escaped_msg and escaped_msg != escaped_title:
-            return f"{icon} <b>{escaped_title}</b>\n{escaped_msg}"
+            return f"{icon} <b>{escaped_title}</b>\n\n{escaped_msg}"
         return f"{icon} <b>{escaped_title}</b>"
 
     async def _apply_rate_limit(self) -> None:
@@ -129,7 +133,11 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         Never raises unhandled exceptions. Classifies failure as retryable vs permanent.
         """
         # Recipient is stored on the delivery record or falls back to adapter default
-        recipient_chat_id = delivery.recipient or self._chat_id
+        recipient_chat_id = (
+            self._chat_id
+            if (not delivery.recipient or delivery.recipient.strip().lower() in ("default", "none", ""))
+            else delivery.recipient
+        )
         if not self._bot_token or not recipient_chat_id:
             return DeliveryResult(
                 success=False,

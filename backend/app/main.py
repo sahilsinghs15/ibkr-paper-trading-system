@@ -62,12 +62,17 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         window_sec=settings.notification_startup_window_sec,
     )
     fastapi_app.state.startup_aggregator = startup_aggregator
-    startup_aggregator.record_component("database", is_ready=True, detail="PostgreSQL schema ready")
+    startup_aggregator.record_component("ec2_instance", is_ready=True, detail="Host environment nominal")
+    startup_aggregator.record_component("oems_engine", is_ready=True, detail="FastAPI trading engine active")
     if not testing:
         await startup_aggregator.start_window()
 
     client = TWSClient()
-    broker_listener = BrokerNotificationListener(notification_orchestrator, client)
+    broker_listener = BrokerNotificationListener(
+        notification_orchestrator,
+        client,
+        startup_aggregator=startup_aggregator,
+    )
     broker_listener.bind_loop(asyncio.get_running_loop())
     client.register_listener(broker_listener)
     fastapi_app.state.broker_listener = broker_listener
@@ -138,9 +143,14 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         timeout=settings.ibkr_connection_timeout,
     )
     startup_aggregator.record_component(
-        "broker",
+        "ib_gateway",
         is_ready=success,
-        detail=f"IBKR TWS/Gateway at {settings.ibkr_host}:{settings.ibkr_port}",
+        detail=f"IBKR TWS/Gateway socket at {settings.ibkr_host}:{settings.ibkr_port}",
+    )
+    startup_aggregator.record_component(
+        "broker_connection",
+        is_ready=success,
+        detail="TWSClient socket connection",
     )
     if not success:
         logger.warning(
@@ -218,11 +228,6 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     if not testing:
         await worker_pool.start()
     fastapi_app.state.worker_pool = worker_pool
-    startup_aggregator.record_component(
-        "worker_pool",
-        is_ready=True,
-        detail="10 execution workers started",
-    )
     margin_scanner._worker_pool = worker_pool
     if settings.margin_scan_enabled and not testing:
         await margin_scanner.start_background()
@@ -236,11 +241,6 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     if not testing:
         await position_reconciler.start()
     fastapi_app.state.position_reconciler = position_reconciler
-    startup_aggregator.record_component(
-        "position_reconciler",
-        is_ready=True,
-        detail="Reconciliation loop active",
-    )
 
     from app.services.red_zone_release import RedZoneReleaseService
 

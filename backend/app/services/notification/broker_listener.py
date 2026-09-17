@@ -25,10 +25,16 @@ class BrokerNotificationListener:
         client: Any = None,
         *,
         loop: asyncio.AbstractEventLoop | None = None,
+        startup_aggregator: Any | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._client = client
         self._loop = loop
+        self._startup_aggregator = startup_aggregator
+
+    def set_startup_aggregator(self, aggregator: Any | None) -> None:
+        """Set or update startup aggregator reference."""
+        self._startup_aggregator = aggregator
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Bind active event loop for scheduling async coroutines from background thread."""
@@ -71,6 +77,22 @@ class BrokerNotificationListener:
 
     def on_next_valid_id(self, order_id: int) -> Any:
         """Invoked by TWSClient when initial handshake finishes (nextValidId received)."""
+        if self._startup_aggregator is not None and getattr(self._startup_aggregator, "is_window_active", False):
+            logger.info(
+                "Startup window active; recording ib_login milestone instead of emitting separate alert (next_order_id=%s)",
+                order_id,
+            )
+            self._startup_aggregator.record_component(
+                "ib_login",
+                is_ready=True,
+                detail=f"Authenticated (next_order_id={order_id})",
+            )
+            self._startup_aggregator.record_component(
+                "broker_connection",
+                is_ready=True,
+                detail="TWS socket connected and authenticated",
+            )
+            return None
         return self._dispatch(self._handle_login_completed(order_id))
 
     async def _handle_connection_closed(self) -> None:

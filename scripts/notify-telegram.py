@@ -222,20 +222,7 @@ def do_market_closed() -> int:
     if state_date == today_s:
         return 0
 
-    severity = NotificationSeverity.INFO if NotificationSeverity is not None else "INFO"
-
-    centralized_ok = _publish_centralized_event(
-        event_type="MARKET_CLOSED",
-        title=f"Market closed — {reason}",
-        message=f"Market closed — {reason}",
-        category="SYSTEM",
-        severity=severity,
-        dedupe_key=idempotency_key,
-        details=detail,
-    )
-
-    if not centralized_ok:
-        _send(text)
+    _send(text)
 
     try:
         state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -246,75 +233,6 @@ def do_market_closed() -> int:
     except OSError as err:
         logger.debug("Could not write state file: %s", err)
     return 0
-
-
-def _publish_centralized_event(
-    event_type: str,
-    title: str,
-    message: str,
-    category: str,
-    severity: Any,
-    dedupe_key: str | None = None,
-    details: dict[str, Any] | None = None,
-) -> bool:
-    """Ingest event into NotificationOrchestrator and immediately dispatch via worker."""
-    if os.environ.get("TRADINGAPP_TESTING") == "1":
-        return False
-    try:
-        from app.db.session import AsyncSessionLocal
-        from app.services.notification.orchestrator import NotificationOrchestrator
-        from app.services.notification.types import NormalizedEvent
-        from app.services.notification.worker import NotificationDeliveryWorker
-
-        async def _run() -> bool:
-            orchestrator = NotificationOrchestrator(AsyncSessionLocal)
-            event = NormalizedEvent(
-                event_type=event_type,
-                title=title,
-                message=message,
-                category=category,
-                severity=severity,
-                dedupe_key=dedupe_key,
-                details=details or {},
-            )
-            notif = await orchestrator.ingest_event(event)
-            if notif and notif.status != "SUPPRESSED":
-                worker = NotificationDeliveryWorker(AsyncSessionLocal)
-                await worker.run_once()
-            return True
-
-        return asyncio.run(_run())
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Centralized notification ingest/dispatch failed: %s", exc)
-        return False
-
-
-CANONICAL_SERVICES: dict[str, dict[str, Any]] = {
-    "ibgateway": {
-        "friendly_name": "Broker Engine",
-        "unit": "ibgateway.service",
-        "SERVICE_STARTED": {"icon": "🟢", "message": "Broker Engine Started Successfully"},
-        "SERVICE_STOPPED": {"icon": "🔴", "message": "Broker Engine Stopped"},
-    },
-    "trading-backend": {
-        "friendly_name": "OEMS Engine",
-        "unit": "trading-backend.service",
-        "SERVICE_STARTED": {"icon": "🟢", "message": "OEMS Engine Started Successfully"},
-        "SERVICE_STOPPED": {"icon": "🔴", "message": "OEMS Engine Stopped"},
-    },
-    "webhook-ingest": {
-        "friendly_name": "Signal Receiver",
-        "unit": "webhook-ingest.service",
-        "SERVICE_STARTED": {"icon": "🟢", "message": "Signal Receiver Started Successfully"},
-        "SERVICE_STOPPED": {"icon": "🔴", "message": "Signal Receiver Stopped"},
-    },
-    "demo-streaming": {
-        "friendly_name": "Dashboard Engine",
-        "unit": "demo-streaming.service",
-        "SERVICE_STARTED": {"icon": "🟢", "message": "Dashboard Engine Started Successfully"},
-        "SERVICE_STOPPED": {"icon": "🔴", "message": "Dashboard Stopped"},
-    },
-}
 
 
 def main(argv: list[str]) -> int:
@@ -328,69 +246,14 @@ def main(argv: list[str]) -> int:
     try:
         if cmd == "market-closed":
             return do_market_closed()
-        if cmd in ("start", "stop") and len(argv) >= 3:
-            svc = argv[2].strip()
-            if svc not in ALLOWED_SERVICES:
-                # allow suffix .service
-                svc = svc.replace(".service", "")
-                if svc not in ALLOWED_SERVICES:
-                    return 0
-
-            kind = "SERVICE_STARTED" if cmd == "start" else "SERVICE_STOPPED"
-            svc_cfg = CANONICAL_SERVICES.get(svc, {})
-            action_cfg = svc_cfg.get(kind, {})
-            friendly_name = svc_cfg.get("friendly_name", svc)
-            icon = action_cfg.get("icon", "🟢" if cmd == "start" else "🔴")
-            title = action_cfg.get(
-                "message",
-                f"{friendly_name} {'Started Successfully' if cmd == 'start' else 'Stopped'}",
+        if cmd in ("start", "stop"):
+            svc = argv[2].strip() if len(argv) >= 3 else "unknown"
+            logger.info(
+                "DEPRECATED: notify-telegram.py %s %s called. "
+                "Lifecycle notifications are aggregated centralizedly; ignoring legacy hook.",
+                cmd,
+                svc,
             )
-            text = f"{icon} {title}"
-
-            now_ts = int(time.time())
-            inv_id = os.environ.get("INVOCATION_ID") or f"{now_ts}_{os.getpid()}"
-            idempotency_key = f"service:{svc}:{cmd}:{inv_id}"
-            detail = {
-                "service": svc,
-                "unit": f"{svc}.service",
-                "action": cmd,
-                "friendly_name": friendly_name,
-                "icon": icon,
-                "title": title,
-                "message": title,
-            }
-
-            # 1. Persist to PostgreSQL event_log
-            _persist_event(
-                process="systemd",
-                kind=kind,
-                detail=detail,
-                idempotency_key=idempotency_key,
-            )
-
-            # 2. Ingest into Centralized Notification System (orchestrator + delivery worker)
-            if NotificationSeverity is not None:
-                severity = (
-                    NotificationSeverity.INFO
-                    if cmd == "start"
-                    else NotificationSeverity.WARNING
-                )
-            else:
-                severity = "INFO" if cmd == "start" else "WARNING"
-
-            centralized_ok = _publish_centralized_event(
-                event_type=kind,
-                title=title,
-                message=title,
-                category="INFRASTRUCTURE",
-                severity=severity,
-                dedupe_key=idempotency_key,
-                details=detail,
-            )
-
-            # 3. Fallback direct send only if centralized dispatch was not executed
-            if not centralized_ok:
-                _send(text)
             return 0
         return 0
     except Exception as exc:  # noqa: BLE001

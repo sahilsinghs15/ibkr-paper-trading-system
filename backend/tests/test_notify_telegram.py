@@ -26,35 +26,28 @@ def _mock_settings(enabled=True, token="tok", chat="123"):
 
 @patch("notify_telegram._load_settings")
 @patch("app.services.watchdog.telegram.TelegramClient")
-def test_start_message(mock_client_cls, mock_settings):
+def test_start_message_deprecated_noop(mock_client_cls, mock_settings):
+    """start <service> is deprecated in favor of centralized startup aggregator and sends no message."""
     mock_settings.return_value = _mock_settings()
     mock_client = MagicMock()
     mock_client.send_message = AsyncMock(return_value=True)
     mock_client_cls.return_value = mock_client
     rc = notify.main(["prog", "start", "ibgateway"])
     assert rc == 0
-    # check message sent contains service + started and correct icon
-    args, _kwargs = mock_client.send_message.call_args
-    text = args[0]
-    assert "Broker Engine" in text
-    assert "Started Successfully" in text
-    assert "\U0001f7e2" in text
-    assert "PID" not in text
+    mock_client.send_message.assert_not_called()
 
 
 @patch("notify_telegram._load_settings")
 @patch("app.services.watchdog.telegram.TelegramClient")
-def test_stop_message(mock_client_cls, mock_settings):
+def test_stop_message_deprecated_noop(mock_client_cls, mock_settings):
+    """stop <service> is deprecated and sends no message."""
     mock_settings.return_value = _mock_settings()
     mock_client = MagicMock()
     mock_client.send_message = AsyncMock(return_value=True)
     mock_client_cls.return_value = mock_client
     rc = notify.main(["prog", "stop", "trading-backend"])
     assert rc == 0
-    text = mock_client.send_message.call_args[0][0]
-    assert "OEMS Engine" in text
-    assert "Stopped" in text
-    assert "\U0001f534" in text
+    mock_client.send_message.assert_not_called()
 
 
 @patch("notify_telegram._load_settings")
@@ -69,41 +62,8 @@ def test_disabled_no_send(mock_settings):
 @patch("notify_telegram._load_settings")
 def test_missing_config_no_failure(mock_settings):
     mock_settings.return_value = _mock_settings(token=None, chat=None)
-    # should exit 0, no exception, no send
     rc = notify.main(["prog", "stop", "webhook-ingest"])
     assert rc == 0
-
-
-@patch("notify_telegram._load_settings")
-@patch("app.services.watchdog.telegram.TelegramClient")
-def test_api_failure_exits_safely(mock_client_cls, mock_settings):
-    mock_settings.return_value = _mock_settings()
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock(side_effect=Exception("network"))
-    mock_client_cls.return_value = mock_client
-    rc = notify.main(["prog", "start", "ibgateway"])
-    assert rc == 0  # must not propagate
-
-
-def test_start_message_format_concise():
-    # ensure helper does not add verbose fields
-    with patch("notify_telegram._load_settings", return_value=_mock_settings()), patch("app.services.watchdog.telegram.TelegramClient") as mock_cls:
-        mock_client = MagicMock()
-        mock_client.send_message = AsyncMock(return_value=True)
-        mock_cls.return_value = mock_client
-        notify.main(["prog", "start", "demo-streaming"])
-        text = mock_client.send_message.call_args[0][0]
-        assert text == "\U0001f7e2 Dashboard Engine Started Successfully"
-
-
-def test_stop_message_format_concise():
-    with patch("notify_telegram._load_settings", return_value=_mock_settings()), patch("app.services.watchdog.telegram.TelegramClient") as mock_cls:
-        mock_client = MagicMock()
-        mock_client.send_message = AsyncMock(return_value=True)
-        mock_cls.return_value = mock_client
-        notify.main(["prog", "stop", "webhook-ingest"])
-        text = mock_client.send_message.call_args[0][0]
-        assert text == "\U0001f534 Signal Receiver Stopped"
 
 
 def test_market_closed_once_per_day(tmp_path, monkeypatch):

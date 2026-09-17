@@ -648,14 +648,15 @@ async def test_startup_aggregator_all_ready(session_factory):
             )
         ).scalars().all()
         assert len(notifs) == 1
-        assert notifs[0].title == "GLOBAL OEMS READY"
+        assert "OEMS Started Successfully" in notifs[0].title
         assert notifs[0].severity == NotificationSeverity.INFO.value
-        assert "All critical systems nominal" in notifs[0].message
+        assert "Database" in notifs[0].message
+        assert "✓" in notifs[0].message
 
 
 @pytest.mark.asyncio
 async def test_startup_aggregator_partial_warning(session_factory):
-    """StartupAggregator produces PARTIAL STARTUP WARNING when a critical component fails."""
+    """StartupAggregator produces OEMS Startup Warning when a critical component fails."""
     orchestrator = NotificationOrchestrator(session_factory)
     aggregator = StartupAggregator(
         orchestrator=orchestrator,
@@ -678,9 +679,9 @@ async def test_startup_aggregator_partial_warning(session_factory):
             )
         ).scalars().all()
         assert len(notifs) == 1
-        assert notifs[0].title == "PARTIAL STARTUP WARNING"
+        assert "OEMS Startup Warning" in notifs[0].title
         assert notifs[0].severity == NotificationSeverity.WARNING.value
-        assert "degraded at startup" in notifs[0].message
+        assert "✗" in notifs[0].message
         assert notifs[0].payload["ready"] is False
         assert "broker" in notifs[0].payload["failed"]
 
