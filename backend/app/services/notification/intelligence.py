@@ -8,7 +8,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -47,6 +47,8 @@ class NotificationIntelligenceEngine:
         """Resolve cooldown duration based on severity and event type."""
         if event_type in ("STARTUP_AGGREGATION", "BROKER_RECONNECTED"):
             return 0.0
+        if event_type in ("SERVICE_STOPPED", "SERVICE_STARTED"):
+            return 10.0  # Debounce duplicate CLI/watcher emissions without suppressing genuine operator actions
         settings = get_settings()
         if severity == NotificationSeverity.CRITICAL:
             return settings.notification_cooldown_critical_sec
@@ -233,20 +235,24 @@ class NotificationIntelligenceEngine:
                 if recent_notif is not None:
                     # Check if there was a recovery event following recent_notif
                     # If the prior incident was already resolved, this is a genuine new incident, not duplicate spam
-                    recovery_query = (
-                        select(NotificationLogModel.id)
-                        .where(
-                            NotificationLogModel.status != NotificationStatus.SUPPRESSED.value,
-                            (
-                                (NotificationLogModel.correlation_id == event.correlation_id)
-                                if event.correlation_id
-                                else (NotificationLogModel.category == event.category)
-                            ),
-                            NotificationLogModel.id > recent_notif.id,
-                            NotificationLogModel.created_at <= now,
+                    recovery_filters = [
+                        NotificationLogModel.status != NotificationStatus.SUPPRESSED.value,
+                        NotificationLogModel.id > recent_notif.id,
+                        NotificationLogModel.created_at <= now,
+                    ]
+                    if event.correlation_id == "oems_engine":
+                        recovery_filters.append(
+                            or_(
+                                NotificationLogModel.correlation_id == "oems_engine",
+                                NotificationLogModel.event_type == "STARTUP_AGGREGATION",
+                            )
                         )
-                        .limit(1)
-                    )
+                    elif event.correlation_id:
+                        recovery_filters.append(NotificationLogModel.correlation_id == event.correlation_id)
+                    else:
+                        recovery_filters.append(NotificationLogModel.category == event.category)
+
+                    recovery_query = select(NotificationLogModel.id).where(*recovery_filters).limit(1)
                     has_recovered = (await session.execute(recovery_query)).scalar_one_or_none() is not None
                     if not has_recovered:
                         logger.info(
