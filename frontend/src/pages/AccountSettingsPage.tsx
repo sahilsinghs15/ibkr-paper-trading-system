@@ -9,7 +9,6 @@ import {
   fetchMarginSettings,
   fetchTradingPause,
   patchAccount,
-  patchAllocation,
   patchExecutionSettings,
   patchMarginSettings,
   pauseTrading,
@@ -24,12 +23,7 @@ import { usePnlStore } from '../store/pnlStore'
 import type { ExecutionSettings, MarginSettings } from '../types/config'
 import { normalizeIbkrAccount } from '../utils/activeAccount'
 import { showFeedbackToast } from '../utils/feedbackToast'
-import {
-  cleanNumberInput,
-  displayStrategy,
-  fmtPct,
-  fmtUsd,
-} from '../utils/format'
+import { cleanNumberInput, fmtUsd } from '../utils/format'
 
 function extractError(err: unknown): string {
   if (typeof err === 'object' && err !== null && 'response' in err) {
@@ -38,14 +32,6 @@ function extractError(err: unknown): string {
   }
   if (err instanceof Error) return err.message
   return 'Request failed'
-}
-
-function pctFromDecimal(value: string): number {
-  return Math.round(parseFloat(value) * 10000) / 100
-}
-
-function decimalFromPct(pct: number): string {
-  return (pct / 100).toFixed(4)
 }
 
 function thresholdInputValue(
@@ -90,19 +76,6 @@ function killSwitchRearmNotice(
     title: 'Kill switch re-armed',
     message: 'This account is blocked from new opening signals again.',
   }
-}
-
-interface AllocationDraft {
-  allocPct: number
-  enabled: boolean
-  maxOpenPositions: number
-  pairMaxAllocationPct: number
-  target: string
-  stop: string
-  timeLimit: number
-  targetUnit: string
-  stopUnit: string
-  exitAutomationEnabled: boolean
 }
 
 function executionSummary(s: {
@@ -511,7 +484,6 @@ export function AccountSettingsPage() {
   const [dailyStopUnit, setDailyStopUnit] = useState('ABSOLUTE')
   const [accountRiskEnabled, setAccountRiskEnabled] = useState(false)
   const [cancelExposure, setCancelExposure] = useState(false)
-  const [drafts, setDrafts] = useState<Record<number, AllocationDraft>>({})
   const [newSymbol, setNewSymbol] = useState('')
   const [newLimit, setNewLimit] = useState('')
   const [message, setMessage] = useState<string | null>(null)
@@ -598,25 +570,6 @@ export function AccountSettingsPage() {
       setDailyStop(thresholdInputValue(account.daily_stop, stpUnit))
       setAccountRiskEnabled(Boolean(account.account_risk_enabled))
       setCancelExposure(Boolean(account.cancel_exposure))
-      setDrafts(
-        Object.fromEntries(
-          account.allocations.map((a) => [
-            a.id,
-            {
-              allocPct: pctFromDecimal(a.alloc_pct),
-              enabled: a.enabled,
-              maxOpenPositions: a.max_open_positions,
-              pairMaxAllocationPct: pctFromDecimal(a.pair_max_allocation_pct),
-              target: thresholdInputValue(a.target, a.target_unit || 'ABSOLUTE'),
-              stop: thresholdInputValue(a.stop, a.stop_unit || 'ABSOLUTE'),
-              timeLimit: a.time_limit,
-              targetUnit: a.target_unit || 'ABSOLUTE',
-              stopUnit: a.stop_unit || 'ABSOLUTE',
-              exitAutomationEnabled: Boolean(a.exit_automation_enabled),
-            },
-          ]),
-        ),
-      )
     }
   }, [account])
 
@@ -638,35 +591,6 @@ export function AccountSettingsPage() {
       setMessage('Account configuration saved.')
       setLocalError(null)
       showFeedbackToast('success', 'Settings saved', 'Account configuration saved.')
-      void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
-      void queryClient.invalidateQueries({ queryKey: ['config', 'accounts'] })
-    },
-    onError: (err: unknown) => {
-      const text = extractError(err)
-      setLocalError(text)
-      setMessage(null)
-      showFeedbackToast('error', 'Save failed', text)
-    },
-  })
-
-  const allocationMutation = useMutation({
-    mutationFn: ({ id, draft }: { id: number; draft: AllocationDraft }) =>
-      patchAllocation(id, {
-        alloc_pct: decimalFromPct(draft.allocPct),
-        enabled: draft.enabled,
-        max_open_positions: draft.maxOpenPositions,
-        pair_max_allocation_pct: decimalFromPct(draft.pairMaxAllocationPct),
-        target: thresholdPayload(draft.target, draft.targetUnit),
-        stop: thresholdPayload(draft.stop, draft.stopUnit),
-        time_limit: draft.timeLimit,
-        target_unit: draft.targetUnit,
-        stop_unit: draft.stopUnit,
-        exit_automation_enabled: draft.exitAutomationEnabled,
-      }),
-    onSuccess: () => {
-      setMessage('Strategy allocation saved.')
-      setLocalError(null)
-      showFeedbackToast('success', 'Settings saved', 'Strategy allocation saved.')
       void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
       void queryClient.invalidateQueries({ queryKey: ['config', 'accounts'] })
     },
@@ -742,22 +666,6 @@ export function AccountSettingsPage() {
     },
   })
 
-  function updateDraft(id: number, patch: Partial<AllocationDraft>) {
-    setDrafts((prev) => ({
-      ...prev,
-      [id]: { ...prev[id], ...patch },
-    }))
-  }
-
-  const enabledSum = useMemo(
-    () =>
-      Object.values(drafts).reduce(
-        (sum, d) => sum + (d.enabled ? d.allocPct : 0),
-        0,
-      ),
-    [drafts],
-  )
-  const sumOver = enabledSum > 100.0001
   const showIbkrId = Boolean(
     account?.name &&
       account.ibkr_account &&
@@ -1048,106 +956,6 @@ export function AccountSettingsPage() {
           </div>
 
           <div className="settings-column">
-            {/* ── STRATEGY ALLOCATIONS ── */}
-            {account.allocations.map((a) => {
-              const draft = drafts[a.id] || {
-                allocPct: pctFromDecimal(a.alloc_pct),
-                enabled: a.enabled,
-                maxOpenPositions: a.max_open_positions,
-                pairMaxAllocationPct: pctFromDecimal(a.pair_max_allocation_pct),
-                target: thresholdInputValue(a.target, a.target_unit || 'ABSOLUTE'),
-                stop: thresholdInputValue(a.stop, a.stop_unit || 'ABSOLUTE'),
-                timeLimit: a.time_limit,
-                targetUnit: a.target_unit || 'ABSOLUTE',
-                stopUnit: a.stop_unit || 'ABSOLUTE',
-                exitAutomationEnabled: Boolean(a.exit_automation_enabled),
-              }
-              const committed = (parseFloat(account.total_margin) * (draft.enabled ? draft.allocPct : 0)) / 100
-              return (
-                <section key={a.id} className="settings-card">
-                  <div className="settings-block">
-                    <div className="settings-block-h">
-                      <h2>STRATEGY — {displayStrategy(a.strategy_id).toUpperCase()}</h2>
-                      <span className={`alloc-sum ${sumOver ? 'over' : ''}`}>Enabled total {fmtPct(enabledSum)}</span>
-                    </div>
-                    <div className="alloc-card">
-                      <div className="alloc-card-h">
-                        <h3>{displayStrategy(a.strategy_id)}</h3>
-                        <label className="toggle-row">
-                          <input type="checkbox" checked={draft.enabled} onChange={(e) => updateDraft(a.id, { enabled: e.target.checked })} />
-                          <span>{draft.enabled ? 'Enabled' : 'Disabled'}</span>
-                        </label>
-                      </div>
-                      <div className="settings-grid">
-                        <label className="field">
-                          <span>Allocation</span>
-                          <div className="money-field">
-                            <input type="number" min="0" max="100" step="1" value={draft.allocPct} onChange={(e) => updateDraft(a.id, { allocPct: parseFloat(e.target.value) || 0 })} />
-                            <span className="money-suffix">%</span>
-                          </div>
-                          <span className="field-hint">Committed: {fmtUsd(String(committed))}</span>
-                        </label>
-                        <label className="field">
-                          <span>Max Open Positions</span>
-                          <input className="inline-input narrow" type="number" min="1" step="1" value={draft.maxOpenPositions} onChange={(e) => updateDraft(a.id, { maxOpenPositions: parseInt(e.target.value, 10) || 1 })} />
-                        </label>
-                        <label className="field">
-                          <span>Per-pair allocation</span>
-                          <div className="money-field">
-                            <input className="inline-input" type="number" min="0.01" max="100" step="0.01" value={draft.pairMaxAllocationPct} onChange={(e) => updateDraft(a.id, { pairMaxAllocationPct: parseFloat(e.target.value) || 0 })} />
-                            <span className="money-suffix">%</span>
-                          </div>
-                          <span className="field-hint">
-                            {fmtPct(draft.pairMaxAllocationPct)} of {fmtUsd(String(committed))} = {fmtUsd(String((committed * draft.pairMaxAllocationPct) / 100))} per pair
-                          </span>
-                        </label>
-                        <div className="settings-block-h" style={{ width: '100%', marginTop: 4 }}>
-                          <h3 style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em' }}>Exit Automation</h3>
-                          <label className="toggle-row">
-                            <input type="checkbox" checked={draft.exitAutomationEnabled} onChange={(e) => updateDraft(a.id, { exitAutomationEnabled: e.target.checked })} />
-                            <span>{draft.exitAutomationEnabled ? 'Enabled' : 'Disabled'}</span>
-                          </label>
-                        </div>
-                        <p className="field-hint" style={{ width: '100%' }}>
-                          Target/stop/time_limit copied onto each pair at open. Edits apply to new pairs only; click an Open Positions row for existing pairs.
-                        </p>
-                        <label className="field">
-                          <span>Pair target</span>
-                          <div className="money-field">
-                            {draft.targetUnit === 'ABSOLUTE' ? <span className="money-prefix">$</span> : null}
-                            <input type="number" step={draft.targetUnit === 'PERCENT' ? '0.01' : '1'} value={draft.target} onChange={(e) => updateDraft(a.id, { target: e.target.value })} />
-                            <select className="inline-input" value={draft.targetUnit} onChange={(e) => updateDraft(a.id, { targetUnit: e.target.value })}>
-                              <option value="ABSOLUTE">USD</option>
-                              <option value="PERCENT">% of pair</option>
-                            </select>
-                          </div>
-                        </label>
-                        <label className="field">
-                          <span>Pair stop</span>
-                          <div className="money-field">
-                            {draft.stopUnit === 'ABSOLUTE' ? <span className="money-prefix">$</span> : null}
-                            <input type="number" step={draft.stopUnit === 'PERCENT' ? '0.01' : '1'} value={draft.stop} onChange={(e) => updateDraft(a.id, { stop: e.target.value })} />
-                            <select className="inline-input" value={draft.stopUnit} onChange={(e) => updateDraft(a.id, { stopUnit: e.target.value })}>
-                              <option value="ABSOLUTE">USD</option>
-                              <option value="PERCENT">% of pair</option>
-                            </select>
-                          </div>
-                        </label>
-                        <label className="field">
-                          <span>Time limit (seconds)</span>
-                          <input className="inline-input" type="number" min="0" step="60" value={draft.timeLimit} onChange={(e) => updateDraft(a.id, { timeLimit: parseInt(e.target.value, 10) || 0 })} />
-                          <span className="field-hint">{draft.timeLimit > 0 ? `${Math.round(draft.timeLimit / 60)} min` : 'disabled'}</span>
-                        </label>
-                        <button type="button" className="btn primary" disabled={allocationMutation.isPending} onClick={() => allocationMutation.mutate({ id: a.id, draft })}>
-                          {allocationMutation.isPending ? 'Saving…' : 'Save Allocation'}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </section>
-              )
-            })}
-
             {/* ── EXECUTION CONTROLS ── */}
             <section className="settings-card">
               <div className="settings-block">
