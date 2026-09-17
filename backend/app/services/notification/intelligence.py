@@ -104,7 +104,7 @@ class NotificationIntelligenceEngine:
         is_recovery = any(
             k in event.event_type.upper()
             for k in ("RECOVER", "RESOLV", "RECONNECT", "RESTORE")
-        )
+        ) or event.event_type == "SERVICE_STARTED"
 
         # 1. Incident / Recovery Correlation check
         if is_recovery:
@@ -231,16 +231,34 @@ class NotificationIntelligenceEngine:
                 )
                 recent_notif = (await session.execute(recent_stmt)).scalar_one_or_none()
                 if recent_notif is not None:
-                    logger.info(
-                        "Event '%s' suppressed: within %.1fs cooldown of notification %s",
-                        event.event_type,
-                        cooldown_sec,
-                        recent_notif.notification_id,
+                    # Check if there was a recovery event following recent_notif
+                    # If the prior incident was already resolved, this is a genuine new incident, not duplicate spam
+                    recovery_query = (
+                        select(NotificationLogModel.id)
+                        .where(
+                            NotificationLogModel.status != NotificationStatus.SUPPRESSED.value,
+                            (
+                                (NotificationLogModel.correlation_id == event.correlation_id)
+                                if event.correlation_id
+                                else (NotificationLogModel.category == event.category)
+                            ),
+                            NotificationLogModel.id > recent_notif.id,
+                            NotificationLogModel.created_at <= now,
+                        )
+                        .limit(1)
                     )
-                    return AdmissionDecision(
-                        admit=False,
-                        suppressed_reason="COOLDOWN",
-                    )
+                    has_recovered = (await session.execute(recovery_query)).scalar_one_or_none() is not None
+                    if not has_recovered:
+                        logger.info(
+                            "Event '%s' suppressed: within %.1fs cooldown of notification %s",
+                            event.event_type,
+                            cooldown_sec,
+                            recent_notif.notification_id,
+                        )
+                        return AdmissionDecision(
+                            admit=False,
+                            suppressed_reason="COOLDOWN",
+                        )
 
         # 4. Hourly Rate / Volume Limit Check (exempting critical and startup aggregation milestones)
         if event.event_type != "STARTUP_AGGREGATION" and event.severity != NotificationSeverity.CRITICAL:

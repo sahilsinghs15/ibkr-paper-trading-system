@@ -291,6 +291,16 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     if settings.notification_worker_enabled and not testing:
         await notification_worker.start()
 
+    from app.services.notification.service_watcher import ServiceLifecycleWatcher
+
+    service_watcher = ServiceLifecycleWatcher(
+        orchestrator=notification_orchestrator,
+        client=client,
+    )
+    fastapi_app.state.service_watcher = service_watcher
+    if not testing:
+        await service_watcher.start()
+
     from app.services.instance_credit.scheduler import InstanceCreditScheduler
 
     instance_credit_scheduler = InstanceCreditScheduler(AsyncSessionLocal)
@@ -347,6 +357,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         await fastapi_app.state.worker_pool.stop()
     if hasattr(fastapi_app.state, "critical_recovery"):
         await fastapi_app.state.critical_recovery.stop()
+    if hasattr(fastapi_app.state, "service_watcher"):
+        await fastapi_app.state.service_watcher.stop()
     if hasattr(fastapi_app.state, "notification_worker"):
         await fastapi_app.state.notification_worker.stop()
     if hasattr(fastapi_app.state, "startup_aggregator"):

@@ -224,21 +224,17 @@ class StartupAggregator:
     async def _has_unrecovered_broker_lost(self) -> bool:
         """Check if this startup is resolving an active, unrecovered BROKER_LOST incident."""
         try:
-            # Check 1: Trigger file modification within last 5 minutes (indicates gateway restart chain)
             trigger_path = Path("/home/tradingapp/storage/state/restart_backend.trigger")
+            recent_trigger = False
             if trigger_path.exists():
                 try:
                     mtime = trigger_path.stat().st_mtime
-                    if (time.time() - mtime) < 300.0:
-                        logger.info(
-                            "Found recent restart_backend.trigger (%.1fs ago); treating startup as broker recovery",
-                            time.time() - mtime,
-                        )
-                        return True
+                    if (time.time() - mtime) < 180.0:
+                        recent_trigger = True
+                    trigger_path.unlink(missing_ok=True)
                 except OSError:
                     pass
 
-            # Check 2: Database notification_log query for open BROKER_LOST
             session_factory = getattr(self._orchestrator, "_session_factory", None)
             if session_factory is not None:
                 async with session_factory() as session:
@@ -258,6 +254,11 @@ class StartupAggregator:
                             last_broker_event.notification_id,
                         )
                         return True
+
+            if recent_trigger:
+                # If trigger was recent and there's no contrary evidence, treat as broker recovery
+                logger.info("Found recent restart_backend.trigger; treating startup as broker recovery")
+                return True
         except Exception:
             logger.exception("Failed checking for unrecovered broker incident")
         return False
