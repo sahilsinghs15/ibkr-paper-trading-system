@@ -67,10 +67,13 @@ async def report_service_lifecycle(action: str, service: str) -> int:
     # (e.g. gateway recovery restarting backend, or backend boot restarting demo-streaming)
     now_ts = time.time()
     if service == "trading-backend" and not is_start:
+        if Path("/tmp/backend_auto_restarting").exists():
+            logger.info("trading-backend stop is automated trigger restart; suppressed")
+            return 0
         trig = Path("/home/tradingapp/storage/state/restart_backend.trigger")
         if trig.exists():
             try:
-                if (now_ts - trig.stat().st_mtime) < 25.0:
+                if (now_ts - trig.stat().st_mtime) < 30.0:
                     logger.info("trading-backend stop is part of automated gateway recovery; suppressed")
                     return 0
             except OSError:
