@@ -36,12 +36,23 @@ async def _cleanup_notifications(session_factory):
         await session.execute(sa.delete(NotificationLogModel))
         await session.execute(sa.delete(PositionReconcileRunModel))
         await session.execute(sa.delete(BrokerPositionModel))
+        # Also clean ledger positions that cause ghost mismatches in rogue tests
+        from app.db.models.manual_order import ManualPositionModel
+        from app.db.models.position import PositionModel
+
+        await session.execute(sa.delete(PositionModel))
+        await session.execute(sa.delete(ManualPositionModel))
     yield
     async with session_factory() as session, session.begin():
         await session.execute(sa.delete(NotificationDeliveryModel))
         await session.execute(sa.delete(NotificationLogModel))
         await session.execute(sa.delete(PositionReconcileRunModel))
         await session.execute(sa.delete(BrokerPositionModel))
+        from app.db.models.manual_order import ManualPositionModel
+        from app.db.models.position import PositionModel
+
+        await session.execute(sa.delete(PositionModel))
+        await session.execute(sa.delete(ManualPositionModel))
 
 
 # =====================================================================

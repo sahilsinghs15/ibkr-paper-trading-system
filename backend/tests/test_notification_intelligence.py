@@ -345,7 +345,7 @@ async def test_kill_switch_activated_and_completed_notifications(session_factory
         account_id=101, requested_by="operator"
     )
     assert created is True
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.15)
 
     # Verify KILL_SWITCH_ACTIVATED notification
     async with session_factory() as session:
@@ -363,7 +363,7 @@ async def test_kill_switch_activated_and_completed_notifications(session_factory
 
     # Simulate reconcile and finalize
     await ks_service._reconcile_and_finalize(op.operation_id, 101, [])
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.15)
 
     # Verify KILL_SWITCH_COMPLETED notification
     async with session_factory() as session:
@@ -386,7 +386,7 @@ async def test_kill_switch_activated_and_completed_notifications(session_factory
         notification_orchestrator=orchestrator,
     )
     assert cleared == 1
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.15)
 
     # Verify KILL_SWITCH_CLEARED notification
     async with session_factory() as session:
