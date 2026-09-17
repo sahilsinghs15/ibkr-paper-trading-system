@@ -6,7 +6,6 @@ import asyncio
 import logging
 import subprocess
 import threading
-import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -196,6 +195,7 @@ class StartupAggregator:
         try:
             start_time = asyncio.get_running_loop().time()
             deadline = start_time + self._window_sec
+            min_settle_time = start_time + min(6.0, self._window_sec * 0.8)
 
             while asyncio.get_running_loop().time() < deadline:
                 if self._auto_probe:
@@ -210,10 +210,10 @@ class StartupAggregator:
                             for c in self._critical_components
                             if c in self._components
                         )
-                        if all_ready:
-                            logger.info("All critical startup components ready early; concluding window")
+                        if all_ready and asyncio.get_running_loop().time() >= min_settle_time:
+                            logger.info("All critical startup components ready and settled early; concluding window")
                             break
-                await asyncio.sleep(min(0.1, self._window_sec))
+                await asyncio.sleep(min(0.2, self._window_sec))
 
             await self.publish_readiness()
         except asyncio.CancelledError:
@@ -225,12 +225,8 @@ class StartupAggregator:
         """Check if this startup is resolving an active, unrecovered BROKER_LOST incident."""
         try:
             trigger_path = Path("/home/tradingapp/storage/state/restart_backend.trigger")
-            recent_trigger = False
             if trigger_path.exists():
                 try:
-                    mtime = trigger_path.stat().st_mtime
-                    if (time.time() - mtime) < 180.0:
-                        recent_trigger = True
                     trigger_path.unlink(missing_ok=True)
                 except OSError:
                     pass

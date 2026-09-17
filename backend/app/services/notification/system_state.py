@@ -86,6 +86,17 @@ async def get_realtime_system_state(
     else:
         states["ib_gateway"] = False
 
+    # Probe backend readiness for broker status when client is not passed (e.g. external CLI)
+    is_tws_ready_probe = False
+    if client is None and probe_endpoints and not components.get("oems_engine", {}).get("ready") is False:
+        try:
+            async with httpx.AsyncClient(timeout=1.0) as http_client:
+                res = await http_client.get("http://127.0.0.1:8001/health/ready")
+                if res.status_code == 200 and res.json().get("status") == "ok":
+                    is_tws_ready_probe = True
+        except (httpx.HTTPError, OSError):
+            pass
+
     # 3. IB Login (authoritative nextValidId / authenticated handshake)
     if "ib_login" in components:
         states["ib_login"] = bool(components["ib_login"].get("ready", False))
@@ -97,7 +108,7 @@ async def get_realtime_system_state(
         except (AttributeError, TypeError, RuntimeError, OSError):
             states["ib_login"] = False
     else:
-        states["ib_login"] = False
+        states["ib_login"] = is_tws_ready_probe
 
     # 4. Broker Connection (TWSClient socket session)
     if "broker_connection" in components:
@@ -109,7 +120,7 @@ async def get_realtime_system_state(
         except (AttributeError, TypeError, RuntimeError, OSError):
             states["broker_connection"] = False
     else:
-        states["broker_connection"] = False
+        states["broker_connection"] = is_tws_ready_probe
 
     # 5. Signal Receiver (HTTP :8000/health)
     if "signal_receiver" in components:

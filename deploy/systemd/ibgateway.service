@@ -11,7 +11,6 @@ WorkingDirectory=/home/tradingapp/app
 EnvironmentFile=/home/tradingapp/app/backend/.env
 ExecStartPre=/home/tradingapp/app/backend/.venv/bin/python /home/tradingapp/app/scripts/holiday_guard.py
 ExecStart=/bin/bash /home/tradingapp/app/scripts/ibgateway-wrapper.sh
-ExecStartPost=-/bin/bash -c 'cd /home/tradingapp/app/backend && /home/tradingapp/app/backend/.venv/bin/python -m app.services.notification.cli start ibgateway'
 ExecStopPost=-/bin/bash -c 'rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 || true; cd /home/tradingapp/app/backend && /home/tradingapp/app/backend/.venv/bin/python -m app.services.notification.cli stop ibgateway'
 Restart=on-failure
 RestartSec=10

@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
+from pathlib import Path
 from typing import Any
 
 from app.db.session import AsyncSessionLocal
@@ -60,6 +62,29 @@ async def report_service_lifecycle(action: str, service: str) -> int:
 
     is_start = action.lower() in ("start", "started", "up")
     svc_key = cfg["key"]
+
+    # Suppress individual alerts during automated restart cascades
+    # (e.g. gateway recovery restarting backend, or backend boot restarting demo-streaming)
+    now_ts = time.time()
+    if service == "trading-backend" and not is_start:
+        trig = Path("/home/tradingapp/storage/state/restart_backend.trigger")
+        if trig.exists():
+            try:
+                if (now_ts - trig.stat().st_mtime) < 25.0:
+                    logger.info("trading-backend stop is part of automated gateway recovery; suppressed")
+                    return 0
+            except OSError:
+                pass
+
+    if service == "demo-streaming":
+        demo_trig = Path("/home/tradingapp/storage/state/restart_demo.trigger")
+        if demo_trig.exists():
+            try:
+                if (now_ts - demo_trig.stat().st_mtime) < 25.0:
+                    logger.info("demo-streaming lifecycle is part of backend boot cascade; suppressed")
+                    return 0
+            except OSError:
+                pass
 
     components_override = {svc_key: {"ready": is_start}}
     if svc_key in ("ib_gateway", "oems_engine") and not is_start:
