@@ -192,7 +192,7 @@ class MarginScanner:
 
     async def _pace(self) -> None:
         settings = get_settings()
-        min_interval = 1.0 / float(settings.margin_scan_max_per_sec)
+        min_interval = 1.0 / settings.margin_scan_max_per_sec
         now = time.monotonic()
         wait = min_interval - (now - self._last_probe_mono)
         if wait > 0:
@@ -264,8 +264,8 @@ class MarginScanner:
             sec_type=row.sec_type,
             exchange=row.exchange,
             currency=row.currency,
-            con_id=int(row.trade_conid) if row.trade_conid else None,
-            market_data_con_id=int(row.market_data_conid) if row.market_data_conid else None,
+            con_id=row.trade_conid if row.trade_conid else None,
+            market_data_con_id=row.market_data_conid if row.market_data_conid else None,
             multiplier=row.multiplier,
             primary_exchange=row.underlying_exchange,
             size_increment=row.size_increment,

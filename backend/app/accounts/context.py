@@ -23,3 +23,4 @@ class AccountExecutionContext:
     stop: Decimal
     time_limit: int
     max_open_positions: int
+    cancel_exposure: bool = False

@@ -61,6 +61,7 @@ def _account_risk_fields(account: AccountModel) -> dict:
         "daily_stop_unit": getattr(account, "daily_stop_unit", None) or "ABSOLUTE",
         "account_risk_enabled": bool(getattr(account, "account_risk_enabled", False)),
         "loss_threshold": getattr(account, "loss_threshold", None),
+        "cancel_exposure": bool(getattr(account, "cancel_exposure", False)),
     }
 
 
@@ -282,8 +283,12 @@ async def clear_account_kill_switch_endpoint(
         is_account_kill_switch_active,
     )
 
+    orchestrator = getattr(request.app.state, "notification_orchestrator", None)
     cleared = await clear_account_kill_switch(
-        session_factory, account_id, cleared_by="operator"
+        session_factory,
+        account_id,
+        cleared_by=current_user.email or "operator",
+        notification_orchestrator=orchestrator,
     )
     return KillSwitchClearResponse(
         account_id=account_id,
@@ -669,6 +674,7 @@ async def patch_account(
         raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
     # loss_threshold needs sentinel to distinguish omitted vs explicit null
     has_loss = "loss_threshold" in body.model_fields_set
+    has_cancel_exposure = "cancel_exposure" in body.model_fields_set
     if (
         body.name is None
         and body.ibkr_account is None
@@ -681,6 +687,7 @@ async def patch_account(
         and body.daily_stop_unit is None
         and body.account_risk_enabled is None
         and not has_loss
+        and not has_cancel_exposure
     ):
         raise HTTPException(status_code=400, detail="No fields to update.")
     kwargs: dict = {
@@ -697,6 +704,8 @@ async def patch_account(
     }
     if has_loss:
         kwargs["loss_threshold"] = body.loss_threshold
+    if has_cancel_exposure:
+        kwargs["cancel_exposure"] = body.cancel_exposure
     try:
         await svc.update_account(account, **kwargs)
         await session.commit()

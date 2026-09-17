@@ -36,6 +36,10 @@ from app.rms.models import (
     OrderLeg,
 )
 from app.rms.models import OrderSide as RMSOrderSide
+from app.services.notification.types import (
+    NormalizedEvent,
+    NotificationSeverity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +142,7 @@ async def clear_account_kill_switch(
     account_id: int,
     *,
     cleared_by: str = "operator",
+    notification_orchestrator: Any | None = None,
 ) -> int:
     """Explicitly disarm an account, allowing new OPENs again.
 
@@ -167,6 +172,25 @@ async def clear_account_kill_switch(
         count,
         cleared_by,
     )
+    if notification_orchestrator is not None and count > 0:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(
+                notification_orchestrator.ingest_event(
+                    NormalizedEvent(
+                        event_type="KILL_SWITCH_CLEARED",
+                        title=f"ℹ️ KILL SWITCH CLEARED — Account {account_id}",
+                        message=f"Account {account_id} kill switch cleared by {cleared_by}.",
+                        category="KILL_SWITCH",
+                        severity=NotificationSeverity.INFO,
+                        source="kill_switch",
+                        correlation_id=f"kill_switch_{account_id}",
+                        details={"account_id": account_id, "cleared_by": cleared_by, "count": count},
+                    )
+                )
+            )
+        except RuntimeError:
+            pass
     return count
 
 
@@ -178,12 +202,24 @@ class KillSwitchService:
         session_factory: async_sessionmaker[AsyncSession],
         order_manager: Any | None = None,
         max_concurrent_positions: int = 5,
+        notification_orchestrator: Any | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._order_manager = order_manager
         self._max_concurrent_positions = max_concurrent_positions
+        self._orchestrator = notification_orchestrator
         self._semaphore = asyncio.Semaphore(max_concurrent_positions)
         self._in_flight: dict[UUID, asyncio.Task[None]] = {}
+
+    def _emit_notification(self, event: NormalizedEvent) -> None:
+        """Asynchronously ingest event without blocking execution or holding DB locks."""
+        if self._orchestrator is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._orchestrator.ingest_event(event))
+        except RuntimeError:
+            pass
 
     async def initiate_square_off(
         self, account_id: int, requested_by: str = "operator"
@@ -248,6 +284,29 @@ class KillSwitchService:
             account_id,
             operation.ibkr_account,
             operation.initial_position_count,
+        )
+        self._emit_notification(
+            NormalizedEvent(
+                event_type="KILL_SWITCH_ACTIVATED",
+                title=f"🚨 EMERGENCY KILL SWITCH ACTIVATED — {operation.ibkr_account or account_id}",
+                message=(
+                    f"Kill switch armed by {requested_by}. "
+                    f"Initial open positions: {operation.initial_position_count}. Flattening initiated."
+                ),
+                category="KILL_SWITCH",
+                severity=NotificationSeverity.CRITICAL,
+                source="kill_switch",
+                source_event_id=str(operation.operation_id),
+                correlation_id=f"kill_switch_{account_id}",
+                dedupe_key=f"ks_act_{operation.operation_id}",
+                details={
+                    "operation_id": str(operation.operation_id),
+                    "account_id": account_id,
+                    "ibkr_account": operation.ibkr_account,
+                    "requested_by": requested_by,
+                    "open_positions": operation.initial_position_count,
+                },
+            )
         )
         return operation, True
 
@@ -316,6 +375,29 @@ class KillSwitchService:
             account_id,
             operation.ibkr_account,
             operation.initial_position_count,
+        )
+        self._emit_notification(
+            NormalizedEvent(
+                event_type="KILL_SWITCH_ACTIVATED",
+                title=f"🚨 EMERGENCY KILL SWITCH ARMED — {operation.ibkr_account or account_id}",
+                message=(
+                    f"Kill switch armed (no broker flatten) by {requested_by}. "
+                    f"Initial open positions: {operation.initial_position_count}."
+                ),
+                category="KILL_SWITCH",
+                severity=NotificationSeverity.CRITICAL,
+                source="kill_switch",
+                source_event_id=str(operation.operation_id),
+                correlation_id=f"kill_switch_{account_id}",
+                dedupe_key=f"ks_act_{operation.operation_id}",
+                details={
+                    "operation_id": str(operation.operation_id),
+                    "account_id": account_id,
+                    "ibkr_account": operation.ibkr_account,
+                    "requested_by": requested_by,
+                    "open_positions": operation.initial_position_count,
+                },
+            )
         )
         return operation, True
 
@@ -711,6 +793,29 @@ class KillSwitchService:
             operation_id,
             final_status,
             net_unresolved,
+        )
+        is_complete = final_status == KILL_SWITCH_STATUS_COMPLETE
+        self._emit_notification(
+            NormalizedEvent(
+                event_type="KILL_SWITCH_COMPLETED" if is_complete else "KILL_SWITCH_UNRESOLVED",
+                title=f"{'✅ KILL SWITCH COMPLETED' if is_complete else '❌ KILL SWITCH UNRESOLVED'} — Account {account_id}",
+                message=(
+                    f"Kill switch operation {operation_id} finalized with status={final_status}. "
+                    f"Unresolved positions: {net_unresolved}."
+                ),
+                category="KILL_SWITCH",
+                severity=NotificationSeverity.INFO if is_complete else NotificationSeverity.CRITICAL,
+                source="kill_switch",
+                source_event_id=str(operation_id),
+                correlation_id=f"kill_switch_{account_id}",
+                dedupe_key=f"ks_fin_{operation_id}_{final_status}",
+                details={
+                    "operation_id": str(operation_id),
+                    "account_id": account_id,
+                    "status": final_status,
+                    "unresolved": net_unresolved,
+                },
+            )
         )
 
     async def _update_operation_completion(

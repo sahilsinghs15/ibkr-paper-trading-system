@@ -114,6 +114,7 @@ class DatabaseStrategyAccountRouter:
                     stop=allocation.stop,
                     time_limit=allocation.time_limit,
                     max_open_positions=allocation.max_open_positions,
+                    cancel_exposure=bool(getattr(account, "cancel_exposure", False)),
                 )
             )
         logger.info(
@@ -150,4 +151,5 @@ def context_from_rows(
         stop=allocation.stop,
         time_limit=allocation.time_limit,
         max_open_positions=allocation.max_open_positions,
+        cancel_exposure=bool(getattr(account, "cancel_exposure", False)),
     )

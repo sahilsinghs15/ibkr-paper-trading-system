@@ -303,6 +303,7 @@ class AccountStrategyConfigService:
         daily_stop_unit: str | None = None,
         account_risk_enabled: bool | None = None,
         loss_threshold: Decimal | None = _MISSING,  # type: ignore[assignment]
+        cancel_exposure: bool | None = None,
     ) -> AccountModel:
         if name is not None:
             clean_name = name.strip()
@@ -362,6 +363,8 @@ class AccountStrategyConfigService:
         if loss_threshold is not _MISSING:
             self.validate_loss_threshold(loss_threshold)  # type: ignore[arg-type]
             account.loss_threshold = loss_threshold  # type: ignore[assignment]
+        if cancel_exposure is not None:
+            account.cancel_exposure = cancel_exposure
         await self._session.flush()
         return account
 

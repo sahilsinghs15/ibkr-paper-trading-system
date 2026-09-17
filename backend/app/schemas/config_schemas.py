@@ -55,6 +55,7 @@ class AccountConfigSchema(BaseModel):
     trading_paused: bool = False
     paused_at: datetime | None = None
     paused_by: str | None = None
+    cancel_exposure: bool = False
     allocations: list[AllocationConfigSchema] = Field(default_factory=list)
     symbol_limits: list[SymbolLimitSchema] = Field(default_factory=list)
 
@@ -89,6 +90,7 @@ class PatchAccountRequest(BaseModel):
     daily_stop_unit: str | None = None
     account_risk_enabled: bool | None = None
     loss_threshold: Decimal | None = None
+    cancel_exposure: bool | None = None
 
 
 class CreateAllocationRequest(BaseModel):

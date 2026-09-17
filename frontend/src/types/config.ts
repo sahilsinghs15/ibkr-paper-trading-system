@@ -35,6 +35,7 @@ export interface AccountConfig {
   trading_paused?: boolean
   paused_at?: string | null
   paused_by?: string | null
+  cancel_exposure?: boolean
   allocations: AllocationConfig[]
   symbol_limits: SymbolLimit[]
 }
@@ -83,6 +84,7 @@ export interface PatchAccountPayload {
   daily_stop_unit?: string
   account_risk_enabled?: boolean
   loss_threshold?: number | string | null
+  cancel_exposure?: boolean
 }
 
 export interface CreateAllocationPayload {

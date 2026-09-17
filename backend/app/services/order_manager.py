@@ -991,6 +991,19 @@ class OrderManager:
         )
         try:
             intent = await handler.build_intent(signal, account=ctx)
+            # Cancel Exposure validation — authoritative pre-trade check (earliest point where
+            # both incoming legs and account paired exposure are known). Only for OPEN
+            # intents with 2 legs; CLOSE signals are explicit trade_id closes and must not
+            # be rejected here. Respects ctx.cancel_exposure (OFF is the safe default).
+            if intent.action == OrderAction.OPEN and len(intent.legs) == 2:
+                from app.services.cancel_exposure import check_cancel_exposure
+
+                await check_cancel_exposure(
+                    intent=intent,
+                    account_id=ctx.account_id,
+                    cancel_exposure=bool(getattr(ctx, "cancel_exposure", False)),
+                    session_factory=self._session_factory,
+                )
             from app.services.kill_switch import is_account_kill_switch_active
             from app.services.trading_pause import is_account_trading_paused
 

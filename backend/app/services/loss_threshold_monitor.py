@@ -22,7 +22,13 @@ from app.db.models.account import AccountModel
 from app.db.models.account_loss_state import AccountLossStateModel
 from app.db.models.position import PositionModel
 from app.db.repositories.event_repository import EventRepository
-from app.services.notification_canonical import send_canonical_telegram
+from app.services.notification.types import (
+    NormalizedEvent,
+    NotificationSeverity,
+)
+from app.services.notification_canonical import (
+    send_canonical_telegram,  # noqa: F401 — deprecated, kept for test patch compatibility
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +45,11 @@ class LossThresholdMonitor:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         interval_sec: float = 30.0,
+        notification_orchestrator: Any | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._interval_sec = interval_sec
+        self._orchestrator = notification_orchestrator
         self._task: asyncio.Task | None = None
         self._running = False
 
@@ -92,31 +100,55 @@ class LossThresholdMonitor:
                     "loss_threshold_str": str(threshold),
                     "timestamp": datetime.now(UTC).isoformat(),
                 }
-                # idempotency: one event per crossing instance
-                # Include current breach counter via updated_at epoch to prevent duplicates across restarts while still allowing new crossing after recovery
-                # Use threshold + state row updated_at as discriminator; simpler: loss_breach:{account_id}:{threshold}:{realised} would dedup too aggressively.
-                # Instead use breach count: count existing LOSS events for account + threshold, +1
-                # For now use timestamp truncated to second + account + threshold
                 ts_key = datetime.now(UTC).isoformat()
                 idem = f"loss_breach:{account_id}:{threshold}:{ts_key}"
-                # Ensure uniqueness if multiple within same second by adding breach sequence
-                # Check if an event with same idempotency already exists is handled by ON CONFLICT DO NOTHING
                 repo = EventRepository(session)
                 row = await repo.append(process="risk", kind="LOSS_THRESHOLD_BREACHED", detail=detail, idempotency_key=idem)
-                # Only send telegram if event was actually inserted
                 state_row.is_below = True
                 state_row.last_threshold = threshold
                 await session.flush()
                 if row is not None:
-                    # fire telegram outside transaction? Already committed via begin will commit at exit
-                    # Schedule after commit
-                    asyncio.create_task(send_canonical_telegram("LOSS_THRESHOLD_BREACHED", detail)).add_done_callback(lambda t: logger.debug("loss telegram done %s", t.exception()) if t.exception() else None)
+                    if self._orchestrator is not None:
+                        asyncio.create_task(
+                            self._orchestrator.ingest_event(
+                                NormalizedEvent(
+                                    event_type="LOSS_THRESHOLD_BREACHED",
+                                    title=f"⚠️ LOSS THRESHOLD BREACHED — {account.ibkr_account or account_id}",
+                                    message=f"Realized P&L {realised} breached loss threshold {threshold}.",
+                                    category="RISK",
+                                    severity=NotificationSeverity.WARNING,
+                                    source="loss_threshold_monitor",
+                                    correlation_id=f"loss_threshold_{account_id}",
+                                    details=detail,
+                                )
+                            )
+                        )
                     return detail
                 return None
             elif not breached and state_row.is_below:
                 state_row.is_below = False
                 state_row.last_threshold = threshold
-                # optional: could log recovery, but spec says only reset
+                if self._orchestrator is not None:
+                    rec_detail = {
+                        "account_id": account_id,
+                        "ibkr_account": account.ibkr_account,
+                        "realized_pnl": str(realised),
+                        "loss_threshold": str(threshold),
+                    }
+                    asyncio.create_task(
+                        self._orchestrator.ingest_event(
+                            NormalizedEvent(
+                                event_type="LOSS_THRESHOLD_RECOVERED",
+                                title=f"✅ LOSS THRESHOLD RECOVERED — {account.ibkr_account or account_id}",
+                                message=f"Realized P&L {realised} recovered above loss threshold {threshold}.",
+                                category="RISK",
+                                severity=NotificationSeverity.INFO,
+                                source="loss_threshold_monitor",
+                                correlation_id=f"loss_threshold_{account_id}",
+                                details=rec_detail,
+                            )
+                        )
+                    )
                 return None
             elif breached and state_row.is_below:
                 # already breached, ensure threshold updated if changed

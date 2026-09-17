@@ -69,6 +69,7 @@ class RiskExitMonitor:
         kill_switch: KillSwitchService | None = None,
         now_fn: Any | None = None,
         monotonic_fn: Any | None = None,
+        notification_orchestrator: Any | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._client = client
@@ -84,7 +85,9 @@ class RiskExitMonitor:
             session_factory, order_manager
         )
         self._kill_switch = kill_switch or KillSwitchService(
-            session_factory, order_manager
+            session_factory,
+            order_manager,
+            notification_orchestrator=notification_orchestrator,
         )
         self._now_fn = now_fn or (lambda: datetime.now(UTC))
         self._monotonic = monotonic_fn or time.monotonic
@@ -289,7 +292,7 @@ class RiskExitMonitor:
                 if callable(getter):
                     snapshot = getter(row.account_id, row.trade_id)
             fresh = self._snapshot_fresh(snapshot, now_mono)
-            pnl = snapshot.pnl if snapshot is not None and fresh else ZERO  # pyrefly: ignore[missing-attribute]
+            pnl = getattr(snapshot, "pnl", ZERO) if snapshot is not None and fresh else ZERO
             if not fresh:
                 time_only = evaluate_pair_exit(params, pnl=pnl, now=now)
                 if time_only is None or time_only.reason != REASON_PAIR_TIME_LIMIT:

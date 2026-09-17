@@ -42,10 +42,36 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     refuse_testing_flag_on_order_process()
     settings = get_settings()
     setup_logging(level=settings.log_level)
+    testing = os.environ.get("TRADINGAPP_TESTING") == "1"
 
     logger.info("Initializing execution components (IBKR Gateway target)...")
 
+    from app.services.notification import (
+        BrokerNotificationListener,
+        NotificationDeliveryWorker,
+        NotificationOrchestrator,
+        StartupAggregator,
+        get_default_dispatcher,
+    )
+
+    notification_orchestrator = NotificationOrchestrator(AsyncSessionLocal)
+    fastapi_app.state.notification_orchestrator = notification_orchestrator
+
+    startup_aggregator = StartupAggregator(
+        orchestrator=notification_orchestrator,
+        window_sec=settings.notification_startup_window_sec,
+    )
+    fastapi_app.state.startup_aggregator = startup_aggregator
+    startup_aggregator.record_component("database", is_ready=True, detail="PostgreSQL schema ready")
+    if not testing:
+        await startup_aggregator.start_window()
+
     client = TWSClient()
+    broker_listener = BrokerNotificationListener(notification_orchestrator, client)
+    broker_listener.bind_loop(asyncio.get_running_loop())
+    client.register_listener(broker_listener)
+    fastapi_app.state.broker_listener = broker_listener
+
     rate_limiter = GatewayRateLimiter(
         max_msg_per_sec=settings.ibkr_gateway_max_msg_per_sec,
         normal_msg_per_sec=settings.ibkr_gateway_normal_msg_per_sec,
@@ -82,7 +108,6 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     order_manager._live_pnl = LivePnlService(  # type: ignore[assignment]
         AsyncSessionLocal, client, rate_limiter=rate_limiter
     )
-    testing = os.environ.get("TRADINGAPP_TESTING") == "1"
     if not testing:
         try:
             await order_manager.hydrate_runtime_from_db()
@@ -111,6 +136,11 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         port=settings.ibkr_port,
         client_id=settings.ibkr_client_id,
         timeout=float(settings.ibkr_connection_timeout),
+    )
+    startup_aggregator.record_component(
+        "broker",
+        is_ready=success,
+        detail=f"IBKR TWS/Gateway at {settings.ibkr_host}:{settings.ibkr_port}",
     )
     if not success:
         logger.warning(
@@ -171,7 +201,7 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     if settings.margin_scan_enabled and success and not testing:
         try:
             await margin_scanner.run_scan(
-                budget_sec=float(settings.margin_scan_startup_budget_sec)
+                budget_sec=settings.margin_scan_startup_budget_sec
             )
             await order_manager.reload_margin_rates()
         except Exception:
@@ -186,6 +216,11 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     if not testing:
         await worker_pool.start()
     fastapi_app.state.worker_pool = worker_pool
+    startup_aggregator.record_component(
+        "worker_pool",
+        is_ready=True,
+        detail="10 execution workers started",
+    )
     margin_scanner._worker_pool = worker_pool
     if settings.margin_scan_enabled and not testing:
         await margin_scanner.start_background()
@@ -194,10 +229,16 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         AsyncSessionLocal,
         client,
         after_sweep=order_manager.after_reconcile_sweep,
+        notification_orchestrator=notification_orchestrator,
     )
     if not testing:
         await position_reconciler.start()
     fastapi_app.state.position_reconciler = position_reconciler
+    startup_aggregator.record_component(
+        "position_reconciler",
+        is_ready=True,
+        detail="Reconciliation loop active",
+    )
 
     from app.services.red_zone_release import RedZoneReleaseService
 
@@ -211,11 +252,12 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         client=client,
         live_pnl=order_manager._live_pnl,
         order_manager=order_manager,
-        interval_sec=float(settings.risk_exit_interval_sec),
-        max_pnl_staleness_sec=float(settings.risk_exit_max_pnl_staleness_sec),
-        max_retries=int(settings.risk_exit_max_retries),
-        enabled=bool(settings.risk_exit_monitor_enabled),
-        shadow_mode=bool(settings.risk_exit_shadow_mode),
+        interval_sec=settings.risk_exit_interval_sec,
+        max_pnl_staleness_sec=settings.risk_exit_max_pnl_staleness_sec,
+        max_retries=settings.risk_exit_max_retries,
+        enabled=settings.risk_exit_monitor_enabled,
+        shadow_mode=settings.risk_exit_shadow_mode,
+        notification_orchestrator=notification_orchestrator,
     )
     if not testing:
         await risk_exit_monitor.start()
@@ -224,7 +266,11 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     from app.services.loss_threshold_monitor import LossThresholdMonitor
     from app.services.trade_book_sync_service import TradeBookSyncService
 
-    loss_monitor = LossThresholdMonitor(AsyncSessionLocal, interval_sec=30.0)
+    loss_monitor = LossThresholdMonitor(
+        AsyncSessionLocal,
+        interval_sec=30.0,
+        notification_orchestrator=notification_orchestrator,
+    )
     fastapi_app.state.loss_monitor = loss_monitor
     if not testing:
         await loss_monitor.start()
@@ -233,6 +279,17 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     fastapi_app.state.trade_book_sync = trade_book_sync
     if not testing:
         await trade_book_sync.start()
+
+    notification_worker = NotificationDeliveryWorker(
+        session_factory=AsyncSessionLocal,
+        dispatcher=get_default_dispatcher(),
+        poll_interval_sec=settings.notification_poll_interval_sec,
+        max_retries=settings.notification_max_retries,
+        initial_retry_backoff_sec=settings.notification_retry_backoff_sec,
+    )
+    fastapi_app.state.notification_worker = notification_worker
+    if settings.notification_worker_enabled and not testing:
+        await notification_worker.start()
 
     if not testing:
         try:
@@ -281,6 +338,10 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         await fastapi_app.state.worker_pool.stop()
     if hasattr(fastapi_app.state, "critical_recovery"):
         await fastapi_app.state.critical_recovery.stop()
+    if hasattr(fastapi_app.state, "notification_worker"):
+        await fastapi_app.state.notification_worker.stop()
+    if hasattr(fastapi_app.state, "startup_aggregator"):
+        await fastapi_app.state.startup_aggregator.stop()
     client.disconnect_clean()
     logger.info("TWS Client disconnected cleanly. Shutdown complete.")
 

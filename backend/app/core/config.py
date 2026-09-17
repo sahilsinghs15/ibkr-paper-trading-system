@@ -140,6 +140,60 @@ class Settings(BaseSettings):
     risk_exit_max_pnl_staleness_sec: Annotated[float, Gt(0)] = 15.0
     risk_exit_max_retries: Annotated[int, Ge(0)] = 3
 
+    # Notification & Alerting Core (Phase 1: Telegram active)
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    telegram_enabled: bool = False
+    telegram_timeout_seconds: Annotated[float, Gt(0)] = 5.0
+    telegram_rate_limit_per_sec: Annotated[float, Gt(0)] = 1.0
+    notification_worker_enabled: bool = True
+    notification_poll_interval_sec: Annotated[float, Gt(0)] = 1.0
+    notification_max_retries: Annotated[int, Ge(0)] = 3
+    notification_retry_backoff_sec: Annotated[float, Gt(0)] = 10.0
+
+    # Notification Intelligence & Anti-Spam (Phase 2)
+    notification_cooldown_info_sec: Annotated[float, Ge(0)] = 60.0
+    notification_cooldown_warning_sec: Annotated[float, Ge(0)] = 120.0
+    notification_cooldown_critical_sec: Annotated[float, Ge(0)] = 300.0
+    notification_hourly_limit_info: Annotated[int, Ge(0)] = 10
+    notification_hourly_limit_warning: Annotated[int, Ge(0)] = 15
+    notification_hourly_limit_critical: Annotated[int, Ge(0)] = 30
+    notification_flapping_window_sec: Annotated[float, Ge(0)] = 300.0
+    notification_flapping_threshold: Annotated[int, Ge(1)] = 3
+    notification_startup_window_sec: Annotated[float, Ge(0)] = 45.0
+    notification_shadow_mode: bool = False
+    notification_legacy_telegram_enabled: bool = False
+
+    # Notification routing policy — multi-channel severity thresholds (Phase 4)
+    # Set to the minimum severity level that activates each channel.
+    # Accepted values: INFO, WARNING, CRITICAL
+    notification_sms_min_severity: str = "CRITICAL"
+    notification_whatsapp_min_severity: str = "CRITICAL"
+
+    # SMS Channel (AWS End User Messaging SMS v2 — pinpoint-sms-voice-v2)
+    # Authentication uses ambient AWS credentials (IAM role, env vars, ~/.aws/credentials).
+    # Never hardcode AWS credentials; use IAM roles or environment variables.
+    sms_enabled: bool = False
+    sms_aws_region: str = "ap-south-1"
+    sms_origination_identity: str | None = None  # Phone number ARN, pool ID, or sender ID
+    sms_message_type: str = "TRANSACTIONAL"      # TRANSACTIONAL or PROMOTIONAL
+    sms_recipient_phone: str | None = None        # E.164 format: +91XXXXXXXXXX
+    sms_timeout_seconds: Annotated[float, Gt(0)] = 10.0
+    sms_india_dlt_principal_entity_id: str | None = None
+    sms_india_dlt_template_id: str | None = None
+
+    # WhatsApp Channel (Meta WhatsApp Cloud API)
+    # Uses approved utility template for proactive OEMS notifications.
+    # Access token must be a system user token for production (not a temp token).
+    whatsapp_enabled: bool = False
+    whatsapp_access_token: str | None = None
+    whatsapp_phone_number_id: str | None = None   # Phone Number ID from Meta App Dashboard
+    whatsapp_recipient_phone: str | None = None    # E.164 without '+': e.g. "919XXXXXXXXX"
+    whatsapp_template_name: str = "oems_alert"
+    whatsapp_template_language: str = "en_US"
+    whatsapp_api_version: str = "v21.0"
+    whatsapp_timeout_seconds: Annotated[float, Gt(0)] = 10.0
+
     def _validate_red_zone(self) -> None:
         if self.max_auto_release_notional is not None and self.max_auto_release_notional < 0:
             raise ValueError("max_auto_release_notional must be >= 0 or None")

@@ -19,6 +19,10 @@ from app.db.models.manual_order import (
 )
 from app.db.models.margin_rate import MarginRateModel
 from app.db.models.margin_settings import MarginSettingsModel
+from app.db.models.notification import (
+    NotificationDeliveryModel,
+    NotificationLogModel,
+)
 from app.db.models.notification_read import (
     UserNotificationReadModel,
     UserNotificationStateModel,
@@ -49,6 +53,8 @@ __all__ = [
     "ManualPositionModel",
     "MarginRateModel",
     "MarginSettingsModel",
+    "NotificationDeliveryModel",
+    "NotificationLogModel",
     "OrderModel",
     "PerSymbolLimitModel",
     "PositionModel",

@@ -57,6 +57,9 @@ class AccountModel(Base):
     paused_by: Mapped[str | None] = mapped_column(
         String(64), nullable=True, default=None
     )
+    cancel_exposure: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
 
     __table_args__ = (
         CheckConstraint("total_margin > 0", name="ck_accounts_total_margin_positive"),

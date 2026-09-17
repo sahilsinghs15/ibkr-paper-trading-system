@@ -346,9 +346,7 @@ class IBKRExecutionAdapter:
             raise ConnectionError("Cannot probe margin: TWS is not connected.")
 
         wait_timeout = (
-            float(timeout)
-            if timeout is not None
-            else float(settings.margin_whatif_timeout_sec)
+            timeout if timeout is not None else settings.margin_whatif_timeout_sec
         )
         if self._rate_limiter is not None:
             await self._rate_limiter.acquire(PRIORITY_DIAGNOSTIC, "whatIfOrder")

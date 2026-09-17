@@ -29,7 +29,13 @@ from app.db.models.position import PositionModel
 from app.db.models.signal import JOB_STATUS_PROCESSING, SignalJobModel
 from app.db.repositories.broker_position_repository import BrokerPositionRepository
 from app.db.repositories.event_repository import EventRepository
-from app.services.notification_canonical import send_canonical_telegram
+from app.services.notification.types import (
+    NormalizedEvent,
+    NotificationSeverity,
+)
+from app.services.notification_canonical import (
+    send_canonical_telegram,  # noqa: F401 — deprecated, kept for test patch compatibility
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +48,14 @@ MISMATCH_LEDGER_GHOST = "LEDGER_GHOST"
 MISMATCH_BROKER_ORPHAN = "BROKER_ORPHAN"
 MISMATCH_QTY_DRIFT = "QTY_DRIFT"
 MISMATCH_UNMAPPED_ACCOUNT = "UNMAPPED_ACCOUNT"
+
+# Human-readable labels for operator-facing notifications (avoid developer codes)
+_ROGUE_TYPE_LABEL: dict[str, str] = {
+    MISMATCH_QTY_DRIFT: "Quantity Difference",
+    MISMATCH_BROKER_ORPHAN: "Broker Ghost",
+    MISMATCH_LEDGER_GHOST: "Ledger Ghost",
+    MISMATCH_UNMAPPED_ACCOUNT: "Unmapped Account",
+}
 
 # Rogue tracking key: (ibkr_account_or_id, symbol, sec_type, kind)
 RogueKey = tuple[str, str, str, str]
@@ -410,12 +424,14 @@ class PositionReconciler:
         interval_sec: float = RECONCILE_INTERVAL_SEC,
         request_timeout_sec: float = POSITIONS_REQUEST_TIMEOUT_SEC,
         after_sweep: Any | None = None,
+        notification_orchestrator: Any | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._client = client
         self._interval_sec = interval_sec
         self._request_timeout_sec = request_timeout_sec
         self._after_sweep = after_sweep
+        self._orchestrator = notification_orchestrator
         self._task: asyncio.Task | None = None
         self._running = False
         self._sweep_lock = asyncio.Lock()
@@ -702,11 +718,14 @@ class PositionReconciler:
 
             for key in sorted(new_keys):
                 diff = current_rogues[key]
-                # Include canonical message for notification center / Telegram
+                label = _ROGUE_TYPE_LABEL.get(diff.kind, diff.kind.replace("_", " ").title())
+                # Operator-facing message: trader language, not provider codes
                 det_msg = (
-                    f"🚨 ROGUE TRADE DETECTED: {diff.kind} on {diff.symbol} "
+                    f"Unexpected position change detected on {diff.symbol} "
                     f"({diff.ibkr_account or diff.account_id}). "
-                    f"Broker qty: {diff.broker_qty}, Ledger qty: {diff.ledger_qty}"
+                    f"Type: {label}. "
+                    f"Broker qty: {diff.broker_qty}, Ledger qty: {diff.ledger_qty}. "
+                    f"Please investigate."
                 )
                 det_payload: dict[str, Any] = {
                     "rogue_type": diff.kind,
@@ -730,17 +749,24 @@ class PositionReconciler:
                     detail=det_payload,
                     idempotency_key=idempotency_key,
                 )
-                # Non-blocking Telegram dispatch — log failures via done callback
-                _task = asyncio.create_task(
-                    send_canonical_telegram("ROGUE_TRADE_DETECTED", det_payload)
-                )
-                _task.add_done_callback(
-                    lambda t: logger.debug(
-                        "ROGUE_TRADE_DETECTED telegram done: %s", t.exception()
+                # Centralized notification only — legacy send_canonical_telegram removed (single system)
+                if self._orchestrator is not None:
+                    asyncio.create_task(
+                        self._orchestrator.ingest_event(
+                            NormalizedEvent(
+                                event_type="ROGUE_TRADE_DETECTED",
+                                title=f"🚨 Unexpected position change: {label} on {diff.symbol}",
+                                message=det_msg,
+                                category="RECONCILIATION",
+                                severity=NotificationSeverity.CRITICAL,
+                                source="position_reconciler",
+                                source_event_id=str(run_row.id),
+                                correlation_id=f"rogue:{key[0]}:{key[1]}:{key[2]}:{key[3]}",
+                                dedupe_key=idempotency_key,
+                                details=det_payload,
+                            )
+                        )
                     )
-                    if t.exception()
-                    else None
-                )
                 active_keys[key] = det_payload
 
             for key in sorted(resolved_keys):
@@ -749,7 +775,9 @@ class PositionReconciler:
                 res_account = prev_payload.get("ibkr_account") or prev_payload.get(
                     "account_id"
                 )
-                res_msg = f"🟢 ROGUE TRADE RESOLVED: {prev_payload.get('rogue_type', key[3])} on {res_symbol} ({res_account})"
+                _res_raw = str(prev_payload.get("rogue_type", key[3]))
+                _res_label = _ROGUE_TYPE_LABEL.get(_res_raw, _res_raw.replace("_", " ").title())
+                res_msg = f"Position discrepancy resolved on {res_symbol} ({res_account}). Type: {_res_label}. Discrepancy cleared."
                 res_payload: dict[str, Any] = {
                     "rogue_type": prev_payload.get("rogue_type", key[3]),
                     "symbol": prev_payload.get("symbol", key[1]),
@@ -769,16 +797,23 @@ class PositionReconciler:
                     detail=res_payload,
                     idempotency_key=idempotency_key,
                 )
-                _task = asyncio.create_task(
-                    send_canonical_telegram("ROGUE_TRADE_RESOLVED", res_payload)
-                )
-                _task.add_done_callback(
-                    lambda t: logger.debug(
-                        "ROGUE_TRADE_RESOLVED telegram done: %s", t.exception()
+                if self._orchestrator is not None:
+                    asyncio.create_task(
+                        self._orchestrator.ingest_event(
+                            NormalizedEvent(
+                                event_type="ROGUE_TRADE_RESOLVED",
+                                title=f"🟢 Position discrepancy resolved on {res_symbol}",
+                                message=res_msg,
+                                category="RECONCILIATION",
+                                severity=NotificationSeverity.INFO,
+                                source="position_reconciler",
+                                source_event_id=str(run_row.id),
+                                correlation_id=f"rogue:{key[0]}:{key[1]}:{key[2]}:{key[3]}",
+                                dedupe_key=idempotency_key,
+                                details=res_payload,
+                            )
+                        )
                     )
-                    if t.exception()
-                    else None
-                )
                 del active_keys[key]
 
             self._active_rogue_keys = active_keys

@@ -462,7 +462,6 @@ function MarginSettingsCard() {
     </section>
   )
 }
-
 export function AccountSettingsPage() {
   const { ibkrAccount } = useParams<{ ibkrAccount: string }>()
   const cleanAccount = normalizeIbkrAccount(ibkrAccount)
@@ -511,6 +510,7 @@ export function AccountSettingsPage() {
   const [dailyTargetUnit, setDailyTargetUnit] = useState('ABSOLUTE')
   const [dailyStopUnit, setDailyStopUnit] = useState('ABSOLUTE')
   const [accountRiskEnabled, setAccountRiskEnabled] = useState(false)
+  const [cancelExposure, setCancelExposure] = useState(false)
   const [drafts, setDrafts] = useState<Record<number, AllocationDraft>>({})
   const [newSymbol, setNewSymbol] = useState('')
   const [newLimit, setNewLimit] = useState('')
@@ -519,7 +519,6 @@ export function AccountSettingsPage() {
   const [isKillSwitchOpen, setIsKillSwitchOpen] = useState(false)
   const [isStartAgainOpen, setIsStartAgainOpen] = useState(false)
 
-  // Query active store positions count for Kill Switch modal
   const activeMap = usePnlStore((s) => s.active)
   const accountOpenPositionsCount = useMemo(() => {
     if (!account) return 0
@@ -598,6 +597,7 @@ export function AccountSettingsPage() {
       setDailyTarget(thresholdInputValue(account.daily_target, tgtUnit))
       setDailyStop(thresholdInputValue(account.daily_stop, stpUnit))
       setAccountRiskEnabled(Boolean(account.account_risk_enabled))
+      setCancelExposure(Boolean(account.cancel_exposure))
       setDrafts(
         Object.fromEntries(
           account.allocations.map((a) => [
@@ -631,6 +631,7 @@ export function AccountSettingsPage() {
         daily_target_unit: dailyTargetUnit,
         daily_stop_unit: dailyStopUnit,
         account_risk_enabled: accountRiskEnabled,
+        cancel_exposure: cancelExposure,
       })
     },
     onSuccess: () => {
@@ -767,11 +768,10 @@ export function AccountSettingsPage() {
     <main className="page settings-page">
       <header className="settings-header-banner">
         <div className="settings-header-title">
-          <h1>MODEL BLUE ACCOUNT SETTINGS</h1>
+          <h1>ACCOUNT SETTINGS</h1>
           <div className="settings-header-meta">
             <span>
-              Account:{' '}
-              <strong>{account?.name || cleanAccount}</strong>
+              Account: <strong>{account?.name || cleanAccount}</strong>
             </span>
             {showIbkrId ? (
               <>
@@ -786,17 +786,20 @@ export function AccountSettingsPage() {
                 </span>
                 {isTradingPaused ? (
                   <span className="account-status-pill paused" style={{ background: '#78350f', color: '#fcd34d' }}>
-                    ⏸️ PAUSED
+                    ⏸ PAUSED
                   </span>
                 ) : null}
                 {isKillSwitchActive ? (
                   <span className="account-status-pill disabled" style={{ background: '#7f1d1d', color: '#fca5a5' }}>
-                    ⛔ STOPPED (KILL SWITCH)
+                    ⛔ STOPPED
                   </span>
                 ) : null}
               </>
             ) : null}
           </div>
+          <p className="field-hint" style={{ marginTop: 6, maxWidth: 640 }}>
+            Production OEMS controls. Changes apply to new signals; open paired exposures remain until closed or squared off.
+          </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <Link to={`/account/${cleanAccount}`} className="btn primary">
@@ -829,38 +832,27 @@ export function AccountSettingsPage() {
       {account ? (
         <div className="settings-dashboard-grid">
           <div className="settings-column">
-            {/* Account Margin & Enable Configuration */}
+            {/* ── ACCOUNT ── */}
             <section className="settings-card">
               <div className="settings-block">
                 <div className="settings-block-h">
-                  <h2>ACCOUNT CONFIGURATION</h2>
+                  <h2>ACCOUNT</h2>
                   <label className="toggle-row">
-                    <input
-                      type="checkbox"
-                      checked={enabled}
-                      onChange={(e) => setEnabled(e.target.checked)}
-                    />
+                    <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
                     <span>{enabled ? 'Enabled' : 'Disabled'}</span>
                   </label>
                 </div>
-
                 <div className="settings-grid">
-                  <label className="field">
+                  <label className="field" style={{ minWidth: 220 }}>
                     <span>Account Name</span>
                     <input className="inline-input" type="text" value={account.name} disabled />
+                    <span className="field-hint">IBKR: {account.ibkr_account}</span>
                   </label>
-
                   <label className="field">
-                    <span>Trading capital</span>
+                    <span>Trading Capital</span>
                     <div className="money-field">
                       <span className="money-prefix">$</span>
-                      <input
-                        type="number"
-                        min="0"
-                        step="1000"
-                        value={margin}
-                        onChange={(e) => setMargin(e.target.value)}
-                      />
+                      <input type="number" min="0" step="1000" value={margin} onChange={(e) => setMargin(e.target.value)} />
                     </div>
                     <span className="field-hint">{fmtUsd(margin)}</span>
                     {brokerMargin?.effective_free_margin ? (
@@ -871,361 +863,134 @@ export function AccountSettingsPage() {
                     ) : null}
                   </label>
                 </div>
+              </div>
+            </section>
 
-                <div className="settings-block-h" style={{ marginTop: 16 }}>
-                  <h2>ACCOUNT DAILY RISK</h2>
-                  <label className="toggle-row">
-                    <input
-                      type="checkbox"
-                      checked={accountRiskEnabled}
-                      onChange={(e) => setAccountRiskEnabled(e.target.checked)}
-                    />
-                    <span>{accountRiskEnabled ? 'Enabled' : 'Disabled'}</span>
-                  </label>
-                </div>
-                <p className="field-hint">
-                  Session PnL (realized today + open unrealized) vs signed daily
-                  stop / target levels. Stop fires at PnL ≤ stop (e.g. −100).
-                  Target fires at PnL ≥ target (e.g. −10 or 0). 0 is breakeven,
-                  not off. Use the switch above to disable.
-                </p>
-                <div className="settings-grid">
-                  <label className="field">
-                    <span>Daily target</span>
-                    <div className="money-field">
-                      {dailyTargetUnit === 'ABSOLUTE' ? (
-                        <span className="money-prefix">$</span>
-                      ) : null}
-                      <input
-                        type="number"
-                        step={dailyTargetUnit === 'PERCENT' ? '0.01' : '1'}
-                        value={dailyTarget}
-                        onChange={(e) => setDailyTarget(e.target.value)}
-                      />
-                      <select
-                        className="inline-input"
-                        value={dailyTargetUnit}
-                        onChange={(e) => setDailyTargetUnit(e.target.value)}
-                      >
-                        <option value="ABSOLUTE">USD</option>
-                        <option value="PERCENT">% of capital</option>
-                      </select>
-                    </div>
-                  </label>
-                  <label className="field">
-                    <span>Daily stop</span>
-                    <div className="money-field">
-                      {dailyStopUnit === 'ABSOLUTE' ? (
-                        <span className="money-prefix">$</span>
-                      ) : null}
-                      <input
-                        type="number"
-                        step={dailyStopUnit === 'PERCENT' ? '0.01' : '1'}
-                        value={dailyStop}
-                        onChange={(e) => setDailyStop(e.target.value)}
-                      />
-                      <select
-                        className="inline-input"
-                        value={dailyStopUnit}
-                        onChange={(e) => setDailyStopUnit(e.target.value)}
-                      >
-                        <option value="ABSOLUTE">USD</option>
-                        <option value="PERCENT">% of capital</option>
-                      </select>
-                    </div>
-                  </label>
+            {/* ── RISK CONTROLS ── */}
+            <section className="settings-card">
+              <div className="settings-block">
+                <div className="settings-block-h">
+                  <h2>RISK CONTROLS</h2>
+                  <span className="field-hint" style={{ fontSize: 10, letterSpacing: '0.06em' }}>DAILY &amp; EXPOSURE</span>
                 </div>
 
-                <div className="settings-grid">
-                  <button
-                    type="button"
-                    className="btn primary"
-                    disabled={accountMutation.isPending}
-                    onClick={() => accountMutation.mutate()}
-                  >
-                    {accountMutation.isPending ? 'Saving…' : 'Save Changes'}
+                {/* Daily Risk */}
+                <div style={{ border: '1px solid var(--line)', borderRadius: 6, background: 'var(--panel-2)', padding: '12px 14px', marginBottom: 12 }}>
+                  <div className="settings-block-h" style={{ marginBottom: 8, borderBottom: 'none', paddingBottom: 0 }}>
+                    <h3 style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', margin: 0 }}>DAILY RISK</h3>
+                    <label className="toggle-row">
+                      <input type="checkbox" checked={accountRiskEnabled} onChange={(e) => setAccountRiskEnabled(e.target.checked)} />
+                      <span>{accountRiskEnabled ? 'Enabled' : 'Disabled'}</span>
+                    </label>
+                  </div>
+                  <p className="field-hint" style={{ marginBottom: 10 }}>
+                    Session PnL vs signed stop/target. Stop fires at PnL ≤ stop, target at PnL ≥ target. 0 is breakeven. Disable to bypass.
+                  </p>
+                  <div className="settings-grid">
+                    <label className="field">
+                      <span>Daily Target</span>
+                      <div className="money-field">
+                        {dailyTargetUnit === 'ABSOLUTE' ? <span className="money-prefix">$</span> : null}
+                        <input type="number" step={dailyTargetUnit === 'PERCENT' ? '0.01' : '1'} value={dailyTarget} onChange={(e) => setDailyTarget(e.target.value)} />
+                        <select className="inline-input" value={dailyTargetUnit} onChange={(e) => setDailyTargetUnit(e.target.value)}>
+                          <option value="ABSOLUTE">USD</option>
+                          <option value="PERCENT">% capital</option>
+                        </select>
+                      </div>
+                    </label>
+                    <label className="field">
+                      <span>Daily Stop</span>
+                      <div className="money-field">
+                        {dailyStopUnit === 'ABSOLUTE' ? <span className="money-prefix">$</span> : null}
+                        <input type="number" step={dailyStopUnit === 'PERCENT' ? '0.01' : '1'} value={dailyStop} onChange={(e) => setDailyStop(e.target.value)} />
+                        <select className="inline-input" value={dailyStopUnit} onChange={(e) => setDailyStopUnit(e.target.value)}>
+                          <option value="ABSOLUTE">USD</option>
+                          <option value="PERCENT">% capital</option>
+                        </select>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Cancel Exposure */}
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    gap: 16,
+                    padding: '12px 14px',
+                    border: '1px solid var(--line)',
+                    borderRadius: 6,
+                    background: 'var(--panel-2)',
+                    marginBottom: 12,
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', display: 'flex', alignItems: 'center', gap: 8 }}>
+                      CANCEL EXPOSURE
+                      <span
+                        style={{
+                          fontSize: 9,
+                          fontWeight: 700,
+                          letterSpacing: '0.06em',
+                          padding: '2px 6px',
+                          borderRadius: 4,
+                          background: cancelExposure ? 'rgba(62,207,142,0.15)' : 'rgba(224,179,76,0.15)',
+                          color: cancelExposure ? 'var(--green)' : 'var(--amber)',
+                          border: `1px solid ${cancelExposure ? 'rgba(62,207,142,0.3)' : 'rgba(224,179,76,0.3)'}`,
+                        }}
+                      >
+                        {cancelExposure ? 'ON' : 'OFF'}
+                      </span>
+                    </div>
+                    <p className="field-hint" style={{ marginTop: 6, lineHeight: 1.5, maxWidth: 520 }}>
+                      {cancelExposure
+                        ? 'Enabled — incoming signals may partially cancel an existing paired exposure. Only use when single-leg unwinds are intentional.'
+                        : 'Prevent a signal from cancelling one side of an existing paired exposure unless the corresponding pair leg is also being closed.'}
+                    </p>
+                    <p className="field-hint" style={{ marginTop: 4, color: 'var(--dim)', fontSize: 10 }}>
+                      Example OFF: holding AAPL BUY + EWC SELL, incoming AAPL SELL + XYZ BUY is rejected. Exact close AAPL SELL + EWC BUY is allowed.
+                    </p>
+                  </div>
+                  <label className="toggle-row" style={{ flexShrink: 0, marginTop: 2 }}>
+                    <input type="checkbox" checked={cancelExposure} onChange={(e) => setCancelExposure(e.target.checked)} />
+                    <span style={{ fontWeight: 700, color: cancelExposure ? 'var(--green)' : 'var(--muted)' }}>{cancelExposure ? 'On' : 'Off'}</span>
+                  </label>
+                </div>
+
+                <div className="settings-grid" style={{ marginTop: 12 }}>
+                  <button type="button" className="btn primary" disabled={accountMutation.isPending} onClick={() => accountMutation.mutate()}>
+                    {accountMutation.isPending ? 'Saving…' : 'Save Risk Controls'}
                   </button>
+                  <span className="field-hint">Applies to new signals. Existing exposures unchanged.</span>
                 </div>
               </div>
             </section>
 
-            {/* Strategy Allocations */}
-            {account.allocations.map((a) => {
-              const draft = drafts[a.id] || {
-                allocPct: pctFromDecimal(a.alloc_pct),
-                enabled: a.enabled,
-                maxOpenPositions: a.max_open_positions,
-                pairMaxAllocationPct: pctFromDecimal(a.pair_max_allocation_pct),
-                target: thresholdInputValue(a.target, a.target_unit || 'ABSOLUTE'),
-                stop: thresholdInputValue(a.stop, a.stop_unit || 'ABSOLUTE'),
-                timeLimit: a.time_limit,
-                targetUnit: a.target_unit || 'ABSOLUTE',
-                stopUnit: a.stop_unit || 'ABSOLUTE',
-                exitAutomationEnabled: Boolean(a.exit_automation_enabled),
-              }
-              const committed =
-                (parseFloat(account.total_margin) * (draft.enabled ? draft.allocPct : 0)) / 100
-
-              return (
-                <section key={a.id} className="settings-card">
-                  <div className="settings-block">
-                    <div className="settings-block-h">
-                      <h2>MODEL BLUE ALLOCATION</h2>
-                      <span className={`alloc-sum ${sumOver ? 'over' : ''}`}>
-                        Enabled total {fmtPct(enabledSum)}
-                      </span>
-                    </div>
-
-                    <div className="alloc-card">
-                      <div className="alloc-card-h">
-                        <h3>{displayStrategy(a.strategy_id)}</h3>
-                        <label className="toggle-row">
-                          <input
-                            type="checkbox"
-                            checked={draft.enabled}
-                            onChange={(e) => updateDraft(a.id, { enabled: e.target.checked })}
-                          />
-                          <span>{draft.enabled ? 'Enabled' : 'Disabled'}</span>
-                        </label>
-                      </div>
-
-                      <div className="settings-grid">
-                        <label className="field">
-                          <span>Allocation</span>
-                          <div className="money-field">
-                            <input
-                              type="number"
-                              min="0"
-                              max="100"
-                              step="1"
-                              value={draft.allocPct}
-                              onChange={(e) =>
-                                updateDraft(a.id, { allocPct: parseFloat(e.target.value) || 0 })
-                              }
-                            />
-                            <span className="money-suffix">%</span>
-                          </div>
-                          <span className="field-hint">
-                            Committed: {fmtUsd(String(committed))}
-                          </span>
-                        </label>
-
-                        <label className="field">
-                          <span>Max Open Positions</span>
-                          <input
-                            className="inline-input narrow"
-                            type="number"
-                            min="1"
-                            step="1"
-                            value={draft.maxOpenPositions}
-                            onChange={(e) =>
-                              updateDraft(a.id, {
-                                maxOpenPositions: parseInt(e.target.value, 10) || 1,
-                              })
-                            }
-                          />
-                        </label>
-
-                        <label className="field">
-                          <span>Per-pair allocation</span>
-                          <div className="money-field">
-                            <input
-                              className="inline-input"
-                              type="number"
-                              min="0.01"
-                              max="100"
-                              step="0.01"
-                              value={draft.pairMaxAllocationPct}
-                              onChange={(e) =>
-                                updateDraft(a.id, {
-                                  pairMaxAllocationPct: parseFloat(e.target.value) || 0,
-                                })
-                              }
-                            />
-                            <span className="money-suffix">%</span>
-                          </div>
-                          <span className="field-hint">
-                            {fmtPct(draft.pairMaxAllocationPct)} of {fmtUsd(String(committed))} ={' '}
-                            {fmtUsd(
-                              String((committed * draft.pairMaxAllocationPct) / 100),
-                            )}{' '}
-                            per pair
-                            {committed > 0 && draft.pairMaxAllocationPct > 0
-                              ? ` · room for ${Math.floor(
-                                  100 / draft.pairMaxAllocationPct,
-                                )} pairs`
-                              : ''}
-                          </span>
-                        </label>
-
-                        <div className="settings-block-h">
-                          <h3>Exit automation</h3>
-                          <label className="toggle-row">
-                            <input
-                              type="checkbox"
-                              checked={draft.exitAutomationEnabled}
-                              onChange={(e) =>
-                                updateDraft(a.id, {
-                                  exitAutomationEnabled: e.target.checked,
-                                })
-                              }
-                            />
-                            <span>
-                              {draft.exitAutomationEnabled ? 'Enabled' : 'Disabled'}
-                            </span>
-                          </label>
-                        </div>
-                        <p className="field-hint">
-                          Target/stop/time_limit are copied onto each pair at open.
-                          Threshold edits here apply to new pairs only; click an Open
-                          Positions row to change an already-open pair. Toggling
-                          automation here also arms or disarms currently open pairs of
-                          this strategy. Values are signed PnL levels: stop
-                          −100 fires at ≤ −$100, target −10 fires at ≥ −$10,
-                          target 0 is breakeven. The arm switch turns this off.
-                        </p>
-
-                        <label className="field">
-                          <span>Pair target</span>
-                          <div className="money-field">
-                            {draft.targetUnit === 'ABSOLUTE' ? (
-                              <span className="money-prefix">$</span>
-                            ) : null}
-                            <input
-                              type="number"
-                              step={draft.targetUnit === 'PERCENT' ? '0.01' : '1'}
-                              value={draft.target}
-                              onChange={(e) =>
-                                updateDraft(a.id, { target: e.target.value })
-                              }
-                            />
-                            <select
-                              className="inline-input"
-                              value={draft.targetUnit}
-                              onChange={(e) =>
-                                updateDraft(a.id, { targetUnit: e.target.value })
-                              }
-                            >
-                              <option value="ABSOLUTE">USD</option>
-                              <option value="PERCENT">% of pair</option>
-                            </select>
-                          </div>
-                        </label>
-
-                        <label className="field">
-                          <span>Pair stop</span>
-                          <div className="money-field">
-                            {draft.stopUnit === 'ABSOLUTE' ? (
-                              <span className="money-prefix">$</span>
-                            ) : null}
-                            <input
-                              type="number"
-                              step={draft.stopUnit === 'PERCENT' ? '0.01' : '1'}
-                              value={draft.stop}
-                              onChange={(e) =>
-                                updateDraft(a.id, { stop: e.target.value })
-                              }
-                            />
-                            <select
-                              className="inline-input"
-                              value={draft.stopUnit}
-                              onChange={(e) =>
-                                updateDraft(a.id, { stopUnit: e.target.value })
-                              }
-                            >
-                              <option value="ABSOLUTE">USD</option>
-                              <option value="PERCENT">% of pair</option>
-                            </select>
-                          </div>
-                        </label>
-
-                        <label className="field">
-                          <span>Time limit (seconds)</span>
-                          <input
-                            className="inline-input"
-                            type="number"
-                            min="0"
-                            step="60"
-                            value={draft.timeLimit}
-                            onChange={(e) =>
-                              updateDraft(a.id, {
-                                timeLimit: parseInt(e.target.value, 10) || 0,
-                              })
-                            }
-                          />
-                          <span className="field-hint">
-                            {draft.timeLimit > 0
-                              ? `${Math.round(draft.timeLimit / 60)} min`
-                              : 'disabled'}
-                          </span>
-                        </label>
-
-                        <button
-                          type="button"
-                          className="btn primary"
-                          disabled={allocationMutation.isPending}
-                          onClick={() => allocationMutation.mutate({ id: a.id, draft })}
-                        >
-                          {allocationMutation.isPending ? 'Saving…' : 'Save Allocation'}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </section>
-              )
-            })}
-
-            {/* Auto Square-Off & Retry */}
-            <ExecutionSettingsCard />
-            <MarginSettingsCard />
-          </div>
-
-          <div className="settings-column">
-            {/* Per-Symbol Money Limits */}
+            {/* ── SYMBOL RISK LIMITS ── */}
             <section className="settings-card">
               <div className="settings-block">
                 <div className="settings-block-h">
                   <h2>SYMBOL RISK LIMITS</h2>
                 </div>
-                <p className="field-hint">
-                  Configure the global default symbol limit for account{' '}
-                  <span className="mono">{cleanAccount}</span> and optional specific symbol overrides.
-                </p>
-
-                {/* Default Symbol Limit Block */}
-                <div style={{ marginTop: 12, padding: '12px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)' }}>
+                <p className="field-hint">Global default fallback and per-symbol overrides for account {cleanAccount}.</p>
+                <div style={{ marginTop: 12, padding: 12, background: 'rgba(255,255,255,0.03)', borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)' }}>
                   <label className="field" style={{ marginBottom: 8 }}>
-                    <span style={{ fontWeight: 600, color: 'var(--amber)' }}>DEFAULT SYMBOL LIMIT (FALLBACK)</span>
+                    <span style={{ fontWeight: 600, color: 'var(--amber)', fontSize: 10, letterSpacing: '0.06em' }}>DEFAULT SYMBOL LIMIT (FALLBACK)</span>
                     <div className="money-field">
                       <span className="money-prefix">$</span>
-                      <input
-                        type="number"
-                        min="1"
-                        step="100000"
-                        value={defaultLimitInput}
-                        onChange={(e) => setDefaultLimitInput(e.target.value)}
-                      />
+                      <input type="number" min="1" step="100000" value={defaultLimitInput} onChange={(e) => setDefaultLimitInput(e.target.value)} />
                     </div>
                   </label>
-                  <p className="field-hint dim" style={{ marginBottom: 8 }}>
-                    Automatically applies to any symbol without a specific override below.
-                  </p>
-                  <button
-                    type="button"
-                    className="btn primary"
-                    disabled={!defaultLimitInput.trim() || defaultLimitMutation.isPending}
-                    onClick={() => defaultLimitMutation.mutate(defaultLimitInput.trim())}
-                  >
+                  <p className="field-hint dim" style={{ marginBottom: 8 }}>Applies to any symbol without a specific override.</p>
+                  <button type="button" className="btn primary" disabled={!defaultLimitInput.trim() || defaultLimitMutation.isPending} onClick={() => defaultLimitMutation.mutate(defaultLimitInput.trim())}>
                     Save Default Limit
                   </button>
                 </div>
-
                 <div style={{ marginTop: 16 }}>
-                  <h3 style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.05em', marginBottom: 6 }}>
-                    SPECIFIC SYMBOL OVERRIDES
-                  </h3>
+                  <h3 style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', marginBottom: 6, color: 'var(--muted)' }}>SPECIFIC OVERRIDES</h3>
                 </div>
-
                 <div style={{ marginTop: 6, overflowX: 'auto' }}>
                   <table>
                     <thead>
@@ -1242,17 +1007,10 @@ export function AccountSettingsPage() {
                           <td className="mono bold">{lim.symbol}</td>
                           <td className="mono">{fmtUsd(lim.money_limit)}</td>
                           <td>
-                            <span style={{ fontSize: '10px', background: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa', padding: '2px 6px', borderRadius: '4px', fontWeight: 600 }}>
-                              SPECIFIC OVERRIDE
-                            </span>
+                            <span style={{ fontSize: 10, background: 'rgba(59,130,246,0.2)', color: '#60a5fa', padding: '2px 6px', borderRadius: 4, fontWeight: 600 }}>OVERRIDE</span>
                           </td>
                           <td style={{ textAlign: 'right' }}>
-                            <button
-                              type="button"
-                              className="btn danger"
-                              disabled={deleteLimitMutation.isPending}
-                              onClick={() => deleteLimitMutation.mutate(lim.symbol)}
-                            >
+                            <button type="button" className="btn danger" disabled={deleteLimitMutation.isPending} onClick={() => deleteLimitMutation.mutate(lim.symbol)}>
                               Remove
                             </button>
                           </td>
@@ -1261,171 +1019,225 @@ export function AccountSettingsPage() {
                       {account.symbol_limits.length === 0 ? (
                         <tr>
                           <td colSpan={4} className="empty">
-                            No specific overrides. All symbols currently fall back to the Default Limit ({fmtUsd(account.default_symbol_limit || 10000000)}).
+                            No overrides. All symbols use default {fmtUsd(account.default_symbol_limit || 10000000)}.
                           </td>
                         </tr>
                       ) : null}
                     </tbody>
                   </table>
                 </div>
-
                 <div className="settings-grid" style={{ marginTop: 12 }}>
                   <label className="field">
                     <span>Symbol</span>
-                    <input
-                      className="inline-input"
-                      type="text"
-                      placeholder="e.g. SIL"
-                      value={newSymbol}
-                      onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
-                    />
+                    <input className="inline-input" type="text" placeholder="e.g. SIL" value={newSymbol} onChange={(e) => setNewSymbol(e.target.value.toUpperCase())} />
                   </label>
                   <label className="field">
                     <span>Money Limit ($)</span>
                     <div className="money-field">
                       <span className="money-prefix">$</span>
-                      <input
-                        type="number"
-                        min="1"
-                        step="1000"
-                        placeholder="25000"
-                        value={newLimit}
-                        onChange={(e) => setNewLimit(e.target.value)}
-                      />
+                      <input type="number" min="1" step="1000" placeholder="25000" value={newLimit} onChange={(e) => setNewLimit(e.target.value)} />
                     </div>
                   </label>
-                  <button
-                    type="button"
-                    className="btn primary"
-                    disabled={!newSymbol.trim() || !newLimit.trim() || limitMutation.isPending}
-                    onClick={() =>
-                      limitMutation.mutate({
-                        symbol: newSymbol.trim(),
-                        limit: newLimit.trim(),
-                      })
-                    }
-                  >
+                  <button type="button" className="btn primary" disabled={!newSymbol.trim() || !newLimit.trim() || limitMutation.isPending} onClick={() => limitMutation.mutate({ symbol: newSymbol.trim(), limit: newLimit.trim() })}>
                     + Add Limit
                   </button>
                 </div>
               </div>
             </section>
 
-            {/* Trading Pause */}
+          </div>
+
+          <div className="settings-column">
+            {/* ── STRATEGY ALLOCATIONS ── */}
+            {account.allocations.map((a) => {
+              const draft = drafts[a.id] || {
+                allocPct: pctFromDecimal(a.alloc_pct),
+                enabled: a.enabled,
+                maxOpenPositions: a.max_open_positions,
+                pairMaxAllocationPct: pctFromDecimal(a.pair_max_allocation_pct),
+                target: thresholdInputValue(a.target, a.target_unit || 'ABSOLUTE'),
+                stop: thresholdInputValue(a.stop, a.stop_unit || 'ABSOLUTE'),
+                timeLimit: a.time_limit,
+                targetUnit: a.target_unit || 'ABSOLUTE',
+                stopUnit: a.stop_unit || 'ABSOLUTE',
+                exitAutomationEnabled: Boolean(a.exit_automation_enabled),
+              }
+              const committed = (parseFloat(account.total_margin) * (draft.enabled ? draft.allocPct : 0)) / 100
+              return (
+                <section key={a.id} className="settings-card">
+                  <div className="settings-block">
+                    <div className="settings-block-h">
+                      <h2>STRATEGY — {displayStrategy(a.strategy_id).toUpperCase()}</h2>
+                      <span className={`alloc-sum ${sumOver ? 'over' : ''}`}>Enabled total {fmtPct(enabledSum)}</span>
+                    </div>
+                    <div className="alloc-card">
+                      <div className="alloc-card-h">
+                        <h3>{displayStrategy(a.strategy_id)}</h3>
+                        <label className="toggle-row">
+                          <input type="checkbox" checked={draft.enabled} onChange={(e) => updateDraft(a.id, { enabled: e.target.checked })} />
+                          <span>{draft.enabled ? 'Enabled' : 'Disabled'}</span>
+                        </label>
+                      </div>
+                      <div className="settings-grid">
+                        <label className="field">
+                          <span>Allocation</span>
+                          <div className="money-field">
+                            <input type="number" min="0" max="100" step="1" value={draft.allocPct} onChange={(e) => updateDraft(a.id, { allocPct: parseFloat(e.target.value) || 0 })} />
+                            <span className="money-suffix">%</span>
+                          </div>
+                          <span className="field-hint">Committed: {fmtUsd(String(committed))}</span>
+                        </label>
+                        <label className="field">
+                          <span>Max Open Positions</span>
+                          <input className="inline-input narrow" type="number" min="1" step="1" value={draft.maxOpenPositions} onChange={(e) => updateDraft(a.id, { maxOpenPositions: parseInt(e.target.value, 10) || 1 })} />
+                        </label>
+                        <label className="field">
+                          <span>Per-pair allocation</span>
+                          <div className="money-field">
+                            <input className="inline-input" type="number" min="0.01" max="100" step="0.01" value={draft.pairMaxAllocationPct} onChange={(e) => updateDraft(a.id, { pairMaxAllocationPct: parseFloat(e.target.value) || 0 })} />
+                            <span className="money-suffix">%</span>
+                          </div>
+                          <span className="field-hint">
+                            {fmtPct(draft.pairMaxAllocationPct)} of {fmtUsd(String(committed))} = {fmtUsd(String((committed * draft.pairMaxAllocationPct) / 100))} per pair
+                          </span>
+                        </label>
+                        <div className="settings-block-h" style={{ width: '100%', marginTop: 4 }}>
+                          <h3 style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em' }}>Exit Automation</h3>
+                          <label className="toggle-row">
+                            <input type="checkbox" checked={draft.exitAutomationEnabled} onChange={(e) => updateDraft(a.id, { exitAutomationEnabled: e.target.checked })} />
+                            <span>{draft.exitAutomationEnabled ? 'Enabled' : 'Disabled'}</span>
+                          </label>
+                        </div>
+                        <p className="field-hint" style={{ width: '100%' }}>
+                          Target/stop/time_limit copied onto each pair at open. Edits apply to new pairs only; click an Open Positions row for existing pairs.
+                        </p>
+                        <label className="field">
+                          <span>Pair target</span>
+                          <div className="money-field">
+                            {draft.targetUnit === 'ABSOLUTE' ? <span className="money-prefix">$</span> : null}
+                            <input type="number" step={draft.targetUnit === 'PERCENT' ? '0.01' : '1'} value={draft.target} onChange={(e) => updateDraft(a.id, { target: e.target.value })} />
+                            <select className="inline-input" value={draft.targetUnit} onChange={(e) => updateDraft(a.id, { targetUnit: e.target.value })}>
+                              <option value="ABSOLUTE">USD</option>
+                              <option value="PERCENT">% of pair</option>
+                            </select>
+                          </div>
+                        </label>
+                        <label className="field">
+                          <span>Pair stop</span>
+                          <div className="money-field">
+                            {draft.stopUnit === 'ABSOLUTE' ? <span className="money-prefix">$</span> : null}
+                            <input type="number" step={draft.stopUnit === 'PERCENT' ? '0.01' : '1'} value={draft.stop} onChange={(e) => updateDraft(a.id, { stop: e.target.value })} />
+                            <select className="inline-input" value={draft.stopUnit} onChange={(e) => updateDraft(a.id, { stopUnit: e.target.value })}>
+                              <option value="ABSOLUTE">USD</option>
+                              <option value="PERCENT">% of pair</option>
+                            </select>
+                          </div>
+                        </label>
+                        <label className="field">
+                          <span>Time limit (seconds)</span>
+                          <input className="inline-input" type="number" min="0" step="60" value={draft.timeLimit} onChange={(e) => updateDraft(a.id, { timeLimit: parseInt(e.target.value, 10) || 0 })} />
+                          <span className="field-hint">{draft.timeLimit > 0 ? `${Math.round(draft.timeLimit / 60)} min` : 'disabled'}</span>
+                        </label>
+                        <button type="button" className="btn primary" disabled={allocationMutation.isPending} onClick={() => allocationMutation.mutate({ id: a.id, draft })}>
+                          {allocationMutation.isPending ? 'Saving…' : 'Save Allocation'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              )
+            })}
+
+            {/* ── EXECUTION CONTROLS ── */}
             <section className="settings-card">
               <div className="settings-block">
                 <div className="settings-block-h">
-                  <h2>TRADING PAUSE</h2>
+                  <h2>EXECUTION CONTROLS</h2>
+                  <span className="field-hint" style={{ fontSize: 10 }}>AUTO SQUARE-OFF &amp; RETRY</span>
                 </div>
+                <ExecutionSettingsCard />
+              </div>
+            </section>
 
+            {/* ── MARGIN CONTROLS ── */}
+            <section className="settings-card">
+              <div className="settings-block">
+                <div className="settings-block-h">
+                  <h2>MARGIN CONTROLS</h2>
+                </div>
+                <MarginSettingsCard />
+              </div>
+            </section>
+
+            {/* ── TRADING STATE ── */}
+            <section className="settings-card">
+              <div className="settings-block">
+                <div className="settings-block-h">
+                  <h2>TRADING STATE</h2>
+                  {isTradingPaused ? <span className="account-status-pill paused" style={{ background: '#78350f', color: '#fcd34d', fontSize: 10 }}>⏸ PAUSED</span> : <span className="field-hint">ACTIVE</span>}
+                </div>
                 {isTradingPaused ? (
-                  <div
-                    className="trading-pause-banner"
-                    style={{
-                      background: '#451a03',
-                      border: '1px solid #b45309',
-                      padding: '12px 16px',
-                      borderRadius: '6px',
-                      marginBottom: 12,
-                    }}
-                  >
-                    <strong style={{ color: '#fbbf24', fontSize: '13px', display: 'block', marginBottom: 4 }}>
-                      ⏸️ TRADING PAUSED
-                    </strong>
-                    <p className="field-hint" style={{ color: '#fde68a', margin: 0 }}>
-                      This account is currently paused for new opening trading signals. Currently open positions and protective exits (stop loss / target) remain active.
+                  <div style={{ background: '#451a03', border: '1px solid #92400e', padding: '12px 14px', borderRadius: 6, marginBottom: 12 }}>
+                    <strong style={{ color: '#fbbf24', fontSize: 12, display: 'block', marginBottom: 4 }}>⏸ TRADING PAUSED</strong>
+                    <p className="field-hint" style={{ color: '#fde68a', margin: 0, lineHeight: 1.5 }}>
+                      New opening signals are blocked. Open positions and protective exits remain active.
                     </p>
                   </div>
                 ) : (
-                  <p className="field-hint" style={{ color: 'var(--ink)' }}>
-                    Temporarily pause incoming opening signals for account{' '}
-                    <span className="mono bold">{cleanAccount}</span> without affecting open positions or protective exits.
-                  </p>
+                  <p className="field-hint" style={{ marginBottom: 12 }}>Pause new opening signals without closing existing exposures.</p>
                 )}
-
-                <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8 }}>
                   {isTradingPaused ? (
-                    <button
-                      type="button"
-                      className="btn primary"
-                      style={{ padding: '10px 16px', fontSize: '11px' }}
-                      disabled={resumeMutation.isPending}
-                      onClick={() => resumeMutation.mutate()}
-                    >
-                      {resumeMutation.isPending ? 'RESUMING…' : '▶️ RESUME TRADING'}
+                    <button type="button" className="btn primary" style={{ padding: '10px 16px', fontSize: 11 }} disabled={resumeMutation.isPending} onClick={() => resumeMutation.mutate()}>
+                      {resumeMutation.isPending ? 'RESUMING…' : '▶ RESUME TRADING'}
                     </button>
                   ) : (
-                    <button
-                      type="button"
-                      className="btn"
-                      style={{ padding: '10px 16px', fontSize: '11px', borderColor: '#b45309', color: '#fbbf24' }}
-                      disabled={pauseMutation.isPending}
-                      onClick={() => pauseMutation.mutate()}
-                    >
-                      {pauseMutation.isPending ? 'PAUSING…' : '⏸️ PAUSE TRADING'}
+                    <button type="button" className="btn" style={{ padding: '10px 16px', fontSize: 11, borderColor: '#b45309', color: '#fbbf24' }} disabled={pauseMutation.isPending} onClick={() => pauseMutation.mutate()}>
+                      {pauseMutation.isPending ? 'PAUSING…' : '⏸ PAUSE TRADING'}
                     </button>
                   )}
                 </div>
               </div>
             </section>
 
-            {/* Emergency / Kill Switch */}
-            <section className="settings-card danger-card">
+            {/* ── EMERGENCY ACTIONS ── */}
+            <section className="settings-card" style={{ borderColor: 'rgba(239,107,115,0.35)', background: 'rgba(239,107,115,0.04)' }}>
               <div className="settings-block">
                 <div className="settings-block-h">
-                  <h2>EMERGENCY / KILL SWITCH</h2>
+                  <h2 style={{ color: 'var(--red)' }}>EMERGENCY ACTIONS</h2>
                 </div>
-
                 {isKillSwitchActive ? (
-                  <div
-                    className="killswitch-stopped-banner"
-                    style={{
-                      background: '#3b1219',
-                      border: '1px solid #7f1d1d',
-                      padding: '12px 16px',
-                      borderRadius: '6px',
-                      marginBottom: 12,
-                    }}
-                  >
-                    <strong style={{ color: '#f87171', fontSize: '13px', display: 'block', marginBottom: 4 }}>
-                      ⛔ STOPPED BY KILL SWITCH
-                    </strong>
-                    <p className="field-hint" style={{ color: '#fca5a5', margin: 0 }}>
-                      {killSwitchData?.requested_by === 'auto_risk' ||
-                      (killSwitchData?.requested_by == null && accountRiskEnabled)
-                        ? 'Re-armed by account daily risk. New opening signals stay blocked until you change the daily stop/target or turn daily risk off, then Start Again.'
-                        : 'This account is currently blocked from receiving or processing new opening trading signals.'}
+                  <div style={{ background: '#3b1219', border: '1px solid #7f1d1d', padding: '12px 14px', borderRadius: 6, marginBottom: 12 }}>
+                    <strong style={{ color: '#f87171', fontSize: 12, display: 'block', marginBottom: 4 }}>⛔ STOPPED — KILL SWITCH ACTIVE</strong>
+                    <p className="field-hint" style={{ color: '#fca5a5', margin: 0, lineHeight: 1.5 }}>
+                      {killSwitchData?.requested_by === 'auto_risk' || (killSwitchData?.requested_by == null && accountRiskEnabled)
+                        ? 'Re-armed by daily risk. Adjust stop/target or disable daily risk, then Start Again.'
+                        : 'Account blocked from new opens. Use Start Again to re-enable.'}
                     </p>
                   </div>
                 ) : (
-                  <p className="field-hint" style={{ color: 'var(--ink)' }}>
-                    Close every currently open position for account{' '}
-                    <span className="mono bold">{cleanAccount}</span>.
+                  <p className="field-hint" style={{ marginBottom: 12, lineHeight: 1.5 }}>
+                    Irreversible: immediately close every open pair for {cleanAccount}. Use only for operational emergency.
                   </p>
                 )}
-
-                <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {isKillSwitchActive ? (
-                    <button
-                      type="button"
-                      className="btn primary"
-                      style={{ padding: '10px 16px', fontSize: '11px', background: '#16a34a', borderColor: '#15803d' }}
-                      onClick={() => setIsStartAgainOpen(true)}
-                    >
+                    <button type="button" className="btn primary" style={{ padding: '10px 16px', fontSize: 11, background: '#16a34a', borderColor: '#15803d' }} onClick={() => setIsStartAgainOpen(true)}>
                       ▶ START AGAIN
                     </button>
                   ) : null}
-                  <button
-                    type="button"
-                    className="btn danger"
-                    style={{ padding: '10px 16px', fontSize: '11px' }}
-                    onClick={() => setIsKillSwitchOpen(true)}
-                  >
-                    ⚠️ SQUARE OFF ALL POSITIONS
+                  <button type="button" className="btn danger" style={{ padding: '10px 16px', fontSize: 11 }} onClick={() => setIsKillSwitchOpen(true)}>
+                    ⚠ SQUARE OFF ALL POSITIONS
                   </button>
                 </div>
               </div>
             </section>
+
+            <div style={{ padding: '8px 4px' }}>
+              <p className="field-hint" style={{ fontSize: 10, lineHeight: 1.6, color: 'var(--dim)' }}>
+                All settings persist per account. Allocation and risk edits affect new pairs only. Open pairs retain frozen exit levels until closed.
+              </p>
+            </div>
           </div>
         </div>
       ) : null}
@@ -1454,8 +1266,7 @@ export function AccountSettingsPage() {
             ibkrAccount={account.ibkr_account}
             onClose={() => setIsStartAgainOpen(false)}
             onSuccess={() => {
-              const text =
-                'Account execution state changed back to ACTIVE. Account is allowed to receive trading signals again.'
+              const text = 'Account execution state changed back to ACTIVE. Account is allowed to receive trading signals again.'
               setMessage(text)
               setLocalError(null)
               showFeedbackToast('success', 'Account restarted', text)

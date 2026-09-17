@@ -161,14 +161,10 @@ class AccountMarginService:
         self._client = client
         self._rate_limiter = rate_limiter
         self._max_age_sec = (
-            int(max_age_sec)
-            if max_age_sec is not None
-            else int(settings.margin_snapshot_max_age_sec)
+            max_age_sec if max_age_sec is not None else settings.margin_snapshot_max_age_sec
         )
         self._refresh_sec = (
-            int(refresh_sec)
-            if refresh_sec is not None
-            else int(settings.margin_snapshot_refresh_sec)
+            refresh_sec if refresh_sec is not None else settings.margin_snapshot_refresh_sec
         )
         self._lock = threading.Lock()
         self._next_req_id = _ACCOUNT_SUMMARY_REQ_START
