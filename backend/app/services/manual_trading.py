@@ -44,8 +44,10 @@ from app.schemas.manual_schemas import (
     ManualOrderSubmitResponse,
 )
 from app.services.kill_switch import (
+    get_active_manual_kill_switch_operation,
     get_armed_kill_switch_operation,
     is_account_kill_switch_active,
+    is_manual_kill_switch_active,
 )
 from app.services.trading_pause import is_account_trading_paused
 
@@ -99,12 +101,20 @@ class ManualTradingService:
         # 4. Kill switch check
         if is_account_kill_switch_active(account.id):
             errors.append(f"Account {account.ibkr_account} kill switch is active. Trading is blocked.")
+        elif is_manual_kill_switch_active(account.id):
+            errors.append(f"Account {account.ibkr_account} manual kill switch is active. Manual trading is blocked.")
         else:
             armed_op = await get_armed_kill_switch_operation(self._session, account.id)
             if armed_op is not None:
                 errors.append(
                     f"Account {account.ibkr_account} has an armed emergency kill-switch operation ({armed_op.status})."
                 )
+            else:
+                armed_manual_op = await get_active_manual_kill_switch_operation(self._session, account.id)
+                if armed_manual_op is not None:
+                    errors.append(
+                        f"Account {account.ibkr_account} has an active manual kill-switch operation ({armed_manual_op.status})."
+                    )
 
         # 5. Trading pause check
         # Pause blocks new OPEN orders. An order is only permitted while paused
@@ -193,7 +203,7 @@ class ManualTradingService:
         connected = self._client is not None and self._client.is_connected()
         halt_state = await self._halt_repo.get_halt_state(account.id)
         manual_halted = bool(halt_state and halt_state.halted)
-        kill_switch_active = is_account_kill_switch_active(account.id)
+        kill_switch_active = is_account_kill_switch_active(account.id) or is_manual_kill_switch_active(account.id)
         trading_paused = is_account_trading_paused(account.id) or account.trading_paused
 
         effective_price: Decimal | None = None

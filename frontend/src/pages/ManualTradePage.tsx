@@ -55,6 +55,24 @@ export function ManualTradePage() {
     void loadGatewayStatus()
   }, [loadGatewayStatus])
 
+  // ── CFD discovery ─────────────────────────────────────────────────
+  const [searchSymbol, setSearchSymbol] = useState('')
+  const [searchExchange, setSearchExchange] = useState('SMART')
+  const [searchCurrency, setSearchCurrency] = useState('USD')
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
+  const [candidates, setCandidates] = useState<CfdCandidateContract[]>([])
+  const [hasSearched, setHasSearched] = useState(false)
+  const [selectedContract, setSelectedContract] = useState<CfdCandidateContract | null>(null)
+  const [selectionError, setSelectionError] = useState<string | null>(null)
+
+  // ── Order ticket ──────────────────────────────────────────────────
+  const [side, setSide] = useState<'BUY' | 'SELL'>('BUY')
+  const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET'>('LIMIT')
+  const [quantity, setQuantity] = useState('100')
+  const [limitPrice, setLimitPrice] = useState('')
+  const [tif, setTif] = useState('DAY')
+
   // ── Close manual position prefill from Main Positions ─────────────
   useEffect(() => {
     if (!isCloseMode || !closeSymbol || !closeSide || !closeQty) return
@@ -84,24 +102,6 @@ export function ManualTradePage() {
       }).catch(() => { })
     }
   }, [isCloseMode, closeSymbol, closeSide, closeQty, closeTradeId, cleanAccount])
-
-  // ── CFD discovery ─────────────────────────────────────────────────
-  const [searchSymbol, setSearchSymbol] = useState('')
-  const [searchExchange, setSearchExchange] = useState('SMART')
-  const [searchCurrency, setSearchCurrency] = useState('USD')
-  const [searchLoading, setSearchLoading] = useState(false)
-  const [searchError, setSearchError] = useState<string | null>(null)
-  const [candidates, setCandidates] = useState<CfdCandidateContract[]>([])
-  const [hasSearched, setHasSearched] = useState(false)
-  const [selectedContract, setSelectedContract] = useState<CfdCandidateContract | null>(null)
-  const [selectionError, setSelectionError] = useState<string | null>(null)
-
-  // ── Order ticket ──────────────────────────────────────────────────
-  const [side, setSide] = useState<'BUY' | 'SELL'>('BUY')
-  const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET'>('LIMIT')
-  const [quantity, setQuantity] = useState('100')
-  const [limitPrice, setLimitPrice] = useState('')
-  const [tif, setTif] = useState('DAY')
 
   // ── Preview / submit ──────────────────────────────────────────────
   // Idempotency: one UUID per intentional order. New UUID only for new intent (contract/side/qty/type/price/tif change) or after successful submit.
@@ -165,20 +165,21 @@ export function ManualTradePage() {
   const [cancelConfirm, setCancelConfirm] = useState<ManualOrderRead | null>(null)
   const [expandedOrderId, setExpandedOrderId] = useState<number | null>(null)
 
-  const loadManualOrders = useCallback(async (page: number) => {
+  const loadManualOrders = useCallback(async (page?: number) => {
     if (!cleanAccount) return
+    const targetPage = page ?? ordersPage
     const requestId = ++ordersRequestIdRef.current
     try {
       setOrdersLoading(true)
       setOrdersError(null)
-      const offset = (page - 1) * ORDERS_PAGE_SIZE
+      const offset = (targetPage - 1) * ORDERS_PAGE_SIZE
       const res = await fetchManualOrders(cleanAccount, undefined, ORDERS_PAGE_SIZE, offset)
       if (requestId !== ordersRequestIdRef.current) return
       setOrders(res.orders)
       setOrdersTotal(res.total)
       // Clamp page if total shrank (e.g., after cancel or close)
       const totalPages = Math.max(1, Math.ceil(res.total / ORDERS_PAGE_SIZE))
-      if (page > totalPages) setOrdersPage(totalPages)
+      if (targetPage > totalPages) setOrdersPage(totalPages)
     } catch (err: unknown) {
       const ae = err as { response?: { data?: { detail?: string } } }
       if (requestId !== ordersRequestIdRef.current) return
@@ -186,7 +187,7 @@ export function ManualTradePage() {
     } finally {
       if (requestId === ordersRequestIdRef.current) setOrdersLoading(false)
     }
-  }, [cleanAccount])
+  }, [cleanAccount, ordersPage])
 
   // Reset to page 1 when account changes
   useEffect(() => {
@@ -214,7 +215,7 @@ export function ManualTradePage() {
     try {
       const res = await cancelManualOrder(cleanAccount, order.id)
       setCancelFeedback({ orderId: order.id, message: res.message || 'Cancellation sent.', isError: !res.success })
-      await loadManualOrders(ordersPage)
+      void loadManualOrders()
     } catch (err: unknown) {
       const ae = err as { response?: { data?: { detail?: string } } }
       setCancelFeedback({ orderId: order.id, message: ae?.response?.data?.detail || (err instanceof Error ? err.message : 'Cancel failed'), isError: true })
@@ -295,7 +296,7 @@ export function ManualTradePage() {
         limit_price: orderType === 'LIMIT' ? limitPrice : null, tif, outside_rth: false, min_tick: selectedContract.min_tick ?? null,
         trade_id: isCloseMode && closeTradeId ? closeTradeId : null,
       })
-      setSubmitResult(res); setIsPreviewOpen(false); setOrdersPage(1); void loadManualOrders(1)
+      setSubmitResult(res); setIsPreviewOpen(false); setOrdersPage(1); void loadManualOrders()
       // Success → rotate key for next intentional order. Keep lastIntentSig so next preview with same intent still generates new key after this.
       try { setIdemKey(genIdemKey()); } catch { setIdemKey('') }
       setLastIntentSig(null)

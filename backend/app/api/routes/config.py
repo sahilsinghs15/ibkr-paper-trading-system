@@ -1,7 +1,6 @@
 """Dashboard config CRUD for accounts, allocations, and symbol limits."""
 
 import logging
-
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -223,6 +222,8 @@ async def square_off_account_positions(
 
     if scope == "account":
         return await square_off_entire_ibkr_account(account_id, request, session, current_user)
+    if scope == "manual":
+        return await square_off_manual_positions(account_id, request, session, current_user)
 
     order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
     session_factory = getattr(request.app.state, "session_factory", None)
@@ -268,6 +269,72 @@ async def square_off_account_positions(
         operation_id=str(op.operation_id),
         status=op.status,
         scope="ENGINE_POSITION_FLATTEN",
+    )
+
+
+@router.post(
+    "/accounts/{account_id}/square-off-manual",
+    response_model=SquareOffResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Emergency Kill Switch: Flatten manual positions only for account",
+)
+async def square_off_manual_positions(
+    account_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
+) -> SquareOffResponse:
+    """Flatten only manual positions for the specified account without touching engine/signal positions."""
+    _check_account_authorization(current_user, account_id=account_id)
+    svc = AccountStrategyConfigService(session)
+    account = await svc.get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Session factory is unavailable.",
+        )
+
+    kill_switch_svc = KillSwitchService(
+        session_factory=session_factory,
+        order_manager=order_manager,
+    )
+
+    op, created_new = await kill_switch_svc.initiate_manual_square_off(
+        account_id=account_id, requested_by="operator"
+    )
+    if created_new:
+        await kill_switch_svc.execute_manual_flatten_operation_background(op.operation_id)
+
+    from app.db.repositories.event_repository import EventRepository
+
+    await EventRepository(session).append(
+        process="kill_switch",
+        kind="MANUAL_POSITION_FLATTEN",
+        detail={
+            "account_id": account_id,
+            "ibkr_account": account.ibkr_account,
+            "operation_id": str(op.operation_id),
+            "requested_by": "operator",
+            "initial_position_count": op.initial_position_count,
+            "scope": "MANUAL_POSITION_FLATTEN",
+        },
+        idempotency_key=f"manual_position_flatten:{op.operation_id}",
+    )
+    await session.commit()
+
+    return SquareOffResponse(
+        account_id=account.id,
+        ibkr_account=account.ibkr_account,
+        squared_off_count=op.initial_position_count,
+        trade_ids=[],
+        operation_id=str(op.operation_id),
+        status=op.status,
+        scope="MANUAL_POSITION_FLATTEN",
     )
 
 
@@ -349,7 +416,6 @@ async def square_off_entire_ibkr_account(
             logger.exception("Account flatten ledger close failed account_id=%s", account_id)
 
     # Re-read operation status after potential ledger close
-    from sqlalchemy import select as _select
     from app.db.models.kill_switch import KillSwitchOperationModel as _KSO
 
     async with session_factory() as _s:
@@ -826,7 +892,7 @@ async def patch_account(
             kwargs[field_name] = val
 
     old_values: dict[str, str | None] = {}
-    for k in kwargs.keys():
+    for k in kwargs:
         old_val = getattr(account, k, None)
         old_values[k] = str(old_val) if old_val is not None else None
 

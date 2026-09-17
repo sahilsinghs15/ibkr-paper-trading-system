@@ -114,6 +114,15 @@ export async function squareOffEntireAccount(
   return data
 }
 
+export async function squareOffManualPositions(
+  accountId: number,
+): Promise<SquareOffResult> {
+  const { data } = await axios.post<SquareOffResult>(
+    `${base}/accounts/${accountId}/square-off-manual`,
+  )
+  return data
+}
+
 export async function squareOffAccountPositions(
   accountId: number,
 ): Promise<SquareOffResult> {

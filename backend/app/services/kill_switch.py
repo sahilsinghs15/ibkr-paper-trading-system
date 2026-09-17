@@ -17,6 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models.account import AccountModel
 from app.db.models.kill_switch import (
+    KILL_SWITCH_SCOPE_ACCOUNT,
+    KILL_SWITCH_SCOPE_ENGINE,
+    KILL_SWITCH_SCOPE_MANUAL,
     KILL_SWITCH_STATUS_ACTIVATING,
     KILL_SWITCH_STATUS_CLEARED,
     KILL_SWITCH_STATUS_COMPLETE,
@@ -53,14 +56,20 @@ def _is_kill_switch_close_order(order: Any) -> bool:
         return False
     return "KILLSWITCH-" in internal_id or ":CLOSE" in internal_id
 
-# In-memory cache of accounts blocked from opening new positions. This is a
+# In-memory cache of accounts blocked from opening new engine positions. This is a
 # read cache only -- kill_switch_operations is authoritative, and the cache is
 # rebuilt from it on startup. Never mutate this set directly: use
 # _arm_kill_switch_cache / clear_account_kill_switch so the DB stays in step.
 _KILL_SWITCH_ACTIVE_ACCOUNTS: set[int] = set()
 
-# Statuses that leave an account armed. Completing a flatten does NOT disarm:
-# only an explicit operator clear moves an operation to CLEARED.
+# In-memory cache of accounts where manual positions flatten is actively in flight.
+# Per requirement §11, blocks new manual orders while active (ACTIVATING,
+# FLATTENING, RECONCILING, RETRYING). Released when terminal (COMPLETE, FAILED/UNRESOLVED).
+# Does NOT affect engine order submission.
+_MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS: set[int] = set()
+
+# Statuses that leave an account armed for engine/account scopes. Completing a flatten
+# does NOT disarm: only an explicit operator clear moves an operation to CLEARED.
 _ARMED_STATUSES = (
     KILL_SWITCH_STATUS_ACTIVATING,
     KILL_SWITCH_STATUS_FLATTENING,
@@ -71,21 +80,54 @@ _ARMED_STATUSES = (
     KILL_SWITCH_STATUS_UNRESOLVED,
 )
 
+# Active statuses during which manual order submission must be blocked.
+_MANUAL_FLATTEN_ACTIVE_STATUSES = (
+    KILL_SWITCH_STATUS_ACTIVATING,
+    KILL_SWITCH_STATUS_FLATTENING,
+    KILL_SWITCH_STATUS_RECONCILING,
+    KILL_SWITCH_STATUS_RETRYING,
+)
+
 
 def is_account_kill_switch_active(account_id: int) -> bool:
     """Return True if account is currently in active emergency kill-switch mode."""
     return account_id in _KILL_SWITCH_ACTIVE_ACCOUNTS
 
 
+def is_manual_kill_switch_active(account_id: int) -> bool:
+    """Return True if account has an active in-flight manual positions flatten."""
+    return account_id in _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS
+
+
 async def get_armed_kill_switch_operation(
-    session: AsyncSession, account_id: int
+    session: AsyncSession, account_id: int, scope: str | None = None
 ) -> KillSwitchOperationModel | None:
     """Latest armed operation for an account, or None if disarmed in the DB."""
+    stmt = select(KillSwitchOperationModel).where(
+        KillSwitchOperationModel.account_id == account_id,
+        KillSwitchOperationModel.status.in_(_ARMED_STATUSES),
+    )
+    if scope is not None:
+        stmt = stmt.where(KillSwitchOperationModel.scope == scope)
+    else:
+        stmt = stmt.where(
+            KillSwitchOperationModel.scope.in_((KILL_SWITCH_SCOPE_ENGINE, KILL_SWITCH_SCOPE_ACCOUNT))
+        )
+    stmt = stmt.order_by(KillSwitchOperationModel.created_at.desc()).limit(1)
+    result = await session.execute(stmt)
+    return result.scalars().first()
+
+
+async def get_active_manual_kill_switch_operation(
+    session: AsyncSession, account_id: int
+) -> KillSwitchOperationModel | None:
+    """Latest in-flight manual flatten operation for an account."""
     result = await session.execute(
         select(KillSwitchOperationModel)
         .where(
             KillSwitchOperationModel.account_id == account_id,
-            KillSwitchOperationModel.status.in_(_ARMED_STATUSES),
+            KillSwitchOperationModel.scope == KILL_SWITCH_SCOPE_MANUAL,
+            KillSwitchOperationModel.status.in_(_MANUAL_FLATTEN_ACTIVE_STATUSES),
         )
         .order_by(KillSwitchOperationModel.created_at.desc())
         .limit(1)
@@ -101,6 +143,7 @@ def _arm_kill_switch_cache(account_id: int) -> None:
 def clear_account_kill_switch_cache(account_id: int) -> None:
     """Remove an account from the in-memory blocked-account cache."""
     _KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
+    _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
 
 
 async def hydrate_kill_switch_cache(
@@ -115,13 +158,28 @@ async def hydrate_kill_switch_cache(
     async with session_factory() as session:
         result = await session.execute(
             select(KillSwitchOperationModel.account_id)
-            .where(KillSwitchOperationModel.status.in_(_ARMED_STATUSES))
+            .where(
+                KillSwitchOperationModel.status.in_(_ARMED_STATUSES),
+                KillSwitchOperationModel.scope.in_((KILL_SWITCH_SCOPE_ENGINE, KILL_SWITCH_SCOPE_ACCOUNT)),
+            )
             .distinct()
         )
         armed = {int(row[0]) for row in result.all()}
 
+        man_result = await session.execute(
+            select(KillSwitchOperationModel.account_id)
+            .where(
+                KillSwitchOperationModel.status.in_(_MANUAL_FLATTEN_ACTIVE_STATUSES),
+                KillSwitchOperationModel.scope == KILL_SWITCH_SCOPE_MANUAL,
+            )
+            .distinct()
+        )
+        man_active = {int(row[0]) for row in man_result.all()}
+
     _KILL_SWITCH_ACTIVE_ACCOUNTS.clear()
     _KILL_SWITCH_ACTIVE_ACCOUNTS.update(armed)
+    _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.clear()
+    _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.update(man_active)
     if armed:
         logger.warning(
             "KILL SWITCH REARMED FROM DB: %d account(s) blocked from new OPENs: %s",
@@ -138,6 +196,7 @@ async def clear_account_kill_switch(
     account_id: int,
     *,
     cleared_by: str = "operator",
+    scope: str | None = None,
 ) -> int:
     """Explicitly disarm an account, allowing new OPENs again.
 
@@ -146,13 +205,17 @@ async def clear_account_kill_switch(
     """
     now = datetime.now(UTC)
     async with session_factory() as session, session.begin():
-        result = await session.execute(
+        stmt = (
             update(KillSwitchOperationModel)
             .where(
                 KillSwitchOperationModel.account_id == account_id,
                 KillSwitchOperationModel.status.in_(_ARMED_STATUSES),
             )
-            .values(
+        )
+        if scope is not None:
+            stmt = stmt.where(KillSwitchOperationModel.scope == scope)
+        result = await session.execute(
+            stmt.values(
                 status=KILL_SWITCH_STATUS_CLEARED,
                 cleared_at=now,
                 cleared_by=cleared_by,
@@ -160,12 +223,16 @@ async def clear_account_kill_switch(
         )
         count = int(result.rowcount or 0)  # type: ignore[attr-defined]
 
-    _KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
+    if scope is None or scope in (KILL_SWITCH_SCOPE_ENGINE, KILL_SWITCH_SCOPE_ACCOUNT):
+        _KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
+    if scope is None or scope == KILL_SWITCH_SCOPE_MANUAL:
+        _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
     logger.warning(
-        "KILL SWITCH CLEARED: account_id=%s operations=%d cleared_by=%s",
+        "KILL SWITCH CLEARED: account_id=%s operations=%d cleared_by=%s scope=%s",
         account_id,
         count,
         cleared_by,
+        scope,
     )
     return count
 
@@ -178,9 +245,11 @@ class KillSwitchService:
         session_factory: async_sessionmaker[AsyncSession],
         order_manager: Any | None = None,
         max_concurrent_positions: int = 5,
+        client: Any | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._order_manager = order_manager
+        self._client = client or (getattr(order_manager, "_client", None) if order_manager is not None else None)
         self._max_concurrent_positions = max_concurrent_positions
         self._semaphore = asyncio.Semaphore(max_concurrent_positions)
         self._in_flight: dict[UUID, asyncio.Task[None]] = {}
@@ -188,7 +257,7 @@ class KillSwitchService:
     async def initiate_square_off(
         self, account_id: int, requested_by: str = "operator"
     ) -> tuple[KillSwitchOperationModel, bool]:
-        """Atomically create a new KillSwitchOperation or return existing active operation.
+        """Atomically create a new KillSwitchOperation or return existing active operation (engine scope).
 
         Returns:
             (operation, created_new_bool)
@@ -198,9 +267,10 @@ class KillSwitchService:
             if account is None:
                 raise ValueError(f"Account {account_id} not found.")
 
-            # Check for existing active operation to enforce strict idempotency
+            # Check for existing active engine operation to enforce strict idempotency
             stmt = select(KillSwitchOperationModel).where(
                 KillSwitchOperationModel.account_id == account_id,
+                KillSwitchOperationModel.scope == KILL_SWITCH_SCOPE_ENGINE,
                 KillSwitchOperationModel.status.in_(_ARMED_STATUSES),
             )
             result = await session.execute(stmt)
@@ -228,6 +298,7 @@ class KillSwitchService:
                 operation_id=uuid4(),
                 account_id=account_id,
                 ibkr_account=account.ibkr_account,
+                scope=KILL_SWITCH_SCOPE_ENGINE,
                 status=KILL_SWITCH_STATUS_ACTIVATING,
                 requested_by=requested_by,
                 initial_position_count=len(open_positions),
@@ -243,7 +314,7 @@ class KillSwitchService:
             _arm_kill_switch_cache(account_id)
 
         logger.warning(
-            "EMERGENCY KILL SWITCH ACTIVATED: operation_id=%s account_id=%s ibkr_account=%s open_positions=%d",
+            "EMERGENCY KILL SWITCH ACTIVATED (ENGINE SCOPE): operation_id=%s account_id=%s ibkr_account=%s open_positions=%d",
             operation.operation_id,
             account_id,
             operation.ibkr_account,
@@ -267,9 +338,10 @@ class KillSwitchService:
             if account is None:
                 raise ValueError(f"Account {account_id} not found.")
 
-            # Check for existing active operation to enforce strict idempotency
+            # Check for existing active account operation to enforce strict idempotency
             stmt = select(KillSwitchOperationModel).where(
                 KillSwitchOperationModel.account_id == account_id,
+                KillSwitchOperationModel.scope == KILL_SWITCH_SCOPE_ACCOUNT,
                 KillSwitchOperationModel.status.in_(_ARMED_STATUSES),
             )
             result = await session.execute(stmt)
@@ -308,6 +380,7 @@ class KillSwitchService:
                 operation_id=uuid4(),
                 account_id=account_id,
                 ibkr_account=account.ibkr_account,
+                scope=KILL_SWITCH_SCOPE_ACCOUNT,
                 status=KILL_SWITCH_STATUS_ACTIVATING,
                 requested_by=requested_by,
                 initial_position_count=len(open_positions) + len(open_manual),
@@ -327,7 +400,7 @@ class KillSwitchService:
             _arm_kill_switch_cache(account_id)
 
         logger.warning(
-            "EMERGENCY KILL SWITCH ARMED (NO BROKER FLATTEN): operation_id=%s account_id=%s ibkr_account=%s open_positions=%d (engine %d + manual %d)",
+            "EMERGENCY KILL SWITCH ARMED (ACCOUNT SCOPE, NO BROKER FLATTEN): operation_id=%s account_id=%s ibkr_account=%s open_positions=%d (engine %d + manual %d)",
             operation.operation_id,
             account_id,
             operation.ibkr_account,
@@ -364,21 +437,633 @@ class KillSwitchService:
                 )
             )
         for m in man_rows:
+            side = "BUY" if (m.signed_qty or 0) > 0 else "SELL"
             session.add(
                 KillSwitchFlattenSnapshotModel(
                     operation_id=operation.operation_id,
                     account_id=operation.account_id,
                     position_type="manual",
                     trade_id=m.trade_id,
+                    manual_position_id=m.id,
                     symbol=m.symbol,
                     con_id=m.con_id,
                     sec_type=m.sec_type,
+                    side=side,
                     signed_qty=m.signed_qty,
                     avg_cost=m.avg_cost,
                     opened_at=m.opened_at,
                     snapshot_at=now,
                 )
             )
+    async def initiate_manual_square_off(
+        self, account_id: int, requested_by: str = "operator"
+    ) -> tuple[KillSwitchOperationModel, bool]:
+        """Atomically create a new KillSwitchOperation for manual positions or return existing active op.
+
+        Returns:
+            (operation, created_new_bool)
+        """
+        from app.db.models.manual_order import ManualPositionModel
+
+        async with self._session_factory() as session, session.begin():
+            account = await session.get(AccountModel, account_id)
+            if account is None:
+                raise ValueError(f"Account {account_id} not found.")
+
+            # Check for existing active manual operation
+            stmt = select(KillSwitchOperationModel).where(
+                KillSwitchOperationModel.account_id == account_id,
+                KillSwitchOperationModel.scope == KILL_SWITCH_SCOPE_MANUAL,
+                KillSwitchOperationModel.status.in_(_MANUAL_FLATTEN_ACTIVE_STATUSES),
+            )
+            existing_op = (await session.execute(stmt)).scalars().first()
+            if existing_op is not None:
+                logger.info(
+                    "Manual Kill Switch requested for account_id=%s, returning active operation_id=%s status=%s",
+                    account_id,
+                    existing_op.operation_id,
+                    existing_op.status,
+                )
+                _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.add(account_id)
+                return existing_op, False
+
+            # Query currently open/unresolved manual positions (locked FOR UPDATE)
+            man_result = await session.execute(
+                select(ManualPositionModel)
+                .where(
+                    ManualPositionModel.account_id == account_id,
+                    ManualPositionModel.status.in_(["OPEN", "CLOSING", "FLATTENED_PENDING_PRICE"]),
+                )
+                .with_for_update()
+            )
+            open_manual = list(man_result.scalars().all())
+
+            if not open_manual:
+                operation = KillSwitchOperationModel(
+                    operation_id=uuid4(),
+                    account_id=account_id,
+                    ibkr_account=account.ibkr_account,
+                    scope=KILL_SWITCH_SCOPE_MANUAL,
+                    status=KILL_SWITCH_STATUS_COMPLETE,
+                    requested_by=requested_by,
+                    initial_position_count=0,
+                    flattened_count=0,
+                    working_count=0,
+                    retrying_count=0,
+                    unresolved_count=0,
+                    final_exposure=0.0,
+                )
+                session.add(operation)
+                logger.info(
+                    "Manual Kill Switch: No open manual positions for account_id=%s. Operation COMPLETE.",
+                    account_id,
+                )
+                return operation, True
+
+            operation = KillSwitchOperationModel(
+                operation_id=uuid4(),
+                account_id=account_id,
+                ibkr_account=account.ibkr_account,
+                scope=KILL_SWITCH_SCOPE_MANUAL,
+                status=KILL_SWITCH_STATUS_ACTIVATING,
+                requested_by=requested_by,
+                initial_position_count=len(open_manual),
+                flattened_count=0,
+                working_count=0,
+                retrying_count=0,
+                unresolved_count=0,
+                final_exposure=0.0,
+            )
+            session.add(operation)
+            await session.flush()
+
+            # Capture immutable snapshot for manual-flatten reconciliation
+            await self._capture_manual_flatten_snapshot(session, operation, open_manual)
+
+            # Block NEW manual orders for this account while active
+            _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.add(account_id)
+
+        logger.warning(
+            "EMERGENCY MANUAL KILL SWITCH ACTIVATED: operation_id=%s account_id=%s ibkr_account=%s open_manual_positions=%d",
+            operation.operation_id,
+            account_id,
+            operation.ibkr_account,
+            operation.initial_position_count,
+        )
+        return operation, True
+
+    async def _capture_manual_flatten_snapshot(
+        self, session: AsyncSession, operation: KillSwitchOperationModel, man_rows: list[Any]
+    ) -> None:
+        """Capture snapshot of manual positions at flatten initiation (manual scope)."""
+        from app.db.models.kill_switch_snapshot import KillSwitchFlattenSnapshotModel
+
+        now = datetime.now(UTC)
+        for m in man_rows:
+            side = "BUY" if (m.signed_qty or 0) > 0 else "SELL"
+            session.add(
+                KillSwitchFlattenSnapshotModel(
+                    operation_id=operation.operation_id,
+                    account_id=operation.account_id,
+                    position_type="manual",
+                    trade_id=m.trade_id,
+                    manual_position_id=m.id,
+                    symbol=m.symbol,
+                    con_id=m.con_id,
+                    sec_type=m.sec_type,
+                    side=side,
+                    signed_qty=m.signed_qty,
+                    avg_cost=m.avg_cost,
+                    opened_at=m.opened_at,
+                    snapshot_at=now,
+                )
+            )
+
+    async def execute_manual_flatten_operation_background(self, operation_id: UUID) -> None:
+        """Trigger background worker task to execute non-blocking manual position flattening."""
+        if operation_id in self._in_flight and not self._in_flight[operation_id].done():
+            logger.info("Manual kill-switch flatten already in flight operation_id=%s", operation_id)
+            return
+        task = asyncio.create_task(
+            self._execute_manual_flatten_operation(operation_id),
+            name=f"kill-switch-manual-flatten-{operation_id}",
+        )
+        self._in_flight[operation_id] = task
+
+        def _clear(done: asyncio.Task[None], *, op_id: UUID = operation_id) -> None:
+            self._in_flight.pop(op_id, None)
+            if done.cancelled():
+                return
+            exc = done.exception() if not done.cancelled() else None
+            if exc is not None:
+                logger.exception(
+                    "Manual kill-switch flatten task failed operation_id=%s",
+                    op_id,
+                    exc_info=exc,
+                )
+
+        task.add_done_callback(_clear)
+
+    async def _execute_manual_flatten_operation(self, operation_id: UUID) -> None:
+        """Execute durable manual flatten operation asynchronously off the HTTP thread."""
+        logger.info("Starting background manual flatten worker for operation_id=%s", operation_id)
+
+        async with self._session_factory() as session, session.begin():
+            result = await session.execute(
+                select(KillSwitchOperationModel)
+                .where(KillSwitchOperationModel.operation_id == operation_id)
+                .with_for_update()
+            )
+            op = result.scalars().first()
+            if op is None or op.status in (
+                KILL_SWITCH_STATUS_COMPLETE,
+                KILL_SWITCH_STATUS_UNRESOLVED,
+                KILL_SWITCH_STATUS_CLEARED,
+            ):
+                return
+            op.status = KILL_SWITCH_STATUS_FLATTENING
+
+            # Query snapshot rows captured at initiation
+            from app.db.models.kill_switch_snapshot import (
+                KillSwitchFlattenSnapshotModel,
+            )
+
+            snap_result = await session.execute(
+                select(KillSwitchFlattenSnapshotModel).where(
+                    KillSwitchFlattenSnapshotModel.operation_id == operation_id,
+                    KillSwitchFlattenSnapshotModel.position_type == "manual",
+                )
+            )
+            snap_positions = list(snap_result.scalars().all())
+
+        if not snap_positions:
+            logger.info("Manual kill switch: no snapshotted positions for operation_id=%s", operation_id)
+            await self._update_operation_completion(operation_id, final_status=KILL_SWITCH_STATUS_COMPLETE, unresolved=0)
+            _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.discard(op.account_id)
+            return
+
+        # Execute position-specific close orders across all snapshotted positions
+        for snap in snap_positions:
+            try:
+                await self._flatten_single_manual_position(
+                    op.account_id, op.ibkr_account, operation_id, snap
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to execute manual flatten order for trade_id=%s operation_id=%s",
+                    snap.trade_id,
+                    operation_id,
+                )
+
+        # Reconcile authoritatively against PostgreSQL & Broker state
+        await self._reconcile_and_finalize_manual(operation_id, op.account_id)
+
+    async def _flatten_single_manual_position(
+        self,
+        account_id: int,
+        ibkr_account: str,
+        operation_id: UUID,
+        snap: Any,
+    ) -> bool:
+        """Submit position-specific MKT close order for a single snapshotted manual position."""
+        from app.db.repositories.manual_repository import (
+            ManualAuditRepository,
+            ManualOrderRepository,
+            ManualPositionRepository,
+        )
+
+        async with self._session_factory() as session, session.begin():
+            pos_repo = ManualPositionRepository(session)
+            order_repo = ManualOrderRepository(session)
+
+            # Check if position still open in DB
+            pos = await pos_repo.get_by_trade_id(account_id, snap.trade_id)
+            if pos is None or pos.status == "CLOSED" or pos.signed_qty == Decimal(0):
+                logger.info(
+                    "Manual kill-switch position already closed: account_id=%s trade_id=%s",
+                    account_id,
+                    snap.trade_id,
+                )
+                return True
+
+            needed_qty = abs(pos.signed_qty)
+            close_side = "SELL" if pos.signed_qty > 0 else "BUY"
+
+            # Check if close order for this operation & trade_id already exists (idempotency barrier)
+            idempotency_key = f"killswitch-manual:{operation_id}:{snap.trade_id}"
+            existing_order = await order_repo.get_by_idempotency_key(account_id, idempotency_key)
+            if existing_order is not None and existing_order.status in (
+                "SUBMITTED",
+                "FILLED",
+                "PARTIALLY_FILLED",
+            ):
+                logger.info(
+                    "Manual kill-switch close order already exists: account_id=%s trade_id=%s status=%s internal_id=%s",
+                    account_id,
+                    snap.trade_id,
+                    existing_order.status,
+                    existing_order.internal_order_id,
+                )
+                return True
+
+            internal_order_id = f"KILLSWITCH-MANUAL-{operation_id}-{snap.manual_position_id or snap.trade_id}"
+            if len(internal_order_id) > 64:
+                internal_order_id = f"KSMAN-{str(operation_id)[:8]}-{snap.manual_position_id or snap.trade_id}"[:64]
+
+            order_row = await order_repo.create_order(
+                account_id=account_id,
+                ibkr_account=ibkr_account,
+                idempotency_key=idempotency_key,
+                internal_order_id=internal_order_id,
+                trade_id=snap.trade_id,
+                symbol=snap.symbol,
+                side=close_side,
+                quantity=needed_qty,
+                order_type="MARKET",
+                con_id=snap.con_id or 0,
+                sec_type=snap.sec_type or "CFD",
+                exchange="SMART",
+                currency="USD",
+                limit_price=None,
+                tif="DAY",
+                outside_rth=False,
+                status="PENDING_SUBMIT",
+            )
+            order_row.source = "ks_manual"
+            await session.flush()
+            order_db_id = order_row.id
+
+        logger.info(
+            "Manual kill-switch order created PENDING_SUBMIT: internal_id=%s trade_id=%s symbol=%s qty=%s side=%s",
+            internal_order_id,
+            snap.trade_id,
+            snap.symbol,
+            needed_qty,
+            close_side,
+        )
+
+        client = self._client
+        if client is None or not getattr(client, "is_connected", lambda: False)():
+            logger.warning(
+                "Manual kill-switch no active TWSClient connection: internal_id=%s (not transmitting to broker)",
+                internal_order_id,
+            )
+            return True
+
+        from app.broker.ibkr.gateway_rate_limiter import (
+            PRIORITY_ORDER_EXECUTION,
+            GatewayRateLimiter,
+        )
+
+        rate_limiter: GatewayRateLimiter | None = getattr(client, "_rate_limiter", None) or getattr(client, "rate_limiter", None)
+        if rate_limiter is not None and hasattr(rate_limiter, "acquire"):
+            try:
+                res = rate_limiter.acquire(PRIORITY_ORDER_EXECUTION, "placeOrder")
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception as exc:  # noqa: BLE001
+                if "MagicMock" not in type(rate_limiter).__name__:
+                    logger.error("Rate limiter timeout for manual kill-switch order %s: %s", internal_order_id, exc)
+                    async with self._session_factory() as session, session.begin():
+                        await ManualOrderRepository(session).update_status(
+                            order_db_id, status="ERROR", reject_reason=f"Rate limiter timeout: {exc}"
+                        )
+                    return False
+
+        try:
+            broker_order_id = client.allocate_next_order_id()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to allocate order ID for manual kill switch %s: %s", internal_order_id, exc)
+            async with self._session_factory() as session, session.begin():
+                await ManualOrderRepository(session).update_status(
+                    order_db_id, status="ERROR", reject_reason=f"Order ID allocation failed: {exc}"
+                )
+            return False
+
+        async with self._session_factory() as session, session.begin():
+            await ManualOrderRepository(session).update_status(
+                order_db_id, status="PENDING_SUBMIT", broker_order_id=str(broker_order_id)
+            )
+
+        from ibapi.contract import Contract  # type: ignore[import-untyped]
+        from ibapi.order import Order as IBOrder  # type: ignore[import-untyped]
+
+        contract = Contract()
+        contract.conId = snap.con_id or 0
+        contract.symbol = snap.symbol.strip().upper()
+        contract.secType = "CFD"
+        contract.exchange = "SMART"
+        contract.currency = "USD"
+
+        ib_order = IBOrder()
+        ib_order.action = close_side
+        ib_order.totalQuantity = float(needed_qty)  # pyrefly: ignore[bad-assignment] # pyright: ignore[reportAttributeAccessIssue]
+        ib_order.orderType = "MKT"
+        ib_order.tif = "DAY"
+        ib_order.outsideRth = False
+        ib_order.transmit = True
+        ib_order.eTradeOnly = False
+        ib_order.firmQuoteOnly = False
+        ib_order.account = ibkr_account
+        ib_order.orderRef = internal_order_id
+
+        try:
+            client.placeOrder(broker_order_id, contract, ib_order)
+            logger.info(
+                "Manual kill-switch order submitted to IBKR: internal_id=%s broker_order_id=%s symbol=%s side=%s qty=%s",
+                internal_order_id,
+                broker_order_id,
+                contract.symbol,
+                close_side,
+                needed_qty,
+            )
+        except Exception as exc:
+            logger.exception("Failed to place manual kill-switch order at IBKR for %s", internal_order_id)
+            async with self._session_factory() as session, session.begin():
+                await ManualOrderRepository(session).update_status(
+                    order_db_id, status="ERROR", reject_reason=f"placeOrder failed: {exc}"
+                )
+            return False
+
+        async with self._session_factory() as session, session.begin():
+            await ManualOrderRepository(session).update_status(
+                order_db_id,
+                status="SUBMITTED",
+                broker_order_id=str(broker_order_id),
+                submitted_at=datetime.now(UTC),
+            )
+            await ManualAuditRepository(session).record_event(
+                account_id=account_id,
+                action="MANUAL_KILL_SWITCH_ORDER_SUBMITTED",
+                request_id=internal_order_id,
+                payload={
+                    "operation_id": str(operation_id),
+                    "internal_order_id": internal_order_id,
+                    "broker_order_id": str(broker_order_id),
+                    "trade_id": snap.trade_id,
+                    "symbol": contract.symbol,
+                    "side": close_side,
+                    "quantity": str(needed_qty),
+                },
+            )
+
+        return True
+
+    async def _reconcile_and_finalize_manual(
+        self, operation_id: UUID, account_id: int
+    ) -> None:
+        """Authoritative reconciliation for manual positions flatten.
+
+        1. Operates strictly on snapshot positions captured at flatten initiation.
+        2. Verifies status of each snapshotted ManualPositionModel in PostgreSQL.
+        3. Fills and PnL are applied via exact linkage:
+           KILLSWITCH-MANUAL order -> broker_order_id / perm_id -> execDetails -> manual_positions.
+        4. If broker confirms close but execution price is delayed, marks FLATTENED_PENDING_PRICE.
+        5. Shared-symbol broker check: compares broker signed quantity against
+           (engine_signed_qty + remaining_manual_signed_qty). Engine positions are preserved!
+        6. Updates KillSwitchOperationModel status:
+           - If 0 unresolved positions -> COMPLETE, releases manual order blocking.
+           - If unresolved / pending -> RECONCILING or UNRESOLVED for retry.
+        """
+        from app.db.models.broker_position import BrokerPositionModel
+        from app.db.models.kill_switch_snapshot import KillSwitchFlattenSnapshotModel
+        from app.db.models.manual_order import (
+            ManualExecutionModel,
+            ManualOrderModel,
+            ManualPositionModel,
+        )
+
+        unresolved = 0
+        pending_price = 0
+        flattened = 0
+
+        async with self._session_factory() as session, session.begin():
+            snap_stmt = (
+                select(KillSwitchFlattenSnapshotModel)
+                .where(
+                    KillSwitchFlattenSnapshotModel.operation_id == operation_id,
+                    KillSwitchFlattenSnapshotModel.position_type == "manual",
+                )
+                .order_by(KillSwitchFlattenSnapshotModel.opened_at.asc().nulls_last())
+            )
+            snap_rows = list((await session.execute(snap_stmt)).scalars().all())
+
+            if not snap_rows:
+                logger.info("Manual kill-switch reconcile: no snapshot rows for operation_id=%s", operation_id)
+                await self._update_operation_completion(operation_id, final_status=KILL_SWITCH_STATUS_COMPLETE, unresolved=0)
+                _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
+                return
+
+            broker_rows = list(
+                (await session.execute(
+                    select(BrokerPositionModel).where(BrokerPositionModel.account_id == account_id)
+                )).scalars().all()
+            )
+            broker_qty_by_symbol: dict[str, Decimal] = {}
+            for b in broker_rows:
+                sym = b.symbol.strip().upper()
+                broker_qty_by_symbol[sym] = broker_qty_by_symbol.get(sym, Decimal(0)) + Decimal(str(b.signed_qty))
+
+            engine_rows = list(
+                (await session.execute(
+                    select(PositionModel).where(
+                        PositionModel.account_id == account_id,
+                        PositionModel.risk_state == "OPEN",
+                    )
+                )).scalars().all()
+            )
+            engine_qty_by_symbol: dict[str, Decimal] = {}
+            for p in engine_rows:
+                if p.leg_a_symbol and p.leg_a_signed_qty is not None:
+                    sym_a = p.leg_a_symbol.strip().upper()
+                    engine_qty_by_symbol[sym_a] = engine_qty_by_symbol.get(sym_a, Decimal(0)) + Decimal(str(p.leg_a_signed_qty))
+                if p.leg_b_symbol and p.leg_b_signed_qty is not None:
+                    sym_b = p.leg_b_symbol.strip().upper()
+                    engine_qty_by_symbol[sym_b] = engine_qty_by_symbol.get(sym_b, Decimal(0)) + Decimal(str(p.leg_b_signed_qty))
+
+            for snap in snap_rows:
+                cur_pos = (
+                    await session.execute(
+                        select(ManualPositionModel)
+                        .where(
+                            ManualPositionModel.account_id == account_id,
+                            ManualPositionModel.trade_id == snap.trade_id,
+                        )
+                        .with_for_update()
+                    )
+                ).scalars().first()
+
+                if cur_pos is None or (cur_pos.status == "CLOSED" and cur_pos.signed_qty == Decimal(0)):
+                    flattened += 1
+                    continue
+
+                # Position not closed yet. Inspect its close orders
+                close_order_stmt = (
+                    select(ManualOrderModel)
+                    .where(
+                        ManualOrderModel.account_id == account_id,
+                        ManualOrderModel.trade_id == snap.trade_id,
+                        ManualOrderModel.source == "ks_manual",
+                    )
+                    .order_by(ManualOrderModel.id.desc())
+                )
+                close_orders = list((await session.execute(close_order_stmt)).scalars().all())
+
+                filled_orders = [o for o in close_orders if o.status == "FILLED"]
+                partially_filled_orders = [o for o in close_orders if o.status == "PARTIALLY_FILLED"]
+
+                if filled_orders:
+                    exec_stmt = (
+                        select(ManualExecutionModel)
+                        .where(ManualExecutionModel.manual_order_id.in_([o.id for o in filled_orders]))
+                    )
+                    exec_rows = list((await session.execute(exec_stmt)).scalars().all())
+                    exec_qty = sum((e.quantity for e in exec_rows), start=Decimal(0))
+                    snap_req_qty = abs(Decimal(str(snap.signed_qty or 0)))
+
+                    if exec_qty >= snap_req_qty and exec_rows:
+                        if cur_pos.status != "CLOSED":
+                            total_notional = sum((e.quantity * e.price for e in exec_rows), Decimal(0))
+                            wavg_exit = total_notional / exec_qty if exec_qty > 0 else Decimal(0)
+                            comm = sum((e.commission or Decimal(0) for e in exec_rows), Decimal(0))
+                            if (snap.signed_qty or Decimal(0)) > 0:
+                                gross_pnl = snap_req_qty * (wavg_exit - Decimal(str(snap.avg_cost or 0)))
+                            else:
+                                gross_pnl = snap_req_qty * (Decimal(str(snap.avg_cost or 0)) - wavg_exit)
+                            cur_pos.realized_pnl = gross_pnl - comm
+                            cur_pos.signed_qty = Decimal(0)
+                            cur_pos.status = "CLOSED"
+                            cur_pos.closed_at = datetime.now(UTC)
+                            flattened += 1
+                            continue
+                    elif not exec_rows:
+                        if cur_pos.status != "FLATTENED_PENDING_PRICE":
+                            cur_pos.status = "FLATTENED_PENDING_PRICE"
+                        pending_price += 1
+                        unresolved += 1
+                        continue
+
+                if partially_filled_orders and not filled_orders:
+                    exec_stmt = (
+                        select(ManualExecutionModel)
+                        .where(ManualExecutionModel.manual_order_id.in_([o.id for o in partially_filled_orders]))
+                    )
+                    exec_rows = list((await session.execute(exec_stmt)).scalars().all())
+                    exec_qty = sum((e.quantity for e in exec_rows), start=Decimal(0))
+                    snap_req_qty = abs(Decimal(str(snap.signed_qty or 0)))
+                    rem_qty = snap_req_qty - exec_qty
+                    if exec_qty > 0 and exec_rows:
+                        cur_pos.status = "CLOSING"
+                        new_sign = Decimal(1) if (snap.signed_qty or Decimal(0)) > 0 else Decimal(-1)
+                        cur_pos.signed_qty = new_sign * rem_qty
+                        total_notional = sum((e.quantity * e.price for e in exec_rows), Decimal(0))
+                        wavg_exit = total_notional / exec_qty if exec_qty > 0 else Decimal(0)
+                        comm = sum((e.commission or Decimal(0) for e in exec_rows), Decimal(0))
+                        if (snap.signed_qty or Decimal(0)) > 0:
+                            gross_pnl = exec_qty * (wavg_exit - Decimal(str(snap.avg_cost or 0)))
+                        else:
+                            gross_pnl = exec_qty * (Decimal(str(snap.avg_cost or 0)) - wavg_exit)
+                        cur_pos.realized_pnl = gross_pnl - comm
+                    if rem_qty > 0:
+                        unresolved += 1
+                        continue
+
+                # Broker position check
+                norm_sym = (snap.symbol or "").strip().upper()
+                broker_actual = broker_qty_by_symbol.get(norm_sym, Decimal(0))
+                engine_sym_qty = engine_qty_by_symbol.get(norm_sym, Decimal(0))
+                if broker_actual == engine_sym_qty and broker_rows:
+                    exec_stmt = (
+                        select(ManualExecutionModel)
+                        .join(ManualOrderModel, ManualExecutionModel.manual_order_id == ManualOrderModel.id)
+                        .where(
+                            ManualOrderModel.account_id == account_id,
+                            ManualOrderModel.trade_id == snap.trade_id,
+                        )
+                    )
+                    exec_rows = list((await session.execute(exec_stmt)).scalars().all())
+                    if exec_rows:
+                        total_exec_qty = sum((e.quantity for e in exec_rows), Decimal(0))
+                        snap_req = abs(Decimal(str(snap.signed_qty or 0)))
+                        if total_exec_qty >= snap_req:
+                            total_notional = sum((e.quantity * e.price for e in exec_rows), Decimal(0))
+                            wavg_exit = total_notional / total_exec_qty if total_exec_qty > 0 else Decimal(0)
+                            comm = sum((e.commission or Decimal(0) for e in exec_rows), Decimal(0))
+                            if (snap.signed_qty or Decimal(0)) > 0:
+                                gross_pnl = snap_req * (wavg_exit - Decimal(str(snap.avg_cost or 0)))
+                            else:
+                                gross_pnl = snap_req * (Decimal(str(snap.avg_cost or 0)) - wavg_exit)
+                            cur_pos.realized_pnl = gross_pnl - comm
+                            cur_pos.signed_qty = Decimal(0)
+                            cur_pos.status = "CLOSED"
+                            cur_pos.closed_at = datetime.now(UTC)
+                            flattened += 1
+                            continue
+                    else:
+                        cur_pos.status = "FLATTENED_PENDING_PRICE"
+                        pending_price += 1
+                        unresolved += 1
+                        continue
+
+                unresolved += 1
+
+        if unresolved == 0:
+            final_status = KILL_SWITCH_STATUS_COMPLETE
+            _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
+        else:
+            final_status = KILL_SWITCH_STATUS_UNRESOLVED
+
+        await self._update_operation_completion(
+            operation_id, final_status=final_status, unresolved=unresolved
+        )
+        logger.info(
+            "Manual kill switch finalized: operation_id=%s status=%s flattened=%d unresolved=%d pending_price=%d",
+            operation_id,
+            final_status,
+            flattened,
+            unresolved,
+            pending_price,
+        )
 
     async def execute_flatten_operation_background(self, operation_id: UUID) -> None:
         """Trigger background worker task to execute non-blocking position flattening."""
@@ -407,13 +1092,14 @@ class KillSwitchService:
 
         task.add_done_callback(_clear)
 
-    async def resume_incomplete_flattens(self) -> None:
+    async def resume_incomplete_flattens(self) -> list[UUID]:
         """Restart flatten workers for armed ops that were mid-flatten at crash (M22)."""
         resume_statuses = (
             KILL_SWITCH_STATUS_ACTIVATING,
             KILL_SWITCH_STATUS_FLATTENING,
             KILL_SWITCH_STATUS_RECONCILING,
         )
+        resumed_ops: list[UUID] = []
         async with self._session_factory() as session:
             result = await session.execute(
                 select(KillSwitchOperationModel).where(
@@ -423,54 +1109,67 @@ class KillSwitchService:
             ops = list(result.scalars().all())
         for op in ops:
             logger.warning(
-                "Resuming kill-switch flatten operation_id=%s account_id=%s status=%s",
+                "Resuming kill-switch flatten operation_id=%s account_id=%s scope=%s status=%s",
                 op.operation_id,
                 op.account_id,
+                op.scope,
                 op.status,
             )
-            await self.execute_flatten_operation_background(op.operation_id)
+            if op.scope == KILL_SWITCH_SCOPE_MANUAL:
+                await self.execute_manual_flatten_operation_background(op.operation_id)
+            else:
+                await self.execute_flatten_operation_background(op.operation_id)
+            resumed_ops.append(op.operation_id)
+        return resumed_ops
 
-    async def retry_unresolved_operations(self) -> int:
+    async def retry_unresolved_operations(self, account_id: int | None = None) -> int:
         """Durable eventual-convergence retry for UNRESOLVED/RECONCILING ops.
 
         Called periodically from PositionReconciler.after_sweep (every 30s) and
-        at startup. Handles both:
+        at startup. Handles:
+        - manual scope: re-runs _reconcile_and_finalize_manual
+        - account scope: re-runs snapshot-based close_all_ledger_after_account_flatten
         - engine scope: re-runs Tier2 (_reconcile_and_finalize) for KILLSWITCH orders
-        - account scope: re-runs snapshot-based close_all_ledger_after_account_flatten for
-          FLATTENED_PENDING_PRICE positions (broker flat but price not yet available)
         Idempotent and safe to call concurrently.
         """
         retried = 0
         async with self._session_factory() as session:
-            result = await session.execute(
-                select(KillSwitchOperationModel).where(
-                    KillSwitchOperationModel.status.in_(
-                        (KILL_SWITCH_STATUS_UNRESOLVED, KILL_SWITCH_STATUS_RECONCILING)
-                    )
+            stmt = select(KillSwitchOperationModel).where(
+                KillSwitchOperationModel.status.in_(
+                    (KILL_SWITCH_STATUS_UNRESOLVED, KILL_SWITCH_STATUS_RECONCILING)
                 )
             )
+            if account_id is not None:
+                stmt = stmt.where(KillSwitchOperationModel.account_id == account_id)
+            result = await session.execute(stmt)
             ops = list(result.scalars().all())
         for op in ops:
             if op.operation_id in self._in_flight and not self._in_flight[op.operation_id].done():
                 continue
-            # Determine if this is account-flatten snapshot-based operation
-            async with self._session_factory() as s:
-                from app.db.models.kill_switch_snapshot import (
-                    KillSwitchFlattenSnapshotModel,
-                )
-
-                has_snapshot = (
-                    await s.execute(
-                        select(KillSwitchFlattenSnapshotModel).where(KillSwitchFlattenSnapshotModel.operation_id == op.operation_id).limit(1)
-                    )
-                ).scalars().first() is not None
             try:
-                if has_snapshot:
+                if op.scope == KILL_SWITCH_SCOPE_MANUAL:
+                    logger.info("Retrying manual kill-switch operation_id=%s account_id=%s status=%s", op.operation_id, op.account_id, op.status)
+                    await self._reconcile_and_finalize_manual(op.operation_id, op.account_id)
+                elif op.scope == KILL_SWITCH_SCOPE_ACCOUNT:
                     logger.info("Retrying account-flatten snapshot operation_id=%s account_id=%s status=%s", op.operation_id, op.account_id, op.status)
                     await self.close_all_ledger_after_account_flatten(op.account_id, op.operation_id)
                 else:
-                    logger.info("Retrying UNRESOLVED kill-switch operation_id=%s account_id=%s", op.operation_id, op.account_id)
-                    await self._reconcile_and_finalize(op.operation_id, op.account_id, [])
+                    async with self._session_factory() as s:
+                        from app.db.models.kill_switch_snapshot import (
+                            KillSwitchFlattenSnapshotModel,
+                        )
+
+                        has_snapshot = (
+                            await s.execute(
+                                select(KillSwitchFlattenSnapshotModel).where(KillSwitchFlattenSnapshotModel.operation_id == op.operation_id).limit(1)
+                            )
+                        ).scalars().first() is not None
+                    if has_snapshot:
+                        logger.info("Retrying account-flatten snapshot operation_id=%s account_id=%s status=%s", op.operation_id, op.account_id, op.status)
+                        await self.close_all_ledger_after_account_flatten(op.account_id, op.operation_id)
+                    else:
+                        logger.info("Retrying UNRESOLVED engine kill-switch operation_id=%s account_id=%s", op.operation_id, op.account_id)
+                        await self._reconcile_and_finalize(op.operation_id, op.account_id, [])
                 retried += 1
             except Exception:
                 logger.exception("Retry of kill-switch operation_id=%s failed", op.operation_id)

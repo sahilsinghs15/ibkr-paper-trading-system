@@ -8,7 +8,6 @@ flatten began (concurrency requirement §9).
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
 from uuid import UUID
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Numeric, String, func
@@ -42,9 +41,11 @@ class KillSwitchFlattenSnapshotModel(Base):
     leg_b_instrument_type: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Manual-specific (nullable for engine)
+    manual_position_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     symbol: Mapped[str | None] = mapped_column(String, nullable=True)
     con_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     sec_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    side: Mapped[str | None] = mapped_column(String(8), nullable=True)
     signed_qty: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     avg_cost: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
 

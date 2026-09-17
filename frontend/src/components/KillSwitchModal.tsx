@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import {
   squareOffEnginePositions,
   squareOffEntireAccount,
+  squareOffManualPositions,
   type SquareOffResult,
 } from '../api/configApi'
 
@@ -15,7 +16,7 @@ interface KillSwitchModalProps {
   onSuccess: (count: number, scope: string) => void
 }
 
-type FlattenOption = 'engine' | 'account' | null
+type FlattenOption = 'account' | 'engine' | 'manual' | null
 
 function extractError(err: unknown): string {
   if (typeof err === 'object' && err !== null && 'response' in err) {
@@ -47,7 +48,19 @@ export function KillSwitchModal({
     mutationFn: () => squareOffEnginePositions(accountId),
     onSuccess: (res: SquareOffResult) => {
       setError(null)
-      onSuccess(res.squared_off_count, 'ENGINE_POSITION_FLATTEN')
+      onSuccess(res.squared_off_count, 'Flatten Signal Positions')
+      handleReset()
+    },
+    onError: (err: unknown) => {
+      setError(extractError(err))
+    },
+  })
+
+  const manualMutation = useMutation({
+    mutationFn: () => squareOffManualPositions(accountId),
+    onSuccess: (res: SquareOffResult) => {
+      setError(null)
+      onSuccess(res.squared_off_count, 'Flatten Manual Positions')
       handleReset()
     },
     onError: (err: unknown) => {
@@ -62,7 +75,7 @@ export function KillSwitchModal({
         setError(res.error)
       } else {
         setError(null)
-        onSuccess(res.squared_off_count, 'ACCOUNT_POSITION_FLATTEN')
+        onSuccess(res.squared_off_count, 'Flatten Account')
         handleReset()
       }
     },
@@ -73,7 +86,7 @@ export function KillSwitchModal({
 
   if (!isOpen) return null
 
-  const isPending = engineMutation.isPending || accountMutation.isPending
+  const isPending = engineMutation.isPending || manualMutation.isPending || accountMutation.isPending
 
   return (
     <div className="modal-overlay" onClick={isPending ? undefined : handleReset}>
@@ -99,67 +112,98 @@ export function KillSwitchModal({
               </p>
 
               <div className="killswitch-options-grid">
-                {/* Option 1: Engine Positions */}
-                <button
-                  type="button"
-                  className="killswitch-option-card primary-option"
-                  onClick={() => setSelectedOption('engine')}
-                >
-                  <div className="option-card-header">
-                    <span className="option-title">Close All Engine Positions</span>
-                    <span className="option-badge warning">ENGINE SCOPE</span>
-                  </div>
-                  <p className="option-desc">
-                    Close only positions managed by the trading engine ({openCount} open pair{openCount === 1 ? '' : 's'}).
-                  </p>
-                </button>
-
-                {/* Option 2: Entire Account Positions */}
+                {/* Option 1: Flatten Account */}
                 <button
                   type="button"
                   className="killswitch-option-card danger-option"
                   onClick={() => setSelectedOption('account')}
                 >
                   <div className="option-card-header">
-                    <span className="option-title danger">Close All Positions of Account</span>
-                    <span className="option-badge danger font-bold">⚠️ FULL IBKR ACCOUNT</span>
+                    <span className="option-title danger">Flatten Account</span>
+                    <span className="option-badge danger font-bold">⚠️ ACCOUNT SCOPE</span>
                   </div>
                   <p className="option-desc">
-                    Flatten the entire IBKR account, including positions not created by this trading system.
+                    Flatten all positions in this account.
+                  </p>
+                </button>
+
+                {/* Option 2: Flatten Signal Positions */}
+                <button
+                  type="button"
+                  className="killswitch-option-card primary-option"
+                  onClick={() => setSelectedOption('engine')}
+                >
+                  <div className="option-card-header">
+                    <span className="option-title">Flatten Signal Positions</span>
+                    <span className="option-badge warning">SIGNAL SCOPE</span>
+                  </div>
+                  <p className="option-desc">
+                    Flatten signal/engine positions only.
+                  </p>
+                </button>
+
+                {/* Option 3: Flatten Manual Positions */}
+                <button
+                  type="button"
+                  className="killswitch-option-card manual-option"
+                  onClick={() => setSelectedOption('manual')}
+                >
+                  <div className="option-card-header">
+                    <span className="option-title">Flatten Manual Positions</span>
+                    <span className="option-badge info">MANUAL SCOPE</span>
+                  </div>
+                  <p className="option-desc">
+                    Flatten manual positions only.
                   </p>
                 </button>
               </div>
             </div>
+          ) : selectedOption === 'account' ? (
+            /* STEP 2A: CONFIRM FLATTEN ACCOUNT */
+            <div className="killswitch-step-confirm">
+              <div className="killswitch-scope-banner danger">
+                <span>⚠️ Flatten Account</span>
+              </div>
+
+              <div className="killswitch-danger-alert">
+                <p className="danger-alert-text">
+                  This will flatten all positions in this account, including signal and manual positions.
+                </p>
+              </div>
+              <p className="field-hint dim">
+                This action executes an account-wide broker flatten sweep against IBKR and arms the account kill switch.
+              </p>
+
+              {error ? <p className="settings-msg err">{error}</p> : null}
+            </div>
           ) : selectedOption === 'engine' ? (
-            /* STEP 2A: CONFIRM ENGINE FLATTEN */
+            /* STEP 2B: CONFIRM FLATTEN SIGNAL POSITIONS */
             <div className="killswitch-step-confirm">
               <div className="killswitch-scope-banner warning">
-                <span>SCOPE: ENGINE POSITIONS ONLY</span>
+                <span>Flatten Signal Positions</span>
               </div>
 
               <p className="killswitch-warning-text">
-                You are about to close all <strong>{openCount}</strong> open position{openCount === 1 ? '' : 's'} managed by the trading engine for account <strong>{ibkrAccount}</strong>.
+                This will flatten signal/engine positions only for account <strong>{ibkrAccount}</strong>. Manual positions will not be affected.
               </p>
               <p className="field-hint dim">
-                This will submit CLOSE operations through OMS &amp; IBKR and block new OPEN signals for this account.
+                This will submit CLOSE operations for engine pairs ({openCount} open pair{openCount === 1 ? '' : 's'}) through OMS &amp; IBKR and block new OPEN signals for this account.
               </p>
 
               {error ? <p className="settings-msg err">{error}</p> : null}
             </div>
           ) : (
-            /* STEP 2B: CONFIRM ENTIRE ACCOUNT FLATTEN (DANGER STEP) */
+            /* STEP 2C: CONFIRM FLATTEN MANUAL POSITIONS */
             <div className="killswitch-step-confirm">
-              <div className="killswitch-scope-banner danger">
-                <span>⚠️ SCOPE: ENTIRE IBKR ACCOUNT</span>
+              <div className="killswitch-scope-banner info">
+                <span>Flatten Manual Positions</span>
               </div>
 
-              <div className="killswitch-danger-alert">
-                <p className="danger-alert-text">
-                  <strong>WARNING:</strong> This will attempt to close <strong>ALL</strong> positions in the selected IBKR account (<strong>{ibkrAccount}</strong>), including positions that were not created by the trading engine.
-                </p>
-              </div>
+              <p className="killswitch-warning-text">
+                This will flatten manual positions only. Signal/engine positions will not be affected.
+              </p>
               <p className="field-hint dim">
-                This action executes a direct broker flatten sweep against IBKR and arms the account kill switch.
+                This will submit position-specific close orders for open manual positions and block new manual orders while flattening is active.
               </p>
 
               {error ? <p className="settings-msg err">{error}</p> : null}
@@ -186,23 +230,32 @@ export function KillSwitchModal({
                 ← BACK
               </button>
 
-              {selectedOption === 'engine' ? (
-                <button
-                  type="button"
-                  className="btn warning"
-                  disabled={isPending}
-                  onClick={() => engineMutation.mutate()}
-                >
-                  {engineMutation.isPending ? 'FLATTENING ENGINE POSITIONS…' : 'CONFIRM & CLOSE ENGINE POSITIONS'}
-                </button>
-              ) : (
+              {selectedOption === 'account' ? (
                 <button
                   type="button"
                   className="btn danger"
                   disabled={isPending}
                   onClick={() => accountMutation.mutate()}
                 >
-                  {accountMutation.isPending ? 'FLATTENING ACCOUNT POSITIONS…' : '⚠️ CONFIRM & FLATTEN ALL ACCOUNT POSITIONS'}
+                  {accountMutation.isPending ? 'FLATTENING ACCOUNT…' : '⚠️ CONFIRM FLATTEN ACCOUNT'}
+                </button>
+              ) : selectedOption === 'engine' ? (
+                <button
+                  type="button"
+                  className="btn warning"
+                  disabled={isPending}
+                  onClick={() => engineMutation.mutate()}
+                >
+                  {engineMutation.isPending ? 'FLATTENING SIGNAL POSITIONS…' : 'CONFIRM FLATTEN SIGNAL POSITIONS'}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn warning"
+                  disabled={isPending}
+                  onClick={() => manualMutation.mutate()}
+                >
+                  {manualMutation.isPending ? 'FLATTENING MANUAL POSITIONS…' : 'CONFIRM FLATTEN MANUAL POSITIONS'}
                 </button>
               )}
             </>

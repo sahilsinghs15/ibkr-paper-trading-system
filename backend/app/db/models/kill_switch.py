@@ -22,6 +22,10 @@ KILL_SWITCH_STATUS_UNRESOLVED = "UNRESOLVED"
 # explicitly clears it; completing the flatten is NOT the same as clearing.
 KILL_SWITCH_STATUS_CLEARED = "CLEARED"
 
+KILL_SWITCH_SCOPE_ENGINE = "engine"
+KILL_SWITCH_SCOPE_ACCOUNT = "account"
+KILL_SWITCH_SCOPE_MANUAL = "manual"
+
 
 class KillSwitchOperationModel(Base):
     """SQLAlchemy model tracking durable emergency flatten / kill switch execution operations."""
@@ -33,6 +37,9 @@ class KillSwitchOperationModel(Base):
     )
     account_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("accounts.id"), nullable=False, index=True)
     ibkr_account: Mapped[str] = mapped_column(String, nullable=False)
+    scope: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=KILL_SWITCH_SCOPE_ENGINE, server_default="engine", index=True
+    )
     status: Mapped[str] = mapped_column(
         String, nullable=False, default=KILL_SWITCH_STATUS_ACTIVATING, index=True
     )
