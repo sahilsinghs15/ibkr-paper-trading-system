@@ -64,23 +64,30 @@ async def report_service_lifecycle(action: str, service: str) -> int:
 
     # For stop actions: verify whether this is an instantaneous restart
     # (systemd restart stops then immediately re-activates the unit).
+    # We poll for up to 10s to accommodate uvicorn/FastAPI startup time (~5s).
     if not is_start:
-        await asyncio.sleep(3.0)
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "systemctl", "is-active", "--quiet", service,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await proc.wait()
-            if proc.returncode == 0:
-                logger.info(
-                    "Service '%s' is active 3s after stop hook; detected restart, suppressing stop alert",
-                    service,
+        is_restarting = False
+        for _ in range(10):
+            await asyncio.sleep(1.0)
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "systemctl", "is-active", "--quiet", service,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
                 )
-                return 0
-        except (OSError, subprocess.SubprocessError) as exc:
-            logger.debug("Failed checking is-active for %s: %s", service, exc)
+                await proc.wait()
+                if proc.returncode == 0:
+                    is_restarting = True
+                    break
+            except (OSError, subprocess.SubprocessError) as exc:
+                logger.debug("Failed checking is-active for %s: %s", service, exc)
+
+        if is_restarting:
+            logger.info(
+                "Service '%s' re-activated after stop hook; detected restart, suppressing stop alert",
+                service,
+            )
+            return 0
 
     components_override = {svc_key: {"ready": is_start}}
     if svc_key in ("ib_gateway", "oems_engine") and not is_start:
