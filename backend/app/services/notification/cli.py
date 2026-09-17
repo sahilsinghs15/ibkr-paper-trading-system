@@ -10,6 +10,7 @@ import asyncio
 import logging
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 from app.db.session import AsyncSessionLocal
@@ -66,26 +67,63 @@ async def report_service_lifecycle(action: str, service: str) -> int:
     # (systemd restart stops then immediately re-activates the unit).
     # We poll for up to 10s to accommodate uvicorn/FastAPI startup time (~5s).
     if not is_start:
+        auto_restart_flag = Path("/home/tradingapp/storage/state/backend_auto_restarting.flag")
+        if auto_restart_flag.exists():
+            logger.info("Auto-restart flag active for %s; suppressing stop alert", service)
+            return 0
+
         is_restarting = False
-        for _ in range(10):
-            await asyncio.sleep(1.0)
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    "systemctl", "is-active", service,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                stdout, _ = await proc.communicate()
-                state_str = stdout.decode().strip().lower()
-                if state_str in ("active", "activating"):
+        # 1. Immediate check: does systemd have a 'restart' job active or queued for this unit?
+        try:
+            proc_jobs = await asyncio.create_subprocess_exec(
+                "systemctl", "list-jobs",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout_jobs, _ = await proc_jobs.communicate()
+            for line in stdout_jobs.decode().splitlines():
+                if service in line and "restart" in line:
                     is_restarting = True
                     break
-            except (OSError, subprocess.SubprocessError) as exc:
-                logger.debug("Failed checking is-active for %s: %s", service, exc)
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.debug("Failed checking list-jobs for %s: %s", service, exc)
+
+        # 2. Polling check: wait for reactivation if restart is transitioning
+        if not is_restarting:
+            for _ in range(10):
+                await asyncio.sleep(1.0)
+                try:
+                    # Check list-jobs again
+                    proc_jobs = await asyncio.create_subprocess_exec(
+                        "systemctl", "list-jobs",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    stdout_jobs, _ = await proc_jobs.communicate()
+                    for line in stdout_jobs.decode().splitlines():
+                        if service in line and "restart" in line:
+                            is_restarting = True
+                            break
+                    if is_restarting:
+                        break
+
+                    # Check is-active
+                    proc = await asyncio.create_subprocess_exec(
+                        "systemctl", "is-active", service,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    stdout, _ = await proc.communicate()
+                    state_str = stdout.decode().strip().lower()
+                    if state_str in ("active", "activating"):
+                        is_restarting = True
+                        break
+                except (OSError, subprocess.SubprocessError) as exc:
+                    logger.debug("Failed checking status for %s: %s", service, exc)
 
         if is_restarting:
             logger.info(
-                "Service '%s' re-activated after stop hook; detected restart, suppressing stop alert",
+                "Service '%s' restart in progress or completed; suppressing stop alert",
                 service,
             )
             return 0
