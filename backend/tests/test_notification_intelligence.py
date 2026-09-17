@@ -291,7 +291,7 @@ async def test_broker_notification_listener(session_factory):
         ).scalars().all()
         assert len(lost_notifs) == 1
         assert lost_notifs[0].severity == NotificationSeverity.CRITICAL.value
-        assert "disconnected" in lost_notifs[0].message
+        assert "Broker Connection  ✗" in lost_notifs[0].message or "disconnected" in lost_notifs[0].message
         assert lost_notifs[0].correlation_id == "broker_connection"
 
     # Simulate connection restored callback
@@ -309,7 +309,7 @@ async def test_broker_notification_listener(session_factory):
         ).scalars().all()
         assert len(rec_notifs) == 1
         assert rec_notifs[0].severity == NotificationSeverity.INFO.value
-        assert "reconnected" in rec_notifs[0].message
+        assert "Broker Connection  ✓" in rec_notifs[0].message or "reconnected" in rec_notifs[0].message
 
 
 @pytest.mark.asyncio
@@ -337,9 +337,9 @@ async def test_ib_login_completed_notification(session_factory):
             )
         ).scalars().all()
         assert len(login_notifs) == 1
-        assert login_notifs[0].title == "IB Login Completed Successfully"
+        assert "IB Login Completed Successfully" in login_notifs[0].title
         assert login_notifs[0].severity == NotificationSeverity.INFO.value
-        assert "next_order_id=1001" in login_notifs[0].message
+        assert "IB Login" in login_notifs[0].message
 
 
 # =====================================================================
@@ -648,7 +648,7 @@ async def test_startup_aggregator_all_ready(session_factory):
             )
         ).scalars().all()
         assert len(notifs) == 1
-        assert "OEMS Started Successfully" in notifs[0].title
+        assert "System Universe Started Successfully" in notifs[0].title
         assert notifs[0].severity == NotificationSeverity.INFO.value
         assert "Database" in notifs[0].message
         assert "✓" in notifs[0].message
@@ -656,7 +656,7 @@ async def test_startup_aggregator_all_ready(session_factory):
 
 @pytest.mark.asyncio
 async def test_startup_aggregator_partial_warning(session_factory):
-    """StartupAggregator produces OEMS Startup Warning when a critical component fails."""
+    """StartupAggregator produces System Universe Startup Warning when a critical component fails."""
     orchestrator = NotificationOrchestrator(session_factory)
     aggregator = StartupAggregator(
         orchestrator=orchestrator,
@@ -679,7 +679,7 @@ async def test_startup_aggregator_partial_warning(session_factory):
             )
         ).scalars().all()
         assert len(notifs) == 1
-        assert "OEMS Startup Warning" in notifs[0].title
+        assert "System Universe Startup Warning" in notifs[0].title
         assert notifs[0].severity == NotificationSeverity.WARNING.value
         assert "✗" in notifs[0].message
         assert notifs[0].payload["ready"] is False

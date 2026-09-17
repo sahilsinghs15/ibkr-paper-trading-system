@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 
 CANONICAL_SERVICES: dict[str, dict[str, Any]] = {
     "ibgateway": {
-        "friendly_name": "Broker Engine",
+        "friendly_name": "IB Gateway",
         "unit": "ibgateway.service",
-        "SERVICE_STARTED": {"icon": "🟢", "message": "Broker Engine Started Successfully"},
-        "SERVICE_STOPPED": {"icon": "🔴", "message": "Broker Engine Stopped"},
+        "SERVICE_STARTED": {"icon": "🟢", "message": "IB Gateway Started Successfully"},
+        "SERVICE_STOPPED": {"icon": "🔴", "message": "IB Gateway Stopped"},
     },
     "trading-backend": {
         "friendly_name": "OEMS Engine",

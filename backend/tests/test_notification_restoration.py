@@ -93,7 +93,7 @@ async def test_complete_startup_sequence_produces_one_notification(session_facto
         assert len(notifs) == 1
         notif = notifs[0]
         assert notif.event_type == "STARTUP_AGGREGATION"
-        assert notif.title == "🟢 OEMS Started Successfully"
+        assert notif.title == "🟢 System Universe Started Successfully"
         assert notif.severity == NotificationSeverity.INFO.value
         assert "Server Machine     ✓" in notif.message
         assert "IB Gateway         ✓" in notif.message
@@ -121,7 +121,7 @@ async def test_complete_startup_sequence_produces_one_notification(session_facto
 
 @pytest.mark.asyncio
 async def test_partial_startup_produces_warning(session_factory):
-    """3: Degraded component produces OEMS Startup Warning with checkmarks and crossmarks."""
+    """3: Degraded component produces System Universe Startup Warning with checkmarks and crossmarks."""
     orchestrator = NotificationOrchestrator(session_factory)
     aggregator = StartupAggregator(
         orchestrator=orchestrator,
@@ -148,7 +148,7 @@ async def test_partial_startup_produces_warning(session_factory):
 
         assert len(notifs) >= 1
         notif = notifs[0]
-        assert notif.title == "⚠️ OEMS Startup Warning"
+        assert notif.title == "⚠️ System Universe Startup Warning"
         assert notif.severity == NotificationSeverity.WARNING.value
         assert "Dashboard Engine   ✗" in notif.message
         assert "Server Machine     ✓" in notif.message
@@ -223,6 +223,8 @@ async def test_runtime_broker_disconnect_and_reconnect(session_factory):
         broker_lost = next(n for n in notifs if n.event_type == "BROKER_LOST")
         assert broker_lost.severity == NotificationSeverity.CRITICAL.value
         assert "Connection Lost" in broker_lost.title
+        assert "Broker Connection  ✗" in broker_lost.message
+        assert "IB Login           ✗" in broker_lost.message
 
         broker_rec = next(n for n in notifs if n.event_type == "BROKER_RECONNECTED")
         assert broker_rec.severity == NotificationSeverity.INFO.value
@@ -427,7 +429,7 @@ async def test_broker_recovery_produces_broker_connected_heading_not_oems_starte
         rec_notif = notifs[1]
         assert rec_notif.event_type == "BROKER_RECONNECTED"
         assert rec_notif.title == "🟢 IBKR Broker Connected Successfully"
-        assert rec_notif.title != "🟢 OEMS Started Successfully"
+        assert rec_notif.title != "🟢 System Universe Started Successfully"
         # All components must show checkmark
         assert "Server Machine     ✓" in rec_notif.message
         assert "IB Gateway         ✓" in rec_notif.message

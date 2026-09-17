@@ -40,7 +40,16 @@ async def get_realtime_system_state(
     components = components or {}
 
     # 1. Server Machine (Host environment)
-    states["ec2_instance"] = True
+    if probe_endpoints:
+        is_server_healthy = False
+        try:
+            load = os.getloadavg()
+            is_server_healthy = len(load) == 3 and load[0] >= 0
+        except OSError:
+            pass
+        states["ec2_instance"] = is_server_healthy
+    else:
+        states["ec2_instance"] = bool(components.get("ec2_instance", {}).get("ready", False))
 
     # 2. IB Gateway (systemd ibgateway.service / process check)
     if probe_endpoints:
@@ -74,18 +83,29 @@ async def get_realtime_system_state(
         states["ib_gateway"] = bool(components.get("ib_gateway", {}).get("ready", False))
 
     # 3. IB Login (authoritative nextValidId / authenticated handshake)
-    if client is not None and hasattr(client, "is_connected"):
-        states["ib_login"] = bool(
-            client.is_connected() and getattr(client, "next_order_id", None) is not None
-        )
+    if "ib_login" in components:
+        states["ib_login"] = bool(components["ib_login"].get("ready", False))
+    elif client is not None and hasattr(client, "is_connected"):
+        try:
+            connected = client.is_connected()
+            order_id = getattr(client, "next_order_id", None)
+            states["ib_login"] = bool(bool(connected) and order_id is not None)
+        except (AttributeError, TypeError, RuntimeError, OSError):
+            states["ib_login"] = False
     else:
-        states["ib_login"] = bool(components.get("ib_login", {}).get("ready", False))
+        states["ib_login"] = False
 
     # 4. Broker Connection (TWSClient socket session)
-    if client is not None and hasattr(client, "is_connected"):
-        states["broker_connection"] = bool(client.is_connected())
+    if "broker_connection" in components:
+        states["broker_connection"] = bool(components["broker_connection"].get("ready", False))
+    elif client is not None and hasattr(client, "is_connected"):
+        try:
+            connected = client.is_connected()
+            states["broker_connection"] = bool(connected)
+        except (AttributeError, TypeError, RuntimeError, OSError):
+            states["broker_connection"] = False
     else:
-        states["broker_connection"] = bool(components.get("broker_connection", {}).get("ready", False))
+        states["broker_connection"] = False
 
     # 5. Signal Receiver (HTTP :8000/health)
     if probe_endpoints:
@@ -101,8 +121,19 @@ async def get_realtime_system_state(
     else:
         states["signal_receiver"] = bool(components.get("signal_receiver", {}).get("ready", False))
 
-    # 6. OEMS Engine (Trading backend engine)
-    states["oems_engine"] = bool(components.get("oems_engine", {}).get("ready", True))
+    # 6. OEMS Engine (Trading backend engine :8001/health)
+    if probe_endpoints:
+        is_oems_ready = False
+        try:
+            async with httpx.AsyncClient(timeout=1.0) as http_client:
+                res = await http_client.get("http://127.0.0.1:8001/health")
+                if res.status_code == 200:
+                    is_oems_ready = True
+        except (httpx.HTTPError, OSError):
+            pass
+        states["oems_engine"] = is_oems_ready
+    else:
+        states["oems_engine"] = bool(components.get("oems_engine", {}).get("ready", False))
 
     # 7. Dashboard Engine (HTTP :8010/health)
     if probe_endpoints:
@@ -119,8 +150,20 @@ async def get_realtime_system_state(
         states["dashboard_engine"] = bool(components.get("dashboard_engine", {}).get("ready", False))
 
     # Format the table
+    items_to_render = list(CANONICAL_STARTUP_COMPONENTS)
+    canonical_keys = {k for k, _ in CANONICAL_STARTUP_COMPONENTS}
+    has_custom = False
+    for k, v in components.items():
+        if k not in canonical_keys:
+            has_custom = True
+            states[k] = bool(v.get("ready", False))
+            items_to_render.append((k, k.replace("_", " ").title()))
+
+    if has_custom and not any(k in components for k in canonical_keys):
+        items_to_render = [(k, k.replace("_", " ").title()) for k in components]
+
     lines = []
-    for key, label in CANONICAL_STARTUP_COMPONENTS:
+    for key, label in items_to_render:
         ready = states.get(key, False)
         mark = "✓" if ready else "✗"
         lines.append(f"{label:<18} {mark}")

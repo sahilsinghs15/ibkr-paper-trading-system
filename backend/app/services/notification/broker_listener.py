@@ -81,7 +81,7 @@ class BrokerNotificationListener:
 
     def on_connection_closed(self) -> Any:
         """Invoked by TWSClient reader thread when connection is lost."""
-        if getattr(self._client, "_intentional_disconnect", False):
+        if getattr(self._client, "_intentional_disconnect", False) is True:
             logger.debug("on_connection_closed called during intentional disconnect; skipping")
             return None
         with self._lock:
@@ -149,13 +149,18 @@ class BrokerNotificationListener:
         port = getattr(self._client, "_connect_port", None) or settings.ibkr_port
         client_id = getattr(self._client, "_connect_client_id", None) or settings.ibkr_client_id
 
+        _, state_table = await get_realtime_system_state(
+            client=self._client,
+            components={
+                "broker_connection": {"ready": False},
+                "ib_login": {"ready": False},
+            },
+        )
+
         event = NormalizedEvent(
             event_type="BROKER_LOST",
             title="🔴 IBKR Broker Connection Lost",
-            message=(
-                f"TWS/Gateway socket disconnected on {host}:{port}. "
-                "Automatic reconnection initiated."
-            ),
+            message=state_table,
             category="BROKER",
             severity=NotificationSeverity.CRITICAL,
             source="tws_client",
@@ -177,7 +182,12 @@ class BrokerNotificationListener:
         port = getattr(self._client, "_connect_port", None) or settings.ibkr_port
         client_id = getattr(self._client, "_connect_client_id", None) or settings.ibkr_client_id
 
-        _, state_table = await get_realtime_system_state(client=self._client)
+        _, state_table = await get_realtime_system_state(
+            client=self._client,
+            components={
+                "broker_connection": {"ready": True},
+            },
+        )
 
         event = NormalizedEvent(
             event_type="BROKER_RECONNECTED",
@@ -204,7 +214,13 @@ class BrokerNotificationListener:
         port = getattr(self._client, "_connect_port", None) or settings.ibkr_port
         client_id = getattr(self._client, "_connect_client_id", None) or settings.ibkr_client_id
 
-        _, state_table = await get_realtime_system_state(client=self._client)
+        _, state_table = await get_realtime_system_state(
+            client=self._client,
+            components={
+                "broker_connection": {"ready": True},
+                "ib_login": {"ready": True},
+            },
+        )
 
         event = NormalizedEvent(
             event_type="IB_LOGIN_COMPLETED",

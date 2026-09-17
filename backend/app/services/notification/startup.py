@@ -1,4 +1,4 @@
-"""Startup aggregator: aggregates individual service startup milestones into a single OEMS readiness decision."""
+"""Startup aggregator: aggregates individual service startup milestones into a single System Universe readiness decision."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class StartupAggregator:
-    """Collects startup milestones and produces a consolidated OEMS READY or PARTIAL WARNING alert."""
+    """Collects startup milestones and produces a consolidated System Universe READY or PARTIAL WARNING alert."""
 
     def __init__(
         self,
@@ -123,7 +123,13 @@ class StartupAggregator:
         """Probe localhost HTTP health endpoints for external services if needed."""
         # 1. Host environment
         if "ec2_instance" in self._critical_components and "ec2_instance" not in self._components:
-            self.record_component("ec2_instance", is_ready=True, detail="Host environment nominal")
+            try:
+                import os
+                load = os.getloadavg()
+                if len(load) == 3 and load[0] >= 0:
+                    self.record_component("ec2_instance", is_ready=True, detail="Host environment nominal")
+            except OSError:
+                pass
 
         # 2. Signal receiver (webhook ingest)
         if "signal_receiver" in self._critical_components and "signal_receiver" not in self._components:
@@ -144,6 +150,16 @@ class StartupAggregator:
                         self.record_component("dashboard_engine", is_ready=True, detail="HTTP 200")
             except (httpx.HTTPError, OSError) as exc:
                 logger.debug("Dashboard engine probe failed: %s", exc)
+
+        # 4. OEMS engine (trading backend)
+        if "oems_engine" in self._critical_components and "oems_engine" not in self._components:
+            try:
+                async with httpx.AsyncClient(timeout=1.0) as client:
+                    res = await client.get("http://127.0.0.1:8001/health")
+                    if res.status_code == 200:
+                        self.record_component("oems_engine", is_ready=True, detail="HTTP 200")
+            except (httpx.HTTPError, OSError) as exc:
+                logger.debug("OEMS engine probe failed: %s", exc)
 
         # 4. IB Gateway process
         if "ib_gateway" in self._critical_components and "ib_gateway" not in self._components:
@@ -287,16 +303,16 @@ class StartupAggregator:
                 correlation_id = "broker_connection"
                 severity = NotificationSeverity.INFO if is_fully_ready else NotificationSeverity.WARNING
             elif is_fully_ready:
-                title = "🟢 OEMS Started Successfully"
+                title = "🟢 System Universe Started Successfully"
                 event_type = "STARTUP_AGGREGATION"
                 category = "SYSTEM"
-                correlation_id = f"oems_startup_{self._session_id}"
+                correlation_id = f"system_universe_startup_{self._session_id}"
                 severity = NotificationSeverity.INFO
             else:
-                title = "⚠️ OEMS Startup Warning"
+                title = "⚠️ System Universe Startup Warning"
                 event_type = "STARTUP_AGGREGATION"
                 category = "SYSTEM"
-                correlation_id = f"oems_startup_{self._session_id}"
+                correlation_id = f"system_universe_startup_{self._session_id}"
                 severity = NotificationSeverity.WARNING
 
             event = NormalizedEvent(

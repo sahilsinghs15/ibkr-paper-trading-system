@@ -30,9 +30,9 @@ def test_canonical_dictionary_completeness(canonical_fixtures):
     expected_services = {"ibgateway", "trading-backend", "webhook-ingest", "demo-streaming"}
     assert set(canonical_fixtures.keys()) == expected_services
 
-    assert canonical_fixtures["ibgateway"]["friendly_name"] == "Broker Engine"
-    assert canonical_fixtures["ibgateway"]["SERVICE_STARTED"]["message"] == "Broker Engine Started Successfully"
-    assert canonical_fixtures["ibgateway"]["SERVICE_STOPPED"]["message"] == "Broker Engine Stopped"
+    assert canonical_fixtures["ibgateway"]["friendly_name"] == "IB Gateway"
+    assert canonical_fixtures["ibgateway"]["SERVICE_STARTED"]["message"] == "IB Gateway Started Successfully"
+    assert canonical_fixtures["ibgateway"]["SERVICE_STOPPED"]["message"] == "IB Gateway Stopped"
 
     assert canonical_fixtures["trading-backend"]["friendly_name"] == "OEMS Engine"
     assert canonical_fixtures["trading-backend"]["SERVICE_STARTED"]["message"] == "OEMS Engine Started Successfully"
@@ -147,7 +147,7 @@ async def test_notifications_api_flow():
 
         # Verify canonical mapping and fields
         item_ev1 = next(it for it in items if it["id"] == ev1_id)
-        assert item_ev1["title"] == "Broker Engine Started Successfully"
+        assert item_ev1["title"] == "IB Gateway Started Successfully"
         assert item_ev1["icon"] == "🟢"
         assert item_ev1["is_read"] is False
 
