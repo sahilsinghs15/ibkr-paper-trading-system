@@ -312,6 +312,36 @@ async def test_broker_notification_listener(session_factory):
         assert "reconnected" in rec_notifs[0].message
 
 
+@pytest.mark.asyncio
+async def test_ib_login_completed_notification(session_factory):
+    """BrokerNotificationListener emits IB_LOGIN_COMPLETED on nextValidId callback."""
+    orchestrator = NotificationOrchestrator(session_factory)
+    client_mock = MagicMock()
+    client_mock._connect_host = "127.0.0.1"
+    client_mock._connect_port = 4001
+    client_mock._connect_client_id = 99
+
+    listener = BrokerNotificationListener(orchestrator, client_mock)
+    listener.bind_loop(asyncio.get_running_loop())
+
+    t = listener.on_next_valid_id(1001)
+    if t is not None:
+        await t
+
+    async with session_factory() as session:
+        login_notifs = (
+            await session.execute(
+                select(NotificationLogModel).where(
+                    NotificationLogModel.event_type == "IB_LOGIN_COMPLETED"
+                )
+            )
+        ).scalars().all()
+        assert len(login_notifs) == 1
+        assert login_notifs[0].title == "IB Login Completed Successfully"
+        assert login_notifs[0].severity == NotificationSeverity.INFO.value
+        assert "next_order_id=1001" in login_notifs[0].message
+
+
 # =====================================================================
 # 5. Kill Switch Integration Tests
 # =====================================================================

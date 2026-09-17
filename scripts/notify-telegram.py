@@ -52,6 +52,16 @@ except ImportError:
     )
     from backend.app.db.session import AsyncSessionLocal, engine  # type: ignore
 
+try:
+    from app.services.notification.types import NotificationSeverity
+except ImportError:
+    try:
+        from backend.app.services.notification.types import (
+            NotificationSeverity,  # type: ignore
+        )
+    except ImportError:
+        NotificationSeverity = None  # type: ignore
+
 
 STATE_FILE: Path | None = None
 
@@ -212,7 +222,20 @@ def do_market_closed() -> int:
     if state_date == today_s:
         return 0
 
-    _send(text)
+    severity = NotificationSeverity.INFO if NotificationSeverity is not None else "INFO"
+
+    centralized_ok = _publish_centralized_event(
+        event_type="MARKET_CLOSED",
+        title=f"Market closed — {reason}",
+        message=f"Market closed — {reason}",
+        category="SYSTEM",
+        severity=severity,
+        dedupe_key=idempotency_key,
+        details=detail,
+    )
+
+    if not centralized_ok:
+        _send(text)
 
     try:
         state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -225,30 +248,71 @@ def do_market_closed() -> int:
     return 0
 
 
+def _publish_centralized_event(
+    event_type: str,
+    title: str,
+    message: str,
+    category: str,
+    severity: Any,
+    dedupe_key: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> bool:
+    """Ingest event into NotificationOrchestrator and immediately dispatch via worker."""
+    if os.environ.get("TRADINGAPP_TESTING") == "1":
+        return False
+    try:
+        from app.db.session import AsyncSessionLocal
+        from app.services.notification.orchestrator import NotificationOrchestrator
+        from app.services.notification.types import NormalizedEvent
+        from app.services.notification.worker import NotificationDeliveryWorker
+
+        async def _run() -> bool:
+            orchestrator = NotificationOrchestrator(AsyncSessionLocal)
+            event = NormalizedEvent(
+                event_type=event_type,
+                title=title,
+                message=message,
+                category=category,
+                severity=severity,
+                dedupe_key=dedupe_key,
+                details=details or {},
+            )
+            notif = await orchestrator.ingest_event(event)
+            if notif and notif.status != "SUPPRESSED":
+                worker = NotificationDeliveryWorker(AsyncSessionLocal)
+                await worker.run_once()
+            return True
+
+        return asyncio.run(_run())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Centralized notification ingest/dispatch failed: %s", exc)
+        return False
+
+
 CANONICAL_SERVICES: dict[str, dict[str, Any]] = {
     "ibgateway": {
-        "friendly_name": "Broker connection",
+        "friendly_name": "Broker Engine",
         "unit": "ibgateway.service",
-        "SERVICE_STARTED": {"icon": "🟢", "message": "Broker connection started"},
-        "SERVICE_STOPPED": {"icon": "🔴", "message": "Broker connection stopped"},
+        "SERVICE_STARTED": {"icon": "🟢", "message": "Broker Engine Started Successfully"},
+        "SERVICE_STOPPED": {"icon": "🔴", "message": "Broker Engine Stopped"},
     },
     "trading-backend": {
-        "friendly_name": "Trading system",
+        "friendly_name": "OEMS Engine",
         "unit": "trading-backend.service",
-        "SERVICE_STARTED": {"icon": "🟢", "message": "Trading system started"},
-        "SERVICE_STOPPED": {"icon": "🔴", "message": "Trading system stopped"},
+        "SERVICE_STARTED": {"icon": "🟢", "message": "OEMS Engine Started Successfully"},
+        "SERVICE_STOPPED": {"icon": "🔴", "message": "OEMS Engine Stopped"},
     },
     "webhook-ingest": {
-        "friendly_name": "Market signal intake",
+        "friendly_name": "Signal Receiver",
         "unit": "webhook-ingest.service",
-        "SERVICE_STARTED": {"icon": "🟢", "message": "Market signal intake started"},
-        "SERVICE_STOPPED": {"icon": "🔴", "message": "Market signal intake stopped"},
+        "SERVICE_STARTED": {"icon": "🟢", "message": "Signal Receiver Started Successfully"},
+        "SERVICE_STOPPED": {"icon": "🔴", "message": "Signal Receiver Stopped"},
     },
     "demo-streaming": {
-        "friendly_name": "Market data display",
+        "friendly_name": "Dashboard Engine",
         "unit": "demo-streaming.service",
-        "SERVICE_STARTED": {"icon": "🟢", "message": "Market data display started"},
-        "SERVICE_STOPPED": {"icon": "🔴", "message": "Market data display stopped"},
+        "SERVICE_STARTED": {"icon": "🟢", "message": "Dashboard Engine Started Successfully"},
+        "SERVICE_STOPPED": {"icon": "🔴", "message": "Dashboard Stopped"},
     },
 }
 
@@ -277,11 +341,11 @@ def main(argv: list[str]) -> int:
             action_cfg = svc_cfg.get(kind, {})
             friendly_name = svc_cfg.get("friendly_name", svc)
             icon = action_cfg.get("icon", "🟢" if cmd == "start" else "🔴")
-            friendly_msg = action_cfg.get(
+            title = action_cfg.get(
                 "message",
-                f"{friendly_name} {'started' if cmd == 'start' else 'stopped'}",
+                f"{friendly_name} {'Started Successfully' if cmd == 'start' else 'Stopped'}",
             )
-            text = f"{icon} {svc} {'started' if cmd == 'start' else 'stopped'}"
+            text = f"{icon} {title}"
 
             now_ts = int(time.time())
             inv_id = os.environ.get("INVOCATION_ID") or f"{now_ts}_{os.getpid()}"
@@ -292,8 +356,8 @@ def main(argv: list[str]) -> int:
                 "action": cmd,
                 "friendly_name": friendly_name,
                 "icon": icon,
-                "title": friendly_msg,
-                "message": friendly_msg,
+                "title": title,
+                "message": title,
             }
 
             # 1. Persist to PostgreSQL event_log
@@ -304,8 +368,29 @@ def main(argv: list[str]) -> int:
                 idempotency_key=idempotency_key,
             )
 
-            # 2. Send Telegram
-            _send(text)
+            # 2. Ingest into Centralized Notification System (orchestrator + delivery worker)
+            if NotificationSeverity is not None:
+                severity = (
+                    NotificationSeverity.INFO
+                    if cmd == "start"
+                    else NotificationSeverity.WARNING
+                )
+            else:
+                severity = "INFO" if cmd == "start" else "WARNING"
+
+            centralized_ok = _publish_centralized_event(
+                event_type=kind,
+                title=title,
+                message=title,
+                category="INFRASTRUCTURE",
+                severity=severity,
+                dedupe_key=idempotency_key,
+                details=detail,
+            )
+
+            # 3. Fallback direct send only if centralized dispatch was not executed
+            if not centralized_ok:
+                _send(text)
             return 0
         return 0
     except Exception as exc:  # noqa: BLE001

@@ -25,9 +25,12 @@ logger = logging.getLogger(__name__)
 
 def _get_severity_icon(severity: str, event_type: str = "") -> str:
     """Return appropriate icon for notification severity."""
+    ev_upper = (event_type or "").upper()
     sev_upper = (severity or "").upper()
-    if "RECOVER" in event_type.upper() or "RESOLV" in event_type.upper():
+    if any(k in ev_upper for k in ("RECOVER", "RESOLV", "LOGIN", "READY", "STARTED")):
         return "🟢"
+    if any(k in ev_upper for k in ("STOPPED",)):
+        return "🔴"
     if sev_upper == NotificationSeverity.CRITICAL.value:
         return "🚨"
     if sev_upper == NotificationSeverity.WARNING.value:
@@ -84,9 +87,21 @@ class TelegramChannelAdapter(BaseChannelAdapter):
 
     def format_message_text(self, logical: NotificationLogModel) -> str:
         """Format a logical notification into a clean Telegram HTML message."""
-        icon = _get_severity_icon(logical.severity, logical.category)
-        escaped_title = html.escape(logical.title)
-        escaped_msg = html.escape(logical.message)
+        ev_ctx = getattr(logical, "event_type", None) or getattr(logical, "category", "") or ""
+        icon = _get_severity_icon(logical.severity, ev_ctx)
+        title = (logical.title or "").strip()
+        first_char = title[0] if title else ""
+
+        # If title already starts with an icon, do not duplicate
+        if first_char in ("🟢", "🔴", "⚠️", "🚨", "ℹ️", "📅"):
+            escaped_title = html.escape(title)
+            escaped_msg = html.escape(logical.message or "")
+            if escaped_msg and escaped_msg != escaped_title:
+                return f"<b>{escaped_title}</b>\n{escaped_msg}"
+            return f"<b>{escaped_title}</b>"
+
+        escaped_title = html.escape(title)
+        escaped_msg = html.escape(logical.message or "")
 
         if escaped_msg and escaped_msg != escaped_title:
             return f"{icon} <b>{escaped_title}</b>\n{escaped_msg}"

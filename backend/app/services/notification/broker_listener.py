@@ -69,6 +69,10 @@ class BrokerNotificationListener:
         """Invoked by TWSClient reconnect thread when socket is restored."""
         return self._dispatch(self._handle_connection_restored())
 
+    def on_next_valid_id(self, order_id: int) -> Any:
+        """Invoked by TWSClient when initial handshake finishes (nextValidId received)."""
+        return self._dispatch(self._handle_login_completed(order_id))
+
     async def _handle_connection_closed(self) -> None:
         settings = get_settings()
         host = getattr(self._client, "_connect_host", None) or settings.ibkr_host
@@ -121,3 +125,30 @@ class BrokerNotificationListener:
             await self._orchestrator.ingest_event(event)
         except Exception:
             logger.exception("Failed ingesting BROKER_RECONNECTED event into orchestrator")
+
+    async def _handle_login_completed(self, order_id: int) -> None:
+        settings = get_settings()
+        host = getattr(self._client, "_connect_host", None) or settings.ibkr_host
+        port = getattr(self._client, "_connect_port", None) or settings.ibkr_port
+        client_id = getattr(self._client, "_connect_client_id", None) or settings.ibkr_client_id
+
+        event = NormalizedEvent(
+            event_type="IB_LOGIN_COMPLETED",
+            title="IB Login Completed Successfully",
+            message=f"IBKR TWS/Gateway session authenticated and ready for orders on {host}:{port} (next_order_id={order_id}).",
+            category="BROKER",
+            severity=NotificationSeverity.INFO,
+            source="tws_client",
+            correlation_id="broker_connection",
+            dedupe_key=f"ib_login_session_{order_id}",
+            details={
+                "host": host,
+                "port": port,
+                "client_id": client_id,
+                "order_id": order_id,
+            },
+        )
+        try:
+            await self._orchestrator.ingest_event(event)
+        except Exception:
+            logger.exception("Failed ingesting IB_LOGIN_COMPLETED event into orchestrator")

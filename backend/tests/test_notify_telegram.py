@@ -36,8 +36,8 @@ def test_start_message(mock_client_cls, mock_settings):
     # check message sent contains service + started and correct icon
     args, _kwargs = mock_client.send_message.call_args
     text = args[0]
-    assert "ibgateway" in text
-    assert "started" in text
+    assert "Broker Engine" in text
+    assert "Started Successfully" in text
     assert "\U0001f7e2" in text
     assert "PID" not in text
 
@@ -52,8 +52,8 @@ def test_stop_message(mock_client_cls, mock_settings):
     rc = notify.main(["prog", "stop", "trading-backend"])
     assert rc == 0
     text = mock_client.send_message.call_args[0][0]
-    assert "trading-backend" in text
-    assert "stopped" in text
+    assert "OEMS Engine" in text
+    assert "Stopped" in text
     assert "\U0001f534" in text
 
 
@@ -93,8 +93,7 @@ def test_start_message_format_concise():
         mock_cls.return_value = mock_client
         notify.main(["prog", "start", "demo-streaming"])
         text = mock_client.send_message.call_args[0][0]
-        assert text == "\U0001f7e2 demo-streaming started"
-        assert len(text.split()) == 3  # icon + service + verb
+        assert text == "\U0001f7e2 Dashboard Engine Started Successfully"
 
 
 def test_stop_message_format_concise():
@@ -104,7 +103,7 @@ def test_stop_message_format_concise():
         mock_cls.return_value = mock_client
         notify.main(["prog", "stop", "webhook-ingest"])
         text = mock_client.send_message.call_args[0][0]
-        assert text == "\U0001f534 webhook-ingest stopped"
+        assert text == "\U0001f534 Signal Receiver Stopped"
 
 
 def test_market_closed_once_per_day(tmp_path, monkeypatch):

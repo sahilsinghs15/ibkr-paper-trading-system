@@ -12,28 +12,28 @@ logger = logging.getLogger(__name__)
 
 CANONICAL_SERVICES: dict[str, dict[str, Any]] = {
     "ibgateway": {
-        "friendly_name": "Broker connection",
+        "friendly_name": "Broker Engine",
         "unit": "ibgateway.service",
-        "SERVICE_STARTED": {"icon": "🟢", "message": "Broker connection started"},
-        "SERVICE_STOPPED": {"icon": "🔴", "message": "Broker connection stopped"},
+        "SERVICE_STARTED": {"icon": "🟢", "message": "Broker Engine Started Successfully"},
+        "SERVICE_STOPPED": {"icon": "🔴", "message": "Broker Engine Stopped"},
     },
     "trading-backend": {
-        "friendly_name": "Trading system",
+        "friendly_name": "OEMS Engine",
         "unit": "trading-backend.service",
-        "SERVICE_STARTED": {"icon": "🟢", "message": "Trading system started"},
-        "SERVICE_STOPPED": {"icon": "🔴", "message": "Trading system stopped"},
+        "SERVICE_STARTED": {"icon": "🟢", "message": "OEMS Engine Started Successfully"},
+        "SERVICE_STOPPED": {"icon": "🔴", "message": "OEMS Engine Stopped"},
     },
     "webhook-ingest": {
-        "friendly_name": "Market signal intake",
+        "friendly_name": "Signal Receiver",
         "unit": "webhook-ingest.service",
-        "SERVICE_STARTED": {"icon": "🟢", "message": "Market signal intake started"},
-        "SERVICE_STOPPED": {"icon": "🔴", "message": "Market signal intake stopped"},
+        "SERVICE_STARTED": {"icon": "🟢", "message": "Signal Receiver Started Successfully"},
+        "SERVICE_STOPPED": {"icon": "🔴", "message": "Signal Receiver Stopped"},
     },
     "demo-streaming": {
-        "friendly_name": "Market data display",
+        "friendly_name": "Dashboard Engine",
         "unit": "demo-streaming.service",
-        "SERVICE_STARTED": {"icon": "🟢", "message": "Market data display started"},
-        "SERVICE_STOPPED": {"icon": "🔴", "message": "Market data display stopped"},
+        "SERVICE_STARTED": {"icon": "🟢", "message": "Dashboard Engine Started Successfully"},
+        "SERVICE_STOPPED": {"icon": "🔴", "message": "Dashboard Stopped"},
     },
 }
 
