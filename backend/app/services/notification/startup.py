@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import uuid
 from typing import Any
 
 import httpx
@@ -40,10 +41,12 @@ class StartupAggregator:
         critical_components: tuple[str, ...] | None = None,
         component_labels: dict[str, str] | None = None,
         auto_probe: bool = True,
+        session_id: str | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         settings = get_settings()
         self._window_sec = window_sec or settings.notification_startup_window_sec
+        self._session_id = session_id or uuid.uuid4().hex[:8]
 
         if critical_components is not None:
             self._critical_components = tuple(critical_components)
@@ -215,7 +218,7 @@ class StartupAggregator:
                 message=status_summary,
                 category="SYSTEM",
                 severity=severity,
-                dedupe_key="startup_aggregation_session",
+                dedupe_key=f"startup_aggregation_{self._session_id}",
                 details={
                     "components": self._components,
                     "ready": is_fully_ready,

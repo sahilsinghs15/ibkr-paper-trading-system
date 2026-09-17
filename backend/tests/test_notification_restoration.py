@@ -23,7 +23,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.db.models.notification import (
     NotificationDeliveryModel,
@@ -50,8 +50,8 @@ from app.services.notification.types import (
 async def clean_notification_tables(session_factory):
     """Ensure clean notification tables for each test."""
     async with session_factory() as session:
-        await session.execute(NotificationDeliveryModel.__table__.delete())
-        await session.execute(NotificationLogModel.__table__.delete())
+        await session.execute(delete(NotificationDeliveryModel))
+        await session.execute(delete(NotificationLogModel))
         await session.commit()
 
 
