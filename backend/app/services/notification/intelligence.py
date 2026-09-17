@@ -205,31 +205,32 @@ class NotificationIntelligenceEngine:
                         suppressed_reason="COOLDOWN",
                     )
 
-        # 4. Hourly Rate / Volume Limit Check (enforced across all admissions)
-        hourly_limit = self.get_hourly_limit(event.severity)
-        if hourly_limit > 0:
-            hour_ago = now - timedelta(seconds=3600)
-            count_stmt = (
-                select(func.count())
-                .select_from(NotificationLogModel)
-                .where(
-                    NotificationLogModel.severity == event.severity.value,
-                    NotificationLogModel.status != NotificationStatus.SUPPRESSED.value,
-                    NotificationLogModel.created_at >= hour_ago,
+        # 4. Hourly Rate / Volume Limit Check (exempting critical and startup aggregation milestones)
+        if event.event_type != "STARTUP_AGGREGATION" and event.severity != NotificationSeverity.CRITICAL:
+            hourly_limit = self.get_hourly_limit(event.severity)
+            if hourly_limit > 0:
+                hour_ago = now - timedelta(seconds=3600)
+                count_stmt = (
+                    select(func.count())
+                    .select_from(NotificationLogModel)
+                    .where(
+                        NotificationLogModel.severity == event.severity.value,
+                        NotificationLogModel.status != NotificationStatus.SUPPRESSED.value,
+                        NotificationLogModel.created_at >= hour_ago,
+                    )
                 )
-            )
-            volume_last_hour = (await session.execute(count_stmt)).scalar_one()
-            if volume_last_hour >= hourly_limit:
-                logger.warning(
-                    "Event '%s' suppressed: hourly limit of %d reached for severity %s",
-                    event.event_type,
-                    hourly_limit,
-                    event.severity.value,
-                )
-                return AdmissionDecision(
-                    admit=False,
-                    suppressed_reason="HOURLY_LIMIT",
-                )
+                volume_last_hour = (await session.execute(count_stmt)).scalar_one()
+                if volume_last_hour >= hourly_limit:
+                    logger.warning(
+                        "Event '%s' suppressed: hourly limit of %d reached for severity %s",
+                        event.event_type,
+                        hourly_limit,
+                        event.severity.value,
+                    )
+                    return AdmissionDecision(
+                        admit=False,
+                        suppressed_reason="HOURLY_LIMIT",
+                    )
 
         return AdmissionDecision(
             admit=True,
