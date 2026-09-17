@@ -97,7 +97,21 @@ async def get_realtime_system_state(
         except (httpx.HTTPError, OSError):
             pass
 
-    # 3. IB Login (authoritative nextValidId / authenticated handshake)
+    # Check if IB Gateway API port (4002) is open (proves IB Gateway login is complete)
+    is_gateway_api_open = False
+    if probe_endpoints and states.get("ib_gateway", False) and not components.get("ib_gateway", {}).get("ready") is False:
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", 4002),
+                timeout=1.0,
+            )
+            writer.close()
+            await writer.wait_closed()
+            is_gateway_api_open = True
+        except (TimeoutError, OSError):
+            pass
+
+    # 3. IB Login (authoritative nextValidId / authenticated handshake or port 4002 open)
     if "ib_login" in components:
         states["ib_login"] = bool(components["ib_login"].get("ready", False))
     elif client is not None and hasattr(client, "is_connected"):
@@ -108,7 +122,7 @@ async def get_realtime_system_state(
         except (AttributeError, TypeError, RuntimeError, OSError):
             states["ib_login"] = False
     else:
-        states["ib_login"] = is_tws_ready_probe
+        states["ib_login"] = bool(is_tws_ready_probe or is_gateway_api_open)
 
     # 4. Broker Connection (TWSClient socket session)
     if "broker_connection" in components:

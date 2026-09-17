@@ -71,12 +71,13 @@ async def report_service_lifecycle(action: str, service: str) -> int:
             await asyncio.sleep(1.0)
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    "systemctl", "is-active", "--quiet", service,
-                    stdout=asyncio.subprocess.DEVNULL,
+                    "systemctl", "is-active", service,
+                    stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
-                await proc.wait()
-                if proc.returncode == 0:
+                stdout, _ = await proc.communicate()
+                state_str = stdout.decode().strip().lower()
+                if state_str in ("active", "activating"):
                     is_restarting = True
                     break
             except (OSError, subprocess.SubprocessError) as exc:
@@ -90,9 +91,11 @@ async def report_service_lifecycle(action: str, service: str) -> int:
             return 0
 
     components_override = {svc_key: {"ready": is_start}}
-    if svc_key in ("ib_gateway", "oems_engine") and not is_start:
+    if svc_key == "ib_gateway" and not is_start:
         components_override["broker_connection"] = {"ready": False}
         components_override["ib_login"] = {"ready": False}
+    elif svc_key == "oems_engine" and not is_start:
+        components_override["broker_connection"] = {"ready": False}
 
     try:
         _, state_table = await get_realtime_system_state(
