@@ -278,7 +278,7 @@ class StartupAggregator:
             )
 
             for k, ready in states.items():
-                if k not in self._components or self._auto_probe:
+                if k not in self._components:
                     self._components[k] = {
                         "ready": ready,
                         "detail": "probed" if self._auto_probe else "",

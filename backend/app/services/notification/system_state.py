@@ -40,7 +40,9 @@ async def get_realtime_system_state(
     components = components or {}
 
     # 1. Server Machine (Host environment)
-    if probe_endpoints:
+    if "ec2_instance" in components:
+        states["ec2_instance"] = bool(components["ec2_instance"].get("ready", False))
+    elif probe_endpoints:
         is_server_healthy = False
         try:
             load = os.getloadavg()
@@ -49,10 +51,12 @@ async def get_realtime_system_state(
             pass
         states["ec2_instance"] = is_server_healthy
     else:
-        states["ec2_instance"] = bool(components.get("ec2_instance", {}).get("ready", False))
+        states["ec2_instance"] = False
 
     # 2. IB Gateway (systemd ibgateway.service / process check)
-    if probe_endpoints:
+    if "ib_gateway" in components:
+        states["ib_gateway"] = bool(components["ib_gateway"].get("ready", False))
+    elif probe_endpoints:
         is_gw_active = False
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -80,7 +84,7 @@ async def get_realtime_system_state(
 
         states["ib_gateway"] = is_gw_active
     else:
-        states["ib_gateway"] = bool(components.get("ib_gateway", {}).get("ready", False))
+        states["ib_gateway"] = False
 
     # 3. IB Login (authoritative nextValidId / authenticated handshake)
     if "ib_login" in components:
@@ -108,7 +112,9 @@ async def get_realtime_system_state(
         states["broker_connection"] = False
 
     # 5. Signal Receiver (HTTP :8000/health)
-    if probe_endpoints:
+    if "signal_receiver" in components:
+        states["signal_receiver"] = bool(components["signal_receiver"].get("ready", False))
+    elif probe_endpoints:
         is_signal_ready = False
         try:
             async with httpx.AsyncClient(timeout=1.0) as http_client:
@@ -119,10 +125,12 @@ async def get_realtime_system_state(
             pass
         states["signal_receiver"] = is_signal_ready
     else:
-        states["signal_receiver"] = bool(components.get("signal_receiver", {}).get("ready", False))
+        states["signal_receiver"] = False
 
     # 6. OEMS Engine (Trading backend engine :8001/health)
-    if probe_endpoints:
+    if "oems_engine" in components:
+        states["oems_engine"] = bool(components["oems_engine"].get("ready", False))
+    elif probe_endpoints:
         is_oems_ready = False
         try:
             async with httpx.AsyncClient(timeout=1.0) as http_client:
@@ -133,10 +141,12 @@ async def get_realtime_system_state(
             pass
         states["oems_engine"] = is_oems_ready
     else:
-        states["oems_engine"] = bool(components.get("oems_engine", {}).get("ready", False))
+        states["oems_engine"] = False
 
     # 7. Dashboard Engine (HTTP :8010/health)
-    if probe_endpoints:
+    if "dashboard_engine" in components:
+        states["dashboard_engine"] = bool(components["dashboard_engine"].get("ready", False))
+    elif probe_endpoints:
         is_dashboard_ready = False
         try:
             async with httpx.AsyncClient(timeout=1.0) as http_client:
@@ -147,7 +157,7 @@ async def get_realtime_system_state(
             pass
         states["dashboard_engine"] = is_dashboard_ready
     else:
-        states["dashboard_engine"] = bool(components.get("dashboard_engine", {}).get("ready", False))
+        states["dashboard_engine"] = False
 
     # Format the table
     items_to_render = list(CANONICAL_STARTUP_COMPONENTS)
