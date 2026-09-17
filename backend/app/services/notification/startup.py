@@ -250,6 +250,7 @@ class StartupAggregator:
                 category="SYSTEM",
                 severity=severity,
                 dedupe_key=f"startup_aggregation_{self._session_id}",
+                correlation_id=f"oems_startup_{self._session_id}",
                 details={
                     "components": self._components,
                     "ready": is_fully_ready,

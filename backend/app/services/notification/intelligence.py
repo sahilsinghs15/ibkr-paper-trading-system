@@ -45,6 +45,8 @@ class NotificationIntelligenceEngine:
 
     def get_cooldown_seconds(self, severity: NotificationSeverity, event_type: str) -> float:
         """Resolve cooldown duration based on severity and event type."""
+        if event_type == "STARTUP_AGGREGATION":
+            return 0.0
         settings = get_settings()
         if severity == NotificationSeverity.CRITICAL:
             return settings.notification_cooldown_critical_sec
