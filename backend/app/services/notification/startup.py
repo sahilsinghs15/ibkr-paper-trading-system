@@ -254,11 +254,6 @@ class StartupAggregator:
                             last_broker_event.notification_id,
                         )
                         return True
-
-            if recent_trigger:
-                # If trigger was recent and there's no contrary evidence, treat as broker recovery
-                logger.info("Found recent restart_backend.trigger; treating startup as broker recovery")
-                return True
         except Exception:
             logger.exception("Failed checking for unrecovered broker incident")
         return False
