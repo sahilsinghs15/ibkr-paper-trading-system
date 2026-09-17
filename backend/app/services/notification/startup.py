@@ -6,29 +6,28 @@ import asyncio
 import logging
 import subprocess
 import threading
+import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx
+from sqlalchemy import select
 
 from app.core.config import get_settings
+from app.db.models.notification import NotificationLogModel
 from app.services.notification.orchestrator import NotificationOrchestrator
+from app.services.notification.system_state import (
+    CANONICAL_STARTUP_COMPONENTS,
+    get_realtime_system_state,
+)
 from app.services.notification.types import (
     NormalizedEvent,
     NotificationSeverity,
+    NotificationStatus,
 )
 
 logger = logging.getLogger(__name__)
-
-CANONICAL_STARTUP_COMPONENTS = (
-    ("ec2_instance", "Server Machine"),
-    ("ib_gateway", "IB Gateway"),
-    ("ib_login", "IB Login"),
-    ("broker_connection", "Broker Connection"),
-    ("signal_receiver", "Signal Receiver"),
-    ("oems_engine", "OEMS Engine"),
-    ("dashboard_engine", "Dashboard Engine"),
-)
 
 
 class StartupAggregator:
@@ -37,6 +36,7 @@ class StartupAggregator:
     def __init__(
         self,
         orchestrator: NotificationOrchestrator,
+        client: Any = None,
         *,
         window_sec: float | None = None,
         critical_components: tuple[str, ...] | None = None,
@@ -45,6 +45,7 @@ class StartupAggregator:
         session_id: str | None = None,
     ) -> None:
         self._orchestrator = orchestrator
+        self._client = client
         settings = get_settings()
         self._window_sec = window_sec or settings.notification_startup_window_sec
         self._session_id = session_id or uuid.uuid4().hex[:8]
@@ -65,6 +66,10 @@ class StartupAggregator:
         self._published = False
         self._is_active = False
         self._aggregation_task: asyncio.Task[None] | None = None
+
+    def set_client(self, client: Any) -> None:
+        """Set or update the TWSClient reference for dynamic state checks."""
+        self._client = client
 
     @property
     def is_window_active(self) -> bool:
@@ -192,13 +197,54 @@ class StartupAggregator:
                         if all_ready:
                             logger.info("All critical startup components ready early; concluding window")
                             break
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(min(0.1, self._window_sec))
 
             await self.publish_readiness()
         except asyncio.CancelledError:
             pass
         except Exception:
             logger.exception("StartupAggregator encountered unexpected error in timer loop")
+
+    async def _has_unrecovered_broker_lost(self) -> bool:
+        """Check if this startup is resolving an active, unrecovered BROKER_LOST incident."""
+        try:
+            # Check 1: Trigger file modification within last 5 minutes (indicates gateway restart chain)
+            trigger_path = Path("/home/tradingapp/storage/state/restart_backend.trigger")
+            if trigger_path.exists():
+                try:
+                    mtime = trigger_path.stat().st_mtime
+                    if (time.time() - mtime) < 300.0:
+                        logger.info(
+                            "Found recent restart_backend.trigger (%.1fs ago); treating startup as broker recovery",
+                            time.time() - mtime,
+                        )
+                        return True
+                except OSError:
+                    pass
+
+            # Check 2: Database notification_log query for open BROKER_LOST
+            session_factory = getattr(self._orchestrator, "_session_factory", None)
+            if session_factory is not None:
+                async with session_factory() as session:
+                    stmt = (
+                        select(NotificationLogModel)
+                        .where(
+                            NotificationLogModel.category == "BROKER",
+                            NotificationLogModel.status != NotificationStatus.SUPPRESSED.value,
+                        )
+                        .order_by(NotificationLogModel.id.desc())
+                        .limit(1)
+                    )
+                    last_broker_event = (await session.execute(stmt)).scalar_one_or_none()
+                    if last_broker_event is not None and last_broker_event.event_type == "BROKER_LOST":
+                        logger.info(
+                            "Found open BROKER_LOST incident (%s) in notification_log; treating startup as broker recovery",
+                            last_broker_event.notification_id,
+                        )
+                        return True
+        except Exception:
+            logger.exception("Failed checking for unrecovered broker incident")
+        return False
 
     async def publish_readiness(self) -> None:
         """Evaluate recorded components and publish unified aggregate notification."""
@@ -209,6 +255,19 @@ class StartupAggregator:
                 self._published = True
                 self._is_active = False
 
+            states, status_summary = await get_realtime_system_state(
+                client=self._client,
+                components=self._components,
+                probe_endpoints=self._auto_probe,
+            )
+
+            for k, ready in states.items():
+                if k not in self._components or self._auto_probe:
+                    self._components[k] = {
+                        "ready": ready,
+                        "detail": "probed" if self._auto_probe else "",
+                    }
+
             missing_critical = set(self._critical_components) - set(self._components.keys())
             failed_components = [
                 name
@@ -218,49 +277,47 @@ class StartupAggregator:
 
             is_fully_ready = (not missing_critical) and (not failed_components)
 
-            # Order components according to critical_components order then remainder
-            order = list(self._critical_components)
-            for k in sorted(self._components.keys()):
-                if k not in order:
-                    order.append(k)
+            # Check if this startup resolves an active unrecovered BROKER_LOST incident
+            is_broker_recovery = await self._has_unrecovered_broker_lost()
 
-            lines = []
-            for name in order:
-                label = self._component_labels.get(name, name.replace("_", " ").title())
-                info = self._components.get(name)
-                if info is None:
-                    mark = "✗"
-                else:
-                    mark = "✓" if info.get("ready", False) else "✗"
-                lines.append(f"{label:<18} {mark}")
-
-            status_summary = "<pre>\n" + "\n".join(lines) + "\n</pre>"
-
-            if is_fully_ready:
+            if is_broker_recovery:
+                title = "🟢 IBKR Broker Connected Successfully"
+                event_type = "BROKER_RECONNECTED"
+                category = "BROKER"
+                correlation_id = "broker_connection"
+                severity = NotificationSeverity.INFO if is_fully_ready else NotificationSeverity.WARNING
+            elif is_fully_ready:
                 title = "🟢 OEMS Started Successfully"
+                event_type = "STARTUP_AGGREGATION"
+                category = "SYSTEM"
+                correlation_id = f"oems_startup_{self._session_id}"
                 severity = NotificationSeverity.INFO
             else:
                 title = "⚠️ OEMS Startup Warning"
+                event_type = "STARTUP_AGGREGATION"
+                category = "SYSTEM"
+                correlation_id = f"oems_startup_{self._session_id}"
                 severity = NotificationSeverity.WARNING
 
             event = NormalizedEvent(
-                event_type="STARTUP_AGGREGATION",
+                event_type=event_type,
                 title=title,
                 message=status_summary,
-                category="SYSTEM",
+                category=category,
                 severity=severity,
-                dedupe_key=f"startup_aggregation_{self._session_id}",
-                correlation_id=f"oems_startup_{self._session_id}",
+                dedupe_key=f"{event_type.lower()}_{self._session_id}",
+                correlation_id=correlation_id,
                 details={
                     "components": self._components,
                     "ready": is_fully_ready,
                     "failed": failed_components,
                     "missing": list(missing_critical),
+                    "is_broker_recovery": is_broker_recovery,
                 },
             )
 
             await self._orchestrator.ingest_event(event)
-            logger.info("Published aggregate startup notification: ready=%s title='%s'", is_fully_ready, title)
+            logger.info("Published aggregate notification: event_type=%s ready=%s title='%s'", event_type, is_fully_ready, title)
 
     async def stop(self) -> None:
         """Cancel aggregation task if active."""

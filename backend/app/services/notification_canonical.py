@@ -33,7 +33,7 @@ CANONICAL_SERVICES: dict[str, dict[str, Any]] = {
         "friendly_name": "Dashboard Engine",
         "unit": "demo-streaming.service",
         "SERVICE_STARTED": {"icon": "🟢", "message": "Dashboard Engine Started Successfully"},
-        "SERVICE_STOPPED": {"icon": "🔴", "message": "Dashboard Stopped"},
+        "SERVICE_STOPPED": {"icon": "🔴", "message": "Dashboard Engine Stopped"},
     },
 }
 

@@ -226,7 +226,7 @@ async def test_runtime_broker_disconnect_and_reconnect(session_factory):
 
         broker_rec = next(n for n in notifs if n.event_type == "BROKER_RECONNECTED")
         assert broker_rec.severity == NotificationSeverity.INFO.value
-        assert "Connection Restored" in broker_rec.title
+        assert "Connected Successfully" in broker_rec.title or "Connection Restored" in broker_rec.title
 
 
 @pytest.mark.asyncio
@@ -306,7 +306,7 @@ async def test_repeated_connection_closed_calls_emit_single_broker_lost(session_
         ).scalars().all()
         # Exactly ONE logical notification must be generated
         assert len(notifs) == 1
-        assert notifs[0].title == "IBKR Broker Connection Lost"
+        assert "IBKR Broker Connection Lost" in notifs[0].title
 
 
 @pytest.mark.asyncio
@@ -376,4 +376,142 @@ async def test_genuine_broker_oscillation_triggers_flapping(session_factory):
         titles = [n.title for n in notifs]
         # At least one notification must be the flapping alert
         assert any("FLAPPING" in t for t in titles)
+
+
+@pytest.mark.asyncio
+async def test_broker_recovery_produces_broker_connected_heading_not_oems_started(session_factory):
+    """TEST B: Broker recovery produces '🟢 IBKR Broker Connected Successfully', NOT 'OEMS Started Successfully'."""
+    orchestrator = NotificationOrchestrator(session_factory)
+
+    # 1. Ingest an unrecovered BROKER_LOST incident
+    lost_event = NormalizedEvent(
+        event_type="BROKER_LOST",
+        title="🔴 IBKR Broker Connection Lost",
+        message="TWS/Gateway socket disconnected.",
+        category="BROKER",
+        severity=NotificationSeverity.CRITICAL,
+        correlation_id="broker_connection",
+    )
+    await orchestrator.ingest_event(lost_event)
+
+    # 2. StartupAggregator runs (simulating backend reboot triggered by gateway recovery)
+    aggregator = StartupAggregator(
+        orchestrator=orchestrator,
+        window_sec=0.2,
+        auto_probe=False,
+    )
+    await aggregator.start_window()
+
+    # Record all components as ready
+    aggregator.record_component("ec2_instance", is_ready=True)
+    aggregator.record_component("ib_gateway", is_ready=True)
+    aggregator.record_component("ib_login", is_ready=True)
+    aggregator.record_component("broker_connection", is_ready=True)
+    aggregator.record_component("signal_receiver", is_ready=True)
+    aggregator.record_component("oems_engine", is_ready=True)
+    aggregator.record_component("dashboard_engine", is_ready=True)
+
+    await asyncio.sleep(0.3)
+
+    async with session_factory() as session:
+        notifs = (
+            await session.execute(
+                select(NotificationLogModel).order_by(NotificationLogModel.id.asc())
+            )
+        ).scalars().all()
+
+        assert len(notifs) == 2
+        lost_notif = notifs[0]
+        assert lost_notif.event_type == "BROKER_LOST"
+
+        rec_notif = notifs[1]
+        assert rec_notif.event_type == "BROKER_RECONNECTED"
+        assert rec_notif.title == "🟢 IBKR Broker Connected Successfully"
+        assert rec_notif.title != "🟢 OEMS Started Successfully"
+        # All components must show checkmark
+        assert "Server Machine     ✓" in rec_notif.message
+        assert "IB Gateway         ✓" in rec_notif.message
+        assert "IB Login           ✓" in rec_notif.message
+        assert "Broker Connection  ✓" in rec_notif.message
+        assert "Signal Receiver    ✓" in rec_notif.message
+        assert "OEMS Engine        ✓" in rec_notif.message
+        assert "Dashboard Engine   ✓" in rec_notif.message
+
+
+@pytest.mark.asyncio
+async def test_broker_recovery_with_dashboard_down_shows_cross_for_dashboard(session_factory):
+    """Dynamic state: If Dashboard is down during broker recovery, Dashboard Engine shows ✗."""
+    orchestrator = NotificationOrchestrator(session_factory)
+
+    lost_event = NormalizedEvent(
+        event_type="BROKER_LOST",
+        title="🔴 IBKR Broker Connection Lost",
+        message="TWS/Gateway socket disconnected.",
+        category="BROKER",
+        severity=NotificationSeverity.CRITICAL,
+        correlation_id="broker_connection",
+    )
+    await orchestrator.ingest_event(lost_event)
+
+    aggregator = StartupAggregator(
+        orchestrator=orchestrator,
+        window_sec=0.2,
+        auto_probe=False,
+    )
+    await aggregator.start_window()
+
+    # Record components: Dashboard is DOWN
+    aggregator.record_component("ec2_instance", is_ready=True)
+    aggregator.record_component("ib_gateway", is_ready=True)
+    aggregator.record_component("ib_login", is_ready=True)
+    aggregator.record_component("broker_connection", is_ready=True)
+    aggregator.record_component("signal_receiver", is_ready=True)
+    aggregator.record_component("oems_engine", is_ready=True)
+    aggregator.record_component("dashboard_engine", is_ready=False, detail="Connection refused")
+
+    await asyncio.sleep(0.3)
+
+    async with session_factory() as session:
+        notifs = (
+            await session.execute(
+                select(NotificationLogModel).order_by(NotificationLogModel.id.asc())
+            )
+        ).scalars().all()
+
+        rec_notif = notifs[1]
+        assert rec_notif.title == "🟢 IBKR Broker Connected Successfully"
+        assert "Dashboard Engine   ✗" in rec_notif.message
+        assert "Broker Connection  ✓" in rec_notif.message
+
+
+@pytest.mark.asyncio
+async def test_independent_ib_login_recovery_produces_login_completed(session_factory):
+    """Runtime handshake completion outside startup produces '🟢 IB Login Completed Successfully'."""
+    orchestrator = NotificationOrchestrator(session_factory)
+    listener = BrokerNotificationListener(orchestrator)
+    listener.bind_loop(asyncio.get_running_loop())
+
+    # Initial handshake at runtime
+    listener.on_next_valid_id(5001)
+    await asyncio.sleep(0.1)
+
+    async with session_factory() as session:
+        notifs = (
+            await session.execute(select(NotificationLogModel))
+        ).scalars().all()
+
+        assert len(notifs) == 1
+        assert notifs[0].event_type == "IB_LOGIN_COMPLETED"
+        assert notifs[0].title == "🟢 IB Login Completed Successfully"
+
+
+def test_canonical_dashboard_service_messages():
+    """Verify canonical dashboard messages match Dashboard Engine Started / Stopped."""
+    from app.services.notification_canonical import CANONICAL_SERVICES
+
+    demo_cfg = CANONICAL_SERVICES["demo-streaming"]
+    assert demo_cfg["friendly_name"] == "Dashboard Engine"
+    assert demo_cfg["SERVICE_STARTED"]["message"] == "Dashboard Engine Started Successfully"
+    assert demo_cfg["SERVICE_STOPPED"]["message"] == "Dashboard Engine Stopped"
+
 

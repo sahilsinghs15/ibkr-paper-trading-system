@@ -68,6 +68,7 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         await startup_aggregator.start_window()
 
     client = TWSClient()
+    startup_aggregator.set_client(client)
     broker_listener = BrokerNotificationListener(
         notification_orchestrator,
         client,

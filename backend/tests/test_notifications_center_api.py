@@ -30,21 +30,21 @@ def test_canonical_dictionary_completeness(canonical_fixtures):
     expected_services = {"ibgateway", "trading-backend", "webhook-ingest", "demo-streaming"}
     assert set(canonical_fixtures.keys()) == expected_services
 
-    assert canonical_fixtures["ibgateway"]["friendly_name"] == "Broker connection"
-    assert canonical_fixtures["ibgateway"]["SERVICE_STARTED"]["message"] == "Broker connection started"
-    assert canonical_fixtures["ibgateway"]["SERVICE_STOPPED"]["message"] == "Broker connection stopped"
+    assert canonical_fixtures["ibgateway"]["friendly_name"] == "Broker Engine"
+    assert canonical_fixtures["ibgateway"]["SERVICE_STARTED"]["message"] == "Broker Engine Started Successfully"
+    assert canonical_fixtures["ibgateway"]["SERVICE_STOPPED"]["message"] == "Broker Engine Stopped"
 
-    assert canonical_fixtures["trading-backend"]["friendly_name"] == "Trading system"
-    assert canonical_fixtures["trading-backend"]["SERVICE_STARTED"]["message"] == "Trading system started"
-    assert canonical_fixtures["trading-backend"]["SERVICE_STOPPED"]["message"] == "Trading system stopped"
+    assert canonical_fixtures["trading-backend"]["friendly_name"] == "OEMS Engine"
+    assert canonical_fixtures["trading-backend"]["SERVICE_STARTED"]["message"] == "OEMS Engine Started Successfully"
+    assert canonical_fixtures["trading-backend"]["SERVICE_STOPPED"]["message"] == "OEMS Engine Stopped"
 
-    assert canonical_fixtures["webhook-ingest"]["friendly_name"] == "Market signal intake"
-    assert canonical_fixtures["webhook-ingest"]["SERVICE_STARTED"]["message"] == "Market signal intake started"
-    assert canonical_fixtures["webhook-ingest"]["SERVICE_STOPPED"]["message"] == "Market signal intake stopped"
+    assert canonical_fixtures["webhook-ingest"]["friendly_name"] == "Signal Receiver"
+    assert canonical_fixtures["webhook-ingest"]["SERVICE_STARTED"]["message"] == "Signal Receiver Started Successfully"
+    assert canonical_fixtures["webhook-ingest"]["SERVICE_STOPPED"]["message"] == "Signal Receiver Stopped"
 
-    assert canonical_fixtures["demo-streaming"]["friendly_name"] == "Market data display"
-    assert canonical_fixtures["demo-streaming"]["SERVICE_STARTED"]["message"] == "Market data display started"
-    assert canonical_fixtures["demo-streaming"]["SERVICE_STOPPED"]["message"] == "Market data display stopped"
+    assert canonical_fixtures["demo-streaming"]["friendly_name"] == "Dashboard Engine"
+    assert canonical_fixtures["demo-streaming"]["SERVICE_STARTED"]["message"] == "Dashboard Engine Started Successfully"
+    assert canonical_fixtures["demo-streaming"]["SERVICE_STOPPED"]["message"] == "Dashboard Engine Stopped"
 
 
 def test_format_canonical_notification_market_closed():
@@ -147,12 +147,12 @@ async def test_notifications_api_flow():
 
         # Verify canonical mapping and fields
         item_ev1 = next(it for it in items if it["id"] == ev1_id)
-        assert item_ev1["title"] == "Broker connection started"
+        assert item_ev1["title"] == "Broker Engine Started Successfully"
         assert item_ev1["icon"] == "🟢"
         assert item_ev1["is_read"] is False
 
         item_ev2 = next(it for it in items if it["id"] == ev2_id)
-        assert item_ev2["title"] == "Market data display stopped"
+        assert item_ev2["title"] == "Dashboard Engine Stopped"
         assert item_ev2["icon"] == "🔴"
         assert item_ev2["is_read"] is False
 

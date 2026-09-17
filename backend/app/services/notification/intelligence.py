@@ -45,7 +45,7 @@ class NotificationIntelligenceEngine:
 
     def get_cooldown_seconds(self, severity: NotificationSeverity, event_type: str) -> float:
         """Resolve cooldown duration based on severity and event type."""
-        if event_type == "STARTUP_AGGREGATION":
+        if event_type in ("STARTUP_AGGREGATION", "BROKER_RECONNECTED"):
             return 0.0
         settings = get_settings()
         if severity == NotificationSeverity.CRITICAL:
@@ -101,12 +101,15 @@ class NotificationIntelligenceEngine:
     ) -> AdmissionDecision:
         """Evaluate event against cooldown, volume limits, flapping, and recovery correlation."""
         now = datetime.now(UTC)
-        is_recovery = "RECOVER" in event.event_type.upper() or "RESOLV" in event.event_type.upper()
+        is_recovery = any(
+            k in event.event_type.upper()
+            for k in ("RECOVER", "RESOLV", "RECONNECT", "RESTORE")
+        )
 
         # 1. Incident / Recovery Correlation check
         if is_recovery:
             # Query for the incident that this recovery resolves
-            # Match by correlation_id or scope_key
+            # Match by correlation_id or category where severity was warning/critical
             incident_query = (
                 select(NotificationLogModel)
                 .where(
@@ -115,6 +118,9 @@ class NotificationIntelligenceEngine:
                         (NotificationLogModel.correlation_id == event.correlation_id)
                         if event.correlation_id
                         else (NotificationLogModel.category == event.category)
+                    ),
+                    NotificationLogModel.severity.in_(
+                        [NotificationSeverity.CRITICAL.value, NotificationSeverity.WARNING.value]
                     ),
                     NotificationLogModel.created_at < now,
                 )
@@ -129,6 +135,35 @@ class NotificationIntelligenceEngine:
                     "Recovery event '%s' suppressed: no prior alerted incident found for correlation_id=%s",
                     event.event_type,
                     event.correlation_id,
+                )
+                return AdmissionDecision(
+                    admit=False,
+                    suppressed_reason="UNALERTED_INCIDENT",
+                )
+
+            # Check if there was already a subsequent recovery resolving this incident
+            subsequent_recovery = (
+                await session.execute(
+                    select(NotificationLogModel)
+                    .where(
+                        NotificationLogModel.status != NotificationStatus.SUPPRESSED.value,
+                        (
+                            (NotificationLogModel.correlation_id == event.correlation_id)
+                            if event.correlation_id
+                            else (NotificationLogModel.category == event.category)
+                        ),
+                        NotificationLogModel.id > prior_incident.id,
+                        NotificationLogModel.created_at < now,
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if subsequent_recovery is not None:
+                logger.info(
+                    "Recovery event '%s' suppressed: incident %s already resolved by %s",
+                    event.event_type,
+                    prior_incident.notification_id,
+                    subsequent_recovery.notification_id,
                 )
                 return AdmissionDecision(
                     admit=False,

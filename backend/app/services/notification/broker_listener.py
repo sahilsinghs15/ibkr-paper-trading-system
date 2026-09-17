@@ -9,6 +9,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.services.notification.orchestrator import NotificationOrchestrator
+from app.services.notification.system_state import get_realtime_system_state
 from app.services.notification.types import (
     NormalizedEvent,
     NotificationSeverity,
@@ -35,11 +36,13 @@ class BrokerNotificationListener:
         self._lock = threading.Lock()
         # Edge-triggered connection state: only transition on genuine state change
         self._is_connected: bool = True
+        self._reconnecting: bool = False
 
     def mark_connected(self) -> None:
         """Explicitly mark broker connection state as active."""
         with self._lock:
             self._is_connected = True
+            self._reconnecting = False
 
     def set_startup_aggregator(self, aggregator: Any | None) -> None:
         """Set or update startup aggregator reference."""
@@ -78,6 +81,9 @@ class BrokerNotificationListener:
 
     def on_connection_closed(self) -> Any:
         """Invoked by TWSClient reader thread when connection is lost."""
+        if getattr(self._client, "_intentional_disconnect", False):
+            logger.debug("on_connection_closed called during intentional disconnect; skipping")
+            return None
         with self._lock:
             if not self._is_connected:
                 logger.debug(
@@ -85,6 +91,7 @@ class BrokerNotificationListener:
                 )
                 return None
             self._is_connected = False
+            self._reconnecting = True
         return self._dispatch(self._handle_connection_closed())
 
     def on_connection_restored(self) -> Any:
@@ -96,12 +103,23 @@ class BrokerNotificationListener:
                 )
                 return None
             self._is_connected = True
+            self._reconnecting = False
+        if self._startup_aggregator is not None and getattr(self._startup_aggregator, "is_window_active", False):
+            logger.info("Startup window active; StartupAggregator will emit broker recovery alert")
+            self._startup_aggregator.record_component(
+                "broker_connection",
+                is_ready=True,
+                detail="TWS socket restored",
+            )
+            return None
         return self._dispatch(self._handle_connection_restored())
 
     def on_next_valid_id(self, order_id: int) -> Any:
         """Invoked by TWSClient when initial handshake finishes (nextValidId received)."""
         with self._lock:
             self._is_connected = True
+            was_reconnecting = self._reconnecting
+
         if self._startup_aggregator is not None and getattr(self._startup_aggregator, "is_window_active", False):
             logger.info(
                 "Startup window active; recording ib_login milestone instead of emitting separate alert (next_order_id=%s)",
@@ -118,6 +136,11 @@ class BrokerNotificationListener:
                 detail="TWS socket connected and authenticated",
             )
             return None
+
+        if was_reconnecting:
+            logger.info("Reconnection in progress; on_connection_restored will publish recovery alert")
+            return None
+
         return self._dispatch(self._handle_login_completed(order_id))
 
     async def _handle_connection_closed(self) -> None:
@@ -128,7 +151,7 @@ class BrokerNotificationListener:
 
         event = NormalizedEvent(
             event_type="BROKER_LOST",
-            title="IBKR Broker Connection Lost",
+            title="🔴 IBKR Broker Connection Lost",
             message=(
                 f"TWS/Gateway socket disconnected on {host}:{port}. "
                 "Automatic reconnection initiated."
@@ -154,10 +177,12 @@ class BrokerNotificationListener:
         port = getattr(self._client, "_connect_port", None) or settings.ibkr_port
         client_id = getattr(self._client, "_connect_client_id", None) or settings.ibkr_client_id
 
+        _, state_table = await get_realtime_system_state(client=self._client)
+
         event = NormalizedEvent(
             event_type="BROKER_RECONNECTED",
-            title="IBKR Broker Connection Restored",
-            message=f"TWS/Gateway socket reconnected successfully on {host}:{port}.",
+            title="🟢 IBKR Broker Connected Successfully",
+            message=state_table,
             category="BROKER",
             severity=NotificationSeverity.INFO,
             source="tws_client",
@@ -179,10 +204,12 @@ class BrokerNotificationListener:
         port = getattr(self._client, "_connect_port", None) or settings.ibkr_port
         client_id = getattr(self._client, "_connect_client_id", None) or settings.ibkr_client_id
 
+        _, state_table = await get_realtime_system_state(client=self._client)
+
         event = NormalizedEvent(
             event_type="IB_LOGIN_COMPLETED",
-            title="IB Login Completed Successfully",
-            message=f"IBKR TWS/Gateway session authenticated and ready for orders on {host}:{port} (next_order_id={order_id}).",
+            title="🟢 IB Login Completed Successfully",
+            message=state_table,
             category="BROKER",
             severity=NotificationSeverity.INFO,
             source="tws_client",
