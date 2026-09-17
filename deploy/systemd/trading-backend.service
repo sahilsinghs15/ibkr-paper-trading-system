@@ -11,6 +11,7 @@ WorkingDirectory=/home/tradingapp/app/backend
 EnvironmentFile=/home/tradingapp/app/backend/.env
 ExecStart=/home/tradingapp/app/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 ExecStartPost=/bin/bash /home/tradingapp/app/scripts/backend-ready-trigger.sh
+ExecStopPost=-/bin/bash -c 'cd /home/tradingapp/app/backend && /home/tradingapp/app/backend/.venv/bin/python -m app.services.notification.cli stop trading-backend'
 Restart=always
 RestartSec=10
 KillMode=mixed

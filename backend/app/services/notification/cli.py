@@ -62,48 +62,51 @@ async def report_service_lifecycle(action: str, service: str) -> int:
     svc_key = cfg["key"]
 
     components_override = {svc_key: {"ready": is_start}}
-    if svc_key == "ib_gateway" and not is_start:
+    if svc_key in ("ib_gateway", "oems_engine") and not is_start:
         components_override["broker_connection"] = {"ready": False}
         components_override["ib_login"] = {"ready": False}
 
-    _, state_table = await get_realtime_system_state(
-        components=components_override,
-        probe_endpoints=True,
-    )
-
-    if is_start:
-        event_type = "SERVICE_STARTED"
-        title = cfg["start_title"]
-        severity = NotificationSeverity.INFO
-    else:
-        event_type = "SERVICE_STOPPED"
-        title = cfg["stop_title"]
-        severity = NotificationSeverity.CRITICAL
-
-    event = NormalizedEvent(
-        event_type=event_type,
-        title=title,
-        message=state_table,
-        category="SYSTEM",
-        severity=severity,
-        correlation_id=svc_key,
-        details={
-            "service": service,
-            "action": action,
-            "component": svc_key,
-        },
-    )
-
-    orchestrator = NotificationOrchestrator(AsyncSessionLocal)
-    notif = await orchestrator.ingest_event(event)
-
-    # Immediately attempt delivery for fast operator feedback
-    if notif is not None and notif.status != "SUPPRESSED":
-        worker = NotificationDeliveryWorker(
-            session_factory=AsyncSessionLocal,
-            dispatcher=get_default_dispatcher(),
+    try:
+        _, state_table = await get_realtime_system_state(
+            components=components_override,
+            probe_endpoints=True,
         )
-        await worker.run_once()
+
+        if is_start:
+            event_type = "SERVICE_STARTED"
+            title = cfg["start_title"]
+            severity = NotificationSeverity.INFO
+        else:
+            event_type = "SERVICE_STOPPED"
+            title = cfg["stop_title"]
+            severity = NotificationSeverity.CRITICAL
+
+        event = NormalizedEvent(
+            event_type=event_type,
+            title=title,
+            message=state_table,
+            category="SYSTEM",
+            severity=severity,
+            correlation_id=svc_key,
+            details={
+                "service": service,
+                "action": action,
+                "component": svc_key,
+            },
+        )
+
+        orchestrator = NotificationOrchestrator(AsyncSessionLocal)
+        notif = await orchestrator.ingest_event(event)
+
+        # Immediately attempt delivery for fast operator feedback
+        if notif is not None and notif.status != "SUPPRESSED":
+            worker = NotificationDeliveryWorker(
+                session_factory=AsyncSessionLocal,
+                dispatcher=get_default_dispatcher(),
+            )
+            await worker.run_once()
+    except Exception:
+        logger.exception("Failed to report lifecycle event for %s %s", action, service)
 
     return 0
 
