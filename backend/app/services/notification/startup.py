@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import subprocess
 import threading
 import uuid
 from typing import Any
@@ -20,7 +21,7 @@ from app.services.notification.types import (
 logger = logging.getLogger(__name__)
 
 CANONICAL_STARTUP_COMPONENTS = (
-    ("ec2_instance", "EC2 Instance"),
+    ("ec2_instance", "Server Machine"),
     ("ib_gateway", "IB Gateway"),
     ("ib_login", "IB Login"),
     ("broker_connection", "Broker Connection"),
@@ -138,6 +139,36 @@ class StartupAggregator:
                         self.record_component("dashboard_engine", is_ready=True, detail="HTTP 200")
             except (httpx.HTTPError, OSError) as exc:
                 logger.debug("Dashboard engine probe failed: %s", exc)
+
+        # 4. IB Gateway process
+        if "ib_gateway" in self._critical_components and "ib_gateway" not in self._components:
+            is_gateway_active = False
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "systemctl", "is-active", "--quiet", "ibgateway",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await proc.wait()
+                if proc.returncode == 0:
+                    is_gateway_active = True
+            except (OSError, subprocess.SubprocessError) as exc:
+                logger.debug("IB Gateway systemctl check failed: %s", exc)
+
+            if not is_gateway_active:
+                try:
+                    import psutil  # type: ignore
+                    for p in psutil.process_iter(["name", "cmdline"]):
+                        cmd = " ".join(p.info.get("cmdline") or [])
+                        name = p.info.get("name") or ""
+                        if "ibgateway" in cmd or "ibcstart" in cmd or "Xvfb" in cmd or "Xvfb" in name:
+                            is_gateway_active = True
+                            break
+                except (ImportError, OSError) as exc:
+                    logger.debug("IB Gateway psutil check failed: %s", exc)
+
+            if is_gateway_active:
+                self.record_component("ib_gateway", is_ready=True, detail="Process active (systemd/IBC)")
 
     async def _timer_loop(self) -> None:
         """Wait for window to elapse or early exit if all components ready, then publish."""

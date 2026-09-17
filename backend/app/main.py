@@ -142,11 +142,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         client_id=settings.ibkr_client_id,
         timeout=settings.ibkr_connection_timeout,
     )
-    startup_aggregator.record_component(
-        "ib_gateway",
-        is_ready=success,
-        detail=f"IBKR TWS/Gateway socket at {settings.ibkr_host}:{settings.ibkr_port}",
-    )
+    if success:
+        broker_listener.mark_connected()
     startup_aggregator.record_component(
         "broker_connection",
         is_ready=success,

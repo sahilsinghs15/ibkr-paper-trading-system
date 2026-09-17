@@ -95,7 +95,7 @@ async def test_complete_startup_sequence_produces_one_notification(session_facto
         assert notif.event_type == "STARTUP_AGGREGATION"
         assert notif.title == "🟢 OEMS Started Successfully"
         assert notif.severity == NotificationSeverity.INFO.value
-        assert "EC2 Instance       ✓" in notif.message
+        assert "Server Machine     ✓" in notif.message
         assert "IB Gateway         ✓" in notif.message
         assert "IB Login           ✓" in notif.message
         assert "Broker Connection  ✓" in notif.message
@@ -151,7 +151,7 @@ async def test_partial_startup_produces_warning(session_factory):
         assert notif.title == "⚠️ OEMS Startup Warning"
         assert notif.severity == NotificationSeverity.WARNING.value
         assert "Dashboard Engine   ✗" in notif.message
-        assert "EC2 Instance       ✓" in notif.message
+        assert "Server Machine     ✓" in notif.message
 
 
 @pytest.mark.asyncio
@@ -284,3 +284,96 @@ async def test_telegram_channel_adapter_is_active_delivery_path(session_factory)
         assert len(delivs) == 1
         assert delivs[0].status == DeliveryStatus.DELIVERED.value
         assert delivs[0].provider_message_id == "998877"
+
+
+@pytest.mark.asyncio
+async def test_repeated_connection_closed_calls_emit_single_broker_lost(session_factory):
+    """11: Multiple consecutive connection closed calls while offline emit exactly ONE BROKER_LOST."""
+    orchestrator = NotificationOrchestrator(session_factory)
+    listener = BrokerNotificationListener(orchestrator)
+    listener.bind_loop(asyncio.get_running_loop())
+
+    # Simulate 5 consecutive connectionClosed calls (e.g. failed reconnect retries while gateway is down)
+    for _ in range(5):
+        listener.on_connection_closed()
+        await asyncio.sleep(0.05)
+
+    async with session_factory() as session:
+        notifs = (
+            await session.execute(
+                select(NotificationLogModel).where(NotificationLogModel.event_type == "BROKER_LOST")
+            )
+        ).scalars().all()
+        # Exactly ONE logical notification must be generated
+        assert len(notifs) == 1
+        assert notifs[0].title == "IBKR Broker Connection Lost"
+
+
+@pytest.mark.asyncio
+async def test_normal_gateway_restart_does_not_trigger_flapping(session_factory):
+    """11, 12: A normal IB Gateway restart (disconnect + retries + reconnect) does NOT trigger false flapping."""
+    orchestrator = NotificationOrchestrator(session_factory)
+    listener = BrokerNotificationListener(orchestrator)
+    listener.bind_loop(asyncio.get_running_loop())
+
+    # 1. Gateway stops -> socket drops
+    listener.on_connection_closed()
+    await asyncio.sleep(0.05)
+
+    # 2. Multiple failed reconnect retries while gateway is booting
+    for _ in range(4):
+        listener.on_connection_closed()
+        await asyncio.sleep(0.05)
+
+    # 3. Gateway finishes booting -> socket reconnected
+    listener.on_connection_restored()
+    await asyncio.sleep(0.05)
+
+    async with session_factory() as session:
+        notifs = (
+            await session.execute(
+                select(NotificationLogModel).order_by(NotificationLogModel.id.asc())
+            )
+        ).scalars().all()
+
+        types = [n.event_type for n in notifs]
+        titles = [n.title for n in notifs]
+
+        assert types == ["BROKER_LOST", "BROKER_RECONNECTED"]
+        assert not any("FLAPPING" in t for t in titles)
+
+
+@pytest.mark.asyncio
+async def test_genuine_broker_oscillation_triggers_flapping(session_factory):
+    """12: Genuine rapid broker oscillations (3 full disconnect/reconnect cycles) DO trigger flapping."""
+    orchestrator = NotificationOrchestrator(session_factory)
+    listener = BrokerNotificationListener(orchestrator)
+    listener.bind_loop(asyncio.get_running_loop())
+
+    # Cycle 1: disconnect + reconnect
+    listener.on_connection_closed()
+    await asyncio.sleep(0.05)
+    listener.on_connection_restored()
+    await asyncio.sleep(0.05)
+
+    # Cycle 2: disconnect + reconnect
+    listener.on_connection_closed()
+    await asyncio.sleep(0.05)
+    listener.on_connection_restored()
+    await asyncio.sleep(0.05)
+
+    # Cycle 3: disconnect
+    listener.on_connection_closed()
+    await asyncio.sleep(0.05)
+
+    async with session_factory() as session:
+        notifs = (
+            await session.execute(
+                select(NotificationLogModel).order_by(NotificationLogModel.id.asc())
+            )
+        ).scalars().all()
+
+        titles = [n.title for n in notifs]
+        # At least one notification must be the flapping alert
+        assert any("FLAPPING" in t for t in titles)
+

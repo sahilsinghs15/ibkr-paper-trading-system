@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any
 
 from app.core.config import get_settings
@@ -31,6 +32,14 @@ class BrokerNotificationListener:
         self._client = client
         self._loop = loop
         self._startup_aggregator = startup_aggregator
+        self._lock = threading.Lock()
+        # Edge-triggered connection state: only transition on genuine state change
+        self._is_connected: bool = True
+
+    def mark_connected(self) -> None:
+        """Explicitly mark broker connection state as active."""
+        with self._lock:
+            self._is_connected = True
 
     def set_startup_aggregator(self, aggregator: Any | None) -> None:
         """Set or update startup aggregator reference."""
@@ -69,14 +78,30 @@ class BrokerNotificationListener:
 
     def on_connection_closed(self) -> Any:
         """Invoked by TWSClient reader thread when connection is lost."""
+        with self._lock:
+            if not self._is_connected:
+                logger.debug(
+                    "on_connection_closed received while already disconnected; suppressing duplicate BROKER_LOST"
+                )
+                return None
+            self._is_connected = False
         return self._dispatch(self._handle_connection_closed())
 
     def on_connection_restored(self) -> Any:
         """Invoked by TWSClient reconnect thread when socket is restored."""
+        with self._lock:
+            if self._is_connected:
+                logger.debug(
+                    "on_connection_restored received while already connected; suppressing duplicate"
+                )
+                return None
+            self._is_connected = True
         return self._dispatch(self._handle_connection_restored())
 
     def on_next_valid_id(self, order_id: int) -> Any:
         """Invoked by TWSClient when initial handshake finishes (nextValidId received)."""
+        with self._lock:
+            self._is_connected = True
         if self._startup_aggregator is not None and getattr(self._startup_aggregator, "is_window_active", False):
             logger.info(
                 "Startup window active; recording ib_login milestone instead of emitting separate alert (next_order_id=%s)",
