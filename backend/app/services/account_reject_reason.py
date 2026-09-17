@@ -36,9 +36,9 @@ _ACCOUNT_SEGMENT = re.compile(
 
 def parse_account_reject_segments(raw: str | None) -> dict[str, str]:
     """Return ``{account_label_upper: reason}`` for Account-prefixed segments."""
-    if not raw or not str(raw).strip():
+    if not raw or not raw.strip():
         return {}
-    text = str(raw).strip()
+    text = raw.strip()
     out: dict[str, str] = {}
     for match in _ACCOUNT_SEGMENT.finditer(text):
         label = match.group(1).strip().upper()
@@ -66,7 +66,7 @@ def scope_reject_reason_for_account(
     """
     if raw is None:
         return None
-    text = str(raw).strip()
+    text = raw.strip()
     if not text:
         return None
 
@@ -75,8 +75,8 @@ def scope_reject_reason_for_account(
         return text
 
     keys: list[str] = []
-    if ibkr_account and str(ibkr_account).strip():
-        keys.append(str(ibkr_account).strip().upper())
+    if ibkr_account and ibkr_account.strip():
+        keys.append(ibkr_account.strip().upper())
     if account_id is not None:
         keys.append(str(account_id))
 
@@ -93,9 +93,9 @@ def format_account_reject_reason(
     account_id: int | None = None,
 ) -> str | None:
     """Ensure a reject reason is tagged with ``Account {ibkr}:`` for merge/scope."""
-    if reason is None or not str(reason).strip():
+    if reason is None or not reason.strip():
         return None
-    text = str(reason).strip()
+    text = reason.strip()
     if has_account_prefixed_segments(text):
         return text
     label = (ibkr_account or "").strip() or (
@@ -111,9 +111,9 @@ def merge_account_reject_reasons(
     incoming: str | None,
 ) -> str | None:
     """Merge Account-prefixed reject segments; last write wins per account label."""
-    if not incoming or not str(incoming).strip():
-        return existing if existing and str(existing).strip() else None
-    incoming_text = str(incoming).strip()
+    if not incoming or not incoming.strip():
+        return existing if existing and existing.strip() else None
+    incoming_text = incoming.strip()
     incoming_segments = parse_account_reject_segments(incoming_text)
     existing_segments = parse_account_reject_segments(existing)
 
@@ -141,7 +141,7 @@ def is_generic_reject_reason(reason: str | None) -> bool:
     """True when the text is empty or the legacy worker/order_manager fallback."""
     if reason is None:
         return True
-    return str(reason).strip() == GENERIC_REJECT_FALLBACK
+    return reason.strip() == GENERIC_REJECT_FALLBACK
 
 
 def _is_basket_state_error(msg: str) -> bool:
@@ -162,7 +162,7 @@ def _first_order_broker_error(orders: list[OMSOrder] | None) -> str | None:
 
 def _outcome_reject_reason(outcome: AccountExecutionOutcome) -> str | None:
     if outcome.error:
-        return str(outcome.error).strip() or None
+        return outcome.error.strip() or None
     result = outcome.result
     if result is None:
         return None

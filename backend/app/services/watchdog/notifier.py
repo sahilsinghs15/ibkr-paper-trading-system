@@ -147,7 +147,7 @@ def _is_success_detail(text: str) -> bool:  # type: ignore[return]
         if "(" in t or "login" in t or "missing" in t or "not seen" in t or "degraded" in t:
             return False
         # e.g. "tcp 127.0.0.1:4002 open" -> success, but "tcp 127.0.0.1:4002 open (login marker not seen)" -> not success
-        return bool(t.count("open") == 1 and len(t) < 40)
+        return t.count("open") == 1 and len(t) < 40
 
 
 def _check_summary(service: ServiceName, event: NotificationEvent, health: HealthResult | None, port: int | None) -> str:

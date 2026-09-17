@@ -85,7 +85,7 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         host=settings.ibkr_host,
         port=settings.ibkr_port,
         client_id=settings.ibkr_client_id,
-        timeout=float(settings.ibkr_connection_timeout),
+        timeout=settings.ibkr_connection_timeout,
         rate_limiter=rate_limiter,
     )
     oms = OMSService(adapter=ibkr_adapter)
@@ -135,7 +135,7 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
         host=settings.ibkr_host,
         port=settings.ibkr_port,
         client_id=settings.ibkr_client_id,
-        timeout=float(settings.ibkr_connection_timeout),
+        timeout=settings.ibkr_connection_timeout,
     )
     startup_aggregator.record_component(
         "broker",
@@ -151,6 +151,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
             await order_manager.hydrate_live_pnl()
         except Exception:
             logger.exception("Failed to re-subscribe live P&L for open positions.")
+
+    if not testing:
         try:
             account_margin.start()
         except Exception:
@@ -170,7 +172,7 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     from app.services.worker_pool import ExecutionWorkerPool
 
     # Manual trading callback listener and recovery
-    manual_listener = ManualExecutionListener(AsyncSessionLocal, client)
+    manual_listener = ManualExecutionListener(AsyncSessionLocal, client, live_pnl=order_manager._live_pnl)
     manual_listener.bind_loop(asyncio.get_running_loop())
     client.register_listener(manual_listener)
     fastapi_app.state.manual_execution_listener = manual_listener
@@ -291,6 +293,13 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     if settings.notification_worker_enabled and not testing:
         await notification_worker.start()
 
+    from app.services.instance_credit.scheduler import InstanceCreditScheduler
+
+    instance_credit_scheduler = InstanceCreditScheduler(AsyncSessionLocal)
+    fastapi_app.state.instance_credit_scheduler = instance_credit_scheduler
+    if not testing:
+        await instance_credit_scheduler.start()
+
     if not testing:
         try:
             await critical_recovery.enqueue_all_critical()
@@ -320,6 +329,8 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
     yield
 
     logger.info("Shutting down paper-trading application...")
+    if hasattr(fastapi_app.state, "instance_credit_scheduler"):
+        await fastapi_app.state.instance_credit_scheduler.stop()
     if hasattr(fastapi_app.state, "loss_monitor"):
         await fastapi_app.state.loss_monitor.stop()
     if hasattr(fastapi_app.state, "trade_book_sync"):

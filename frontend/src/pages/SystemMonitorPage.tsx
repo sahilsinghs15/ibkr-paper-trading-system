@@ -297,6 +297,67 @@ export function SystemMonitorPage() {
         </div>
       )}
 
+      {/* Credit Usage Cards */}
+      {data?.credit ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
+          {/* Daily Instance Cost */}
+          <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '6px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div style={{ color: 'var(--muted)', fontSize: '12px', fontWeight: 600, letterSpacing: '0.04em' }}>DAILY INSTANCE COST</div>
+            <div style={{ fontSize: '26px', fontWeight: 700, fontFamily: 'var(--mono)' }}>
+              {data.credit.daily.amount_usd !== null && data.credit.daily.amount_usd !== undefined ? `$${Number(data.credit.daily.amount_usd).toFixed(2)}` : '—'}
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--muted)', fontFamily: 'var(--mono)' }}>
+              {data.credit.daily.status === 'ACTUAL' ? (
+                <span>Actual · {data.credit.daily.date ? new Date(data.credit.daily.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : ''}</span>
+              ) : data.credit.daily.status === 'ESTIMATE' ? (
+                <span>Estimated · {data.credit.daily.date ? new Date(data.credit.daily.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : ''} · source {data.credit.daily.source_date ? new Date(data.credit.daily.source_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '—'} actual</span>
+              ) : (
+                <span>{data.credit.daily.status} · {data.credit.daily.date || '—'}</span>
+              )}
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--dim)', fontFamily: 'var(--mono)', display: 'flex', gap: '12px' }}>
+              <span>EC2: {data.credit.daily.ec2_cost_usd !== null ? `$${Number(data.credit.daily.ec2_cost_usd).toFixed(2)}` : '—'}</span>
+              <span>Elastic IP: {data.credit.daily.public_ipv4_cost_usd !== null ? `$${Number(data.credit.daily.public_ipv4_cost_usd).toFixed(2)}` : '—'}</span>
+            </div>
+            {data.credit.daily.public_ipv4_cost_usd === null && data.credit.daily.status !== 'UNAVAILABLE' ? (
+              <div style={{ fontSize: '10px', color: 'var(--dim)' }}>EIP cost pending CE resource data (see logs)</div>
+            ) : null}
+            {data.credit.daily.fetched_at ? (
+              <div style={{ fontSize: '10px', color: 'var(--dim)' }}>Fetched {new Date(data.credit.daily.fetched_at).toLocaleString()}</div>
+            ) : null}
+          </div>
+
+          {/* This Month Credit Usage */}
+          <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '6px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div style={{ color: 'var(--muted)', fontSize: '12px', fontWeight: 600, letterSpacing: '0.04em' }}>THIS MONTH CREDIT USAGE</div>
+            <div style={{ fontSize: '26px', fontWeight: 700, fontFamily: 'var(--mono)' }}>
+              {data.credit.monthly.displayed_total_usd !== null && data.credit.monthly.displayed_total_usd !== undefined ? `$${Number(data.credit.monthly.displayed_total_usd).toFixed(2)}` : '—'}
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--muted)', fontFamily: 'var(--mono)' }}>
+              {(() => {
+                const s = new Date(data.credit.monthly.month_start)
+                const e = new Date(data.credit.monthly.month_end)
+                const fmt = (d: Date) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+                return `${fmt(s)} – ${fmt(e)}`
+              })()}
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--dim)', fontFamily: 'var(--mono)' }}>
+              {data.credit.monthly.actual_through ? (
+                <span>Actual through {new Date(data.credit.monthly.actual_through).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
+              ) : (
+                <span>No actual yet</span>
+              )}
+              {data.credit.monthly.current_estimate_usd !== null ? (
+                <span> · {new Date(data.credit.monthly.estimate_date || data.credit.monthly.month_end).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} estimated</span>
+              ) : null}
+            </div>
+            <div style={{ fontSize: '10px', color: data.credit.monthly.is_stale ? 'var(--amber)' : 'var(--dim)' }}>
+              {data.credit.monthly.status === 'STALE' ? 'Stale ledger' : data.credit.monthly.status === 'UNAVAILABLE' ? 'Unavailable' : `Actual $${Number(data.credit.monthly.actual_total_usd).toFixed(2)} + estimate $${data.credit.monthly.current_estimate_usd !== null ? Number(data.credit.monthly.current_estimate_usd).toFixed(2) : '—'}`}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {/* Top Cards: Hardware Resources */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
         {/* CPU */}

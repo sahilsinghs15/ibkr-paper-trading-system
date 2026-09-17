@@ -164,7 +164,7 @@ class ExecutionClaimRepository:
             )
         )
         res = await self._session.execute(stmt)
-        return int(res.scalar_one() or 0)
+        return res.scalar_one() or 0
 
     async def has_claimed(self, strategy_id: str, signal_id: str) -> bool:
         """True if a live CLAIMED barrier exists for this strategy/signal."""
@@ -174,7 +174,7 @@ class ExecutionClaimRepository:
             ExecutionClaimModel.state == CLAIM_STATE_CLAIMED,
         )
         res = await self._session.execute(stmt)
-        return int(res.scalar_one() or 0) > 0
+        return (res.scalar_one() or 0) > 0
 
     async def reconcile_stale_claims(self, stale_after_sec: float = 300.0) -> dict[str, int]:
         """Resolve claims left CLAIMED by a crashed attempt.

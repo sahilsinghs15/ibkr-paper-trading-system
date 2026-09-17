@@ -128,7 +128,7 @@ class ResourceMonitor:
         else:
             usage = psutil.cpu_percent(interval=None)
         # Normalize None
-        usage = float(usage) if usage is not None else 0.0
+        usage = usage if usage is not None else 0.0
         try:
             load1, load5, load15 = os.getloadavg()
         except Exception:  # noqa: BLE001

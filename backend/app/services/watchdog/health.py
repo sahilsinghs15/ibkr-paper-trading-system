@@ -31,7 +31,7 @@ def _postgres_host_port(settings: WatchdogSettings) -> tuple[str, int]:
         url = make_url(settings.database_url)
         host = url.host or settings.postgres_host
         port = url.port or settings.postgres_port
-        return host, int(port)
+        return host, port
     except Exception:  # noqa: BLE001
         return settings.postgres_host, settings.postgres_port
 

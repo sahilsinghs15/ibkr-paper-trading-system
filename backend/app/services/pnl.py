@@ -216,6 +216,42 @@ class LivePnlService:
             with self._persist_lock:
                 self._last_persisted_pnl[trade_key] = Decimal(str(row.live_pnl))
 
+    def hydrate_from_manual_position_rows(self, rows, *, catalog=None) -> None:
+        """Re-subscribe market data for OPEN manual positions. Same IBKR ticks, separate ledger."""
+        if self._client is None:
+            return
+        self._catalog = catalog
+        for row in rows:
+            signed = row.signed_qty
+            if signed is None or signed == 0:
+                continue
+            side = OrderSide.BUY if signed >= 0 else OrderSide.SELL
+            qty = abs(signed)
+            # Reuse Main Engine mark semantics: manual CFD uses STK underlying for ticks, not CFD conId.
+            # Keep leg.con_id None so _request_ticks resolves underlying via catalog/market_data_conid + reroute.
+            self.watch_open(
+                OrderIntent(
+                    signal_id=row.trade_id,
+                    strategy_id="manual",
+                    action=OrderAction.OPEN,
+                    account_id=row.account_id,
+                    legs=[
+                        OrderLeg(
+                            symbol=row.symbol,
+                            side=side,
+                            quantity=float(qty),
+                            price=Decimal(str(row.avg_cost)) if row.avg_cost is not None else Decimal(0),
+                            instrument_type=row.sec_type or "CFD",
+                            leg_index=0,
+                        )
+                    ],
+                )
+            )
+            trade_key = (row.account_id, row.trade_id)
+            with self._persist_lock:
+                # Manual live_pnl may be None initially
+                self._last_persisted_pnl[trade_key] = Decimal(str(row.live_pnl)) if getattr(row, "live_pnl", None) is not None else Decimal(0)
+
     def unwatch(self, account_id: int, trade_id: str) -> None:
         trade_key = (account_id, trade_id)
         self._legs.pop(trade_key, None)
@@ -645,6 +681,8 @@ class LivePnlService:
         )
 
         resolved = getattr(leg, "resolved", None)
+        # Proven Main Engine: CFD execution uses CFD contract, but MARK uses underlying STK contract.
+        # Never use CFD conId for market data — IBKR CFD has no native ticks (see docs/safety.md, frontend/ibkr-tws-price-streaming-guide).
         stk_con_id = stk_mark_con_id_from_resolved(resolved)
         if stk_con_id is None:
             stk_con_id = stk_mark_con_id_from_catalog(leg.symbol, self._catalog)
@@ -960,4 +998,14 @@ class LivePnlService:
         async with self._session_factory() as session, session.begin():
             await PositionRepository(session).update_live_pnl(
                 account_id=account_id, trade_id=trade_id, live_pnl=pnl
+            )
+            # Also persist for manual ledger — separate table, same trade_id namespace per ledger is isolated
+            from sqlalchemy import update
+
+            from app.db.models.manual_order import ManualPositionModel
+
+            await session.execute(
+                update(ManualPositionModel)
+                .where(ManualPositionModel.account_id == account_id, ManualPositionModel.trade_id == trade_id)
+                .values(live_pnl=pnl)
             )

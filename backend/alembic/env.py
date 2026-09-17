@@ -9,7 +9,10 @@ from alembic import context
 from app.core.config import get_settings
 from app.db.base import Base
 from app.db.models import AccountModel  # noqa: F401 — register ORM tables on metadata
+from app.db.models.broker_position import BrokerPositionModel  # noqa: F401
 from app.db.models.execution import ExecutionModel  # noqa: F401
+from app.db.models.kill_switch import KillSwitchOperationModel  # noqa: F401
+from app.db.models.kill_switch_snapshot import KillSwitchFlattenSnapshotModel  # noqa: F401
 from app.db.models.manual_order import (  # noqa: F401 — register manual trading tables for autogenerate
     ManualAuditEventModel,
     ManualExecutionModel,
@@ -17,6 +20,7 @@ from app.db.models.manual_order import (  # noqa: F401 — register manual tradi
     ManualOrderModel,
     ManualPositionModel,
 )
+from app.db.models.position import PositionModel  # noqa: F401
 from app.db.models.trade_execution import TradeExecutionModel  # noqa: F401
 
 # this is the Alembic Config object, which provides

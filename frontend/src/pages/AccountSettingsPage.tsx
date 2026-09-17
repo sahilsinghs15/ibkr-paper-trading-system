@@ -1250,8 +1250,13 @@ export function AccountSettingsPage() {
             ibkrAccount={account.ibkr_account}
             openCount={accountOpenPositionsCount}
             onClose={() => setIsKillSwitchOpen(false)}
-            onSuccess={(closedCount) => {
-              const text = `Kill Switch executed: squared off ${closedCount} position(s).`
+            onSuccess={(closedCount, scope) => {
+              const scopeLabel = scope === 'ACCOUNT_POSITION_FLATTEN' || scope === 'Flatten Account'
+                ? 'Flatten Account'
+                : scope === 'MANUAL_POSITION_FLATTEN' || scope === 'Flatten Manual Positions'
+                ? 'Flatten Manual Positions'
+                : 'Flatten Signal Positions'
+              const text = `Kill Switch executed (${scopeLabel}): squared off ${closedCount} position(s).`
               skipNextArmToastRef.current = true
               setMessage(text)
               setLocalError(null)

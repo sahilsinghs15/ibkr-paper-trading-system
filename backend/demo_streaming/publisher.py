@@ -14,9 +14,11 @@ from app.db.models.account import AccountModel
 from demo_streaming.snapshot import (
     classify_event,
     load_baskets,
+    load_manual_position_rows,
     load_orders,
     load_position_rows,
     load_signals,
+    manual_position_payload,
     pnl_fingerprint,
     position_leg_payloads,
     structural_fingerprint,
@@ -323,6 +325,13 @@ class PositionBridge:
                     timestamp=now,
                 )
             )
+        # Manual positions — isolated ledger, single-leg, source=manual
+        try:
+            manual_rows = await load_manual_position_rows(session)
+            for manual_pos, account in manual_rows:
+                payloads.append(manual_position_payload(manual_pos, account, timestamp=now))
+        except Exception:
+            logger.exception("Failed to load manual positions for demo stream")
         return payloads
 
 

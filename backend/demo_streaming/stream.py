@@ -23,7 +23,7 @@ class PositionStream:
         self._stream_maxlen = stream_maxlen
 
     async def ping(self) -> bool:
-        return bool(await self._redis.ping())
+        return await self._redis.ping()
 
     async def xadd(self, payload: dict[str, Any]) -> str:
         fields = {key: _encode(value) for key, value in payload.items()}

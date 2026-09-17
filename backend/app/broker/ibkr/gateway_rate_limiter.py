@@ -89,8 +89,8 @@ class GatewayRateLimiter:
         self._lock = threading.Lock()
         self._global_burst_cap = burst_cap
         self._normal_burst_cap = min(burst_cap, normal_msg_per_sec)
-        self._global_tokens = float(burst_cap)
-        self._normal_tokens = float(self._normal_burst_cap)
+        self._global_tokens = burst_cap
+        self._normal_tokens = self._normal_burst_cap
         self._last_refill = time.monotonic()
         self._cooldown_until = 0.0
         self._wait_seq = 0

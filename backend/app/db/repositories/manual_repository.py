@@ -152,7 +152,7 @@ class ManualOrderRepository:
             base = base.where(ManualOrderModel.symbol == symbol.strip().upper())
 
         count_stmt = select(func.count()).select_from(base.subquery())
-        total = int((await self._session.execute(count_stmt)).scalar_one())
+        total = (await self._session.execute(count_stmt)).scalar_one()
 
         stmt = base.order_by(ManualOrderModel.id.desc()).offset(offset).limit(limit)
         rows = list((await self._session.execute(stmt)).scalars().all())
@@ -176,7 +176,7 @@ class ManualOrderRepository:
     ) -> ManualOrderModel | None:
         stmt = (
             select(ManualOrderModel)
-            .where(ManualOrderModel.broker_order_id == str(broker_order_id))
+            .where(ManualOrderModel.broker_order_id == broker_order_id)
             .order_by(ManualOrderModel.id.desc())
         )
         if account_id is not None:
@@ -195,7 +195,7 @@ class ManualOrderRepository:
     ) -> ManualOrderModel | None:
         stmt = (
             select(ManualOrderModel)
-            .where(ManualOrderModel.perm_id == int(perm_id))
+            .where(ManualOrderModel.perm_id == perm_id)
             .order_by(ManualOrderModel.id.desc())
         )
         if account_id is not None:
@@ -456,11 +456,7 @@ class ManualPositionRepository:
         # Invariant: CLOSED trade_id must not be silently resurrected.
         # If row is CLOSED (status == "CLOSED" and qty == 0), reject reuse.
         if pos.status == "CLOSED" and current_qty == Decimal(0):
-            from app.db.repositories.manual_repository import (
-                ManualAuditRepository as _AuditRepo,
-            )
-
-            audit = _AuditRepo(self._session)
+            audit = ManualAuditRepository(self._session)
             await audit.record_event(
                 account_id=account_id,
                 action="MANUAL_POSITION_CLOSED_TRADE_ID_REUSE_REJECTED",
@@ -701,7 +697,7 @@ class ManualAuditRepository:
             base = base.where(ManualAuditEventModel.action == action.strip().upper())
 
         count_stmt = select(func.count()).select_from(base.subquery())
-        total = int((await self._session.execute(count_stmt)).scalar_one())
+        total = (await self._session.execute(count_stmt)).scalar_one()
 
         stmt = (
             base.order_by(ManualAuditEventModel.created_at.desc(), ManualAuditEventModel.id.desc())

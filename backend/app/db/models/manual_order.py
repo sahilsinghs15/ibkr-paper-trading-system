@@ -200,9 +200,12 @@ class ManualPositionModel(Base):
     realized_pnl: Mapped[Decimal] = mapped_column(
         Numeric(18, 8), nullable=False, default=Decimal(0)
     )
+    live_pnl: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 8), nullable=True
+    )
     status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="OPEN", index=True
-    )  # OPEN | CLOSED
+        String(32), nullable=False, default="OPEN", index=True
+    )  # OPEN | CLOSED | CLOSING | FLATTENED_PENDING_PRICE
     source: Mapped[str] = mapped_column(
         String(16), nullable=False, default="manual", server_default="manual"
     )

@@ -71,6 +71,38 @@ export interface SystemInfoResponse {
   instance_type: string
 }
 
+export interface DailyCreditUsage {
+  date: string | null
+  amount_usd: string | number | null
+  ec2_cost_usd: string | number | null
+  public_ipv4_cost_usd: string | number | null
+  status: 'ACTUAL' | 'ESTIMATE' | 'UNAVAILABLE' | 'STALE' | 'FAILED'
+  source: string | null
+  source_date: string | null
+  fetched_at: string | null
+}
+
+export interface MonthlyCreditUsage {
+  month_start: string
+  month_end: string
+  actual_through: string | null
+  actual_total_usd: string | number
+  current_estimate_usd: string | number | null
+  estimate_date: string | null
+  estimate_source_date: string | null
+  displayed_total_usd: string | number | null
+  is_stale: boolean
+  fetched_at: string | null
+  status: 'OK' | 'STALE' | 'UNAVAILABLE'
+}
+
+export interface CreditUsageResponse {
+  daily: DailyCreditUsage
+  monthly: MonthlyCreditUsage
+  instance_id: string | null
+  region: string | null
+}
+
 export interface SystemMonitorResponse {
   overall_status: 'HEALTHY' | 'DEGRADED' | 'CRITICAL' | 'MARKET_CLOSED'
   timestamp: string
@@ -87,6 +119,7 @@ export interface SystemMonitorResponse {
   }
   alerts: AlertItem[]
   top_processes: ProcessInfo[]
+  credit?: CreditUsageResponse | null
 }
 
 export type ServiceKey = 'ibgateway' | 'backend' | 'webhook' | 'watchdog'

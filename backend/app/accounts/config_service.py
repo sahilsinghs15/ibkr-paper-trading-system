@@ -588,7 +588,7 @@ class AccountStrategyConfigService:
             ExecutionRetryPolicy(
                 enabled=row.enabled,
                 square_off_after_sec=float(row.square_off_after_sec),
-                max_retries=int(row.max_retries),
+                max_retries=row.max_retries,
                 retry_interval_sec=float(row.retry_interval_sec),
                 retry_window_sec=float(row.retry_window_sec),
             ).validate()
@@ -695,14 +695,14 @@ class AccountStrategyConfigService:
     @staticmethod
     def margin_policy_from_row(row: MarginSettingsModel) -> MarginPolicy:
         return MarginPolicy(
-            check_enabled=bool(row.check_enabled),
-            gate_basis=str(row.gate_basis),
+            check_enabled=row.check_enabled,
+            gate_basis=row.gate_basis,
             min_free_buffer=Decimal(str(row.min_free_buffer)),
             min_free_pct_of_netliq=Decimal(str(row.min_free_pct_of_netliq)),
             comfort_ratio=Decimal(str(row.comfort_ratio)),
-            confirm_borderline=bool(row.confirm_borderline),
-            enforce_look_ahead=bool(row.enforce_look_ahead),
-            reject_on_stale_snapshot=bool(row.reject_on_stale_snapshot),
+            confirm_borderline=row.confirm_borderline,
+            enforce_look_ahead=row.enforce_look_ahead,
+            reject_on_stale_snapshot=row.reject_on_stale_snapshot,
             default_rate=Decimal(str(row.default_rate)),
             rate_safety_multiplier=Decimal(str(row.rate_safety_multiplier)),
         )

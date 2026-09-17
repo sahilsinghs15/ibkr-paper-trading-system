@@ -28,7 +28,7 @@ class RatePacer:
         self.interval = 1.0 / rate_limit_hz
         self.max_tokens = max(1.0, max_burst)
 
-        self._tokens = float(self.max_tokens)
+        self._tokens = self.max_tokens
         self._last_update = time.monotonic()
         self._lock = threading.Lock()
 
@@ -76,5 +76,5 @@ class RatePacer:
     def reset(self) -> None:
         """Reset the token bucket state."""
         with self._lock:
-            self._tokens = float(self.max_tokens)
+            self._tokens = self.max_tokens
             self._last_update = time.monotonic()

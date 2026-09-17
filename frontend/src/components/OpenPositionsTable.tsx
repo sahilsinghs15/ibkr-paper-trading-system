@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { fetchReconcilePositions } from '../api/reconcileApi'
 import { ClosePairModal } from './ClosePairModal'
+import { ManualPositionDetailModal } from './ManualPositionDetailModal'
 import { PairDetailModal } from './PairDetailModal'
 import { SortableTh } from './SortableTh'
 import { groupLegs, usePnlStore } from '../store/pnlStore'
@@ -91,8 +93,10 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
   const displayTz = usePnlStore((s) => s.displayTz)
   const cleanFilter = (accountFilter || '').trim().toUpperCase()
   const [historyOrder, setHistoryOrder] = useState<'RECENT' | 'OLDER'>('RECENT')
+  const navigate = useNavigate()
   const [pairToClose, setPairToClose] = useState<PairToClose | null>(null)
   const [pairToInspect, setPairToInspect] = useState<PairToInspect | null>(null)
+  const [manualToInspect, setManualToInspect] = useState<PairToInspect | null>(null)
   const [closeMessage, setCloseMessage] = useState<string | null>(null)
   const [reconcileDiffs, setReconcileDiffs] = useState<ReconcileDiffRow[]>([])
   const { sortKey, sortDir, handleSort } = useTableSortState()
@@ -272,13 +276,22 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                 const tk = `${head.account_id}|${head.trade_id}`
                 const rowSno = idx + 1
 
+                const isManual = String(head.source || '').toLowerCase() === 'manual'
                 const openDetail = () => {
                   if (head.account_id === undefined || head.account_id === null || !head.trade_id) return
-                  setPairToInspect({
-                    accountId: Number(head.account_id),
-                    tradeId: head.trade_id,
-                    legs,
-                  })
+                  if (isManual) {
+                    setManualToInspect({
+                      accountId: Number(head.account_id),
+                      tradeId: head.trade_id,
+                      legs,
+                    })
+                  } else {
+                    setPairToInspect({
+                      accountId: Number(head.account_id),
+                      tradeId: head.trade_id,
+                      legs,
+                    })
+                  }
                 }
 
                 const rogueTypes = getPairRogueTypes(legs)
@@ -319,11 +332,17 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                       </div>
                     </td>
 
-                    {/* 4. PAIR */}
+                    {/* 4. PAIR — single-leg manual shows single badge */}
                     <td className="pair-cell">
                       <div className="pair-badges">
-                        <span className="badge-pair leg-a">{legA.symbol || '—'}</span>
-                        <span className="badge-pair leg-b">{legB.symbol || '—'}</span>
+                        {head.source === 'manual' && legs.length === 1 ? (
+                          <span className="badge-pair leg-a">{legA.symbol || '—'}</span>
+                        ) : (
+                          <>
+                            <span className="badge-pair leg-a">{legA.symbol || '—'}</span>
+                            <span className="badge-pair leg-b">{legB.symbol || '—'}</span>
+                          </>
+                        )}
                         {head.source === 'manual' ? (
                           <span
                             className="source-badge manual"
@@ -338,7 +357,7 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                               fontWeight: 600,
                             }}
                           >
-                            Manual Trading
+                            Manual
                           </span>
                         ) : (
                           <span
@@ -354,7 +373,7 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                               fontWeight: 500,
                             }}
                           >
-                            Engine Trading
+                            Engine
                           </span>
                         )}
                       </div>
@@ -381,31 +400,50 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                       )}
                     </td>
 
-                    {/* 5. EXPOSURE BALANCE */}
+                    {/* 5. EXPOSURE BALANCE — manual single-leg shows one line, no imbalance */}
                     <td className="exposure-cell">
-                      <div className="exposure-box">
-                        <div className="exp-legs">
-                          <div className="exp-leg leg-a">
-                            <span className="sym">{legA.symbol}</span>
-                            <div className="track">
-                              <div className="fill" style={{ width: `${Math.max(15, legAPct)}%` }} />
+                      {head.source === 'manual' && legs.length === 1 ? (
+                        <div className="exposure-box">
+                          <div className="exp-legs">
+                            <div className="exp-leg leg-a">
+                              <span className="sym">{legA.symbol}</span>
+                              <div className="track">
+                                <div className="fill" style={{ width: '100%' }} />
+                              </div>
+                              <span className="val">
+                                {fmtQty(legAQty)} / {fmtCompactCurrency(legANotional)}
+                              </span>
                             </div>
-                            <span className="val">
-                              {fmtQty(legAQty)} / {fmtCompactCurrency(legANotional)}
-                            </span>
                           </div>
-                          <div className="exp-leg leg-b">
-                            <span className="sym">{legB.symbol}</span>
-                            <div className="track">
-                              <div className="fill" style={{ width: `${Math.max(15, legBPct)}%` }} />
-                            </div>
-                            <span className="val">
-                              {fmtQty(legBQty)} / {fmtCompactCurrency(legBNotional)}
-                            </span>
-                          </div>
+                          <span className="badge" style={{ fontSize: '9px', background: '#3b2d54', color: '#d8b4fe', border: '1px solid #7c3aed' }}>
+                            {legAQty > 0 ? 'LONG' : 'SHORT'} {fmtQty(Math.abs(legAQty))}
+                          </span>
                         </div>
-                        <span className="imbalance-pill">{imbalanceText}</span>
-                      </div>
+                      ) : (
+                        <div className="exposure-box">
+                          <div className="exp-legs">
+                            <div className="exp-leg leg-a">
+                              <span className="sym">{legA.symbol}</span>
+                              <div className="track">
+                                <div className="fill" style={{ width: `${Math.max(15, legAPct)}%` }} />
+                              </div>
+                              <span className="val">
+                                {fmtQty(legAQty)} / {fmtCompactCurrency(legANotional)}
+                              </span>
+                            </div>
+                            <div className="exp-leg leg-b">
+                              <span className="sym">{legB.symbol}</span>
+                              <div className="track">
+                                <div className="fill" style={{ width: `${Math.max(15, legBPct)}%` }} />
+                              </div>
+                              <span className="val">
+                                {fmtQty(legBQty)} / {fmtCompactCurrency(legBNotional)}
+                              </span>
+                            </div>
+                          </div>
+                          <span className="imbalance-pill">{imbalanceText}</span>
+                        </div>
+                      )}
                     </td>
 
                     {/* 6. PL */}
@@ -433,26 +471,46 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
                       </div>
                     </td>
 
-                    {/* 8. ACTION */}
+                    {/* 8. ACTION — manual uses Manual Trading, not Close Pair */}
                     <td className="right action-cell">
-                      <button
-                        type="button"
-                        className="btn danger"
-                        style={{ padding: '4px 8px', fontSize: '10px', fontWeight: 600 }}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          if (head.account_id === undefined || head.account_id === null || !head.trade_id) return
-                          setPairToClose({
-                            accountId: Number(head.account_id),
-                            ibkrAccount: head.ibkr_account || cleanFilter || 'Unknown',
-                            tradeId: head.trade_id,
-                            legASymbol: legA.symbol || '—',
-                            legBSymbol: legs.length > 1 ? legB.symbol : null,
-                          })
-                        }}
-                      >
-                        Close Pair
-                      </button>
+                      {String(head.source || '').toLowerCase() === 'manual' ? (
+                        <button
+                          type="button"
+                          className="btn"
+                          style={{ padding: '4px 8px', fontSize: '10px', fontWeight: 600, background: '#3b2d54', color: '#d8b4fe', border: '1px solid #7c3aed' }}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (!head.trade_id || head.account_id == null) return
+                            const qty = Math.abs(num(head.quantity ?? (head as unknown as { filled_quantity?: unknown }).filled_quantity) || 0) || Math.abs(num(legA.quantity) || 0)
+                            const side = String(head.side || legA.side || '').toUpperCase() === 'BUY' ? 'SELL' : 'BUY'
+                            const sym = head.symbol || legA.symbol || ''
+                            const ibkr = head.ibkr_account || cleanFilter || ''
+                            // Navigate to Manual Trading with close prefill (symbol/side/qty)
+                            navigate(`/account/${ibkr}/manual-trade?close_symbol=${encodeURIComponent(sym)}&close_side=${side}&close_qty=${qty}&close_trade_id=${encodeURIComponent(String(head.trade_id))}`)
+                          }}
+                        >
+                          Close
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn danger"
+                          style={{ padding: '4px 8px', fontSize: '10px', fontWeight: 600 }}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (head.account_id === undefined || head.account_id === null || !head.trade_id) return
+                            setPairToClose({
+                              accountId: Number(head.account_id),
+                              ibkrAccount: head.ibkr_account || cleanFilter || 'Unknown',
+                              tradeId: head.trade_id,
+                              legASymbol: legA.symbol || '—',
+                              legBSymbol: legs.length > 1 ? legB.symbol : null,
+                            })
+                          }}
+                        >
+                          Close Pair
+                        </button>
+                      )}
                     </td>
                   </tr>
                 )
@@ -487,6 +545,20 @@ export function OpenPositionsTable({ accountFilter }: { accountFilter?: string }
           tradeId={pairToInspect.tradeId}
           legs={pairToInspect.legs}
           onClose={() => setPairToInspect(null)}
+        />
+      ) : null}
+      {manualToInspect ? (
+        <ManualPositionDetailModal
+          isOpen={!!manualToInspect}
+          accountId={manualToInspect.accountId}
+          tradeId={manualToInspect.tradeId}
+          legs={manualToInspect.legs}
+          onClose={() => setManualToInspect(null)}
+          onCloseViaManual={(tradeId, symbol, qty, side) => {
+            const head = manualToInspect.legs[0]
+            const ibkr = head?.ibkr_account || cleanFilter || ''
+            navigate(`/account/${ibkr}/manual-trade?close_symbol=${encodeURIComponent(symbol)}&close_side=${side}&close_qty=${qty}&close_trade_id=${encodeURIComponent(tradeId)}`)
+          }}
         />
       ) : null}
     </section>

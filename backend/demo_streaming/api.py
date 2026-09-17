@@ -47,10 +47,12 @@ from demo_streaming.snapshot import (
     load_baskets,
     load_closed_position_rows,
     load_ingest_jobs,
+    load_manual_position_rows,
     load_orders,
     load_pair_detail,
     load_position_rows,
     load_signals,
+    manual_position_payload,
     position_leg_payloads,
 )
 from demo_streaming.stream import PositionStream
@@ -181,8 +183,10 @@ def create_demo_app(
         now = datetime.now(UTC)
         async with session_factory() as session:
             rows = await load_position_rows(session)
+            manual_rows = await load_manual_position_rows(session)
             if user.role == "user":
                 rows = [r for r in rows if r[0].account_id == user.ibkr_account_id]
+                manual_rows = [r for r in manual_rows if r[0].account_id == user.ibkr_account_id]
             keys = {
                 (position.account_id, position.trade_id) for position, _account in rows
             }
@@ -202,6 +206,11 @@ def create_demo_app(
                     timestamp=now,
                 )
             )
+        # Manual positions — isolated ledger, single-leg, source=manual
+        for manual_pos, account in manual_rows:
+            if getattr(manual_pos, "status", "OPEN") != "OPEN":
+                continue
+            payload.append(manual_position_payload(manual_pos, account, timestamp=now))
         return JSONResponse({"positions": payload, "market_data_status": "UNAVAILABLE"})
 
     @app.get("/demo/positions/{account_id}/{trade_id}")

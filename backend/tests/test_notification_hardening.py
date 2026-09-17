@@ -452,11 +452,12 @@ async def test_controlled_cutover_elimination_of_double_alerts(session_factory):
         session_factory=session_factory,
         client=mock_client,
         notification_orchestrator=orchestrator,
+        rogue_confirm_sweeps=1,
     )
 
     with patch("app.services.position_reconciler.send_canonical_telegram", new_callable=AsyncMock) as legacy_mock:
         await reconciler.run_once()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.15)
 
         # Legacy direct Telegram call was NOT made because orchestrator was active!
         assert legacy_mock.await_count == 0

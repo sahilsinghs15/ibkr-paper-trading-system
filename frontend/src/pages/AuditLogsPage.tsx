@@ -9,6 +9,7 @@ const CATEGORIES = [
   { id: 'risk', label: 'Risk & RMS' },
   { id: 'reconcile', label: 'Reconciliation' },
   { id: 'positions', label: 'Positions' },
+  { id: 'config', label: 'Config & Settings' },
   { id: 'system', label: 'System Services' },
 ]
 
@@ -269,12 +270,26 @@ export function AuditLogsPage() {
 
                 let summary = String(d.message || d.title || d.action || d.reason || '')
                 if (!summary) {
-                  if (row.kind === 'POSITION_RECONCILE') {
+                  if (row.kind === 'ENGINE_POSITION_FLATTEN') {
+                    summary = `Close All Engine Positions (${d.initial_position_count ?? 0} positions)`
+                  } else if (row.kind === 'ACCOUNT_POSITION_FLATTEN') {
+                    summary = `Close All Positions of IBKR Account ${d.ibkr_account ?? ''}`
+                  } else if (row.kind === 'KILL_SWITCH_CLEARED') {
+                    summary = `Kill Switch Cleared by ${d.cleared_by ?? 'operator'}`
+                  } else if (row.kind === 'ACCOUNT_SETTINGS_CHANGED') {
+                    summary = `Settings Changed: ${d.setting ?? ''}`
+                  } else if (row.kind === 'FIX_BUTTON_CLICKED') {
+                    summary = `FIX Clicked: Align ${d.symbol ?? ''} broker line to ledger`
+                  } else if (row.kind === 'POSITION_RECONCILE') {
                     summary = `run #${d.run_id ?? ''} — ${d.match_count ?? 0} matches, ${d.drift_count ?? 0} drift, ${d.ghost_count ?? 0} ghost`
                   } else {
                     summary = Object.keys(d).length > 0 ? Object.entries(d).slice(0, 3).map(([k, v]) => `${k}=${String(v)}`).join(', ') : '—'
                   }
                 }
+
+                const isKillSwitch = row.kind.includes('FLATTEN') || row.kind.includes('KILL_SWITCH')
+                const isSettings = row.kind.includes('SETTINGS')
+                const isFix = row.kind.includes('FIX')
 
                 return (
                   <tr
@@ -299,7 +314,13 @@ export function AuditLogsPage() {
                     </td>
                     <td style={{ fontWeight: 600 }}>
                       <span style={{
-                        color: row.kind.includes('DETECTED') || row.kind.includes('STOPPED') || row.kind.includes('REJECT') || row.kind.includes('ERROR')
+                        color: isKillSwitch
+                          ? '#f59e0b'
+                          : isSettings
+                          ? '#38bdf8'
+                          : isFix
+                          ? '#a855f7'
+                          : row.kind.includes('DETECTED') || row.kind.includes('STOPPED') || row.kind.includes('REJECT') || row.kind.includes('ERROR')
                           ? '#ff6b6b'
                           : row.kind.includes('RESOLVED') || row.kind.includes('STARTED') || row.kind.includes('FILLED')
                           ? 'var(--green)'
@@ -458,18 +479,106 @@ export function AuditLogsPage() {
                 <span style={{ color: 'var(--dim)', fontWeight: 600 }}>Kind:</span>
                 <span className="mono" style={{ fontWeight: 700 }}>{selectedLog.kind}</span>
 
+                {selectedLog.detail?.account_id != null && (
+                  <>
+                    <span style={{ color: 'var(--dim)', fontWeight: 600 }}>Account ID:</span>
+                    <span className="mono">{String(selectedLog.detail.account_id)}</span>
+                  </>
+                )}
+
+                {Boolean(selectedLog.detail?.ibkr_account) && (
+                  <>
+                    <span style={{ color: 'var(--dim)', fontWeight: 600 }}>IBKR Account:</span>
+                    <span className="mono">{String(selectedLog.detail.ibkr_account)}</span>
+                  </>
+                )}
+
+                {Boolean(selectedLog.detail?.source) && (
+                  <>
+                    <span style={{ color: 'var(--dim)', fontWeight: 600 }}>Source:</span>
+                    <span className="mono">{String(selectedLog.detail.source)}</span>
+                  </>
+                )}
+
+                {Boolean(selectedLog.detail?.operator) && (
+                  <>
+                    <span style={{ color: 'var(--dim)', fontWeight: 600 }}>Operator:</span>
+                    <span className="mono">{String(selectedLog.detail.operator)}</span>
+                  </>
+                )}
+
                 <span style={{ color: 'var(--dim)', fontWeight: 600 }}>Signal ID:</span>
                 <span className="mono">{selectedLog.signal_id ?? '—'}</span>
 
                 <span style={{ color: 'var(--dim)', fontWeight: 600 }}>Order ID:</span>
                 <span className="mono">{selectedLog.order_id ?? '—'}</span>
 
-                <span style={{ color: 'var(--dim)', fontWeight: 600 }}>Basket ID:</span>
-                <span className="mono">{selectedLog.basket_id ?? '—'}</span>
-
                 <span style={{ color: 'var(--dim)', fontWeight: 600 }}>Idempotency:</span>
                 <span className="mono" style={{ wordBreak: 'break-all' }}>{selectedLog.idempotency_key ?? '—'}</span>
               </div>
+
+              {/* Action-Specific Structured Views */}
+              {Boolean(selectedLog.kind === 'ACCOUNT_SETTINGS_CHANGED' && selectedLog.detail?.changes) && (
+                <div style={{ marginBottom: '16px', background: 'var(--panel-2)', border: '1px solid var(--line)', borderRadius: '6px', padding: '12px' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink)', marginBottom: '8px' }}>
+                    Modified Settings
+                  </div>
+                  <table style={{ width: '100%', fontSize: '11px', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ color: 'var(--dim)', borderBottom: '1px solid var(--line)', textAlign: 'left' }}>
+                        <th style={{ padding: '4px' }}>Setting</th>
+                        <th style={{ padding: '4px' }}>Previous</th>
+                        <th style={{ padding: '4px' }}>New</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(selectedLog.detail.changes as Record<string, { previous?: string; new?: string }>).map(([stKey, vals]) => (
+                        <tr key={stKey} style={{ borderBottom: '1px solid var(--line)' }}>
+                          <td className="mono" style={{ padding: '4px', color: '#38bdf8' }}>{stKey}</td>
+                          <td className="mono" style={{ padding: '4px', color: 'var(--dim)' }}>{vals?.previous ?? 'null'}</td>
+                          <td className="mono" style={{ padding: '4px', color: 'var(--green)', fontWeight: 600 }}>{vals?.new ?? 'null'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {(selectedLog.kind === 'ENGINE_POSITION_FLATTEN' || selectedLog.kind === 'ACCOUNT_POSITION_FLATTEN' || selectedLog.kind === 'KILL_SWITCH_CLEARED') && (
+                <div style={{ marginBottom: '16px', background: 'var(--panel-2)', border: '1px solid var(--line)', borderRadius: '6px', padding: '12px' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: '#f59e0b', marginBottom: '6px' }}>
+                    Kill Switch Details
+                  </div>
+                  <div style={{ fontSize: '11px', display: 'grid', gridTemplateColumns: '100px 1fr', gap: '4px' }}>
+                    <span style={{ color: 'var(--dim)' }}>Scope:</span>
+                    <strong style={{ color: 'var(--ink)' }}>{String(selectedLog.detail?.scope ?? selectedLog.kind)}</strong>
+                    <span style={{ color: 'var(--dim)' }}>Operation ID:</span>
+                    <span className="mono">{String(selectedLog.detail?.operation_id ?? '—')}</span>
+                    {selectedLog.detail?.initial_position_count != null && (
+                      <>
+                        <span style={{ color: 'var(--dim)' }}>Positions:</span>
+                        <span>{String(selectedLog.detail.initial_position_count)}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {selectedLog.kind === 'FIX_BUTTON_CLICKED' && (
+                <div style={{ marginBottom: '16px', background: 'var(--panel-2)', border: '1px solid var(--line)', borderRadius: '6px', padding: '12px' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: '#a855f7', marginBottom: '6px' }}>
+                    Fix Action Target
+                  </div>
+                  <div style={{ fontSize: '11px', display: 'grid', gridTemplateColumns: '100px 1fr', gap: '4px' }}>
+                    <span style={{ color: 'var(--dim)' }}>Target:</span>
+                    <strong style={{ color: 'var(--ink)' }}>{String(selectedLog.detail?.target ?? 'POSITION_MISMATCH')}</strong>
+                    <span style={{ color: 'var(--dim)' }}>Symbol:</span>
+                    <span className="mono">{String(selectedLog.detail?.symbol ?? '—')}</span>
+                    <span style={{ color: 'var(--dim)' }}>ConId:</span>
+                    <span className="mono">{String(selectedLog.detail?.con_id ?? '—')}</span>
+                  </div>
+                </div>
+              )}
 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                 <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--ink)' }}>Payload / Detail JSON</span>

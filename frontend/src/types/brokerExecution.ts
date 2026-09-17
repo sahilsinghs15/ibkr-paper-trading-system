@@ -19,6 +19,7 @@ export interface BrokerExecutionLine {
   commission_currency: string | null
   realized_pnl: number | null
   order_status: string | null
+  source?: 'engine' | 'manual' | string
 }
 
 export interface BrokerExecutionsResponse {
@@ -69,6 +70,7 @@ export interface OrderBookRow {
   created_at: string | null
   updated_at: string | null
   filled_at: string | null
+  source?: 'engine' | 'manual' | string
 }
 
 export interface OrderBookResponse {

@@ -36,7 +36,7 @@ class PositionSnapshotCollector:
         if abs(qty) <= 1e-9:
             return
         line = BrokerPositionLine(
-            ibkr_account=str(account),
+            ibkr_account=account,
             symbol=str(getattr(contract, "symbol", "") or ""),
             sec_type=str(getattr(contract, "secType", "") or ""),
             con_id=int(getattr(contract, "conId", 0) or 0),

@@ -59,7 +59,7 @@ async def _create_test_database_if_missing() -> None:
 def _run_alembic_upgrade() -> None:
     backend_dir = Path(__file__).resolve().parents[1]
     result = subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        [sys.executable, "-m", "alembic", "upgrade", "heads"],
         cwd=backend_dir,
         env={**os.environ},
         capture_output=True,
@@ -68,7 +68,7 @@ def _run_alembic_upgrade() -> None:
     )
     if result.returncode != 0:
         raise RuntimeError(
-            f"alembic upgrade head failed (exit {result.returncode}):\n"
+            f"alembic upgrade heads failed (exit {result.returncode}):\n"
             f"{result.stdout}\n{result.stderr}"
         )
 

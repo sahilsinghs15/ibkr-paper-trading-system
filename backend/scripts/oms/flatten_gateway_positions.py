@@ -21,11 +21,13 @@ Paper ports only ({7497, 4002}) unless --allow-live is also passed.
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 _backend_dir = str(Path(__file__).resolve().parents[2])
 if _backend_dir not in sys.path:
@@ -38,6 +40,8 @@ from app.broker.ibkr.tws_client import TWSClient
 from app.core.config import get_settings
 from app.core.logger import setup_logging
 from app.oms.retry_policy import PAPER_IBKR_PORTS
+
+logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = frozenset(
     {"Filled", "Cancelled", "ApiCancelled", "Inactive", "Rejected"}
@@ -119,11 +123,11 @@ class FlattenListener:
             row = self.submitted.get(orderId)
             if row is None:
                 return
-            row.status = str(status)
+            row.status = status
             row.filled = float(filled or 0)
             row.remaining = float(remaining or 0)
             if avgFillPrice:
-                row.avg_price = float(avgFillPrice)
+                row.avg_price = avgFillPrice
 
     def on_error(self, reqId: int, errorCode: int, errorString: str) -> None:
         if 2000 <= errorCode < 3000:
@@ -250,80 +254,83 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> int:
-    args = parse_args()
-    setup_logging(level="INFO", filename_prefix="flatten-gateway")
-    settings = get_settings()
-    host = args.host or settings.ibkr_host
-    port = int(args.port or settings.ibkr_port)
-    account = args.account.strip() or None
-    sec_type = None if str(args.sec_type).upper() == "ALL" else str(args.sec_type).upper()
+def run_flatten_gateway_positions(
+    *,
+    host: str | None = None,
+    port: int | None = None,
+    client_id: int = 99,
+    account: str | None = None,
+    sec_type: str | None = "CFD",
+    pace: float = 0.2,
+    fill_timeout: float = 90.0,
+    apply: bool = True,
+    allow_live: bool = False,
+) -> dict[str, Any]:
+    """Execute account-level position flatten against IB Gateway / TWS.
 
-    if args.client_id == settings.ibkr_client_id:
-        print(
-            f"Refusing client id {args.client_id}: that is the trading app socket "
-            f"(IBKR_CLIENT_ID). Use --client-id 99.",
-            file=sys.stderr,
-        )
-        return 2
-    if port not in PAPER_IBKR_PORTS and not args.allow_live:
-        print(
-            f"Refusing port {port}: not a paper port {sorted(PAPER_IBKR_PORTS)}. "
-            "Pass --allow-live if you really intend this.",
-            file=sys.stderr,
-        )
-        return 2
-    if args.pace < 0:
-        print("--pace must be >= 0", file=sys.stderr)
-        return 2
+    Returns summary dict with count, status, and fill details.
+    """
+    settings = get_settings()
+    target_host = host or settings.ibkr_host
+    target_port = port if port is not None else settings.ibkr_port
+    target_account = account.strip() if account and account.strip() else None
+    target_sec_type = (
+        None if sec_type and sec_type.upper() == "ALL" else (sec_type.upper() if sec_type else None)
+    )
+
+    if client_id == settings.ibkr_client_id:
+        msg = f"Refusing client id {client_id}: that is the trading app socket (IBKR_CLIENT_ID). Use client id 99."
+        return {"success": False, "submitted": 0, "filled": 0, "rejected": 0, "pending": 0, "positions_found": 0, "error": msg}
+    if target_port not in PAPER_IBKR_PORTS and not allow_live:
+        msg = f"Refusing port {target_port}: not a paper port {sorted(PAPER_IBKR_PORTS)}. Pass allow_live=True if intended."
+        return {"success": False, "submitted": 0, "filled": 0, "rejected": 0, "pending": 0, "positions_found": 0, "error": msg}
+    if pace < 0:
+        return {"success": False, "submitted": 0, "filled": 0, "rejected": 0, "pending": 0, "positions_found": 0, "error": "pace must be >= 0"}
 
     listener = FlattenListener()
     client = TWSClient()
     client.register_listener(listener)
     connected = client.connect_and_start(
-        host=host,
-        port=port,
-        client_id=args.client_id,
-        timeout=float(settings.ibkr_connection_timeout),
+        host=target_host,
+        port=target_port,
+        client_id=client_id,
+        timeout=settings.ibkr_connection_timeout,
     )
     if not connected:
-        print("FAILURE: could not connect to TWS/Gateway", file=sys.stderr)
-        return 1
+        return {"success": False, "submitted": 0, "filled": 0, "rejected": 0, "pending": 0, "positions_found": 0, "error": "Could not connect to TWS/Gateway"}
 
-    print(f"Connected {host}:{port} client_id={args.client_id}")
     try:
         client.reqPositions()
         if not listener.wait_positions(timeout=15.0):
-            print("WARNING: positionEnd timed out; using whatever arrived", file=sys.stderr)
+            pass
         try:
             client.cancelPositions()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("cancelPositions exception ignored: %s", exc)
         time.sleep(0.2)
 
-        plan = _filter_positions(listener.positions, account=account, sec_type=sec_type)
-        _print_plan(plan)
+        plan = _filter_positions(listener.positions, account=target_account, sec_type=target_sec_type)
         if not plan:
-            print("Nothing to flatten.")
-            return 0
+            return {"success": True, "submitted": 0, "filled": 0, "rejected": 0, "pending": 0, "positions_found": 0, "error": None}
+
         missing_conid = [p.symbol for p in plan if not p.con_id]
         if missing_conid:
-            print(
-                f"Refusing to submit: missing conId for {missing_conid}",
-                file=sys.stderr,
-            )
-            return 1
+            return {
+                "success": False,
+                "submitted": 0,
+                "filled": 0,
+                "rejected": 0,
+                "pending": 0,
+                "positions_found": len(plan),
+                "error": f"Missing conId for {missing_conid}",
+            }
 
-        if not args.apply:
-            print(
-                "\nDry run only. No orders submitted. Re-run with --apply to close these."
-            )
-            return 0
+        if not apply:
+            return {"success": True, "submitted": 0, "filled": 0, "rejected": 0, "pending": 0, "positions_found": len(plan), "error": "Dry run only"}
 
-        print(f"\nSubmitting {len(plan)} MARKET closes at pace={args.pace:.3f}s ...")
         last_submit = 0.0
         for pos in plan:
-            wait = args.pace - (time.monotonic() - last_submit)
+            wait = pace - (time.monotonic() - last_submit)
             if wait > 0:
                 time.sleep(wait)
             tws_id = _next_order_id(client)
@@ -331,34 +338,52 @@ def main() -> int:
             listener.submitted[tws_id] = close
             client.placeOrder(tws_id, _build_close_contract(pos), _build_close_order(pos))
             last_submit = time.monotonic()
-            print(
-                f"  placed tws_id={tws_id} {pos.account} {pos.close_action} "
-                f"{pos.close_qty:g} {pos.symbol} {pos.sec_type} conId={pos.con_id}"
-            )
 
-        deadline = time.monotonic() + args.fill_timeout
+        deadline = time.monotonic() + fill_timeout
         while time.monotonic() < deadline and not listener.all_terminal():
             time.sleep(0.25)
 
-        print("\nResults:")
         filled = rejected = pending = 0
         for row in listener.submitted.values():
-            flag = row.status
             if row.status == "Filled":
                 filled += 1
             elif row.status in {"Rejected", "Inactive", "Cancelled", "ApiCancelled"}:
                 rejected += 1
             else:
                 pending += 1
-            extra = f" error={row.error}" if row.error else ""
-            print(
-                f"  tws_id={row.tws_id} {row.position.symbol} {row.status} "
-                f"filled={row.filled:g} rem={row.remaining:g} avg={row.avg_price:g}{extra}"
-            )
-        print(f"\nSummary: submitted={len(plan)} filled={filled} rejected/inactive={rejected} pending={pending}")
-        return 0 if pending == 0 and rejected == 0 else 1
+
+        is_ok = (pending == 0 and rejected == 0)
+        return {
+            "success": is_ok,
+            "submitted": len(plan),
+            "filled": filled,
+            "rejected": rejected,
+            "pending": pending,
+            "positions_found": len(plan),
+            "error": None if is_ok else f"Flatten incomplete: filled={filled}, rejected={rejected}, pending={pending}",
+        }
     finally:
         client.disconnect_clean()
+
+
+def main() -> int:
+    args = parse_args()
+    setup_logging(level="INFO", filename_prefix="flatten-gateway")
+    res = run_flatten_gateway_positions(
+        host=args.host,
+        port=args.port,
+        client_id=args.client_id,
+        account=args.account,
+        sec_type=args.sec_type,
+        pace=args.pace,
+        fill_timeout=args.fill_timeout,
+        apply=args.apply,
+        allow_live=args.allow_live,
+    )
+    if res["error"]:
+        print(f"Result error: {res['error']}", file=sys.stderr)
+    print(f"Summary: positions={res['positions_found']} submitted={res['submitted']} filled={res['filled']} rejected={res['rejected']} pending={res['pending']}")
+    return 0 if res["success"] else 1
 
 
 if __name__ == "__main__":

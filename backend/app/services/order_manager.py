@@ -21,6 +21,9 @@ from app.core.config import get_settings
 from app.core.identifiers import normalize_symbol
 from app.core.logger import bind_log_context, get_log_context
 from app.db.models.account import AccountModel, PerSymbolLimitModel
+from app.db.models.manual_order import (
+    ManualPositionModel,  # for live-PnL hydration reuse
+)
 from app.db.repositories.event_repository import EventRepository
 from app.db.repositories.execution_claim_repository import (
     ExecutionClaimRepository,
@@ -169,7 +172,9 @@ class OrderManager:
         )
         self._model_blue_sizer = self._model_blue_strategy._sizer
         self._model_blue_trades = self._model_blue_strategy._trades
-        self.registry = strategy_registry or StrategyRegistry([self._model_blue_strategy])
+        self.registry = strategy_registry or StrategyRegistry(
+            [self._model_blue_strategy]
+        )
         self._live_pnl = None
         self._baskets: BasketCoordinator | None = None
         self._exposure_locks: dict[object, asyncio.Lock] = {}
@@ -194,7 +199,9 @@ class OrderManager:
                 cancel_timeout=30.0,
                 rms_engine=self._rms_engine,
                 rms_context=self._rms_context,
-                paper_retries_allowed=paper_retry_ports_allowed(self._settings.ibkr_port),
+                paper_retries_allowed=paper_retry_ports_allowed(
+                    self._settings.ibkr_port
+                ),
             )
 
     async def hydrate_runtime_from_db(self) -> None:
@@ -226,8 +233,10 @@ class OrderManager:
                 session_factory=self._session_factory, order_manager=self
             )
             await ks.resume_incomplete_flattens()
+            # Also retry UNRESOLVED finalizations that may have missed execution arrival
+            await ks.retry_unresolved_operations()
         except Exception:
-            logger.exception("Failed to resume incomplete kill-switch flatten workers.")
+            logger.exception("Failed to resume/ retry kill-switch flatten workers.")
 
         async with self._session_factory() as session:
             processed = await SignalRepository(session).list_processed_open_keys()
@@ -242,9 +251,9 @@ class OrderManager:
             if self._account_router is not None:
                 by_strategy: dict[str, list[str]] = {}
                 for strategy_id, signal_id in processed:
-                    by_strategy.setdefault(normalize_strategy_id(strategy_id), []).append(
-                        signal_id
-                    )
+                    by_strategy.setdefault(
+                        normalize_strategy_id(strategy_id), []
+                    ).append(signal_id)
                 for strategy_id, signal_ids in by_strategy.items():
                     for ctx in await self._account_router.resolve(strategy_id):
                         for signal_id in signal_ids:
@@ -264,7 +273,9 @@ class OrderManager:
                     self._rms_context.open_positions.get(pos_key, 0) + 1
                 )
                 self._add_row_exposure(row)
-            limits = (await session.execute(select(PerSymbolLimitModel))).scalars().all()
+            limits = (
+                (await session.execute(select(PerSymbolLimitModel))).scalars().all()
+            )
             accounts = (await session.execute(select(AccountModel))).scalars().all()
             self._apply_symbol_limits(limits, accounts)
         if self._baskets is not None:
@@ -275,7 +286,9 @@ class OrderManager:
             try:
                 await self._baskets.recover_incomplete_baskets()
             except Exception:
-                logger.exception("Failed to recover incomplete baskets from PostgreSQL.")
+                logger.exception(
+                    "Failed to recover incomplete baskets from PostgreSQL."
+                )
         await self.reload_execution_policy()
         await self.reload_margin_settings()
         await self.reload_margin_rates()
@@ -295,21 +308,25 @@ class OrderManager:
         """Replace in-memory per-symbol money limits and default symbol limits from DB rows."""
         self._rms_context.per_symbol_limits.clear()
         for limit in limits:
-            self._rms_context.per_symbol_limits[(limit.account_id, normalize_symbol(limit.symbol))] = (
-                limit.money_limit
-            )
+            self._rms_context.per_symbol_limits[
+                (limit.account_id, normalize_symbol(limit.symbol))
+            ] = limit.money_limit
         if accounts is not None:
             self._rms_context.default_symbol_limits.clear()
             for acc in accounts:
                 if acc.default_symbol_limit is not None:
-                    self._rms_context.default_symbol_limits[acc.id] = acc.default_symbol_limit
+                    self._rms_context.default_symbol_limits[acc.id] = (
+                        acc.default_symbol_limit
+                    )
 
     async def reload_rms_limits(self) -> None:
         """Reload per-symbol money limits and default symbol limits from Postgres into RMSContext."""
         if self._session_factory is None:
             return
         async with self._session_factory() as session:
-            limits = (await session.execute(select(PerSymbolLimitModel))).scalars().all()
+            limits = (
+                (await session.execute(select(PerSymbolLimitModel))).scalars().all()
+            )
             accounts = (await session.execute(select(AccountModel))).scalars().all()
             self._apply_symbol_limits(limits, accounts)
         logger.info(
@@ -332,7 +349,7 @@ class OrderManager:
                     policy = ExecutionRetryPolicy(
                         enabled=row.enabled,
                         square_off_after_sec=float(row.square_off_after_sec),
-                        max_retries=int(row.max_retries),
+                        max_retries=row.max_retries,
                         retry_interval_sec=float(row.retry_interval_sec),
                         retry_window_sec=float(row.retry_window_sec),
                     )
@@ -384,9 +401,28 @@ class OrderManager:
         )
 
     async def after_reconcile_sweep(self) -> None:
-        """Reload rates then re-seed model_value_used from open positions."""
+        """Reload rates then re-seed model_value_used from open positions.
+
+        Also retries any UNRESOLVED kill-switch operations whose executions
+        arrived after Tier2 (eventual-convergence guarantee). This is the
+        durable mechanism that wakes the system after T10: execution row
+        arrives after Tier2 returns, next 30s reconciler sweep calls this
+        and re-runs Tier2 via KillSwitchService.retry_unresolved_operations.
+        """
         await self.reload_margin_rates()
         await self._reseed_model_value_used()
+        # Eventual ledger convergence for kill-switch: retry UNRESOLVED ops
+        # whose close fills may now be persistently available.
+        if self._session_factory is not None:
+            try:
+                from app.services.kill_switch import KillSwitchService
+
+                ks = KillSwitchService(
+                    session_factory=self._session_factory, order_manager=self
+                )
+                await ks.retry_unresolved_operations()
+            except Exception:
+                logger.exception("Kill switch UNRESOLVED retry after reconcile sweep failed")
 
     async def _reseed_model_value_used(self) -> None:
         """Rebuild model_value_used from open positions under the exposure locks."""
@@ -410,9 +446,9 @@ class OrderManager:
             used: dict[tuple[int, str], Decimal] = {}
             for row in open_rows:
                 value_key = (row.account_id, row.strategy_id)
-                used[value_key] = used.get(value_key, Decimal(0)) + position_row_market_value(
-                    row
-                )
+                used[value_key] = used.get(
+                    value_key, Decimal(0)
+                ) + position_row_market_value(row)
             self._rms_context.model_value_used = used
         finally:
             for lock in reversed(acquired):
@@ -547,8 +583,8 @@ class OrderManager:
         if band is not MarginBand.BORDERLINE:
             return
 
-        adapter = getattr(self._oms, "_adapter", None)
-        probe = getattr(adapter, "probe_margin", None)
+        adapter: Any = getattr(self._oms, "_adapter", None)
+        probe: Any = getattr(adapter, "probe_margin", None)
         if not callable(probe):
             raise ValueError("MARGIN_PROBE_UNKNOWN: no whatIf adapter available.")  # noqa: TRY004
 
@@ -561,7 +597,7 @@ class OrderManager:
                     f"MARGIN_PROBE_UNKNOWN: {leg.symbol} has no resolved contract."
                 )
             contract = ibkr_contract_from_resolved(leg.resolved)
-            result = await probe(  # pyrefly: ignore[not-async]
+            result: Any = await probe(  # pyrefly: ignore[not-async]  # pyright: ignore[reportGeneralTypeIssues]
                 contract=contract,
                 side=leg.side.value,
                 quantity=leg.quantity,
@@ -616,9 +652,24 @@ class OrderManager:
         """
         if self._live_pnl is None or self._session_factory is None:
             return
-        async with self._session_factory() as session:
+        live_pnl = self._live_pnl
+        session_factory = self._session_factory
+        # Load both ledgers — Engine and Manual share the same LivePnlService ticks
+        async with session_factory() as session:
             open_rows = await PositionRepository(session).list_open()
-        if not open_rows:
+        manual_rows: list[ManualPositionModel] = []
+        try:
+            async with session_factory() as session:
+                result = await session.execute(
+                    select(ManualPositionModel).where(
+                        ManualPositionModel.status == "OPEN"
+                    )
+                )
+                manual_rows = list(result.scalars().all())
+        except Exception:
+            manual_rows = []
+            logger.exception("Failed to load manual positions for live PnL hydration")
+        if not open_rows and not manual_rows:
             return
         catalog = getattr(self, "_instrument_catalog", None)
         if catalog is not None:
@@ -629,8 +680,14 @@ class OrderManager:
             symbols: list[str] = []
             for position in open_rows:
                 for symbol, raw_type in (
-                    (position.leg_a_symbol, getattr(position, "leg_a_instrument_type", None)),
-                    (position.leg_b_symbol, getattr(position, "leg_b_instrument_type", None)),
+                    (
+                        position.leg_a_symbol,
+                        getattr(position, "leg_a_instrument_type", None),
+                    ),
+                    (
+                        position.leg_b_symbol,
+                        getattr(position, "leg_b_instrument_type", None),
+                    ),
                 ):
                     if not symbol:
                         continue
@@ -639,25 +696,65 @@ class OrderManager:
                             symbols.append(symbol)
                     except InstrumentResolutionError:
                         continue
+            # Manual ledger CFD symbols use the same CFD discovery / underlying STK mapping
+            for m in manual_rows:
+                try:
+                    if ibkr_sec_type(
+                        getattr(m, "sec_type", None) or "CFD"
+                    ) == "CFD" and getattr(m, "symbol", None):
+                        symbols.append(m.symbol)
+                except InstrumentResolutionError:
+                    continue
             if symbols:
                 await ensure_cfd_instruments_for_symbols(
                     symbols=symbols,
                     client=self._tws_client(),
-                    session_factory=self._session_factory,
+                    session_factory=session_factory,
                     catalog=catalog,
                 )
         snapshot = await self._instrument_snapshot_for_legs(
             [
-                (row.leg_a_symbol, getattr(row, "leg_a_instrument_type", None))
+                (
+                    row.leg_a_symbol if row.leg_a_symbol else None,
+                    (
+                        row.leg_a_instrument_type
+                        if getattr(row, "leg_a_instrument_type", None)
+                        else None
+                    ),
+                )
                 for row in open_rows
             ]
             + [
-                (row.leg_b_symbol, getattr(row, "leg_b_instrument_type", None))
+                (
+                    row.leg_b_symbol if row.leg_b_symbol else None,
+                    (
+                        row.leg_b_instrument_type
+                        if getattr(row, "leg_b_instrument_type", None)
+                        else None
+                    ),
+                )
                 for row in open_rows
                 if row.leg_b_symbol
             ]
+            + [
+                (
+                    m.symbol if getattr(m, "symbol", None) else None,
+                    m.sec_type if getattr(m, "sec_type", None) else None,
+                )
+                for m in manual_rows
+                if getattr(m, "symbol", None)
+            ]
         )
-        self._live_pnl.hydrate_from_position_rows(open_rows, catalog=snapshot)
+        if open_rows:
+            live_pnl.hydrate_from_position_rows(open_rows, catalog=snapshot)
+        # Manual positions — same IBKR ticks, separate ledger, same LivePnlService reuse
+        if manual_rows:
+            try:
+                live_pnl.hydrate_from_manual_position_rows(
+                    manual_rows, catalog=snapshot
+                )
+            except Exception:
+                logger.exception("Failed to hydrate manual live PnL")
 
     def _add_row_exposure(self, row) -> None:
         from app.core.identifiers import normalize_strategy_id
@@ -667,7 +764,11 @@ class OrderManager:
         self._rms_context.symbol_exposures[key_a] = (
             self._rms_context.symbol_exposures.get(key_a, Decimal(0)) + a_notional
         )
-        if row.leg_b_symbol and row.leg_b_signed_qty is not None and row.leg_b_entry_mark is not None:
+        if (
+            row.leg_b_symbol
+            and row.leg_b_signed_qty is not None
+            and row.leg_b_entry_mark is not None
+        ):
             b_notional = abs(row.leg_b_signed_qty) * row.leg_b_entry_mark
             key_b = (row.account_id, normalize_symbol(row.leg_b_symbol))
             self._rms_context.symbol_exposures[key_b] = (
@@ -732,7 +833,8 @@ class OrderManager:
         return bool(
             getattr(signal, "raw_payload", None)
             and isinstance(signal.raw_payload, dict)
-            and signal.raw_payload.get("intent_mode") == ExecutionIntentMode.EMERGENCY_FLATTEN.value
+            and signal.raw_payload.get("intent_mode")
+            == ExecutionIntentMode.EMERGENCY_FLATTEN.value
         )
 
     async def process_signal_execution(
@@ -787,7 +889,14 @@ class OrderManager:
                         signal_id=signal.signal_id,  # type: ignore[arg-type]
                         strategy_id=signal.strategy_id or self._strategy_id,
                         action=OrderAction.OPEN,
-                        legs=[OrderLeg(symbol="DEFERRED", side=OrderSide.BUY, quantity=0, price=Decimal(0))],
+                        legs=[
+                            OrderLeg(
+                                symbol="DEFERRED",
+                                side=OrderSide.BUY,
+                                quantity=0,
+                                price=Decimal(0),
+                            )
+                        ],
                     )
                     dummy_order = OO(
                         internal_order_id=f"DEFERRED-{signal.signal_id}",
@@ -820,20 +929,26 @@ class OrderManager:
                 # fail closed: treat as deferred? Better to reject
                 raise
 
-        inbound_row = await self._persist_inbound_signal(signal, status=SIGNAL_STATUS_NEW)
+        inbound_row = await self._persist_inbound_signal(
+            signal, status=SIGNAL_STATUS_NEW
+        )
         try:
             res = await self._process_signal_execution_inner(
                 signal, inbound_row, account_scope=account_scope
             )
             if res is not None and getattr(res, "all_rejected", False):
                 rej_msg = collect_fanout_reject_reasons(res)
-                existing_reason = getattr(inbound_row, "reject_reason", None) if inbound_row else None
+                existing_reason = (
+                    getattr(inbound_row, "reject_reason", None) if inbound_row else None
+                )
                 if existing_reason is None and self._session_factory is not None:
                     persist_id = persist_signal_id_for(signal)
                     if persist_id:
                         try:
                             async with self._session_factory() as session:
-                                prior = await SignalRepository(session).get_by_strategy_signal(
+                                prior = await SignalRepository(
+                                    session
+                                ).get_by_strategy_signal(
                                     signal.strategy_id or self._strategy_id,
                                     persist_id,
                                 )
@@ -847,7 +962,9 @@ class OrderManager:
                 await self._persist_inbound_signal(
                     signal,
                     status=SIGNAL_STATUS_REJECTED,
-                    reject_reason=merge_account_reject_reasons(existing_reason, rej_msg),
+                    reject_reason=merge_account_reject_reasons(
+                        existing_reason, rej_msg
+                    ),
                 )
             return res
         except Exception as exc:
@@ -855,13 +972,13 @@ class OrderManager:
                 None,
                 str(exc),
                 account_id=int(account_scope)
-                if account_scope and str(account_scope).strip().isdigit()
+                if account_scope and account_scope.strip().isdigit()
                 else None,
             )
             # Prefer IBKR account label when scope is a numeric account_id.
             if (
                 account_scope
-                and str(account_scope).strip().isdigit()
+                and account_scope.strip().isdigit()
                 and self._session_factory is not None
             ):
                 try:
@@ -869,8 +986,7 @@ class OrderManager:
                         acc = (
                             await session.execute(
                                 select(AccountModel).where(
-                                    AccountModel.id == int(str(account_scope).strip())
-                                )
+                                    AccountModel.id == str(account_scope).strip()                            )
                             )
                         ).scalar_one_or_none()
                         if acc is not None:
@@ -901,7 +1017,9 @@ class OrderManager:
             await self._persist_inbound_signal(
                 signal,
                 status=SIGNAL_STATUS_REJECTED,
-                reject_reason=merge_account_reject_reasons(existing_reason, scoped_reason),
+                reject_reason=merge_account_reject_reasons(
+                    existing_reason, scoped_reason
+                ),
             )
             raise
 
@@ -916,7 +1034,9 @@ class OrderManager:
                     f"UNKNOWN_STRATEGY: '{strat_id}' is not registered; "
                     "refusing IBKR submission without a strategy handler."
                 )
-            result = await self._process_legacy_single_name(signal, inbound_pk=_row_pk(inbound_row))
+            result = await self._process_legacy_single_name(
+                signal, inbound_pk=_row_pk(inbound_row)
+            )
             return FanoutExecutionResult.from_single(result)
 
         if self._account_router is None:
@@ -1007,7 +1127,9 @@ class OrderManager:
             from app.services.kill_switch import is_account_kill_switch_active
             from app.services.trading_pause import is_account_trading_paused
 
-            if intent.action == OrderAction.OPEN and is_account_kill_switch_active(ctx.account_id):
+            if intent.action == OrderAction.OPEN and is_account_kill_switch_active(
+                ctx.account_id
+            ):
                 logger.warning(
                     "KILL_SWITCH_ACTIVE: Blocking NEW open signal for account_id=%s ibkr=%s signal_id=%s",
                     ctx.account_id,
@@ -1018,7 +1140,9 @@ class OrderManager:
                     f"KILL_SWITCH_ACTIVE: Account {ctx.account_id} is in active emergency kill-switch mode."
                 )
 
-            if intent.action == OrderAction.OPEN and is_account_trading_paused(ctx.account_id):
+            if intent.action == OrderAction.OPEN and is_account_trading_paused(
+                ctx.account_id
+            ):
                 logger.warning(
                     "TRADING_PAUSED: Blocking NEW open signal for account_id=%s ibkr=%s signal_id=%s",
                     ctx.account_id,
@@ -1069,7 +1193,11 @@ class OrderManager:
         raise_if_single = len(contexts) == 1
         tasks = [
             self._fanout_single_account(
-                signal, handler, ctx, inbound_pk=inbound_pk, raise_if_single=raise_if_single
+                signal,
+                handler,
+                ctx,
+                inbound_pk=inbound_pk,
+                raise_if_single=raise_if_single,
             )
             for ctx in contexts
         ]
@@ -1111,21 +1239,33 @@ class OrderManager:
         target_price = signal.price if signal.price is not None else self._price
 
         if not target_symbol or target_symbol == "N/A":
-            raise ValueError("MISSING_SYMBOL: Signal payload does not specify a valid symbol/ticker.")
+            raise ValueError(
+                "MISSING_SYMBOL: Signal payload does not specify a valid symbol/ticker."
+            )
 
-        action_val = str(signal.action or "OPEN").upper()
+        action_val = (signal.action or "OPEN").upper()
         order_action = OrderAction.CLOSE if action_val == "CLOSE" else OrderAction.OPEN
 
         if signal.side:
-            side_str = str(signal.side).upper()
-            rms_side = RMSOrderSide.SELL if side_str in ("SELL", "SHORT") else RMSOrderSide.BUY
+            side_str = signal.side.upper()
+            rms_side = (
+                RMSOrderSide.SELL if side_str in ("SELL", "SHORT") else RMSOrderSide.BUY
+            )
         else:
-            rms_side = RMSOrderSide.BUY if signal.signal_type == SignalType.BUY else RMSOrderSide.SELL
+            rms_side = (
+                RMSOrderSide.BUY
+                if signal.signal_type == SignalType.BUY
+                else RMSOrderSide.SELL
+            )
 
         if order_action == OrderAction.OPEN:
-            target_qty = signal.quantity if signal.quantity is not None else self._quantity
+            target_qty = (
+                signal.quantity if signal.quantity is not None else self._quantity
+            )
             if target_qty is None or target_qty <= 0:
-                raise ValueError("MISSING_QUANTITY: Signal payload does not specify order quantity.")
+                raise ValueError(
+                    "MISSING_QUANTITY: Signal payload does not specify order quantity."
+                )
         else:
             open_count = self._rms_context.open_positions.get(target_symbol, 0)
             if open_count <= 0:
@@ -1134,9 +1274,15 @@ class OrderManager:
                 raise ValueError(
                     f"NO_OPEN_POSITION: Cannot close position for '{target_symbol}': No active open position found in memory."
                 )
-            target_qty = signal.quantity if (signal.quantity is not None and signal.quantity > 0) else open_count
+            target_qty = (
+                signal.quantity
+                if (signal.quantity is not None and signal.quantity > 0)
+                else open_count
+            )
 
-        if self._order_type.upper() == "LIMIT" and (target_price is None or target_price <= 0):
+        if self._order_type.upper() == "LIMIT" and (
+            target_price is None or target_price <= 0
+        ):
             raise ValueError(
                 "MISSING_LIMIT_PRICE: Limit price is required and must be positive for LIMIT order type."
             )
@@ -1180,7 +1326,11 @@ class OrderManager:
         if self._session_factory is None:
             return None
         dedupe_key = execution_dedupe_key(intent)
-        action = intent.action.value if hasattr(intent.action, "value") else str(intent.action)
+        action = (
+            intent.action.value
+            if hasattr(intent.action, "value")
+            else str(intent.action)
+        )
         async with self._session_factory() as session, session.begin():
             await ExecutionClaimRepository(session).acquire(
                 dedupe_key=dedupe_key,
@@ -1203,7 +1353,9 @@ class OrderManager:
         except Exception:
             logger.exception("Failed to seal execution claim %s", dedupe_key)
 
-    async def _resolve_failed_claim(self, dedupe_key: str | None, intent: OrderIntent) -> None:
+    async def _resolve_failed_claim(
+        self, dedupe_key: str | None, intent: OrderIntent
+    ) -> None:
         """Decide a claim's fate after a failed submission.
 
         Release only when the order ledger proves nothing was emitted. If any
@@ -1260,9 +1412,7 @@ class OrderManager:
         Keys are acquired in a stable sorted order so two intents with
         overlapping symbol sets cannot deadlock against each other.
         """
-        keys: list[object] = [
-            exposure_key(intent, leg.symbol) for leg in intent.legs
-        ]
+        keys: list[object] = [exposure_key(intent, leg.symbol) for leg in intent.legs]
         if intent.ibkr_account:
             keys.append(("__margin__", intent.ibkr_account.strip().upper()))
         value_key = model_value_key(intent)
@@ -1329,9 +1479,7 @@ class OrderManager:
             evaluated_intent, signal_pk=inbound_pk
         )
         evaluated_intent = self._annotate_margin_metadata(evaluated_intent)
-        await self._confirm_margin_if_borderline(
-            evaluated_intent, signal_pk=inbound_pk
-        )
+        await self._confirm_margin_if_borderline(evaluated_intent, signal_pk=inbound_pk)
 
         if self._oms is None:
             raise RuntimeError("No OMSService configured on OrderManager.")
@@ -1383,7 +1531,9 @@ class OrderManager:
 
                 clock2 = get_session_clock()
                 if clock2.projected_in_red_zone(datetime.now(UTC)):
-                    raise ValueError("RED_ZONE_DEFERRED: projected in red zone, refusing claim")
+                    raise ValueError(
+                        "RED_ZONE_DEFERRED: projected in red zone, refusing claim"
+                    )
             except ValueError:
                 raise
             except Exception:
@@ -1417,12 +1567,16 @@ class OrderManager:
             )
             if basket_res.state in (BasketState.OPEN, BasketState.CLOSED):
                 await self._seal_execution_claim(dedupe_key)
-                filled_intent = self._intent_with_fills(evaluated_intent, basket_res.orders)
+                filled_intent = self._intent_with_fills(
+                    evaluated_intent, basket_res.orders
+                )
                 await self._update_runtime_state(
                     filled_intent, exec_res, handler=handler, sized_from=signal
                 )
                 if self._live_pnl is not None and intent.account_id is not None:
-                    trade_key = evaluated_intent.signal_id.split(":CLOSE")[0].split(":UNWIND:")[0]
+                    trade_key = evaluated_intent.signal_id.split(":CLOSE")[0].split(
+                        ":UNWIND:"
+                    )[0]
                     if basket_res.state == BasketState.OPEN:
                         self._live_pnl.watch_open(filled_intent)
                     else:
@@ -1440,7 +1594,9 @@ class OrderManager:
             exec_res = await self._oms.submit_intent(
                 intent=evaluated_intent,
                 rms_result=rms_result,
-                limit_price=None if use_leg_prices else (signal.price if signal.price is not None else self._price),
+                limit_price=None
+                if use_leg_prices
+                else (signal.price if signal.price is not None else self._price),
                 order_type=self._order_type,
             )
             if not exec_res.success:
@@ -1450,11 +1606,17 @@ class OrderManager:
             raise
 
         await self._seal_execution_claim(dedupe_key)
-        await self._update_runtime_state(evaluated_intent, exec_res, handler=handler, sized_from=signal)
+        await self._update_runtime_state(
+            evaluated_intent, exec_res, handler=handler, sized_from=signal
+        )
         return exec_res
 
     async def _audit_rms(
-        self, intent: OrderIntent, rms_result: RMSResult, *, signal_pk: int | None = None
+        self,
+        intent: OrderIntent,
+        rms_result: RMSResult,
+        *,
+        signal_pk: int | None = None,
     ) -> None:
         if self._session_factory is None:
             return
@@ -1463,7 +1625,9 @@ class OrderManager:
             "ibkr_account": intent.ibkr_account,
             "trade_id": intent.signal_id,
             "strategy_id": intent.strategy_id,
-            "action": intent.action.value if hasattr(intent.action, "value") else str(intent.action),
+            "action": intent.action.value
+            if hasattr(intent.action, "value")
+            else str(intent.action),
             "outcome": rms_result.outcome.value,
             "reason": rms_result.reason,
             "check_number": rms_result.check_number,
@@ -1492,7 +1656,9 @@ class OrderManager:
         except Exception:
             logger.exception("Failed to persist RMS audit event")
 
-    def _intent_with_fills(self, intent: OrderIntent, orders: list[OMSOrder]) -> OrderIntent:
+    def _intent_with_fills(
+        self, intent: OrderIntent, orders: list[OMSOrder]
+    ) -> OrderIntent:
         filled_legs = []
         for index, leg in enumerate(intent.legs):
             matching = [
@@ -1503,7 +1669,7 @@ class OrderManager:
             if not matching:
                 filled_legs.append(leg)
                 continue
-            qty = sum(float(o.filled_quantity) for o in matching)
+            qty = sum(o.filled_quantity for o in matching)
             weighted_num = Decimal(0)
             weighted_den = Decimal(0)
             px = leg.price
@@ -1644,7 +1810,9 @@ class OrderManager:
                 self._rms_context.open_positions[pos_key] = new_strat_qty
                 for leg in intent.legs:
                     exp_key = exposure_key(intent, leg.symbol)
-                    remaining = self._rms_context.symbol_exposures.get(exp_key, Decimal(0))
+                    remaining = self._rms_context.symbol_exposures.get(
+                        exp_key, Decimal(0)
+                    )
                     delta = leg.effective_notional
                     if remaining - delta < 0:
                         logger.warning(
@@ -1674,7 +1842,9 @@ class OrderManager:
                     )
                 self._commit_margin(intent, opening=False)
             await handler.after_submit(sized_from, intent, exec_res)
-            await self._persist_inbound_signal(sized_from, status=SIGNAL_STATUS_PROCESSED)
+            await self._persist_inbound_signal(
+                sized_from, status=SIGNAL_STATUS_PROCESSED
+            )
             return
 
         target_symbol = intent.legs[0].symbol
@@ -1688,8 +1858,12 @@ class OrderManager:
                 self._rms_context.open_positions.get(strat_id, 0) + target_qty
             )
         elif intent.action == OrderAction.CLOSE:
-            new_sym_qty = max(0, self._rms_context.open_positions.get(target_symbol, 0) - target_qty)
-            new_strat_qty = max(0, self._rms_context.open_positions.get(strat_id, 0) - target_qty)
+            new_sym_qty = max(
+                0, self._rms_context.open_positions.get(target_symbol, 0) - target_qty
+            )
+            new_strat_qty = max(
+                0, self._rms_context.open_positions.get(strat_id, 0) - target_qty
+            )
             self._rms_context.open_positions[target_symbol] = new_sym_qty
             self._rms_context.open_positions[strat_id] = new_strat_qty
 
@@ -1714,8 +1888,10 @@ class OrderManager:
                     status=status,
                     reject_reason=reject_reason,
                 )
-                action = str(signal.action or "").upper()
-                received_kind = "CLOSE_SIGNAL_RECEIVED" if action == "CLOSE" else "SIGNAL_RECEIVED"
+                action = (signal.action or "").upper()
+                received_kind = (
+                    "CLOSE_SIGNAL_RECEIVED" if action == "CLOSE" else "SIGNAL_RECEIVED"
+                )
                 await EventRepository(session).append(
                     process="webhook",
                     kind=received_kind,
@@ -1772,11 +1948,16 @@ class OrderManager:
         if existing is None:
             self._rms_context.strategy_configs[strategy_id] = StrategyConfig(
                 strategy_id=strategy_id,
-                max_open_positions=max_open_positions if max_open_positions is not None else 100,
+                max_open_positions=max_open_positions
+                if max_open_positions is not None
+                else 100,
                 money_limit_per_symbol=None,
             )
             return
-        if max_open_positions is not None and existing.max_open_positions != max_open_positions:
+        if (
+            max_open_positions is not None
+            and existing.max_open_positions != max_open_positions
+        ):
             self._rms_context.strategy_configs[strategy_id] = StrategyConfig(
                 strategy_id=strategy_id,
                 max_open_positions=max_open_positions,
@@ -1877,7 +2058,9 @@ class OrderManager:
                 rows.extend(await catalog.find_all_async(symbol, sec))
             else:
                 rows.extend(list(catalog.find_all(symbol, sec)))
-        return SnapshotInstrumentCatalog(rows) if rows else SnapshotInstrumentCatalog([])
+        return (
+            SnapshotInstrumentCatalog(rows) if rows else SnapshotInstrumentCatalog([])
+        )
 
     async def _audit_instruments_resolved(
         self, intent: OrderIntent, *, signal_pk: int | None
@@ -1889,9 +2072,10 @@ class OrderManager:
         legs = []
         for index, leg in enumerate(intent.legs):
             resolved = getattr(leg, "resolved", None)
-            requested = getattr(
-                resolved, "requested_instrument_type", None
-            ) or leg.instrument_type
+            requested = (
+                getattr(resolved, "requested_instrument_type", None)
+                or leg.instrument_type
+            )
             resolved_type = getattr(resolved, "sec_type", None)
             _exec, override = execution_instrument_type(requested)
             logger.info(

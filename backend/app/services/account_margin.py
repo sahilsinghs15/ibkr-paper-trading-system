@@ -206,9 +206,9 @@ class AccountMarginService:
             self._cancel_summary(req_id)
 
     def snapshot_for(self, ibkr_account: str | None) -> AccountMarginSnapshot | None:
-        if not ibkr_account or not str(ibkr_account).strip():
+        if not ibkr_account or not ibkr_account.strip():
             return None
-        key = str(ibkr_account).strip().upper()
+        key = ibkr_account.strip().upper()
         with self._lock:
             return self._snapshots.get(key)
 
@@ -219,7 +219,7 @@ class AccountMarginService:
     def on_account_summary(
         self, reqId: int, account: str, tag: str, value: str, currency: str
     ) -> None:
-        key = str(account or "").strip().upper()
+        key = (account or "").strip().upper()
         if not key:
             return
         published: AccountMarginSnapshot | None = None
@@ -231,11 +231,11 @@ class AccountMarginService:
             )
             if currency:
                 row["currency"] = currency
-            row["tags"][str(tag)] = value
+            row["tags"][tag] = value
             existing = self._snapshots.get(key)
             if existing is not None:
                 now = datetime.now(UTC)
-                merged = self._merge_tag(existing, str(tag), value, currency, now)
+                merged = self._merge_tag(existing, tag, value, currency, now)
                 self._snapshots[key] = merged
                 published = merged
         if published is not None:
@@ -270,6 +270,12 @@ class AccountMarginService:
             self._started = False
         logger.info("AccountMarginService resubscribing after reconnect")
         self.start()
+
+    def on_next_valid_id(self, orderId: int) -> None:
+        """Callback when TWS completes handshake (nextValidId)."""
+        if not self._started and self._client.is_connected():
+            logger.info("AccountMarginService starting on nextValidId event")
+            self.start()
 
     def on_error(self, reqId: int, errorCode: int, errorString: str) -> None:
         with self._lock:

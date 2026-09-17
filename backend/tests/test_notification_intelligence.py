@@ -509,6 +509,7 @@ async def test_position_reconciler_rogue_trade_detection_and_resolution(
         session_factory=session_factory,
         client=client_mock,
         notification_orchestrator=orchestrator,
+        rogue_confirm_sweeps=1,
     )
 
     # Seed an account

@@ -44,8 +44,10 @@ from app.schemas.manual_schemas import (
     ManualOrderSubmitResponse,
 )
 from app.services.kill_switch import (
+    get_active_manual_kill_switch_operation,
     get_armed_kill_switch_operation,
     is_account_kill_switch_active,
+    is_manual_kill_switch_active,
 )
 from app.services.trading_pause import is_account_trading_paused
 
@@ -99,12 +101,20 @@ class ManualTradingService:
         # 4. Kill switch check
         if is_account_kill_switch_active(account.id):
             errors.append(f"Account {account.ibkr_account} kill switch is active. Trading is blocked.")
+        elif is_manual_kill_switch_active(account.id):
+            errors.append(f"Account {account.ibkr_account} manual kill switch is active. Manual trading is blocked.")
         else:
             armed_op = await get_armed_kill_switch_operation(self._session, account.id)
             if armed_op is not None:
                 errors.append(
                     f"Account {account.ibkr_account} has an armed emergency kill-switch operation ({armed_op.status})."
                 )
+            else:
+                armed_manual_op = await get_active_manual_kill_switch_operation(self._session, account.id)
+                if armed_manual_op is not None:
+                    errors.append(
+                        f"Account {account.ibkr_account} has an active manual kill-switch operation ({armed_manual_op.status})."
+                    )
 
         # 5. Trading pause check
         # Pause blocks new OPEN orders. An order is only permitted while paused
@@ -193,7 +203,7 @@ class ManualTradingService:
         connected = self._client is not None and self._client.is_connected()
         halt_state = await self._halt_repo.get_halt_state(account.id)
         manual_halted = bool(halt_state and halt_state.halted)
-        kill_switch_active = is_account_kill_switch_active(account.id)
+        kill_switch_active = is_account_kill_switch_active(account.id) or is_manual_kill_switch_active(account.id)
         trading_paused = is_account_trading_paused(account.id) or account.trading_paused
 
         effective_price: Decimal | None = None
@@ -298,6 +308,11 @@ class ManualTradingService:
         )
         if existing is not None:
             # Check for identical parameters (idempotent replay) vs conflict
+            # Trade_id is the close intent carrier: same symbol/qty but different trade_id = different position close target
+            # For new OPEN orders trade_id is auto-generated (TRD_...), so a replay with no explicit trade_id should still match.
+            req_trade_id = (request.trade_id or "").strip()
+            existing_trade_id = (existing.trade_id or "").strip()
+            trade_id_match = (not req_trade_id) or (existing_trade_id == req_trade_id)
             is_same_param = (
                 existing.con_id == request.con_id
                 and existing.symbol == request.symbol.strip().upper()
@@ -305,6 +320,11 @@ class ManualTradingService:
                 and existing.quantity == request.quantity
                 and existing.order_type == request.order_type
                 and existing.limit_price == request.limit_price
+                and existing.tif == request.tif.strip().upper()
+                and existing.exchange == request.exchange.strip().upper()
+                and existing.currency == request.currency.strip().upper()
+                and existing.sec_type == request.sec_type.strip().upper()
+                and trade_id_match
             )
             if is_same_param:
                 logger.info(
@@ -326,7 +346,7 @@ class ManualTradingService:
                 )
                 raise HTTPException(
                     status_code=409,
-                    detail=f"Idempotency conflict: key '{idempotency_key}' already used with different parameters.",
+                    detail="This order request has already been used with different parameters. Please start a new order.",
                 )
 
         # 3. Create durable PENDING_SUBMIT record in PostgreSQL and COMMIT before broker call
@@ -365,6 +385,9 @@ class ManualTradingService:
                     account_id=account.id, idempotency_key=idempotency_key
                 )
                 if existing2 is not None:
+                    req_trade_id2 = (request.trade_id or "").strip()
+                    existing_trade_id2 = (existing2.trade_id or "").strip()
+                    trade_id_match2 = (not req_trade_id2) or (existing_trade_id2 == req_trade_id2)
                     is_same = (
                         existing2.con_id == request.con_id
                         and existing2.symbol == request.symbol.strip().upper()
@@ -372,6 +395,11 @@ class ManualTradingService:
                         and existing2.quantity == request.quantity
                         and existing2.order_type == request.order_type
                         and existing2.limit_price == request.limit_price
+                        and existing2.tif == request.tif.strip().upper()
+                        and existing2.exchange == request.exchange.strip().upper()
+                        and existing2.currency == request.currency.strip().upper()
+                        and existing2.sec_type == request.sec_type.strip().upper()
+                        and trade_id_match2
                     )
                     if is_same:
                         logger.info(
@@ -386,7 +414,7 @@ class ManualTradingService:
                         )
                     raise HTTPException(
                         status_code=409,
-                        detail=f"Idempotency conflict: key '{idempotency_key}' already used with different parameters.",
+                        detail="This order request has already been used with different parameters. Please start a new order.",
                     ) from exc
             raise
         await self._session.refresh(order_row)

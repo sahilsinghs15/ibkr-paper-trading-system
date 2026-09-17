@@ -19,11 +19,11 @@ _HELD: set[Hashable] = set()
 
 
 def ledger_key(account_id: int, trade_id: str) -> tuple[str, int, str]:
-    return ("ledger", int(account_id), str(trade_id))
+    return ("ledger", account_id, trade_id)
 
 
 def broker_key(ibkr_account: str, con_id: int) -> tuple[str, str, int]:
-    return ("broker", ibkr_account.strip().upper(), int(con_id))
+    return ("broker", ibkr_account.strip().upper(), con_id)
 
 
 async def try_acquire(key: Hashable) -> bool:

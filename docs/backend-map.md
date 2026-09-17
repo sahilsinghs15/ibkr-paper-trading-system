@@ -189,3 +189,5 @@ Chain ends at revision **`r6s7t8u9v0w1`** (`r6s7t8u9v0w1_signed_exit_levels.py`,
 | Gateway limiter defaults | `core/config.py` | 30/24/6 msg/sec, 8s wait, 2s Error 100 cooldown |
 | Kill-switch flatten concurrency | `kill_switch.py` | `5` |
 | Position reconcile interval | `position_reconciler.py` | `30s` |
+| Rogue Telegram confirm sweeps | `position_reconciler.py` | `2` (~60s); skips `in_flight` |
+| Rogue Telegram confirm sweeps | `position_reconciler.py` | `2` (~60s); skips `in_flight` |

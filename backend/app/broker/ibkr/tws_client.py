@@ -99,6 +99,13 @@ class TWSClient(EWrapper, EClient):
             "TWS nextValidId received: next_order_id=%d. Handshake complete.",
             orderId,
         )
+        for listener in list(self._listeners) + list(self._market_data_listeners):
+            try:
+                cb = getattr(listener, "on_next_valid_id", None)
+                if callable(cb):
+                    cb(orderId)
+            except Exception:
+                logger.exception("Error in on_next_valid_id listener")
 
     def allocate_next_order_id(self) -> int:
         """Reserve the next TWS order id. Never defaults None→1 (M34)."""
@@ -719,6 +726,8 @@ class TWSClient(EWrapper, EClient):
             self._connected_event.clear()
             with self._order_id_lock:
                 self.next_order_id = None
+            if not self._intentional_disconnect:
+                self._start_reconnect_loop()
             return False
 
     def disconnect_clean(self) -> None:

@@ -1,8 +1,9 @@
 """Dashboard config CRUD for accounts, allocations, and symbol limits."""
 
 import logging
+from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -205,11 +206,12 @@ async def get_account_by_identifier(
     "/accounts/{account_id}/square-off",
     response_model=SquareOffResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Emergency Kill Switch: Square off all open positions for account",
+    summary="Emergency Kill Switch: Square off open engine positions for account",
 )
 async def square_off_account_positions(
     account_id: int,
     request: Request,
+    scope: str | None = Query("engine", description="Flatten scope: 'engine' or 'account'"),
     session: AsyncSession = Depends(get_db_session),
     current_user: UserModel = Depends(require_authenticated_user),
 ) -> SquareOffResponse:
@@ -218,6 +220,11 @@ async def square_off_account_positions(
     account = await svc.get_account(account_id)
     if account is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    if scope == "account":
+        return await square_off_entire_ibkr_account(account_id, request, session, current_user)
+    if scope == "manual":
+        return await square_off_manual_positions(account_id, request, session, current_user)
 
     order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
     session_factory = getattr(request.app.state, "session_factory", None)
@@ -238,6 +245,23 @@ async def square_off_account_positions(
     if created_new:
         await kill_switch_svc.execute_flatten_operation_background(op.operation_id)
 
+    from app.db.repositories.event_repository import EventRepository
+
+    await EventRepository(session).append(
+        process="kill_switch",
+        kind="ENGINE_POSITION_FLATTEN",
+        detail={
+            "account_id": account_id,
+            "ibkr_account": account.ibkr_account,
+            "operation_id": str(op.operation_id),
+            "requested_by": "operator",
+            "initial_position_count": op.initial_position_count,
+            "scope": "ENGINE_POSITION_FLATTEN",
+        },
+        idempotency_key=f"engine_position_flatten:{op.operation_id}",
+    )
+    await session.commit()
+
     return SquareOffResponse(
         account_id=account.id,
         ibkr_account=account.ibkr_account,
@@ -245,6 +269,169 @@ async def square_off_account_positions(
         trade_ids=[],
         operation_id=str(op.operation_id),
         status=op.status,
+        scope="ENGINE_POSITION_FLATTEN",
+    )
+
+
+@router.post(
+    "/accounts/{account_id}/square-off-manual",
+    response_model=SquareOffResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Emergency Kill Switch: Flatten manual positions only for account",
+)
+async def square_off_manual_positions(
+    account_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
+) -> SquareOffResponse:
+    """Flatten only manual positions for the specified account without touching engine/signal positions."""
+    _check_account_authorization(current_user, account_id=account_id)
+    svc = AccountStrategyConfigService(session)
+    account = await svc.get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Session factory is unavailable.",
+        )
+
+    kill_switch_svc = KillSwitchService(
+        session_factory=session_factory,
+        order_manager=order_manager,
+    )
+
+    op, created_new = await kill_switch_svc.initiate_manual_square_off(
+        account_id=account_id, requested_by="operator"
+    )
+    if created_new:
+        await kill_switch_svc.execute_manual_flatten_operation_background(op.operation_id)
+
+    from app.db.repositories.event_repository import EventRepository
+
+    await EventRepository(session).append(
+        process="kill_switch",
+        kind="MANUAL_POSITION_FLATTEN",
+        detail={
+            "account_id": account_id,
+            "ibkr_account": account.ibkr_account,
+            "operation_id": str(op.operation_id),
+            "requested_by": "operator",
+            "initial_position_count": op.initial_position_count,
+            "scope": "MANUAL_POSITION_FLATTEN",
+        },
+        idempotency_key=f"manual_position_flatten:{op.operation_id}",
+    )
+    await session.commit()
+
+    return SquareOffResponse(
+        account_id=account.id,
+        ibkr_account=account.ibkr_account,
+        squared_off_count=op.initial_position_count,
+        trade_ids=[],
+        operation_id=str(op.operation_id),
+        status=op.status,
+        scope="MANUAL_POSITION_FLATTEN",
+    )
+
+
+@router.post(
+    "/accounts/{account_id}/square-off-account",
+    response_model=SquareOffResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Emergency Kill Switch: Flatten all broker positions for account at IBKR",
+)
+async def square_off_entire_ibkr_account(
+    account_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    current_user: UserModel = Depends(require_authenticated_user),
+) -> SquareOffResponse:
+    """Flatten all positions held in the IBKR account via existing flatten_gateway_positions path.
+
+    Also arms the account kill switch so new OPEN signals are immediately blocked.
+    """
+    _check_account_authorization(current_user, account_id=account_id)
+    svc = AccountStrategyConfigService(session)
+    account = await svc.get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Session factory is unavailable.",
+        )
+
+    order_manager: OrderManager | None = getattr(request.app.state, "order_manager", None)
+    kill_switch_svc = KillSwitchService(
+        session_factory=session_factory,
+        order_manager=order_manager,
+    )
+
+    # Arm account kill switch so OPEN signals stay blocked
+    op, _ = await kill_switch_svc.arm_account_kill_switch_only(
+        account_id=account_id, requested_by="operator_account_flatten"
+    )
+
+    from app.db.repositories.event_repository import EventRepository
+
+    await EventRepository(session).append(
+        process="kill_switch",
+        kind="ACCOUNT_POSITION_FLATTEN",
+        detail={
+            "account_id": account_id,
+            "ibkr_account": account.ibkr_account,
+            "operation_id": str(op.operation_id),
+            "requested_by": "operator",
+            "scope": "ACCOUNT_POSITION_FLATTEN",
+        },
+        idempotency_key=f"account_position_flatten:{op.operation_id}",
+    )
+    await session.commit()
+
+    import asyncio
+
+    from scripts.oms.flatten_gateway_positions import run_flatten_gateway_positions
+
+    res = await asyncio.to_thread(
+        run_flatten_gateway_positions,
+        account=account.ibkr_account,
+        sec_type="CFD",
+        apply=True,
+    )
+
+    # If broker flatten succeeded, also close ledger ghosts for this account (engine+manual)
+    # This is the correct accounting path for scope=account – operator explicitly authorized
+    # to flatten entire IBKR account, so ledger must converge to broker-flat.
+    if res.get("success"):
+        try:
+            closed = await kill_switch_svc.close_all_ledger_after_account_flatten(account_id, op.operation_id)
+            logger.info("Account flatten ledger close: account_id=%s closed=%s", account_id, closed)
+        except Exception:
+            logger.exception("Account flatten ledger close failed account_id=%s", account_id)
+
+    # Re-read operation status after potential ledger close
+    from app.db.models.kill_switch import KillSwitchOperationModel as _KSO
+
+    async with session_factory() as _s:
+        _op_row = await _s.get(_KSO, op.operation_id)
+        _status = _op_row.status if _op_row else ("COMPLETE" if res.get("success") else "UNRESOLVED")
+
+    return SquareOffResponse(
+        account_id=account.id,
+        ibkr_account=account.ibkr_account,
+        squared_off_count=res.get("submitted", 0),
+        trade_ids=[],
+        operation_id=str(op.operation_id),
+        status=_status,
+        scope="ACCOUNT_POSITION_FLATTEN",
+        error=res.get("error"),
     )
 
 
@@ -278,6 +465,7 @@ async def clear_account_kill_switch_endpoint(
             detail="Session factory is unavailable.",
         )
 
+    from app.db.repositories.event_repository import EventRepository
     from app.services.kill_switch import (
         clear_account_kill_switch,
         is_account_kill_switch_active,
@@ -287,9 +475,23 @@ async def clear_account_kill_switch_endpoint(
     cleared = await clear_account_kill_switch(
         session_factory,
         account_id,
-        cleared_by=current_user.email or "operator",
+        cleared_by=getattr(current_user, "email", None) or "operator",
         notification_orchestrator=orchestrator,
     )
+    await EventRepository(session).append(
+        process="kill_switch",
+        kind="KILL_SWITCH_CLEARED",
+        detail={
+            "account_id": account_id,
+            "ibkr_account": account.ibkr_account,
+            "operations_cleared": cleared,
+            "cleared_by": getattr(current_user, "email", "operator"),
+            "scope": "KILL_SWITCH_CLEARED",
+            "source": "frontend",
+        },
+    )
+    await session.commit()
+
     return KillSwitchClearResponse(
         account_id=account_id,
         ibkr_account=account.ibkr_account,
@@ -690,24 +892,51 @@ async def patch_account(
         and not has_cancel_exposure
     ):
         raise HTTPException(status_code=400, detail="No fields to update.")
-    kwargs: dict = {
-        "name": body.name,
-        "ibkr_account": body.ibkr_account,
-        "total_margin": body.total_margin,
-        "enabled": body.enabled,
-        "default_symbol_limit": body.default_symbol_limit,
-        "daily_target": body.daily_target,
-        "daily_stop": body.daily_stop,
-        "daily_target_unit": body.daily_target_unit,
-        "daily_stop_unit": body.daily_stop_unit,
-        "account_risk_enabled": body.account_risk_enabled,
-    }
-    if has_loss:
-        kwargs["loss_threshold"] = body.loss_threshold
-    if has_cancel_exposure:
-        kwargs["cancel_exposure"] = body.cancel_exposure
+    kwargs: dict = {}
+    for field_name in body.model_fields_set:
+        val = getattr(body, field_name, None)
+        if val is not None or field_name == "loss_threshold":
+            kwargs[field_name] = val
+
+    old_values: dict[str, str | None] = {}
+    for k in kwargs:
+        old_val = getattr(account, k, None)
+        old_values[k] = str(old_val) if old_val is not None else None
     try:
         await svc.update_account(account, **kwargs)
+        changes: dict[str, dict[str, str | None]] = {}
+        for k, old_v in old_values.items():
+            new_val = getattr(account, k, None)
+            new_v_str = str(new_val) if new_val is not None else None
+
+            def _are_equal(a: str | None, b: str | None) -> bool:
+                if a == b:
+                    return True
+                if a is None or b is None:
+                    return False
+                try:
+                    return Decimal(a) == Decimal(b)
+                except (ValueError, TypeError, ArithmeticError):
+                    return False
+
+            if not _are_equal(old_v, new_v_str):
+                changes[k] = {"previous": old_v, "new": new_v_str}
+
+        if changes:
+            from app.db.repositories.event_repository import EventRepository
+            await EventRepository(session).append(
+                process="config",
+                kind="ACCOUNT_SETTINGS_CHANGED",
+                detail={
+                    "account_id": account_id,
+                    "ibkr_account": account.ibkr_account,
+                    "setting": ", ".join(changes.keys()),
+                    "changes": changes,
+                    "source": "frontend",
+                    "operator": getattr(current_user, "email", "operator"),
+                },
+            )
+
         await session.commit()
     except AllocationConfigError as exc:
         await session.rollback()
@@ -900,6 +1129,19 @@ async def patch_allocation(
             stop_unit=body.stop_unit,
             exit_automation_enabled=body.exit_automation_enabled,
         )
+        from app.db.repositories.event_repository import EventRepository
+        await EventRepository(session).append(
+            process="config",
+            kind="ACCOUNT_SETTINGS_CHANGED",
+            detail={
+                "account_id": allocation.account_id,
+                "allocation_id": allocation_id,
+                "strategy_id": allocation.strategy_id,
+                "setting": "strategy_allocation",
+                "source": "frontend",
+                "operator": getattr(current_user, "email", "operator"),
+            },
+        )
         await session.commit()
     except AllocationConfigError as exc:
         await session.rollback()
@@ -936,6 +1178,19 @@ async def put_symbol_limit(
             symbol=symbol,
             money_limit=body.money_limit,
         )
+        from app.db.repositories.event_repository import EventRepository
+        await EventRepository(session).append(
+            process="config",
+            kind="ACCOUNT_SETTINGS_CHANGED",
+            detail={
+                "account_id": account_id,
+                "setting": f"symbol_limit:{symbol}",
+                "symbol": symbol,
+                "new_limit": str(body.money_limit),
+                "source": "frontend",
+                "operator": getattr(current_user, "email", "operator"),
+            },
+        )
         await session.commit()
     except AllocationConfigError as exc:
         await session.rollback()
@@ -968,7 +1223,23 @@ async def put_default_symbol_limit(
     if account is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
     try:
+        old_limit = account.default_symbol_limit
         await svc.update_account(account, default_symbol_limit=body.default_symbol_limit)
+        from app.db.repositories.event_repository import EventRepository
+        await EventRepository(session).append(
+            process="config",
+            kind="ACCOUNT_SETTINGS_CHANGED",
+            detail={
+                "account_id": account_id,
+                "ibkr_account": account.ibkr_account,
+                "setting": "default_symbol_limit",
+                "changes": {
+                    "default_symbol_limit": {"previous": str(old_limit), "new": str(body.default_symbol_limit)}
+                },
+                "source": "frontend",
+                "operator": getattr(current_user, "email", "operator"),
+            },
+        )
         await session.commit()
     except AllocationConfigError as exc:
         await session.rollback()

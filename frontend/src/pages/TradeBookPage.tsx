@@ -22,6 +22,7 @@ const EXECUTION_SORT_EXTRACTORS: Record<string, (row: BrokerExecutionLine) => un
   exec_id: (row) => row.exec_id,
   broker_order_id: (row) => row.broker_order_id,
   order_status: (row) => row.order_status || '',
+  source: (row) => (row as unknown as { source?: string }).source || '',
 }
 
 function defaultSort(a: BrokerExecutionLine, b: BrokerExecutionLine): number {
@@ -207,12 +208,13 @@ export function TradeBookPage() {
                 <SortableTh sortKey="exec_id" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Exec ID</SortableTh>
                 <SortableTh sortKey="broker_order_id" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Broker Order ID</SortableTh>
                 <SortableTh sortKey="order_status" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Order Status</SortableTh>
+                <SortableTh sortKey="source" currentSortKey={sortKey} currentSortDir={sortDir} onSort={handleSort}>Source</SortableTh>
               </tr>
             </thead>
             <tbody>
               {sortedExecutions.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="trade-book-empty">
+                  <td colSpan={12} className="trade-book-empty">
                     No executions
                   </td>
                 </tr>
@@ -240,6 +242,7 @@ export function TradeBookPage() {
                       <td className="mono muted">{row.exec_id}</td>
                       <td className="mono muted">{row.broker_order_id ?? '—'}</td>
                       <td>{status ? <span className={`trade-book-side ${status === 'FILLED' ? 'buy' : status === 'REJECTED' || status === 'ERROR' ? 'sell' : ''}`}>{status}</span> : '—'}</td>
+                      <td>{(row as unknown as { source?: string }).source === 'manual' ? <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 3, background: '#3b2d54', color: '#d8b4fe', border: '1px solid #7c3aed' }}>MANUAL</span> : <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 3, background: '#1e293b', color: '#94a3b8', border: '1px solid #334155' }}>ENGINE</span>}</td>
                     </tr>
                   )
                 })

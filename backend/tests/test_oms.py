@@ -791,7 +791,7 @@ async def test_tws_error_attaches_to_already_rejected_order(
     tws_id = int(order.ibkr_order_id)  # type: ignore[arg-type]
     mock_adapter._client.get_request_type.return_value = "order"  # pyrefly: ignore[missing-attribute]
     mock_adapter.on_order_status(
-        tws_id, "Inactive", 0.0, float(order.quantity), 0.0, 0, 0, 0.0, 1, "", 0.0
+        tws_id, "Inactive", 0.0, order.quantity, 0.0, 0, 0, 0.0, 1, "", 0.0
     )
     assert oms.get_order(order.internal_order_id).status == OMSOrderStatus.REJECTED  # pyrefly: ignore[missing-attribute]
     assert not oms.get_order(order.internal_order_id).error_message  # pyrefly: ignore[missing-attribute]

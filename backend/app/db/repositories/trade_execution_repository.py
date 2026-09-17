@@ -41,7 +41,7 @@ class TradeExecutionRepository:
         if existing is not None and (Decimal(str(existing.quantity)) != Decimal(str(line.quantity))
                 or Decimal(str(existing.price)) != Decimal(str(line.price))
                 or (existing.symbol or "") != (line.symbol or "")
-                or str(existing.side) != str(line.side)):
+                or existing.side != line.side):
             is_correction = True
         # Build values with Decimal coercion
         values: dict[str, Any] = {
@@ -53,7 +53,7 @@ class TradeExecutionRepository:
             "sec_type": line.sec_type or "STK",
             "exchange": line.exchange or "SMART",
             "currency": line.currency or "USD",
-            "con_id": int(line.con_id or 0),
+            "con_id": line.con_id or 0,
             "side": line.side,
             "quantity": Decimal(str(line.quantity)),
             "price": Decimal(str(line.price)),
@@ -125,7 +125,7 @@ class TradeExecutionRepository:
 
     async def count_for_account(self, account_id: int) -> int:
         result = await self._session.execute(select(func.count()).select_from(TradeExecutionModel).where(TradeExecutionModel.account_id == account_id))
-        return int(result.scalar_one())
+        return result.scalar_one()
 
     async def list_paginated(
         self,
@@ -147,7 +147,7 @@ class TradeExecutionRepository:
         if date_to is not None:
             base = base.where(TradeExecutionModel.executed_at <= date_to)
         total_res = await self._session.execute(select(func.count()).select_from(base.subquery()))
-        total = int(total_res.scalar_one())
+        total = total_res.scalar_one()
         # sort
         col = getattr(TradeExecutionModel, sort, TradeExecutionModel.executed_at)
         if direction.lower() == "asc":
@@ -180,7 +180,7 @@ class TradeExecutionRepository:
         if date_to is not None:
             base = base.where(TradeExecutionModel.executed_at <= date_to)
         total_res = await self._session.execute(select(func.count()).select_from(base.subquery()))
-        total = int(total_res.scalar_one())
+        total = total_res.scalar_one()
         col = getattr(TradeExecutionModel, sort, TradeExecutionModel.executed_at)
         if direction.lower() == "asc":
             base = base.order_by(col.asc(), TradeExecutionModel.id.asc())
@@ -199,7 +199,7 @@ class TradeExecutionRepository:
                 status_map[int(oid)] = str(st)
         result: list[tuple[TradeExecutionModel, str | None]] = []
         for r in rows:
-            st = status_map.get(int(r.order_id)) if r.order_id is not None else None
+            st = status_map.get(r.order_id) if r.order_id is not None else None
             result.append((r, st))
         return result, total
 

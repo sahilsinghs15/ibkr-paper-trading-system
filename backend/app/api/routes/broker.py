@@ -150,11 +150,19 @@ async def get_trade_book(
             sort = "executed_at"
         direction = dir.lower() if dir.lower() in ("asc", "desc") else "desc"
 
+        from app.db.models.manual_order import ManualExecutionModel
+
         repo = TradeExecutionRepository(session2)
         joined, total = await repo.list_paginated_with_order_status(
             account_id=acc.id, page=page, page_size=page_size, symbol=symbol, date_from=df, date_to=d_to, sort=sort, direction=direction
         )
         last_synced = await repo.get_last_synced_at(acc.id)
+        # Determine source: manual executions have exec_id in manual_executions
+        manual_exec_ids: set[str] = set()
+        if joined:
+            exec_ids = [r.exec_id for r, _ in joined]
+            m_rows = await session2.execute(select(ManualExecutionModel.exec_id).where(ManualExecutionModel.exec_id.in_(exec_ids)))
+            manual_exec_ids = {row[0] for row in m_rows.all()}
         exec_schemas = [
             BrokerExecutionLineSchema(
                 exec_id=r.exec_id,
@@ -177,6 +185,7 @@ async def get_trade_book(
                 commission_currency=r.commission_currency,
                 realized_pnl=float(r.realized_pnl) if r.realized_pnl is not None else None,
                 order_status=st,
+                source="manual" if r.exec_id in manual_exec_ids else "engine",
             )
             for r, st in joined
         ]
@@ -240,10 +249,34 @@ async def get_order_book(
         if sort not in allowed:
             sort = "updated_at"
         direction = dir.lower() if dir.lower() in ("asc", "desc") else "desc"
+        from app.db.models.manual_order import ManualOrderModel
+
         repo = OrderBookRepository(session2)
-        rows, total = await repo.list_paginated(
-            account_id=acc.id, page=page, page_size=page_size, status=status, symbol=symbol, date_from=df, date_to=d_to, sort=sort, direction=direction
+        rows, total_engine = await repo.list_paginated(
+            account_id=acc.id, page=1, page_size=10000, status=status, symbol=symbol, date_from=df, date_to=d_to, sort=sort, direction=direction
         )
+        # Manual orders — isolated ledger, same visibility rules, source=manual
+        from app.db.models.manual_order import ManualExecutionModel
+
+        manual_stmt = select(ManualOrderModel).where(ManualOrderModel.account_id == acc.id)
+        if status:
+            manual_stmt = manual_stmt.where(ManualOrderModel.status == status.strip().upper())
+        if symbol:
+            manual_stmt = manual_stmt.where(func.upper(ManualOrderModel.symbol) == symbol.strip().upper())
+        if df is not None:
+            manual_stmt = manual_stmt.where(ManualOrderModel.created_at >= df)
+        if d_to is not None:
+            manual_stmt = manual_stmt.where(ManualOrderModel.created_at <= d_to)
+        manual_rows = list((await session2.execute(manual_stmt)).scalars().all())
+        # Precompute filled for manual orders via manual_executions
+        manual_filled_map: dict[int, float] = {}
+        if manual_rows:
+            mids = [r.id for r in manual_rows]
+            sums = await session2.execute(
+                select(ManualExecutionModel.manual_order_id, func.coalesce(func.sum(ManualExecutionModel.quantity), 0)).where(ManualExecutionModel.manual_order_id.in_(mids)).group_by(ManualExecutionModel.manual_order_id)
+            )
+            for oid, total in sums.all():
+                manual_filled_map[int(oid)] = float(total or 0)
 
         def _to_row(r):
             return OrderBookRowSchema(
@@ -275,7 +308,60 @@ async def get_order_book(
                 created_at=r.created_at,
                 updated_at=r.updated_at,
                 filled_at=r.filled_at,
+                source="engine",
             )
+
+        def _to_row_manual(r):
+            filled = manual_filled_map.get(int(r.id), 0.0)
+            qty = float(r.quantity) if r.quantity is not None else 0.0
+            return OrderBookRowSchema(
+                internal_order_id=r.internal_order_id or "",
+                broker_order_id=r.broker_order_id,
+                perm_id=r.perm_id,
+                ibkr_account=clean_account,
+                symbol=r.symbol,
+                sec_type=r.sec_type,
+                exchange=r.exchange,
+                currency=r.currency,
+                ibkr_contract=None,
+                side=r.side,
+                quantity=qty,
+                filled=filled,
+                remaining=max(0.0, qty - filled),
+                order_type=r.order_type or "LIMIT",
+                limit_price=float(r.limit_price) if r.limit_price is not None else None,
+                status=r.status,
+                avg_fill_price=None,
+                last_fill_price=None,
+                trade_id=r.trade_id,
+                signal_id=None,
+                basket_id=None,
+                is_compensation=False,
+                compensation_of=None,
+                rejection_reason=r.reject_reason,
+                cancel_reason=None,
+                created_at=r.created_at,
+                updated_at=r.updated_at,
+                filled_at=r.completed_at,
+                source="manual",
+            )
+
+        combined = [_to_row(r) for r in rows] + [_to_row_manual(r) for r in manual_rows]
+        # Sort combined by sort field (updated_at default) and direction
+        reverse = direction.lower() != "asc"
+        def _sort_key(o: OrderBookRowSchema):
+            val = getattr(o, sort, None)
+            if val is None:
+                val = o.updated_at or o.created_at
+            return (val or "", o.internal_order_id)
+        try:
+            combined.sort(key=_sort_key, reverse=reverse)
+        except Exception:
+            combined.sort(key=lambda o: o.updated_at or o.created_at or o.internal_order_id, reverse=reverse)
+        total = len(combined)
+        # Paginate combined
+        start = (page - 1) * page_size
+        paged = combined[start : start + page_size]
 
         return OrderBookResponse(
             ibkr_account=clean_account,
@@ -283,7 +369,7 @@ async def get_order_book(
             total=total,
             page=page,
             page_size=page_size,
-            orders=[_to_row(r) for r in rows],
+            orders=paged,
         )
 
 

@@ -25,7 +25,7 @@ def main() -> None:
         host=settings.ibkr_host,
         port=settings.ibkr_port,
         client_id=settings.ibkr_client_id,
-        timeout=float(settings.ibkr_connection_timeout),
+        timeout=settings.ibkr_connection_timeout,
     )
 
     if success:

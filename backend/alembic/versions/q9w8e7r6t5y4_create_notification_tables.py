@@ -1,7 +1,7 @@
 """Create notification_log and notification_deliveries tables for centralized notification system.
 
-Revision ID: z7a8b9c0d1e2
-Revises: y6z7a8b9c0d1
+Revision ID: q9w8e7r6t5y4
+Revises: z7a8b9c0d1e2
 Create Date: 2026-09-17
 """
 
@@ -12,8 +12,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "z7a8b9c0d1e2"
-down_revision: str | Sequence[str] | None = "y6z7a8b9c0d1"
+revision: str = "q9w8e7r6t5y4"
+down_revision: str | Sequence[str] | None = "z7a8b9c0d1e2"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

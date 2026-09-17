@@ -1,7 +1,7 @@
 """Add event_type, correlation_id, and suppressed_reason to notification_log.
 
 Revision ID: b2c3d4e5f6g7
-Revises: z7a8b9c0d1e2
+Revises: q9w8e7r6t5y4
 Create Date: 2026-09-17
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "b2c3d4e5f6g7"
-down_revision: str | Sequence[str] | None = "z7a8b9c0d1e2"
+down_revision: str | Sequence[str] | None = "q9w8e7r6t5y4"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

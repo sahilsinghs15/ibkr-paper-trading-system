@@ -1,0 +1,16 @@
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" && subject.user == "tradingapp") {
+        var unit = action.lookup("unit");
+        if (unit == "trading-backend.service" ||
+            unit == "ibgateway.service" ||
+            unit == "webhook-ingest.service" ||
+            unit == "watchdog.service" ||
+            unit == "demo-streaming.service" ||
+            unit == "trading-backend-restart.service" ||
+            unit == "trading-backend-restart.path" ||
+            unit == "demo-streaming-restart.service" ||
+            unit == "demo-streaming-restart.path") {
+            return polkit.Result.YES;
+        }
+    }
+});

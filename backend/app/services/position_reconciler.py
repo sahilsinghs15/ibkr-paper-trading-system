@@ -42,6 +42,9 @@ logger = logging.getLogger(__name__)
 RECONCILE_INTERVAL_SEC = 30.0
 POSITIONS_REQUEST_TIMEOUT_SEC = 15.0
 QTY_EPSILON = 1e-6
+# Require the same mismatch on N consecutive sweeps before Telegram DETECTED.
+# Default 2 (~60s) filters one-sweep fill races that otherwise auto-resolve.
+ROGUE_CONFIRM_SWEEPS = 2
 
 MISMATCH_MATCH = "MATCH"
 MISMATCH_LEDGER_GHOST = "LEDGER_GHOST"
@@ -56,6 +59,13 @@ _ROGUE_TYPE_LABEL: dict[str, str] = {
     MISMATCH_LEDGER_GHOST: "Ledger Ghost",
     MISMATCH_UNMAPPED_ACCOUNT: "Unmapped Account",
 }
+ROGUE_MISMATCH_KINDS = frozenset(
+    {
+        MISMATCH_QTY_DRIFT,
+        MISMATCH_BROKER_ORPHAN,
+        MISMATCH_LEDGER_GHOST,
+    }
+)
 
 # Rogue tracking key: (ibkr_account_or_id, symbol, sec_type, kind)
 RogueKey = tuple[str, str, str, str]
@@ -223,8 +233,8 @@ def build_ledger_net_lines(
             sec_type = _norm_sec_type(mpos.sec_type or "CFD")
             net_key = (mpos.account_id, _norm_symbol(mpos.symbol), sec_type)
             manual_nets[net_key] += Decimal(str(mpos.signed_qty))
-            if mpos.con_id and int(mpos.con_id) > 0:
-                symbol_to_conids[(_norm_symbol(mpos.symbol), sec_type)].add(int(mpos.con_id))
+            if mpos.con_id and mpos.con_id > 0:
+                symbol_to_conids[(_norm_symbol(mpos.symbol), sec_type)].add(mpos.con_id)
 
     all_keys = set(engine_nets.keys()) | set(manual_nets.keys())
     result: list[LedgerNetLine] = []
@@ -425,6 +435,7 @@ class PositionReconciler:
         request_timeout_sec: float = POSITIONS_REQUEST_TIMEOUT_SEC,
         after_sweep: Any | None = None,
         notification_orchestrator: Any | None = None,
+        rogue_confirm_sweeps: int = ROGUE_CONFIRM_SWEEPS,
     ) -> None:
         self._session_factory = session_factory
         self._client = client
@@ -432,10 +443,13 @@ class PositionReconciler:
         self._request_timeout_sec = request_timeout_sec
         self._after_sweep = after_sweep
         self._orchestrator = notification_orchestrator
+        self._rogue_confirm_sweeps = max(1, rogue_confirm_sweeps)
         self._task: asyncio.Task | None = None
         self._running = False
         self._sweep_lock = asyncio.Lock()
         self._active_rogue_keys: dict[RogueKey, dict[str, Any]] | None = None
+        # Streak of consecutive non-in-flight mismatch sweeps before DETECTED.
+        self._pending_rogue_streaks: dict[RogueKey, int] = {}
 
     async def _ensure_active_rogue_keys(self, repo: BrokerPositionRepository) -> None:
         if self._active_rogue_keys is not None:
@@ -449,27 +463,27 @@ class PositionReconciler:
                     if not isinstance(m, dict):
                         continue
                     kind = m.get("kind")
-                    if kind in (
-                        MISMATCH_QTY_DRIFT,
-                        MISMATCH_BROKER_ORPHAN,
-                        MISMATCH_LEDGER_GHOST,
-                    ):
-                        acc = str(m.get("ibkr_account") or m.get("account_id") or "")
-                        sym = str(m.get("symbol") or "")
-                        sec = str(m.get("sec_type") or "")
-                        key = (acc, sym, sec, str(kind))
-                        self._active_rogue_keys[key] = {
-                            "rogue_type": kind,
-                            "symbol": sym,
-                            "sec_type": sec,
-                            "con_id": m.get("con_id"),
-                            "account_id": m.get("account_id"),
-                            "ibkr_account": m.get("ibkr_account"),
-                            "broker_qty": m.get("broker_qty"),
-                            "ledger_qty": m.get("ledger_qty"),
-                            "in_flight": m.get("in_flight", False),
-                            "run_id": latest_run.id,
-                        }
+                    if kind not in ROGUE_MISMATCH_KINDS:
+                        continue
+                    # In-flight noise must not rehydrate as an active rogue alert.
+                    if m.get("in_flight"):
+                        continue
+                    acc = str(m.get("ibkr_account") or m.get("account_id") or "")
+                    sym = str(m.get("symbol") or "")
+                    sec = str(m.get("sec_type") or "")
+                    key = (acc, sym, sec, str(kind))
+                    self._active_rogue_keys[key] = {
+                        "rogue_type": kind,
+                        "symbol": sym,
+                        "sec_type": sec,
+                        "con_id": m.get("con_id"),
+                        "account_id": m.get("account_id"),
+                        "ibkr_account": m.get("ibkr_account"),
+                        "broker_qty": m.get("broker_qty"),
+                        "ledger_qty": m.get("ledger_qty"),
+                        "in_flight": False,
+                        "run_id": latest_run.id,
+                    }
         except Exception:
             logger.exception(
                 "Failed loading previous reconcile mismatches for active rogue tracking"
@@ -694,30 +708,47 @@ class PositionReconciler:
                 idempotency_key=f"reconcile:{run_row.id}",
             )
 
-            # Authoritative active rogue trades tracking (transition-based)
-            current_rogues: dict[RogueKey, ReconcileDiff] = {}
+            # Authoritative active rogue trades tracking (transition-based).
+            # - Still persist all mismatches on the reconcile run (sensor).
+            # - Telegram DETECTED only after N consecutive non-in-flight sweeps.
+            # - In-flight mismatches never open a new alert and never clear an
+            #   existing one (account-level in_flight would otherwise flap).
+            present_keys: set[RogueKey] = set()
+            alertable_rogues: dict[RogueKey, ReconcileDiff] = {}
             for d in diffs:
-                if d.kind in (
-                    MISMATCH_QTY_DRIFT,
-                    MISMATCH_BROKER_ORPHAN,
-                    MISMATCH_LEDGER_GHOST,
-                ):
-                    acc = str(d.ibkr_account or d.account_id or "")
-                    rogue_key: RogueKey = (acc, d.symbol, d.sec_type, d.kind)
-                    current_rogues[rogue_key] = d
+                if d.kind not in ROGUE_MISMATCH_KINDS:
+                    continue
+                acc = str(d.ibkr_account or d.account_id or "")
+                rogue_key: RogueKey = (acc, d.symbol, d.sec_type, d.kind)
+                present_keys.add(rogue_key)
+                if not d.in_flight:
+                    alertable_rogues[rogue_key] = d
 
             active_keys: dict[RogueKey, dict[str, Any]] = (
                 self._active_rogue_keys if self._active_rogue_keys is not None else {}
             )
-            new_keys: set[RogueKey] = set(current_rogues.keys()) - set(
-                active_keys.keys()
-            )
-            resolved_keys: set[RogueKey] = set(active_keys.keys()) - set(
-                current_rogues.keys()
-            )
+            pending = self._pending_rogue_streaks
 
-            for key in sorted(new_keys):
-                diff = current_rogues[key]
+            # Drop pending streaks that are gone or only present while in-flight.
+            for key in list(pending.keys()):
+                if key not in alertable_rogues:
+                    del pending[key]
+
+            newly_confirmed: list[RogueKey] = []
+            for key, diff in alertable_rogues.items():
+                if key in active_keys:
+                    continue
+                streak = pending.get(key, 0) + 1
+                pending[key] = streak
+                if streak >= self._rogue_confirm_sweeps:
+                    newly_confirmed.append(key)
+
+            # Resolve only when the mismatch is fully gone (not merely in-flight).
+            resolved_keys: set[RogueKey] = set(active_keys.keys()) - present_keys
+
+            for key in sorted(newly_confirmed):
+                diff = alertable_rogues[key]
+                pending.pop(key, None)
                 label = _ROGUE_TYPE_LABEL.get(diff.kind, diff.kind.replace("_", " ").title())
                 # Operator-facing message: trader language, not provider codes
                 det_msg = (
@@ -817,6 +848,7 @@ class PositionReconciler:
                 del active_keys[key]
 
             self._active_rogue_keys = active_keys
+            self._pending_rogue_streaks = pending
 
         if mismatch_payload or timed_out or error:
             logger.warning(

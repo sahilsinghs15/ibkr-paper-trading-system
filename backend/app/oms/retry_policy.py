@@ -9,7 +9,7 @@ PAPER_IBKR_PORTS = frozenset({7497, 4002, 4001})
 
 def paper_retry_ports_allowed(ibkr_port: int) -> bool:
     """Retries are allowed on paper TWS ports and the live Gateway (4001) after M9/M14."""
-    return int(ibkr_port) in PAPER_IBKR_PORTS
+    return ibkr_port in PAPER_IBKR_PORTS
 
 
 @dataclass(frozen=True)

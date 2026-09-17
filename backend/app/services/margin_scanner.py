@@ -88,7 +88,7 @@ class MarginScanner:
             except Exception:
                 logger.exception("MarginScanner background scan failed")
             try:
-                await asyncio.sleep(float(settings.margin_rate_refresh_sec))
+                await asyncio.sleep(settings.margin_rate_refresh_sec)
             except asyncio.CancelledError:
                 break
 
@@ -108,7 +108,7 @@ class MarginScanner:
             return {"planned": 0, "probed": 0, "written": 0, "unknown": 0, "skipped": 0}
 
         deadline = (
-            time.monotonic() + float(budget_sec) if budget_sec is not None else None
+            time.monotonic() + budget_sec if budget_sec is not None else None
         )
         working = await self._working_set()
         prices = await self._prices_for(working)
