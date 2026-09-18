@@ -986,7 +986,10 @@ class OrderManager:
                         acc = (
                             await session.execute(
                                 select(AccountModel).where(
-                                    AccountModel.id == str(account_scope).strip()                            )
+                                    # accounts.id is BIGINT; binding a str fails in
+                                    # PostgreSQL with "bigint = character varying".
+                                    AccountModel.id == int(account_scope.strip())
+                                )
                             )
                         ).scalar_one_or_none()
                         if acc is not None:
