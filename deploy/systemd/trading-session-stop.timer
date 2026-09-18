@@ -2,7 +2,7 @@
 Description=Timer for trading session stop (16:00 ET Mon-Fri)
 
 [Timer]
-OnCalendar=Mon..Fri 16:00:00
+OnCalendar=Mon..Fri *-*-* 16:00:00 America/New_York
 Persistent=true
 Unit=trading-session-stop.service
 
