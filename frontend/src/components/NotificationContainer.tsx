@@ -4,6 +4,7 @@ import type { ToastNotification } from '../types/systemEvent'
 export function NotificationContainer() {
   const toasts = useNotificationStore((s) => s.toasts)
   const removeToast = useNotificationStore((s) => s.removeToast)
+  const clearAllToasts = useNotificationStore((s) => s.clearAllToasts)
 
   if (toasts.length === 0) {
     return null
@@ -11,6 +12,19 @@ export function NotificationContainer() {
 
   return (
     <div className="notification-container" aria-live="polite" aria-atomic="true">
+      {toasts.length > 1 && (
+        <div className="toast-toolbar">
+          <span className="toast-count-pill">{toasts.length} new updates</span>
+          <button
+            type="button"
+            className="toast-clear-btn"
+            onClick={clearAllToasts}
+            aria-label="Clear all notifications"
+          >
+            Clear all
+          </button>
+        </div>
+      )}
       {toasts.map((toast) => (
         <NotificationToastCard key={toast.id} toast={toast} onClose={() => removeToast(toast.id)} />
       ))}
@@ -26,9 +40,13 @@ function NotificationToastCard({
   onClose: () => void
 }) {
   const typeClass =
-    toast.kind === 'SERVICE_STARTED' || toast.kind === 'SUCCESS'
+    toast.kind === 'SERVICE_STARTED' || toast.kind === 'SUCCESS' || toast.icon === '🟢'
       ? 'toast-start'
-      : toast.kind === 'SERVICE_STOPPED' || toast.kind === 'ERROR'
+      : toast.kind === 'SERVICE_STOPPED' ||
+          toast.kind === 'ERROR' ||
+          toast.kind === 'CRITICAL' ||
+          toast.icon === '🔴' ||
+          toast.icon === '🚨'
         ? 'toast-stop'
         : 'toast-holiday'
 
@@ -42,7 +60,9 @@ function NotificationToastCard({
           <span className="toast-title">{toast.title}</span>
           {toast.timeStr && <span className="toast-time">{toast.timeStr}</span>}
         </div>
-        <div className="toast-message">{toast.message}</div>
+        {toast.message && toast.message !== toast.title && (
+          <div className="toast-message">{toast.message}</div>
+        )}
       </div>
       <button
         type="button"
@@ -55,3 +75,4 @@ function NotificationToastCard({
     </div>
   )
 }
+

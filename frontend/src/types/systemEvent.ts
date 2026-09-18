@@ -1,6 +1,17 @@
-export type AllowedService = 'ibgateway' | 'trading-backend' | 'webhook-ingest' | 'demo-streaming'
-export type SystemEventKind = 'SERVICE_STARTED' | 'SERVICE_STOPPED' | 'MARKET_CLOSED'
-export type ToastKind = SystemEventKind | 'SUCCESS' | 'ERROR'
+export type AllowedService = 'ibgateway' | 'trading-backend' | 'webhook-ingest' | 'demo-streaming' | 'server-machine' | 'ec2-instance'
+export type SystemEventKind =
+  | 'SERVICE_STARTED'
+  | 'SERVICE_STOPPED'
+  | 'MARKET_CLOSED'
+  | 'STARTUP_AGGREGATION'
+  | 'BROKER_LOST'
+  | 'BROKER_RECONNECTED'
+  | 'ROGUE_TRADE_DETECTED'
+  | 'ROGUE_TRADE_RESOLVED'
+  | 'LOSS_THRESHOLD_BREACHED'
+  | 'LOSS_THRESHOLD_RESET'
+  | string
+export type ToastKind = SystemEventKind | 'SUCCESS' | 'ERROR' | 'INFO' | 'WARNING' | 'CRITICAL'
 
 export interface SystemEventDetail {
   service?: string

@@ -5,8 +5,8 @@ import type {
   ToastNotification,
 } from '../types/systemEvent'
 
-const MAX_TOAST_STACK = 5
-const TOAST_AUTO_DISMISS_MS = 7000
+const MAX_TOAST_STACK = 3
+const TOAST_AUTO_DISMISS_MS = 5000
 
 interface NotificationState {
   // Toasts (transient top-right)
@@ -43,7 +43,14 @@ export const useNotificationStore = create<NotificationState>((set) => ({
   // Toast actions
   addToast: (toast) => {
     set((state) => {
-      if (state.toasts.some((t) => t.id === toast.id || t.eventId === toast.eventId)) {
+      if (
+        state.toasts.some(
+          (t) =>
+            t.id === toast.id ||
+            t.eventId === toast.eventId ||
+            (t.title === toast.title && t.message === toast.message)
+        )
+      ) {
         return state
       }
       const updated = [toast, ...state.toasts].slice(0, MAX_TOAST_STACK)

@@ -164,6 +164,9 @@ export const NotificationCenterPanel: React.FC = () => {
           <div className="notification-items-list">
             {notifications.map((item) => {
               const isExpanded = expandedId === item.id
+              const hasMultilineMessage = Boolean(item.message && item.message.includes('\n'))
+              const hasSubtitle = Boolean(item.message && item.message !== item.title && !hasMultilineMessage)
+
               return (
                 <div
                   key={item.id}
@@ -179,6 +182,17 @@ export const NotificationCenterPanel: React.FC = () => {
                         <span className="notification-item-title">{item.title}</span>
                         {!item.is_read && <span className="notification-new-badge">NEW</span>}
                       </div>
+
+                      {hasSubtitle && (
+                        <div className="notification-item-subtitle">{item.message}</div>
+                      )}
+
+                      {hasMultilineMessage && !isExpanded && (
+                        <div className="notification-expand-hint">
+                          <span>Status details available ▾</span>
+                        </div>
+                      )}
+
                       <div className="notification-item-meta">
                         <span className="notification-item-time">
                           {formatNotificationTime(item.ts)}
@@ -197,40 +211,48 @@ export const NotificationCenterPanel: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Technical Detail Accordion */}
+                  {/* Technical Detail & Message Accordion */}
                   {isExpanded && (
                     <div
                       className="notification-technical-details"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <div className="technical-detail-row">
-                        <span className="technical-label">Event ID:</span>
-                        <span className="technical-value mono">{item.id}</span>
+                      {item.message && (
+                        <div className="technical-message-block">
+                          <span className="technical-label">Message Details</span>
+                          <pre className="notification-message-pre">{item.message}</pre>
+                        </div>
+                      )}
+                      <div className="technical-grid">
+                        <div className="technical-detail-row">
+                          <span className="technical-label">Event ID:</span>
+                          <span className="technical-value mono">{item.id}</span>
+                        </div>
+                        {item.unit && (
+                          <div className="technical-detail-row">
+                            <span className="technical-label">Unit:</span>
+                            <span className="technical-value mono">{item.unit}</span>
+                          </div>
+                        )}
+                        {item.service && (
+                          <div className="technical-detail-row">
+                            <span className="technical-label">Service:</span>
+                            <span className="technical-value mono">{item.service}</span>
+                          </div>
+                        )}
+                        {item.kind && (
+                          <div className="technical-detail-row">
+                            <span className="technical-label">Kind:</span>
+                            <span className="technical-value mono">{item.kind}</span>
+                          </div>
+                        )}
+                        {item.ts && (
+                          <div className="technical-detail-row">
+                            <span className="technical-label">Timestamp:</span>
+                            <span className="technical-value mono">{item.ts}</span>
+                          </div>
+                        )}
                       </div>
-                      {item.unit && (
-                        <div className="technical-detail-row">
-                          <span className="technical-label">Unit:</span>
-                          <span className="technical-value mono">{item.unit}</span>
-                        </div>
-                      )}
-                      {item.service && (
-                        <div className="technical-detail-row">
-                          <span className="technical-label">Service:</span>
-                          <span className="technical-value mono">{item.service}</span>
-                        </div>
-                      )}
-                      {item.kind && (
-                        <div className="technical-detail-row">
-                          <span className="technical-label">Kind:</span>
-                          <span className="technical-value mono">{item.kind}</span>
-                        </div>
-                      )}
-                      {item.ts && (
-                        <div className="technical-detail-row">
-                          <span className="technical-label">Timestamp:</span>
-                          <span className="technical-value mono">{item.ts}</span>
-                        </div>
-                      )}
                     </div>
                   )}
                 </div>

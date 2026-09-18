@@ -9,24 +9,31 @@ import type {
 
 const STORAGE_KEY = 'zahnrad_last_seen_event_id'
 const POLL_INTERVAL_MS = 5000
-const RECENT_THRESHOLD_MS = 120_000 // 2 minutes
 
 const CANONICAL_MESSAGES: Record<string, Record<string, string>> = {
   ibgateway: {
-    SERVICE_STARTED: 'Broker connection started',
-    SERVICE_STOPPED: 'Broker connection stopped',
+    SERVICE_STARTED: 'IB Gateway Started Successfully',
+    SERVICE_STOPPED: 'IB Gateway Stopped',
   },
   'trading-backend': {
-    SERVICE_STARTED: 'Trading Backend started',
-    SERVICE_STOPPED: 'Trading Backend stopped',
+    SERVICE_STARTED: 'OEMS Engine Started Successfully',
+    SERVICE_STOPPED: 'OEMS Engine Stopped',
   },
   'webhook-ingest': {
-    SERVICE_STARTED: 'Market signal intake started',
-    SERVICE_STOPPED: 'Market signal intake stopped',
+    SERVICE_STARTED: 'Signal Receiver Started Successfully',
+    SERVICE_STOPPED: 'Signal Receiver Stopped',
   },
   'demo-streaming': {
-    SERVICE_STARTED: 'Market data display started',
-    SERVICE_STOPPED: 'Market data display stopped',
+    SERVICE_STARTED: 'Dashboard Engine Started Successfully',
+    SERVICE_STOPPED: 'Dashboard Engine Stopped',
+  },
+  'server-machine': {
+    SERVICE_STARTED: 'Server Machine Started Successfully',
+    SERVICE_STOPPED: 'Server Machine Stopped',
+  },
+  'ec2-instance': {
+    SERVICE_STARTED: 'Server Machine Started Successfully',
+    SERVICE_STOPPED: 'Server Machine Stopped',
   },
 }
 
@@ -67,9 +74,16 @@ function resolveCanonicalTitle(evt: SystemEventItem): {
     return { icon, title: msg, message: msg }
   }
 
+  if (svc === 'server-machine' || svc === 'ec2-instance') {
+    const action = evt.kind === 'SERVICE_STARTED' ? 'Started Successfully' : 'Stopped'
+    const icon = evt.kind === 'SERVICE_STARTED' ? '🟢' : '🔴'
+    const msg = `Server Machine ${action}`
+    return { icon, title: msg, message: msg }
+  }
+
   const fallbackMsg = String(detail.message || `${svc || 'Service'} ${evt.kind}`)
   return {
-    icon: String(detail.icon || 'ℹ️'),
+    icon: String(detail.icon || (evt.kind === 'SERVICE_STOPPED' ? '🔴' : '🟢')),
     title: fallbackMsg,
     message: fallbackMsg,
   }
@@ -77,13 +91,18 @@ function resolveCanonicalTitle(evt: SystemEventItem): {
 
 function eventToToast(evt: SystemEventItem): ToastNotification {
   const { icon, title, message } = resolveCanonicalTitle(evt)
+  // Clean up message for single-line toast if it contains multi-line status table
+  const singleLineMessage = message.includes('\n')
+    ? message.split('\n')[0]
+    : message
+
   return {
     id: `evt-${evt.id}`,
     eventId: evt.id,
     kind: evt.kind,
     icon,
     title,
-    message,
+    message: singleLineMessage,
     timeStr: formatTime(evt.ts),
   }
 }
@@ -120,62 +139,89 @@ export function useSystemEvents(): void {
     let timer: ReturnType<typeof setInterval> | null = null
     let active = true
 
-    // Initial load of unread count / notification feed
-    void fetchNotificationFeed(30, 0).then((feed) => {
-      if (active) {
-        setFeed(feed)
-      }
-    })
-
-    async function poll() {
-      if (!active) return
-      const currentCursor = lastSeenIdRef.current
-
-      // First run: bootstrap cursor without replaying unbounded historical events
-      if (!initializedRef.current && currentCursor === 0) {
-        initializedRef.current = true
-        const initialEvents = await fetchSystemEvents(0, 50)
+    // 1. Initial load of notification feed & SILENT bootstrap of event cursor
+    // Historical events go into the Notification Center only; NEVER replay toasts on mount.
+    async function initFeedAndCursor() {
+      try {
+        const feed = await fetchNotificationFeed(30, 0)
         if (!active) return
-        if (initialEvents.length > 0) {
-          const maxId = Math.max(...initialEvents.map((e) => e.id))
-          lastSeenIdRef.current = maxId
-          sessionStorage.setItem(STORAGE_KEY, String(maxId))
+        setFeed(feed)
 
-          // Only display genuinely recent events that occurred in the last 2 minutes
-          const now = Date.now()
-          const recent = initialEvents.filter((e) => {
-            if (!e.ts) return false
-            const t = Date.parse(e.ts)
-            return !Number.isNaN(t) && now - t < RECENT_THRESHOLD_MS
-          })
-          for (const evt of recent.slice(-3)) {
-            addToast(eventToToast(evt))
-          }
+        // Find the absolute highest/latest event ID in the system
+        const latestHeadId = feed.items && feed.items.length > 0 ? feed.items[0].id : 0
+        
+        // Fast-forward cursor to head so no historical events are ever toasted
+        lastSeenIdRef.current = Math.max(lastSeenIdRef.current, latestHeadId)
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem(STORAGE_KEY, String(lastSeenIdRef.current))
         }
-        return
-      }
-
-      initializedRef.current = true
-      const newEvents = await fetchSystemEvents(lastSeenIdRef.current, 20)
-      if (!active || newEvents.length === 0) return
-
-      let maxId = lastSeenIdRef.current
-      for (const evt of newEvents) {
-        if (evt.id > lastSeenIdRef.current) {
-          addToast(eventToToast(evt))
-          addNewNotification(eventToNotificationItem(evt))
-          if (evt.id > maxId) maxId = evt.id
-        }
-      }
-
-      if (maxId > lastSeenIdRef.current) {
-        lastSeenIdRef.current = maxId
-        sessionStorage.setItem(STORAGE_KEY, String(maxId))
+      } catch {
+        // Fallback gracefully on network hiccup
+      } finally {
+        initializedRef.current = true
       }
     }
 
-    // Run initial poll
-    void poll()
+    void initFeedAndCursor()
+
+    // 2. Periodic poll for LIVE events arriving strictly after the dashboard was opened
+    async function poll() {
+      if (!active || !initializedRef.current) return
+
+      try {
+        const newEvents = await fetchSystemEvents(lastSeenIdRef.current, 20)
+        if (!active || newEvents.length === 0) return
+
+        const strictlyNew = newEvents
+          .filter((e) => e.id > lastSeenIdRef.current)
+          .sort((a, b) => a.id - b.id)
+
+        if (strictlyNew.length === 0) return
+
+        // Update cursor to the latest received event
+        const maxId = strictlyNew[strictlyNew.length - 1].id
+        lastSeenIdRef.current = maxId
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem(STORAGE_KEY, String(maxId))
+        }
+
+        // Always register every event in the persistent Notification Center
+        for (const evt of strictlyNew) {
+          addNewNotification(eventToNotificationItem(evt))
+        }
+
+        // Manage transient live toasts: coalesce rapid bursts to avoid screen spam
+        if (strictlyNew.length > 2) {
+          // If multiple events arrived simultaneously (e.g. session start/stop sweep),
+          // toast the most important event (e.g. stop/error) plus a coalesced badge
+          const criticalEvt =
+            strictlyNew.find(
+              (e) =>
+                e.kind === 'SERVICE_STOPPED' ||
+                e.kind === 'ROGUE_TRADE_DETECTED' ||
+                e.kind === 'LOSS_THRESHOLD_BREACHED',
+            ) || strictlyNew[strictlyNew.length - 1]
+
+          addToast(eventToToast(criticalEvt))
+          addToast({
+            id: `batch-${maxId}`,
+            eventId: -maxId,
+            kind: 'INFO',
+            icon: '⚡',
+            title: 'System Activity',
+            message: `${strictlyNew.length} events logged. Check Notification Center for details.`,
+            timeStr: formatTime(new Date().toISOString()),
+          })
+        } else {
+          // 1 or 2 live events: show individual toasts
+          for (const evt of strictlyNew) {
+            addToast(eventToToast(evt))
+          }
+        }
+      } catch {
+        // Ignore transient poll errors
+      }
+    }
 
     // Setup periodic 5-second polling
     timer = setInterval(() => {
