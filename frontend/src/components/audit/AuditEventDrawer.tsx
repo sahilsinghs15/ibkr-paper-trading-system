@@ -4,7 +4,7 @@ import { auditErrorMessage, fetchAuditEvent } from '../../api/auditApi'
 import { EMPTY_AUDIT_FILTERS, type AuditEventDetail, type AuditFilters } from '../../types/audit'
 import type { DisplayTimezone } from '../../types/position'
 import { fmtTime } from '../../utils/format'
-import { actorLabel, displayValue, RESULT_HINT, resultClass, shortId } from './auditFormat'
+import { actorLabel, displayValue, RESULT_HINT, resultClass } from './auditFormat'
 
 type Pivot = (patch: Partial<AuditFilters>, sort?: 'newest' | 'oldest') => void
 
@@ -31,10 +31,10 @@ const RELATED_LABELS: Record<string, { label: string; filter: RefFilter }> = {
   perm_id: { label: 'IBKR perm ID', filter: 'order_id' },
   manual_order_id: { label: 'Manual order record', filter: 'order_id' },
   trade_id: { label: 'Trade / position ID', filter: 'trade_id' },
-  operation_id: { label: 'Kill-switch operation ID', filter: 'correlation_id' },
+  operation_id: { label: 'Kill-switch operation', filter: 'correlation_id' },
   idempotency_key: { label: 'Idempotency key', filter: 'correlation_id' },
   session_id: { label: 'Session ID', filter: 'session_id' },
-  con_id: { label: 'Contract ID (conId)', filter: 'ref_id' },
+  con_id: { label: 'Contract ID', filter: 'ref_id' },
   symbol: { label: 'Symbol', filter: 'ref_id' },
   symbols: { label: 'Symbols', filter: 'ref_id' },
   allocation_id: { label: 'Allocation ID', filter: 'ref_id' },
@@ -49,31 +49,66 @@ function humanize(key: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
-function Band({ tone, title, note, children }: { tone: string; title: string; note?: ReactNode; children: ReactNode }) {
+function asRecord(v: unknown): Record<string, unknown> {
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+}
+
+function formatAge(seconds: number): string {
+  if (seconds < 90) return `${Math.round(seconds)} s`
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min`
+  return `${(seconds / 3600).toFixed(1)} h`
+}
+
+// ─── Building blocks ─────────────────────────────────────────────────────────
+
+/** Long identifier: middle-truncated, full value on hover, one-click copy. */
+function Id({ value, head = 8, tail = 6 }: { value: string | number | null | undefined; head?: number; tail?: number }) {
+  const [copied, setCopied] = useState(false)
+  if (value === null || value === undefined || value === '') return <span className="ad-muted">—</span>
+  const full = String(value)
+  const short = full.length > head + tail + 1 ? `${full.slice(0, head)}…${full.slice(-tail)}` : full
+  const copy = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    void navigator.clipboard?.writeText(full).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1200)
+    })
+  }
   return (
-    <section className={`audit-band ${tone}`}>
-      <h4>{title}</h4>
-      {note && <p className="audit-band-note">{note}</p>}
+    <span className="ad-id" title={full}>
+      <span className="mono">{short}</span>
+      <button type="button" className="ad-copy" onClick={copy} aria-label={`Copy ${full}`}>
+        {copied ? '✓' : '⧉'}
+      </button>
+    </span>
+  )
+}
+
+function Section({ title, children, aside }: { title: string; children: ReactNode; aside?: ReactNode }) {
+  return (
+    <section className="ad-section">
+      <header className="ad-section-head">
+        <h4>{title}</h4>
+        {aside}
+      </header>
       {children}
     </section>
   )
 }
 
-function Sub({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div className="audit-sub-section">
-      <h5>{title}</h5>
-      {children}
-    </div>
-  )
+function Rows({ children }: { children: ReactNode }) {
+  return <dl className="ad-rows">{children}</dl>
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Row({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
   return (
-    <>
+    <div className="ad-row">
       <dt>{label}</dt>
-      <dd>{children ?? '—'}</dd>
-    </>
+      <dd>
+        {children ?? <span className="ad-muted">—</span>}
+        {hint && <span className="ad-hint">{hint}</span>}
+      </dd>
+    </div>
   )
 }
 
@@ -87,7 +122,7 @@ function PivotLink({ onClick, children, title }: { onClick: () => void; children
 
 function Observation({ label, value }: { label: string; value: unknown }) {
   const cls = value === true ? 'match' : value === false ? 'differs' : 'unknown'
-  const text = value === true ? 'same as at login' : value === false ? 'differs from login' : 'not available'
+  const text = value === true ? 'same as sign-in' : value === false ? 'differs from sign-in' : 'n/a'
   return (
     <span className={`audit-observation ${cls}`}>
       {label}: {text}
@@ -95,46 +130,37 @@ function Observation({ label, value }: { label: string; value: unknown }) {
   )
 }
 
-function asRecord(v: unknown): Record<string, unknown> {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
-}
-
-function KeyValues({ data }: { data: Record<string, unknown> }) {
-  const entries = Object.entries(data)
-  if (!entries.length) return <div className="audit-muted">None</div>
+function Disclosure({ summary, children, defaultOpen = false }: { summary: ReactNode; children: ReactNode; defaultOpen?: boolean }) {
   return (
-    <dl className="audit-kv">
-      {entries.map(([k, v]) => (
-        <Field key={k} label={k}>
-          <span className="mono audit-break">{displayValue(v)}</span>
-        </Field>
-      ))}
-    </dl>
-  )
-}
-
-function JsonBlock({ label, value }: { label: string; value: unknown }) {
-  if (value === null || value === undefined) return null
-  return (
-    <details className="audit-json">
-      <summary>{label}</summary>
-      <pre>{JSON.stringify(value, null, 2)}</pre>
+    <details className="ad-disclosure" open={defaultOpen}>
+      <summary>{summary}</summary>
+      <div className="ad-disclosure-body">{children}</div>
     </details>
   )
 }
 
-function formatAge(seconds: number): string {
-  if (seconds < 90) return `${Math.round(seconds)} s`
-  if (seconds < 5400) return `${Math.round(seconds / 60)} min`
-  return `${(seconds / 3600).toFixed(1)} h`
+function Json({ value }: { value: unknown }) {
+  return <pre className="ad-json">{JSON.stringify(value, null, 2)}</pre>
 }
 
-function Body({
-  ev,
-  displayTz,
-  onPivot,
-  onOpenEvent,
-}: { ev: AuditEventDetail } & Omit<Props, 'eventId' | 'onClose'>) {
+/** Scalar → inline text; objects/arrays → compact summary with the full value expandable. */
+function Value({ v }: { v: unknown }) {
+  if (v === null || v === undefined || v === '') return <span className="ad-muted">—</span>
+  if (typeof v === 'object') {
+    const n = Array.isArray(v) ? v.length : Object.keys(v as object).length
+    return (
+      <Disclosure summary={<span className="ad-muted">{Array.isArray(v) ? `${n} items` : `${n} fields`}</span>}>
+        <Json value={v} />
+      </Disclosure>
+    )
+  }
+  const s = displayValue(v)
+  return s.length > 48 ? <Id value={s} head={22} tail={10} /> : <span className="mono">{s}</span>
+}
+
+// ─── Body ────────────────────────────────────────────────────────────────────
+
+function Body({ ev, displayTz, onPivot, onOpenEvent }: { ev: AuditEventDetail } & Omit<Props, 'eventId' | 'onClose'>) {
   const ctx = ev.context ?? {}
   const network = asRecord(ctx.network)
   const client = asRecord(ctx.client)
@@ -145,86 +171,76 @@ function Body({
   const inv = ev.investigation
   const at = (iso: string | null | undefined) => fmtTime(iso, displayTz, { withZone: true })
   const durationMs =
-    ev.completed_at && ev.occurred_at
-      ? new Date(ev.completed_at).getTime() - new Date(ev.occurred_at).getTime()
-      : null
-  const relatedEntries = Object.entries(ev.related ?? {}).filter(([, v]) => v != null && v !== '')
+    ev.completed_at && ev.occurred_at ? new Date(ev.completed_at).getTime() - new Date(ev.occurred_at).getTime() : null
+  const params = Object.entries(ev.parameters ?? {})
+  const related = Object.entries(ev.related ?? {}).filter(([, v]) => v != null && v !== '')
+  const changes = ev.changes ?? []
+  const hasState = ev.before_state != null || ev.after_state != null
 
   return (
     <>
       {ev.provenance !== 'NATIVE' && (
-        <div className="audit-callout legacy">
-          Legacy record imported from <span className="mono">{String(legacy.source_table ?? ev.legacy_ref)}</span>.
-          Only fields captured at the time are shown; missing IP, session and role were never recorded.
+        <div className="ad-note legacy">
+          Legacy record imported from <span className="mono">{String(legacy.source_table ?? ev.legacy_ref)}</span>. Only fields
+          captured at the time are shown.
         </div>
       )}
 
-      {/* ---------------------------------------------------------- 1 */}
-      <Band
-        tone="actor"
-        title="Authenticated actor"
-        note="The account the server authenticated for this request (from the signed session token)."
-      >
-        <dl className="audit-kv">
-          <Field label="User">{actorLabel(ev)}</Field>
-          <Field label="User ID">
-            {ev.actor_user_id != null ? (
+      {/* 1. Actor */}
+      <Section title="Actor" aside={<span className="ad-muted ad-small">authenticated by the server</span>}>
+        <Rows>
+          <Row label="User">
+            {ev.actor_email ? (
               <PivotLink title="All actions by this user" onClick={() => onPivot(scoped({ actor: ev.actor_email ?? '' }))}>
-                {ev.actor_user_id}
+                {ev.actor_email}
               </PivotLink>
             ) : (
-              '—'
+              actorLabel(ev)
             )}
-          </Field>
-          <Field label="Role at the time">{ev.actor_role}</Field>
-          <Field label="Actor type">{ev.actor_type}</Field>
-          {identity.service_label != null && <Field label="Service caller">{String(identity.service_label)}</Field>}
-          <Field label="Authentication">{ev.auth_method}</Field>
-          <Field label="Session">
+          </Row>
+          {ev.actor_user_id != null && <Row label="User ID"><span className="mono">{ev.actor_user_id}</span></Row>}
+          <Row label="Role">{ev.actor_role}</Row>
+          <Row label="Type" hint={identity.service_label != null ? String(identity.service_label) : undefined}>
+            {ev.actor_type}
+          </Row>
+          <Row label="Authentication">{ev.auth_method}</Row>
+          <Row label="Session">
             {ev.session_id ? (
-              <PivotLink
-                title="Show everything done in this session, oldest first"
-                onClick={() => onPivot(scoped({ session_id: ev.session_id ?? '' }), 'oldest')}
-              >
-                <span className="mono">{shortId(ev.session_id, 13)}</span> · session timeline
-              </PivotLink>
+              <span className="ad-inline">
+                <Id value={ev.session_id} />
+                <PivotLink
+                  title="Everything done in this session, oldest first"
+                  onClick={() => onPivot(scoped({ session_id: ev.session_id ?? '' }), 'oldest')}
+                >
+                  timeline
+                </PivotLink>
+              </span>
             ) : (
-              'No server-side session'
+              <span className="ad-muted">No server-side session</span>
             )}
-          </Field>
+          </Row>
           {inv.session && (
             <>
-              <Field label="Signed in">{at(inv.session.created_at)}</Field>
-              <Field label="Session ended">
-                {inv.session.ended_at
-                  ? `${at(inv.session.ended_at)} (${inv.session.end_reason ?? ''})`
-                  : 'Still active or expired'}
-              </Field>
+              <Row label="Signed in">{at(inv.session.created_at)}</Row>
+              <Row label="Session ended">
+                {inv.session.ended_at ? `${at(inv.session.ended_at)} · ${inv.session.end_reason ?? ''}` : 'Active or expired'}
+              </Row>
               {inv.session.login_audit_event_id && (
-                <Field label="Sign-in record">
+                <Row label="Sign-in record">
                   <PivotLink title="Open the sign-in audit event" onClick={() => onOpenEvent(inv.session!.login_audit_event_id!)}>
                     open sign-in event
                   </PivotLink>
-                </Field>
+                </Row>
               )}
             </>
           )}
-        </dl>
-      </Band>
+        </Rows>
+      </Section>
 
-      {/* ---------------------------------------------------------- 2 */}
-      <Band
-        tone="source"
-        title="Observed source / client context"
-        note={
-          <>
-            Technical context observed by the server. It supports investigation but does <strong>not</strong> prove
-            which person physically operated the device. Client-reported values are unverified.
-          </>
-        }
-      >
-        <dl className="audit-kv">
-          <Field label="Source IP">
+      {/* 2. Source / Client */}
+      <Section title="Source / Client" aside={<span className="ad-muted ad-small">observed, not proof of person</span>}>
+        <Rows>
+          <Row label="Source IP" hint={network.client_ip_scope ? String(network.client_ip_scope) : undefined}>
             {ev.client_ip ? (
               <PivotLink title="All actions from this IP" onClick={() => onPivot(scoped({ ip: ev.client_ip ?? '' }))}>
                 <span className="mono">{ev.client_ip}</span>
@@ -232,231 +248,252 @@ function Body({
             ) : (
               String(network.peer_label ?? '—')
             )}
-            {network.client_ip_scope ? <span className="audit-muted"> · {String(network.client_ip_scope)}</span> : null}
-          </Field>
-          <Field label="Browser">
+          </Row>
+          <Row label="Browser">
             {client.browser ? (
               <PivotLink title="All actions from this browser" onClick={() => onPivot(scoped({ browser: String(client.browser) }))}>
                 {[client.browser, client.browser_version].filter(Boolean).join(' ')}
               </PivotLink>
-            ) : (
-              '—'
-            )}
-          </Field>
-          <Field label="Operating system">
-            {[client.os, client.os_version].filter(Boolean).join(' ') || '—'}
-            {client.device_class ? <span className="audit-muted"> · {String(client.device_class)}</span> : null}
-          </Field>
-          <Field label="Device / install ID">
+            ) : null}
+          </Row>
+          <Row label="OS" hint={client.device_class ? String(client.device_class) : undefined}>
+            {[client.os, client.os_version].filter(Boolean).join(' ') || null}
+          </Row>
+          <Row label="Device / install" hint="client-reported">
             {ev.client_device_id ? (
-              <PivotLink title="All actions from this browser install" onClick={() => onPivot(scoped({ device_id: ev.client_device_id ?? '' }))}>
-                <span className="mono">{shortId(ev.client_device_id, 13)}</span>
-              </PivotLink>
+              <span className="ad-inline">
+                <Id value={ev.client_device_id} />
+                <PivotLink title="All actions from this browser install" onClick={() => onPivot(scoped({ device_id: ev.client_device_id ?? '' }))}>
+                  filter
+                </PivotLink>
+              </span>
             ) : client.device_id_invalid ? (
-              'Invalid value supplied (discarded)'
-            ) : (
-              '—'
-            )}
-            <span className="audit-muted"> · client-reported</span>
-          </Field>
-          <Field label="App version">
-            {String(client.app_version ?? '—')}
-            <span className="audit-muted"> · client-reported</span>
-          </Field>
-          {inv.session?.login_ip && <Field label="IP at sign-in">{<span className="mono">{inv.session.login_ip}</span>}</Field>}
-        </dl>
+              <span className="ad-muted">invalid value discarded</span>
+            ) : null}
+          </Row>
+          <Row label="App version" hint="client-reported">
+            {client.app_version ? <span className="mono">{String(client.app_version)}</span> : null}
+          </Row>
+          {inv.session?.login_ip && <Row label="IP at sign-in"><span className="mono">{inv.session.login_ip}</span></Row>}
+        </Rows>
         {Object.keys(observations).length > 0 && (
           <div className="audit-observations">
             <Observation label="IP" value={observations.ip_matches_login} />
             <Observation label="Device" value={observations.device_matches_login} />
             <Observation label="Browser" value={observations.user_agent_matches_login} />
             {typeof observations.session_age_seconds === 'number' && (
-              <span className="audit-observation unknown">Session age: {formatAge(observations.session_age_seconds)}</span>
+              <span className="audit-observation unknown">Session age {formatAge(observations.session_age_seconds)}</span>
             )}
           </div>
         )}
-        <details className="audit-json">
-          <summary>Network &amp; server details</summary>
-          <dl className="audit-kv">
-            <Field label="X-Forwarded-For (as received)">
-              <span className="mono">{String(network.forwarded_for_header ?? '—')}</span>
-            </Field>
-            <Field label="IP source">{String(network.ip_source ?? '—')}</Field>
-            <Field label="Handled by">{[server.process, server.host].filter(Boolean).join(' @ ') || '—'}</Field>
-            <Field label="User-Agent">
-              <span className="mono audit-break">{ev.user_agent ?? '—'}</span>
-            </Field>
-          </dl>
-        </details>
-      </Band>
+        <Disclosure summary="Network & client details">
+          <Rows>
+            <Row label="X-Forwarded-For"><Value v={network.forwarded_for_header} /></Row>
+            <Row label="Handled by">{[server.process, server.host].filter(Boolean).join(' @ ') || null}</Row>
+            <Row label="User-Agent"><span className="ad-wrap mono">{ev.user_agent ?? '—'}</span></Row>
+          </Rows>
+        </Disclosure>
+      </Section>
 
-      {/* ---------------------------------------------------------- 3 */}
-      <Band tone="action" title="Action / result">
-        <dl className="audit-kv">
-          <Field label="Time">{at(ev.occurred_at)}</Field>
-          <Field label="Category">{ev.category}</Field>
-          <Field label="Action">
-            {ev.action_label} <span className="mono audit-muted">({ev.action})</span>
-          </Field>
-          <Field label="Summary">{ev.summary}</Field>
-          <Field label="Account">
+      {/* 3. Action */}
+      <Section title="Action">
+        <Rows>
+          <Row label="Action" hint={ev.action}>{ev.action_label}</Row>
+          <Row label="Category">{ev.category}</Row>
+          <Row label="Summary"><span className="ad-wrap">{ev.summary}</span></Row>
+          <Row label="Account">
             {ev.ibkr_account ? (
               <PivotLink title="All actions on this account" onClick={() => onPivot(scoped({ account: ev.ibkr_account ?? '' }))}>
                 <span className="mono">{ev.ibkr_account}</span>
               </PivotLink>
             ) : ev.account_id != null ? (
-              String(ev.account_id)
-            ) : (
-              '—'
-            )}
-          </Field>
-          <Field label="Resource">
-            {ev.target_type ? (
-              <span className="mono audit-break">
-                {ev.target_type}: {ev.target_id ?? '—'}
-              </span>
-            ) : (
-              '—'
-            )}
-          </Field>
-          <Field label="Result">
-            <span className={resultClass(ev.result)}>{ev.result}</span>{' '}
-            <span className="audit-muted">{RESULT_HINT[ev.result] ?? ''}</span>
-          </Field>
-          <Field label="Reason">{ev.result_reason}</Field>
-          <Field label="Completed">
-            {ev.completed_at ? `${at(ev.completed_at)}${durationMs != null ? ` (${durationMs} ms)` : ''}` : '—'}
-          </Field>
-        </dl>
+              <span className="mono">{ev.account_id}</span>
+            ) : null}
+          </Row>
+          <Row label="Resource" hint={ev.target_type ?? undefined}>
+            {ev.target_id ? <Id value={ev.target_id} head={18} tail={8} /> : null}
+          </Row>
+          <Row label="Time">{at(ev.occurred_at)}</Row>
+        </Rows>
+      </Section>
 
-        <Sub title="Parameters">
-          <KeyValues data={ev.parameters ?? {}} />
-        </Sub>
+      {/* 4. Parameters */}
+      <Section title="Parameters" aside={<span className="ad-muted ad-small">{params.length} supplied</span>}>
+        {params.length === 0 ? (
+          <div className="ad-empty">No parameters.</div>
+        ) : (
+          <Rows>
+            {params.map(([k, v]) => (
+              <Row key={k} label={humanize(k)}>
+                <Value v={v} />
+              </Row>
+            ))}
+          </Rows>
+        )}
+      </Section>
 
-        <Sub title="Before / after">
-          {ev.changes && ev.changes.length > 0 ? (
-            <table className="audit-changes">
-              <thead>
-                <tr>
-                  <th>Field</th>
-                  <th>Before</th>
-                  <th>After</th>
+      {/* 5. Before / After */}
+      <Section title="Before / After">
+        {changes.length > 0 ? (
+          <table className="ad-changes">
+            <thead>
+              <tr>
+                <th>Field</th>
+                <th>Before</th>
+                <th>After</th>
+              </tr>
+            </thead>
+            <tbody>
+              {changes.map((c) => (
+                <tr key={c.field}>
+                  <td>{humanize(c.field)}</td>
+                  <td className="mono ad-before">{displayValue(c.before)}</td>
+                  <td className="mono ad-after">{displayValue(c.after)}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {ev.changes.map((c) => (
-                  <tr key={c.field}>
-                    <td className="mono">{c.field}</td>
-                    <td className="mono audit-before">{displayValue(c.before)}</td>
-                    <td className="mono audit-after">{displayValue(c.after)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div className="audit-muted">
-              {ev.before_state == null && ev.after_state == null
-                ? 'No state snapshot for this action.'
-                : 'No field-level difference between the recorded snapshots.'}
-            </div>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="ad-empty">
+            {hasState ? 'No field-level difference between the snapshots.' : 'No state snapshot recorded for this action.'}
+          </div>
+        )}
+        {ev.before_state != null && (
+          <Disclosure summary="View full state — before">
+            <Json value={ev.before_state} />
+          </Disclosure>
+        )}
+        {ev.after_state != null && (
+          <Disclosure summary="View full state — after / result details">
+            <Json value={ev.after_state} />
+          </Disclosure>
+        )}
+      </Section>
+
+      {/* 6. Result */}
+      <Section title="Result">
+        <Rows>
+          <Row label="Status" hint={RESULT_HINT[ev.result]}>
+            <span className={resultClass(ev.result)}>{ev.result}</span>
+          </Row>
+          {ev.result_reason && (
+            <Row label="Reason">
+              <span className="ad-wrap">{ev.result_reason}</span>
+            </Row>
           )}
-          <JsonBlock label="Full before state" value={ev.before_state} />
-          <JsonBlock label="Full after state / result details" value={ev.after_state} />
-        </Sub>
-      </Band>
+          <Row label="Started">{at(ev.occurred_at)}</Row>
+          <Row label="Completed" hint={durationMs != null ? `${durationMs} ms` : undefined}>
+            {ev.completed_at ? at(ev.completed_at) : null}
+          </Row>
+        </Rows>
+      </Section>
 
-      {/* ---------------------------------------------------------- IDs */}
-      <section className="audit-section">
-        <h4>Related IDs &amp; correlation</h4>
-        <dl className="audit-kv">
-          <Field label="Correlation / request ID">
-            {ev.request_id ? (
-              <PivotLink title="All events with this correlation ID" onClick={() => onPivot(scoped({ correlation_id: ev.request_id ?? '' }))}>
-                <span className="mono">{ev.request_id}</span>
-              </PivotLink>
-            ) : (
-              '—'
-            )}
-          </Field>
-          {relatedEntries.map(([key, value]) => {
-            const meta = RELATED_LABELS[key] ?? { label: humanize(key), filter: 'ref_id' as const }
-            return (
-              <Field key={key} label={meta.label}>
-                {(Array.isArray(value) ? value : [value]).map((item) =>
-                  item == null ? null : (
-                    <PivotLink
-                      key={String(item)}
-                      title={`Find every audit event with this ${meta.label.toLowerCase()}`}
-                      onClick={() => onPivot(scoped({ [meta.filter]: String(item) }), 'oldest')}
-                    >
-                      <span className="mono">{String(item)}</span>
-                    </PivotLink>
-                  ),
-                )}
-              </Field>
-            )
-          })}
-          <Field label="Audit event ID">
-            <span className="mono audit-break">{ev.event_id}</span>
-          </Field>
-          <Field label="Endpoint">
-            <span className="mono">{[ev.http_method, ev.http_path].filter(Boolean).join(' ') || '—'}</span>
-          </Field>
-        </dl>
-      </section>
-
-      {ev.actor_user_id != null && (
-        <section className="audit-section">
-          <h4>Investigation context</h4>
-          <p className="audit-band-note">Observations to help assess possible credential misuse — not verdicts.</p>
-          <dl className="audit-kv">
-            <Field label="Events in this session">{inv.session_event_count ?? '—'}</Field>
-            <Field label="Device first seen for user">{inv.device_first_seen_at ? at(inv.device_first_seen_at) : '—'}</Field>
-            <Field label="User's IPs within ±24h">
-              {inv.actor_ips_within_24h.length
-                ? inv.actor_ips_within_24h.map((x) => (
-                    <PivotLink key={x.ip} title="All actions from this IP" onClick={() => onPivot(scoped({ ip: x.ip }))}>
-                      <span className="mono">
-                        {x.ip} ({x.events})
+      {/* 7. Related / Correlation */}
+      <Section title="Related / Correlation">
+        <Rows>
+          {related
+            .filter(([k]) => ['internal_order_id', 'internal_order_ids', 'trade_id', 'operation_id'].includes(k))
+            .map(([key, value]) => {
+              const meta = RELATED_LABELS[key]
+              return (
+                <Row key={key} label={meta.label}>
+                  <span className="ad-stack">
+                    {(Array.isArray(value) ? value : [value]).map((item) => (
+                      <span key={String(item)} className="ad-inline">
+                        <Id value={String(item)} head={14} tail={8} />
+                        <PivotLink title={`All events with this ${meta.label.toLowerCase()}`} onClick={() => onPivot(scoped({ [meta.filter]: String(item) }), 'oldest')}>
+                          filter
+                        </PivotLink>
                       </span>
-                    </PivotLink>
-                  ))
-                : '—'}
-            </Field>
-          </dl>
-          <h5>Other sessions of this user live at that moment ({inv.concurrent_sessions.length})</h5>
-          {inv.concurrent_sessions.length === 0 ? (
-            <div className="audit-muted">None.</div>
-          ) : (
-            <table className="audit-changes">
-              <thead>
-                <tr>
-                  <th>Session</th>
-                  <th>Signed in</th>
-                  <th>IP at sign-in</th>
-                  <th>Device</th>
-                </tr>
-              </thead>
-              <tbody>
-                {inv.concurrent_sessions.map((s) => (
-                  <tr key={s.session_id}>
-                    <td>
-                      <PivotLink title="Show this session's timeline" onClick={() => onPivot(scoped({ session_id: s.session_id }), 'oldest')}>
-                        <span className="mono">{shortId(s.session_id, 13)}</span>
-                      </PivotLink>
-                    </td>
-                    <td className="mono">{fmtTime(s.created_at, displayTz)}</td>
-                    <td className="mono">{s.login_ip ?? '—'}</td>
-                    <td className="mono">{shortId(s.login_device_id, 13)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </section>
-      )}
+                    ))}
+                  </span>
+                </Row>
+              )
+            })}
+        </Rows>
+        <Disclosure summary={`Technical identifiers (${related.length + 3})`}>
+          <Rows>
+            <Row label="Correlation / request">
+              {ev.request_id ? (
+                <span className="ad-inline">
+                  <Id value={ev.request_id} />
+                  <PivotLink title="All events with this correlation ID" onClick={() => onPivot(scoped({ correlation_id: ev.request_id ?? '' }))}>
+                    filter
+                  </PivotLink>
+                </span>
+              ) : null}
+            </Row>
+            {related.map(([key, value]) => {
+              const meta = RELATED_LABELS[key] ?? { label: humanize(key), filter: 'ref_id' as const }
+              return (
+                <Row key={key} label={meta.label}>
+                  <span className="ad-stack">
+                    {(Array.isArray(value) ? value : [value]).map((item) => (
+                      <span key={String(item)} className="ad-inline">
+                        <Id value={String(item)} head={14} tail={8} />
+                        <PivotLink title={`All events with this ${meta.label.toLowerCase()}`} onClick={() => onPivot(scoped({ [meta.filter]: String(item) }), 'oldest')}>
+                          filter
+                        </PivotLink>
+                      </span>
+                    ))}
+                  </span>
+                </Row>
+              )
+            })}
+            <Row label="Audit event ID"><Id value={ev.event_id} /></Row>
+            <Row label="Endpoint"><span className="mono ad-wrap">{[ev.http_method, ev.http_path].filter(Boolean).join(' ') || '—'}</span></Row>
+          </Rows>
+        </Disclosure>
 
-      <JsonBlock label="Raw record (JSON)" value={ev} />
+        {ev.actor_user_id != null && (
+          <Disclosure summary={`Investigation context · ${inv.concurrent_sessions.length} other live session(s)`}>
+            <p className="ad-muted ad-small">Observations to help assess credential misuse — not verdicts.</p>
+            <Rows>
+              <Row label="Events in session">{inv.session_event_count ?? null}</Row>
+              <Row label="Device first seen">{inv.device_first_seen_at ? at(inv.device_first_seen_at) : null}</Row>
+              <Row label="User IPs ±24h">
+                {inv.actor_ips_within_24h.length ? (
+                  <span className="ad-stack">
+                    {inv.actor_ips_within_24h.map((x) => (
+                      <PivotLink key={x.ip} title="All actions from this IP" onClick={() => onPivot(scoped({ ip: x.ip }))}>
+                        <span className="mono">{x.ip}</span> <span className="ad-muted">({x.events})</span>
+                      </PivotLink>
+                    ))}
+                  </span>
+                ) : null}
+              </Row>
+            </Rows>
+            {inv.concurrent_sessions.length > 0 && (
+              <table className="ad-changes">
+                <thead>
+                  <tr>
+                    <th>Session</th>
+                    <th>Signed in</th>
+                    <th>IP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {inv.concurrent_sessions.map((s) => (
+                    <tr key={s.session_id}>
+                      <td>
+                        <PivotLink title="Show this session's timeline" onClick={() => onPivot(scoped({ session_id: s.session_id }), 'oldest')}>
+                          <span className="mono">{s.session_id.slice(0, 8)}…</span>
+                        </PivotLink>
+                      </td>
+                      <td className="mono">{fmtTime(s.created_at, displayTz)}</td>
+                      <td className="mono">{s.login_ip ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Disclosure>
+        )}
+
+        <Disclosure summary="Raw record (JSON)">
+          <Json value={ev} />
+        </Disclosure>
+      </Section>
     </>
   )
 }
@@ -487,35 +524,39 @@ export function AuditEventDrawer({ eventId, displayTz, onClose, onPivot, onOpenE
 
   return (
     <div className="audit-drawer-backdrop" onClick={onClose} role="presentation">
-      <aside
-        className="audit-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Audit event detail"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="audit-drawer-head">
-          <div>
-            <h3>{data?.action_label ?? 'Audit event'}</h3>
-            {data && (
-              <div className="audit-sub">
-                <span className={resultClass(data.result)}>{data.result}</span>{' '}
-                {fmtTime(data.occurred_at, displayTz, { withZone: true })} · {data.category}
-                {data.actor_email ? ` · ${data.actor_email}` : ''}
+      <aside className="audit-drawer ad-drawer" role="dialog" aria-modal="true" aria-label="Audit event detail" onClick={(e) => e.stopPropagation()}>
+        <header className="ad-head">
+          <div className="ad-head-top">
+            <span className="ad-eyebrow">Audit event</span>
+            <div className="ad-inline">
+              <button type="button" className="history-filter-btn" onClick={copy} disabled={!data}>
+                {copied ? 'Copied' : 'Copy JSON'}
+              </button>
+              <button type="button" className="audit-close" onClick={onClose} aria-label="Close">
+                ✕
+              </button>
+            </div>
+          </div>
+          {data ? (
+            <div className={`ad-banner ${resultClass(data.result).replace('audit-result', '').trim() || 'neutral'}`}>
+              <div className="ad-banner-main">
+                <span className={resultClass(data.result)}>{data.result}</span>
+                <h3>{data.action_label}</h3>
               </div>
-            )}
-          </div>
-          <div className="audit-inline">
-            <button type="button" className="history-filter-btn" onClick={copy} disabled={!data}>
-              {copied ? 'Copied' : 'Copy JSON'}
-            </button>
-            <button type="button" className="audit-close" onClick={onClose} aria-label="Close">
-              ✕
-            </button>
-          </div>
+              <div className="ad-banner-sub">
+                {fmtTime(data.occurred_at, displayTz, { withZone: true })}
+                {' · '}
+                {data.actor_email ?? actorLabel(data)}
+                {data.ibkr_account ? ` · ${data.ibkr_account}` : ''}
+              </div>
+              {data.result_reason && <div className="ad-banner-reason">{data.result_reason}</div>}
+            </div>
+          ) : (
+            <h3 className="ad-loading-title">Audit event</h3>
+          )}
         </header>
-        <div className="audit-drawer-body">
-          {isLoading && <div className="audit-muted">Loading…</div>}
+        <div className="ad-body">
+          {isLoading && <div className="ad-empty">Loading…</div>}
           {error && <div className="status-badge off">{auditErrorMessage(error)}</div>}
           {data && <Body ev={data} displayTz={displayTz} onPivot={onPivot} onOpenEvent={onOpenEvent} />}
         </div>
