@@ -203,3 +203,110 @@ async def test_notifications_api_flow():
         if u_row:
             await session.delete(u_row)
         await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_frontend_telegram_sync():
+    """Verify that events admitted by NotificationOrchestrator sync to /demo/notifications with identical title and state table."""
+    from app.services.notification.orchestrator import NotificationOrchestrator
+    from app.services.notification.types import NormalizedEvent, NotificationSeverity
+    from app.db.models.notification import NotificationLogModel, NotificationDeliveryModel
+    from sqlalchemy import select
+
+    table_content = (
+        "<pre>\n"
+        "Server Machine     ✓\n"
+        "IB Gateway         ✗\n"
+        "IB Login           ✗\n"
+        "Broker Connection  ✗\n"
+        "Signal Receiver    ✓\n"
+        "OEMS Engine        ✓\n"
+        "Dashboard Engine   ✓\n"
+        "</pre>"
+    )
+    title = "🔴 IB Gateway Stopped"
+    dedupe = f"sync_test:{datetime.now(UTC).timestamp()}"
+
+    event = NormalizedEvent(
+        event_type="SERVICE_STOPPED",
+        title=title,
+        message=table_content,
+        category="SYSTEM",
+        severity=NotificationSeverity.CRITICAL,
+        correlation_id="ibgateway",
+        dedupe_key=dedupe,
+        details={
+            "service": "ibgateway",
+            "action": "stop",
+        },
+    )
+
+    orchestrator = NotificationOrchestrator(AsyncSessionLocal)
+    notif = await orchestrator.ingest_event(event)
+    assert notif is not None
+    assert notif.title == title
+    assert notif.message == table_content
+
+    # Now verify that the frontend app GET /demo/notifications receives the exact same notification
+    redis_mock = AsyncMock()
+    app = create_demo_app(
+        session_factory=AsyncSessionLocal,
+        redis=redis_mock,
+        stream_name="positions:stream",
+    )
+
+    prefix = f"sync_u_{int(datetime.now(UTC).timestamp())}"
+    async with AsyncSessionLocal() as session:
+        user = UserModel(
+            email=f"{prefix}@test.com",
+            password_hash="mock",
+            role="admin",
+            is_active=True,
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+    token = create_access_token({"sub": str(user.id)})
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        res = await client.get("/demo/notifications", headers=headers)
+        assert res.status_code == 200
+        items = res.json()["items"]
+        matching = [it for it in items if it["title"] == title]
+        assert len(matching) >= 1
+        item = matching[0]
+        # Must match Telegram message exactly
+        assert item["message"] == table_content
+        assert item["icon"] == "🔴"
+        assert item["service"] == "ibgateway"
+
+        # Verify GET /demo/system-events returns the exact same title, message, and icon
+        res_sys = await client.get(f"/demo/system-events?since_id={item['id'] - 1}", headers=headers)
+        assert res_sys.status_code == 200
+        sys_items = res_sys.json()
+        matching_sys = [it for it in sys_items if it["title"] == title]
+        assert len(matching_sys) >= 1
+        assert matching_sys[0]["message"] == table_content
+        assert matching_sys[0]["icon"] == "🔴"
+
+    # Cleanup
+    async with AsyncSessionLocal() as session:
+        u_row = await session.get(UserModel, user.id)
+        if u_row:
+            await session.delete(u_row)
+        stmt_del = select(NotificationDeliveryModel).where(NotificationDeliveryModel.notification_id == notif.id)
+        for d in (await session.execute(stmt_del)).scalars().all():
+            await session.delete(d)
+        n_row = await session.get(NotificationLogModel, notif.id)
+        if n_row:
+            await session.delete(n_row)
+        stmt_ev = select(EventLogModel).where(EventLogModel.detail["notification_id"].astext == notif.notification_id)
+        for ev in (await session.execute(stmt_ev)).scalars().all():
+            await session.delete(ev)
+        await session.commit()
+

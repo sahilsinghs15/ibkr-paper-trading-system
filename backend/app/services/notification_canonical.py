@@ -37,7 +37,12 @@ CANONICAL_SERVICES: dict[str, dict[str, Any]] = {
     },
 }
 
-ALLOWED_SERVICES = frozenset(CANONICAL_SERVICES.keys())
+ALLOWED_SERVICES = frozenset(CANONICAL_SERVICES.keys()) | {
+    "server-machine",
+    "ec2-instance",
+    "ec2_instance",
+    "server",
+}
 ALLOWED_KINDS = frozenset(
     {
         "SERVICE_STARTED",
@@ -46,6 +51,9 @@ ALLOWED_KINDS = frozenset(
         "ROGUE_TRADE_DETECTED",
         "ROGUE_TRADE_RESOLVED",
         "LOSS_THRESHOLD_BREACHED",
+        "STARTUP_AGGREGATION",
+        "BROKER_LOST",
+        "BROKER_RECONNECTED",
     }
 )
 
@@ -63,9 +71,9 @@ def format_canonical_notification(
         if svc_cfg and kind in svc_cfg:
             cfg = svc_cfg[kind]
             return {
-                "icon": cfg["icon"],
-                "title": cfg["message"],
-                "message": cfg["message"],
+                "icon": detail.get("icon") or cfg["icon"],
+                "title": detail.get("title") or cfg["message"],
+                "message": detail.get("message") or cfg["message"],
                 "friendly_name": svc_cfg["friendly_name"],
                 "service": service,
                 "unit": svc_cfg["unit"],
@@ -74,9 +82,9 @@ def format_canonical_notification(
             action = "Started Successfully" if kind == "SERVICE_STARTED" else "Stopped"
             icon = "🟢" if kind == "SERVICE_STARTED" else "🔴"
             return {
-                "icon": icon,
-                "title": f"Server Machine {action}",
-                "message": f"Server Machine {action}",
+                "icon": detail.get("icon") or icon,
+                "title": detail.get("title") or f"Server Machine {action}",
+                "message": detail.get("message") or f"Server Machine {action}",
                 "friendly_name": "Server Machine",
                 "service": str(service),
                 "unit": "server-lifecycle.service",
@@ -85,12 +93,40 @@ def format_canonical_notification(
         action = "started" if kind == "SERVICE_STARTED" else "stopped"
         icon = "🟢" if kind == "SERVICE_STARTED" else "🔴"
         return {
-            "icon": icon,
-            "title": f"{service or 'Service'} {action}",
-            "message": f"{service or 'Service'} {action}",
+            "icon": detail.get("icon") or icon,
+            "title": detail.get("title") or f"{service or 'Service'} {action}",
+            "message": detail.get("message") or f"{service or 'Service'} {action}",
             "friendly_name": service or "Service",
             "service": service,
             "unit": detail.get("unit") or f"{service}.service",
+        }
+
+    if kind == "STARTUP_AGGREGATION":
+        title = detail.get("title") or "🟢 All Systems Operational"
+        msg = detail.get("message") or title
+        icon = detail.get("icon") or "🟢"
+        return {
+            "icon": icon,
+            "title": title,
+            "message": msg,
+            "friendly_name": "System Startup",
+            "service": "system",
+            "unit": "all",
+        }
+
+    if kind in ("BROKER_LOST", "BROKER_RECONNECTED"):
+        is_reconnected = kind == "BROKER_RECONNECTED"
+        icon = "🟢" if is_reconnected else "🔴"
+        default_title = "🟢 Broker Reconnected" if is_reconnected else "🔴 Broker Disconnected"
+        title = detail.get("title") or default_title
+        msg = detail.get("message") or title
+        return {
+            "icon": detail.get("icon") or icon,
+            "title": title,
+            "message": msg,
+            "friendly_name": "Broker Connection",
+            "service": "ibgateway",
+            "unit": "ibgateway.service",
         }
 
     if kind == "MARKET_CLOSED":

@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
+from app.db.models.event import EventLogModel
 from app.db.models.notification import NotificationDeliveryModel, NotificationLogModel
 from app.services.notification.intelligence import NotificationIntelligenceEngine
 from app.services.notification.normalizer import EventNormalizer
@@ -287,6 +288,23 @@ class NotificationOrchestrator:
                         )
                     )
                     await session.execute(insert_deliv_stmt)
+
+                # Mirror admitted event to event_log so frontend Notification Center and Telegram stay 100% in real-time sync
+                try:
+                    event_row = EventLogModel(
+                        process=str(event.category or "system").lower(),
+                        kind=event.event_type,
+                        detail={
+                            **(event.details or {}),
+                            "title": title,
+                            "message": message,
+                            "severity": event.severity.value,
+                            "notification_id": notif_id,
+                        },
+                    )
+                    session.add(event_row)
+                except Exception as mirror_err:
+                    logger.warning("Failed mirroring notification to event_log: %s", mirror_err)
 
                 # Fetch full persisted model for caller
                 fetch_stmt = (

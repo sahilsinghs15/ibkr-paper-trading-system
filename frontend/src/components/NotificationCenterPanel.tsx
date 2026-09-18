@@ -38,6 +38,14 @@ function formatNotificationTime(isoStr: string | null): string {
   }
 }
 
+function cleanDisplayMessage(msg: string | null | undefined): string {
+  if (!msg) return ''
+  return msg
+    .replace(/^<pre>\s*/i, '')
+    .replace(/\s*<\/pre>$/i, '')
+    .trim()
+}
+
 export const NotificationCenterPanel: React.FC = () => {
   const isPanelOpen = useNotificationStore((s) => s.isPanelOpen)
   const closePanel = useNotificationStore((s) => s.closePanel)
@@ -164,8 +172,9 @@ export const NotificationCenterPanel: React.FC = () => {
           <div className="notification-items-list">
             {notifications.map((item) => {
               const isExpanded = expandedId === item.id
-              const hasMultilineMessage = Boolean(item.message && item.message.includes('\n'))
-              const hasSubtitle = Boolean(item.message && item.message !== item.title && !hasMultilineMessage)
+              const cleanMsg = cleanDisplayMessage(item.message)
+              const hasMultilineMessage = cleanMsg.includes('\n')
+              const hasSubtitle = Boolean(cleanMsg && cleanMsg !== item.title.trim() && !hasMultilineMessage)
 
               return (
                 <div
@@ -184,7 +193,7 @@ export const NotificationCenterPanel: React.FC = () => {
                       </div>
 
                       {hasSubtitle && (
-                        <div className="notification-item-subtitle">{item.message}</div>
+                        <div className="notification-item-subtitle">{cleanMsg}</div>
                       )}
 
                       {hasMultilineMessage && !isExpanded && (
@@ -217,10 +226,10 @@ export const NotificationCenterPanel: React.FC = () => {
                       className="notification-technical-details"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      {item.message && (
+                      {cleanMsg && (
                         <div className="technical-message-block">
                           <span className="technical-label">Message Details</span>
-                          <pre className="notification-message-pre">{item.message}</pre>
+                          <pre className="notification-message-pre">{cleanMsg}</pre>
                         </div>
                       )}
                       <div className="technical-grid">

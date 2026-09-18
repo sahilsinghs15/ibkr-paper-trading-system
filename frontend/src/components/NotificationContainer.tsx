@@ -32,6 +32,14 @@ export function NotificationContainer() {
   )
 }
 
+function cleanDisplayMessage(msg: string | null | undefined): string {
+  if (!msg) return ''
+  return msg
+    .replace(/^<pre>\s*/i, '')
+    .replace(/\s*<\/pre>$/i, '')
+    .trim()
+}
+
 function NotificationToastCard({
   toast,
   onClose,
@@ -50,6 +58,9 @@ function NotificationToastCard({
         ? 'toast-stop'
         : 'toast-holiday'
 
+  const cleanMsg = cleanDisplayMessage(toast.message)
+  const showMessage = Boolean(cleanMsg && cleanMsg !== toast.title.trim())
+
   return (
     <div className={`toast-card ${typeClass}`} role="alert">
       <div className="toast-icon" aria-hidden="true">
@@ -60,9 +71,7 @@ function NotificationToastCard({
           <span className="toast-title">{toast.title}</span>
           {toast.timeStr && <span className="toast-time">{toast.timeStr}</span>}
         </div>
-        {toast.message && toast.message !== toast.title && (
-          <div className="toast-message">{toast.message}</div>
-        )}
+        {showMessage && <div className="toast-message">{cleanMsg}</div>}
       </div>
       <button
         type="button"

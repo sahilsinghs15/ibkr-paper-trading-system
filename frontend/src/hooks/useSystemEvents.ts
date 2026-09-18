@@ -91,10 +91,14 @@ function resolveCanonicalTitle(evt: SystemEventItem): {
 
 function eventToToast(evt: SystemEventItem): ToastNotification {
   const { icon, title, message } = resolveCanonicalTitle(evt)
+  const clean = message
+    .replace(/^<pre>\s*/i, '')
+    .replace(/\s*<\/pre>$/i, '')
+    .trim()
   // Clean up message for single-line toast if it contains multi-line status table
-  const singleLineMessage = message.includes('\n')
-    ? message.split('\n')[0]
-    : message
+  const singleLineMessage = clean.includes('\n')
+    ? clean.split('\n')[0]
+    : clean
 
   return {
     id: `evt-${evt.id}`,

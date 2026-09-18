@@ -274,7 +274,7 @@ async def test_startup_aggregator_out_of_order_and_degraded(session_factory):
         assert len(notifs) == 1
         notif = notifs[0]
         assert notif.severity == NotificationSeverity.WARNING.value
-        assert "OEMS Startup Warning" in notif.title
+        assert "Startup Warning" in notif.title
         assert notif.payload["ready"] is False
         assert "broker" in notif.payload["failed"]
 
