@@ -148,6 +148,9 @@ async def get_realtime_system_state(
     # 6. OEMS Engine (Trading backend engine :8001/health)
     if "oems_engine" in components:
         states["oems_engine"] = bool(components["oems_engine"].get("ready", False))
+    elif client is not None:
+        # Client instance is provided when executing from within the trading backend (OEMS engine) process
+        states["oems_engine"] = True
     elif probe_endpoints:
         is_oems_ready = False
         try:

@@ -225,6 +225,7 @@ async def test_runtime_broker_disconnect_and_reconnect(session_factory):
         assert "Connection Lost" in broker_lost.title
         assert "Broker Connection  ✗" in broker_lost.message
         assert "IB Login           ✗" in broker_lost.message
+        assert "OEMS Engine        ✓" in broker_lost.message
 
         broker_rec = next(n for n in notifs if n.event_type == "BROKER_RECONNECTED")
         assert broker_rec.severity == NotificationSeverity.INFO.value

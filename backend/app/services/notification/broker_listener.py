@@ -154,6 +154,7 @@ class BrokerNotificationListener:
             components={
                 "broker_connection": {"ready": False},
                 "ib_login": {"ready": False},
+                "oems_engine": {"ready": True},
             },
         )
 
@@ -186,6 +187,7 @@ class BrokerNotificationListener:
             client=self._client,
             components={
                 "broker_connection": {"ready": True},
+                "oems_engine": {"ready": True},
             },
         )
 
@@ -219,6 +221,7 @@ class BrokerNotificationListener:
             components={
                 "broker_connection": {"ready": True},
                 "ib_login": {"ready": True},
+                "oems_engine": {"ready": True},
             },
         )
 
