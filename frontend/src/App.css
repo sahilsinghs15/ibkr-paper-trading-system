@@ -4986,9 +4986,21 @@ thead th {
 /* Tables: horizontal scroll stays inside the table container */
 .mw-table-wrap {
   max-width: 100%;
+  scrollbar-color: #2a3444 transparent;
+  scrollbar-width: thin;
 }
 .mw-table-wrap.is-ledger {
   border-color: rgba(110, 168, 255, 0.3);
+  /* Fixed-height ledger: scrolls inside its own box so Manual Orders stays in reach. */
+  max-height: min(60vh, 560px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+/* Header row stays visible while the table scrolls. */
+.mw-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 .mw-table th.num,
 .mw-table td.num {
