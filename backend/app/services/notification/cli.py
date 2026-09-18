@@ -50,6 +50,18 @@ SERVICE_MAP: dict[str, dict[str, Any]] = {
         "start_title": "🟢 Signal Receiver Started Successfully",
         "name": "Signal Receiver",
     },
+    "server-machine": {
+        "key": "ec2_instance",
+        "stop_title": "🔴 Server Machine Stopped",
+        "start_title": "🟢 Server Machine Started Successfully",
+        "name": "Server Machine",
+    },
+    "ec2-instance": {
+        "key": "ec2_instance",
+        "stop_title": "🔴 Server Machine Stopped",
+        "start_title": "🟢 Server Machine Started Successfully",
+        "name": "Server Machine",
+    },
 }
 
 
@@ -66,7 +78,8 @@ async def report_service_lifecycle(action: str, service: str) -> int:
     # For stop actions: verify whether this is an instantaneous restart
     # (systemd restart stops then immediately re-activates the unit).
     # We poll for up to 10s to accommodate uvicorn/FastAPI startup time (~5s).
-    if not is_start:
+    # NOTE: ec2_instance shutdown must NOT wait; it must dispatch immediately before OS cuts network!
+    if not is_start and svc_key != "ec2_instance":
         auto_restart_flag = Path("/home/tradingapp/storage/state/backend_auto_restarting.flag")
         if auto_restart_flag.exists():
             logger.info("Auto-restart flag active for %s; suppressing stop alert", service)
@@ -129,12 +142,24 @@ async def report_service_lifecycle(action: str, service: str) -> int:
             return 0
 
     components_override = {svc_key: {"ready": is_start}}
-    if svc_key == "ib_gateway" and not is_start:
+    if svc_key == "ec2_instance" and not is_start:
+        components_override = {
+            "ec2_instance": {"ready": False},
+            "ib_gateway": {"ready": False},
+            "ib_login": {"ready": False},
+            "broker_connection": {"ready": False},
+            "signal_receiver": {"ready": False},
+            "oems_engine": {"ready": False},
+            "dashboard_engine": {"ready": False},
+        }
+    elif svc_key == "ib_gateway" and not is_start:
         components_override["broker_connection"] = {"ready": False}
         components_override["ib_login"] = {"ready": False}
     elif svc_key == "oems_engine" and not is_start:
         components_override["broker_connection"] = {"ready": False}
 
+    title = ""
+    state_table = ""
     try:
         _, state_table = await get_realtime_system_state(
             components=components_override,
@@ -159,8 +184,9 @@ async def report_service_lifecycle(action: str, service: str) -> int:
             correlation_id=svc_key,
             details={
                 "service": service,
-                "action": action,
                 "component": svc_key,
+                "ready": is_start,
+                "action": action,
             },
         )
 
@@ -175,7 +201,21 @@ async def report_service_lifecycle(action: str, service: str) -> int:
             )
             await worker.run_once()
     except Exception:
-        logger.exception("Failed to report lifecycle event for %s %s", action, service)
+        logger.exception("Failed to report lifecycle event for %s %s via DB orchestrator", action, service)
+        # Direct fallback for emergency shutdown if DB is unavailable
+        try:
+            from app.core.config import get_settings
+            settings = get_settings()
+            token = settings.telegram_bot_token
+            chat_id = settings.telegram_chat_id
+            if settings.telegram_enabled and token and chat_id and title and state_table:
+                import httpx
+                url = f"https://api.telegram.org/bot{token}/sendMessage"
+                text = f"<b>{title}</b>\n\n{state_table}"
+                async with httpx.AsyncClient(timeout=4.0) as http_client:
+                    await http_client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
+        except Exception:
+            logger.exception("Direct Telegram fallback also failed for %s %s", action, service)
 
     return 0
 

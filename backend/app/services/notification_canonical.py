@@ -70,6 +70,17 @@ def format_canonical_notification(
                 "service": service,
                 "unit": svc_cfg["unit"],
             }
+        if str(service) in ("server-machine", "ec2-instance", "ec2_instance", "server"):
+            action = "Started Successfully" if kind == "SERVICE_STARTED" else "Stopped"
+            icon = "🟢" if kind == "SERVICE_STARTED" else "🔴"
+            return {
+                "icon": icon,
+                "title": f"Server Machine {action}",
+                "message": f"Server Machine {action}",
+                "friendly_name": "Server Machine",
+                "service": str(service),
+                "unit": "server-lifecycle.service",
+            }
         # Fallback for unrecognized service
         action = "started" if kind == "SERVICE_STARTED" else "stopped"
         icon = "🟢" if kind == "SERVICE_STARTED" else "🔴"

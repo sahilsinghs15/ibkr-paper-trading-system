@@ -42,16 +42,9 @@ async def get_realtime_system_state(
     # 1. Server Machine (Host environment)
     if "ec2_instance" in components:
         states["ec2_instance"] = bool(components["ec2_instance"].get("ready", False))
-    elif probe_endpoints:
-        is_server_healthy = False
-        try:
-            load = os.getloadavg()
-            is_server_healthy = len(load) == 3 and load[0] >= 0
-        except OSError:
-            pass
-        states["ec2_instance"] = is_server_healthy
     else:
-        states["ec2_instance"] = False
+        # Host environment is active by virtue of this code executing
+        states["ec2_instance"] = True
 
     # 2. IB Gateway (systemd ibgateway.service / process check)
     if "ib_gateway" in components:

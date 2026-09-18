@@ -517,3 +517,44 @@ def test_canonical_dashboard_service_messages():
     assert demo_cfg["SERVICE_STOPPED"]["message"] == "Dashboard Engine Stopped"
 
 
+@pytest.mark.asyncio
+async def test_server_machine_lifecycle_notifications(session_factory):
+    """Verify server-machine start and stop produce canonical Server Machine notifications."""
+    from app.services.notification.cli import report_service_lifecycle
+
+    with patch("app.services.notification.cli.AsyncSessionLocal", session_factory), \
+         patch("app.services.notification.cli.get_default_dispatcher"), \
+         patch("app.services.notification.cli.NotificationDeliveryWorker") as mock_worker:
+        mock_worker.return_value.run_once = AsyncMock()
+
+        # 1. Stop Server Machine
+        rc_stop = await report_service_lifecycle("stop", "server-machine")
+        assert rc_stop == 0
+
+        async with session_factory() as session:
+            notifs = (await session.execute(select(NotificationLogModel))).scalars().all()
+            assert len(notifs) == 1
+            assert notifs[0].event_type == "SERVICE_STOPPED"
+            assert notifs[0].title == "🔴 Server Machine Stopped"
+            assert "Server Machine     ✗" in notifs[0].message
+            assert "OEMS Engine        ✗" in notifs[0].message
+            assert "Dashboard Engine   ✗" in notifs[0].message
+
+        # Clean table
+        async with session_factory() as session:
+            await session.execute(delete(NotificationLogModel))
+            await session.commit()
+
+        # 2. Start Server Machine
+        rc_start = await report_service_lifecycle("start", "server-machine")
+        assert rc_start == 0
+
+        async with session_factory() as session:
+            notifs = (await session.execute(select(NotificationLogModel))).scalars().all()
+            assert len(notifs) == 1
+            assert notifs[0].event_type == "SERVICE_STARTED"
+            assert notifs[0].title == "🟢 Server Machine Started Successfully"
+            assert "Server Machine     ✓" in notifs[0].message
+
+
+

@@ -1,0 +1,19 @@
+[Unit]
+Description=Server Machine Lifecycle Notification (Startup & Shutdown)
+DefaultDependencies=no
+After=network-online.target docker.service
+Wants=network-online.target
+Before=shutdown.target poweroff.target halt.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=tradingapp
+WorkingDirectory=/home/tradingapp/app/backend
+EnvironmentFile=/home/tradingapp/app/backend/.env
+ExecStart=/home/tradingapp/app/backend/.venv/bin/python -m app.services.notification.cli start server-machine
+ExecStop=/home/tradingapp/app/backend/.venv/bin/python -m app.services.notification.cli stop server-machine
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
