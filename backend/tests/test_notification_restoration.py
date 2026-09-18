@@ -557,4 +557,63 @@ async def test_server_machine_lifecycle_notifications(session_factory):
             assert "Server Machine     ✓" in notifs[0].message
 
 
+@pytest.mark.asyncio
+async def test_unrecovered_broker_lost_does_not_claim_broker_reconnected_if_broker_down(session_factory):
+    """If an unrecovered BROKER_LOST exists, but broker_connection is FALSE during startup,
+
+    StartupAggregator must NEVER emit '🟢 IBKR Broker Connected Successfully'.
+    It must emit '⚠️ System Universe Startup Warning'.
+    """
+    orchestrator = NotificationOrchestrator(session_factory)
+
+    # 1. Prior unrecovered BROKER_LOST incident
+    lost_event = NormalizedEvent(
+        event_type="BROKER_LOST",
+        title="🔴 IBKR Broker Connection Lost",
+        message="TWS/Gateway socket disconnected.",
+        category="BROKER",
+        severity=NotificationSeverity.CRITICAL,
+        correlation_id="broker_connection",
+    )
+    await orchestrator.ingest_event(lost_event)
+
+    # 2. StartupAggregator runs while IB Gateway and broker are down
+    aggregator = StartupAggregator(
+        orchestrator=orchestrator,
+        window_sec=0.2,
+        auto_probe=False,
+    )
+    await aggregator.start_window()
+
+    # Host & web services ready, but IB components are down
+    aggregator.record_component("ec2_instance", is_ready=True)
+    aggregator.record_component("ib_gateway", is_ready=False)
+    aggregator.record_component("ib_login", is_ready=False)
+    aggregator.record_component("broker_connection", is_ready=False)
+    aggregator.record_component("signal_receiver", is_ready=True)
+    aggregator.record_component("oems_engine", is_ready=True)
+    aggregator.record_component("dashboard_engine", is_ready=True)
+
+    await asyncio.sleep(0.3)
+
+    async with session_factory() as session:
+        notifs = (
+            await session.execute(
+                select(NotificationLogModel).order_by(NotificationLogModel.id.asc())
+            )
+        ).scalars().all()
+
+        assert len(notifs) == 2
+        startup_notif = notifs[1]
+        assert startup_notif.event_type == "STARTUP_AGGREGATION"
+        assert startup_notif.title == "⚠️ System Universe Startup Warning"
+        assert startup_notif.title != "🟢 IBKR Broker Connected Successfully"
+        assert startup_notif.severity == NotificationSeverity.WARNING.value
+        assert "Broker Connection  ✗" in startup_notif.message
+        assert "IB Gateway         ✗" in startup_notif.message
+        assert "IB Login           ✗" in startup_notif.message
+        assert "Server Machine     ✓" in startup_notif.message
+
+
+
 

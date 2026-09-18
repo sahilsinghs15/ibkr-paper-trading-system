@@ -286,7 +286,8 @@ class StartupAggregator:
             is_fully_ready = (not missing_critical) and (not failed_components)
 
             # Check if this startup resolves an active unrecovered BROKER_LOST incident
-            is_broker_recovery = await self._has_unrecovered_broker_lost()
+            is_broker_ready = bool(self._components.get("broker_connection", {}).get("ready", False))
+            is_broker_recovery = (await self._has_unrecovered_broker_lost()) and is_broker_ready
 
             if is_broker_recovery:
                 title = "🟢 IBKR Broker Connected Successfully"
