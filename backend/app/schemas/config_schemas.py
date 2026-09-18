@@ -251,6 +251,7 @@ class ClosePairResponse(BaseModel):
     status: str
     success: bool
     message: str | None = None
+    order_ids: list[str] = Field(default_factory=list)
 
 
 class PatchPositionExitsRequest(BaseModel):

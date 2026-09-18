@@ -7,6 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin
+from app.audit.context import actor_for_user
+from app.audit.recorder import audit_entry, get_audit_recorder
+from app.audit.taxonomy import AuditAction, AuditResult
 from app.db.models.user import UserModel
 from app.db.session import AsyncSessionLocal, get_db_session
 from app.schemas.system_monitor import CreditUsageResponse, SystemMonitorResponse
@@ -70,23 +73,38 @@ async def get_credit_usage(
     response_model=dict,
 )
 async def refresh_credit_usage(
+    request: Request,
     _admin: Annotated[UserModel, Depends(require_admin)],
 ) -> dict:
     """Admin-triggered AWS fetch (outside normal daily schedule)."""
-    identity = await discover_instance_identity()
-    if identity is None:
-        raise HTTPException(status_code=503, detail="Instance identity unavailable (no IMDS / env config)")
-    svc = InstanceCreditService(AsyncSessionLocal)
     target_date = (datetime.now(UTC) - timedelta(days=1)).date()
-    result = await svc.fetch_and_persist_for_date(target_date, identity=identity)
-    if result is None:
-        # Could be missing data or error; report to caller
-        return {"status": "no_data", "target_date": target_date.isoformat(), "detail": "No cost data available or fetch failed (see logs, ledger not overwritten with $0)"}
-    return {
-        "status": "ok",
-        "target_date": target_date.isoformat(),
-        "total_cost_usd": str(result.total_cost_usd) if result.total_cost_usd is not None else None,
-        "ec2_cost_usd": str(result.ec2_cost_usd) if result.ec2_cost_usd is not None else None,
-        "public_ipv4_cost_usd": str(result.public_ipv4_cost_usd) if result.public_ipv4_cost_usd is not None else None,
-        "source": result.source,
-    }
+    entry = audit_entry(
+        request,
+        action=AuditAction.CREDIT_LEDGER_REFRESH,
+        actor=actor_for_user(request, _admin),
+        summary=f"Instance credit ledger refresh for {target_date.isoformat()}",
+        target_type="CREDIT_LEDGER",
+        target_id=target_date.isoformat(),
+        parameters={"target_date": target_date.isoformat()},
+    )
+    async with get_audit_recorder(request).operation(entry) as audit_op:
+        identity = await discover_instance_identity()
+        if identity is None:
+            raise HTTPException(status_code=503, detail="Instance identity unavailable (no IMDS / env config)")
+        svc = InstanceCreditService(AsyncSessionLocal)
+        result = await svc.fetch_and_persist_for_date(target_date, identity=identity)
+        if result is None:
+            # Could be missing data or error; report to caller
+            payload: dict[str, str | None] = {"status": "no_data", "target_date": target_date.isoformat(), "detail": "No cost data available or fetch failed (see logs, ledger not overwritten with $0)"}
+            audit_op.set_outcome(AuditResult.FAILED, reason=payload["detail"], after=payload)
+            return payload
+        payload = {
+            "status": "ok",
+            "target_date": target_date.isoformat(),
+            "total_cost_usd": str(result.total_cost_usd) if result.total_cost_usd is not None else None,
+            "ec2_cost_usd": str(result.ec2_cost_usd) if result.ec2_cost_usd is not None else None,
+            "public_ipv4_cost_usd": str(result.public_ipv4_cost_usd) if result.public_ipv4_cost_usd is not None else None,
+            "source": result.source,
+        }
+        audit_op.set_outcome(AuditResult.SUCCEEDED, after=payload)
+        return payload

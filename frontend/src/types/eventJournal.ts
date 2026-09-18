@@ -1,4 +1,5 @@
-export interface AuditLogItem {
+/** Machine/system event journal (event_log). Not the operator audit trail. */
+export interface EventJournalItem {
   id: number
   ts: string
   process: string
@@ -10,14 +11,14 @@ export interface AuditLogItem {
   detail: Record<string, unknown>
 }
 
-export interface AuditLogsResponse {
+export interface EventJournalResponse {
   total: number
   limit: number
   offset: number
-  events: AuditLogItem[]
+  events: EventJournalItem[]
 }
 
-export interface AuditLogsQueryParams {
+export interface EventJournalQueryParams {
   category?: string
   process?: string
   kind?: string

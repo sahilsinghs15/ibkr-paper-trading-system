@@ -2,6 +2,7 @@
 
 from app.db.models.account import AccountModel, PerSymbolLimitModel
 from app.db.models.account_loss_state import AccountLossStateModel
+from app.db.models.audit import AuditEventModel, AuthSessionModel
 from app.db.models.basket import BasketModel
 from app.db.models.broker_position import BrokerPositionModel, PositionReconcileRunModel
 from app.db.models.event import EventLogModel
@@ -39,6 +40,8 @@ __all__ = [
     "AccountLossStateModel",
     "AccountModel",
     "AllocationModel",
+    "AuditEventModel",
+    "AuthSessionModel",
     "BasketModel",
     "BrokerPositionModel",
     "EventLogModel",

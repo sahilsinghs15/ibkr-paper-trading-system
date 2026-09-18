@@ -59,7 +59,7 @@ export function AppHeader() {
   }
 
   function handleLogout() {
-    logout()
+    logout({ revokeServerSession: true })
     navigate('/login', { replace: true })
   }
 

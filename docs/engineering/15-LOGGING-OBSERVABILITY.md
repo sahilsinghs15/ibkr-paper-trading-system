@@ -13,17 +13,42 @@
 
 ---
 
-## 2. DATABASE AUDIT LOGGING
+## 2. DATABASE AUDIT & EVENT JOURNALS
 
-1. **`event_log` Table**:
-   - Central append-only audit trail for algorithmic engine events.
-   - Records RMS check outcomes, kill switch activations, reconcile sweeps, and position align actions.
-   - Enforces unique `idempotency_key` where applicable.
-2. **`manual_audit_events` Table**:
-   - Dedicated audit trail for manual trading actions.
-   - Records `MANUAL_ORDER_SUBMITTED`, `MANUAL_ORDER_CANCELLED`, `MANUAL_ORDER_STATUS_UPDATED`, and `MANUAL_EXECUTION_RECEIVED`.
+1. **`audit_events` Table — Operator Audit Trail (authoritative)**:
+   - One row per meaningful human/operator (or external-caller) action that can affect trading, risk,
+     configuration, inventory, emergency state, services or security. Not UI analytics.
+   - Written only by backend routes through `app/audit/recorder.py` (`AuditRecorder`):
+     - `transaction()` — settings mutations: audit row commits atomically with the change; refusals are
+       recorded separately after rollback.
+     - `operation()` — side-effecting actions (manual orders, Close Pair, flattens, inventory fixes, service
+       lifecycle): a `PENDING` row is **committed before** the side effect, then finalized once.
+       `trading-backend` stop/restart can never run without a durable audit row (fails closed with 503).
+     - `record_committed()` — security events (login success/failure, logout, ended-session token reuse,
+       access denied; the last two are throttled).
+   - Taxonomy (`app/audit/taxonomy.py`): category / action / result / actor_type are structured columns.
+   - Actor = server-derived identity (JWT + `auth_sessions`) + observed context (IP resolved by uvicorn
+     trusted-proxy handling, User-Agent, client-reported device id/app version flagged unverified).
+     Never taken from request bodies. Does not claim to identify the physical person.
+   - **Append-only enforced in PostgreSQL**: DELETE/TRUNCATE rejected; UPDATE only allowed to finalize a
+     `PENDING` row once, touching outcome columns only. No foreign keys (evidence survives deletions).
+   - Values are sanitized before persistence (`app/audit/sanitize.py`): secrets redacted, control chars
+     stripped, sizes bounded.
+   - Read API (admin only): `GET /api/v1/audit/events|events/{id}|facets`. UI: Audit Logs page.
+   - Legacy operator rows from `event_log` / `manual_audit_events` were imported with `provenance=LEGACY_*`
+     (no IP/session/role fabricated).
+2. **`auth_sessions` Table**: one row per login; its id is the signed `sid` JWT claim. Logout ends the session
+   and every token (including derived SSE tokens) carrying that `sid` is rejected.
+3. **`event_log` Table — System Event Journal**:
+   - Machine/engine events (RMS outcomes, reconcile sweeps, kill switch operations, service events) and the
+     notification mirror. Shown in the "System Event Journal" tab (`GET /demo/event-journal`).
+   - It is **not** the operator audit trail; do not add operator attribution writes here.
+4. **`manual_audit_events` Table**: manual order lifecycle ledger (submissions, cancels, status updates, fills).
 
----
+### Client IP trust model
+Browser → dashboard (`:8010`, peer IP is the real client; forwarded headers only trusted from 127.0.0.1)
+→ `/api/v1` proxy **replaces** any client-supplied `X-Forwarded-For`/`X-Real-IP`/`Forwarded` with its own
+view of the peer → trading API (`:8001`, loopback only) trusts `X-Forwarded-For` only from 127.0.0.1.
 
 ## 3. TELEGRAM OPERATOR ALERTS
 

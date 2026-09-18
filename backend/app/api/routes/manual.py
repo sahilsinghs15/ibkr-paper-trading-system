@@ -15,6 +15,9 @@ from sqlalchemy import func, select
 
 from app.api.deps import require_authenticated_user
 from app.api.routes.config import _check_account_authorization
+from app.audit.context import actor_for_user
+from app.audit.recorder import audit_entry, get_audit_recorder, model_snapshot
+from app.audit.taxonomy import AuditAction, AuditResult
 from app.broker.ibkr.tws_client import TWSClient
 from app.core.config import get_settings
 from app.db.models.account import AccountModel
@@ -354,8 +357,60 @@ async def submit_manual_order(
         if acc is None:
             raise HTTPException(status_code=404, detail=f"Account {clean_account} not found")
 
+        from app.services.kill_switch import is_account_kill_switch_active
+
+        before: dict[str, object] = {"kill_switch_active": is_account_kill_switch_active(acc.id)}
+        if payload.trade_id:
+            # Separate session: never share identity-map state with the service.
+            async with AsyncSessionLocal() as snap_session:
+                lot = await ManualPositionRepository(snap_session).get_by_trade_id(
+                    acc.id, payload.trade_id.strip()
+                )
+                before["manual_position"] = model_snapshot(lot, exclude=("live_pnl",))
+        entry = audit_entry(
+            request,
+            action=AuditAction.MANUAL_ORDER_SUBMIT,
+            actor=actor_for_user(request, current_user),
+            summary=(
+                f"Manual {payload.side} {payload.quantity} {payload.symbol.strip().upper()} "
+                f"{payload.order_type}"
+                + (f" @ {payload.limit_price}" if payload.limit_price is not None else "")
+            ),
+            account_id=acc.id,
+            ibkr_account=acc.ibkr_account,
+            target_type="MANUAL_ORDER",
+            parameters=payload.model_dump(),
+            before_state=before,
+            related={
+                "idempotency_key": payload.idempotency_key,
+                "con_id": payload.con_id,
+                "trade_id": payload.trade_id,
+            },
+        )
         service = ManualTradingService(session, client=client, ibkr_adapter=ibkr_adapter)
-        return await service.submit_order(acc, payload, current_user)
+        async with get_audit_recorder(request).operation(entry) as audit_op:
+            response = await service.submit_order(acc, payload, current_user)
+            order = response.order
+            audit_op.add_related(
+                internal_order_id=order.internal_order_id,
+                broker_order_id=order.broker_order_id,
+                perm_id=order.perm_id,
+                trade_id=order.trade_id,
+                manual_order_id=order.id,
+            )
+            audit_op.set_outcome(
+                AuditResult.SUCCEEDED,
+                reason="Idempotent replay: no new broker order was placed."
+                if response.idempotent_replay
+                else None,
+                after={
+                    "order": order,
+                    "idempotent_replay": response.idempotent_replay,
+                    "message": response.message,
+                },
+                target_id=order.internal_order_id,
+            )
+        return response
 
 
 @router.get(
@@ -515,6 +570,51 @@ async def cancel_manual_order(
         if acc is None:
             raise HTTPException(status_code=404, detail=f"Account {clean_account} not found")
 
+        # Separate session: the service must take its own FOR UPDATE read.
+        async with AsyncSessionLocal() as snap_session:
+            existing = await ManualOrderRepository(snap_session).get_by_id(
+                order_id, account_id=acc.id
+            )
+            existing_read = (
+                ManualOrderRead.model_validate(existing) if existing is not None else None
+            )
+        entry = audit_entry(
+            request,
+            action=AuditAction.MANUAL_ORDER_CANCEL,
+            actor=actor_for_user(request, current_user),
+            summary=(
+                f"Cancel manual order {existing.internal_order_id} ({existing.symbol})"
+                if existing is not None
+                else f"Cancel manual order id={order_id}"
+            ),
+            account_id=acc.id,
+            ibkr_account=acc.ibkr_account,
+            target_type="MANUAL_ORDER",
+            target_id=existing.internal_order_id if existing is not None else str(order_id),
+            parameters={"order_id": order_id},
+            before_state=existing_read,
+            related={
+                "manual_order_id": order_id,
+                "internal_order_id": existing.internal_order_id if existing else None,
+                "broker_order_id": existing.broker_order_id if existing else None,
+                "perm_id": existing.perm_id if existing else None,
+            },
+        )
         service = ManualTradingService(session, client=client, ibkr_adapter=ibkr_adapter)
-        return await service.cancel_order(acc, order_id=order_id, current_user=current_user)
+        async with get_audit_recorder(request).operation(entry) as audit_op:
+            response = await service.cancel_order(
+                acc, order_id=order_id, current_user=current_user
+            )
+            if not response.success:
+                cancel_result = AuditResult.REJECTED
+            elif response.status == "CANCEL_REQUESTED":
+                cancel_result = AuditResult.ACCEPTED
+            else:
+                cancel_result = AuditResult.SUCCEEDED
+            audit_op.set_outcome(
+                cancel_result,
+                reason=None if response.success else response.message,
+                after=response,
+            )
+        return response
 

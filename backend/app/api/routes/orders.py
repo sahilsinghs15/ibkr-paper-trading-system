@@ -2,9 +2,12 @@
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.deps import get_oms, require_authenticated_user
+from app.audit.context import actor_for_user
+from app.audit.recorder import audit_entry, get_audit_recorder
+from app.audit.taxonomy import AuditAction, AuditResult
 from app.db.models.user import UserModel
 from app.oms.oms_service import OMSService
 from app.schemas.api_schemas import OrderSchema
@@ -61,6 +64,7 @@ async def get_order_by_id(
 )
 async def cancel_order(
     order_id: str,
+    request: Request,
     oms: OMSService = Depends(get_oms),
     current_user: UserModel = Depends(require_authenticated_user),
 ) -> OrderSchema:
@@ -73,16 +77,33 @@ async def cancel_order(
         user_account = current_user.account.ibkr_account if current_user.account else None
         if getattr(order.intent, "ibkr_account", None) != user_account:
             raise HTTPException(status_code=404, detail=f"Order {order_id} not found.")
-    try:
-        canceled_order = await oms.cancel_order(order_id)
-        logger.info(
-            "HTTP cancel order result: order_id=%s status=%s",
-            order_id,
-            canceled_order.status.value,
-        )
-        return OrderSchema.model_validate(canceled_order)
-    except ValueError as e:
-        logger.warning("HTTP cancel order failed: order_id=%s error=%s", order_id, e)
-        if "not found" in str(e).lower():
-            raise HTTPException(status_code=404, detail=str(e))
-        raise HTTPException(status_code=400, detail=str(e))
+    before = OrderSchema.model_validate(order)
+    entry = audit_entry(
+        request,
+        action=AuditAction.ENGINE_ORDER_CANCEL,
+        actor=actor_for_user(request, current_user),
+        summary=f"Cancel engine order {order_id} ({order.symbol})",
+        account_id=getattr(order.intent, "account_id", None),
+        ibkr_account=getattr(order.intent, "ibkr_account", None),
+        target_type="ENGINE_ORDER",
+        target_id=order_id,
+        parameters={"order_id": order_id},
+        before_state=before,
+        related={"internal_order_id": order_id},
+    )
+    async with get_audit_recorder(request).operation(entry) as audit_op:
+        try:
+            canceled_order = await oms.cancel_order(order_id)
+            logger.info(
+                "HTTP cancel order result: order_id=%s status=%s",
+                order_id,
+                canceled_order.status.value,
+            )
+            result = OrderSchema.model_validate(canceled_order)
+            audit_op.set_outcome(AuditResult.SUCCEEDED, after=result)
+            return result
+        except ValueError as e:
+            logger.warning("HTTP cancel order failed: order_id=%s error=%s", order_id, e)
+            if "not found" in str(e).lower():
+                raise HTTPException(status_code=404, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e))

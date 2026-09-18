@@ -124,12 +124,13 @@ def test_service_control_start_allowed_services(
         assert data["unit"] == expected_unit
 
         # Verify subprocess.run was called with fixed list [systemctl, start, expected_unit]
-        patched_subprocess.assert_called_once_with(
-            ["systemctl", "start", expected_unit],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
+        # Exactly one mutating systemctl call; any other calls are read-only
+        # `systemctl show` snapshots taken for the audit record.
+        mutating = [c for c in patched_subprocess.call_args_list if c.args[0][1] != "show"]
+        expected_cmd = ["systemctl", "start", expected_unit]
+        assert len(mutating) == 1
+        assert mutating[0].args[0] == expected_cmd
+        assert mutating[0].kwargs == {"capture_output": True, "text": True, "timeout": 15}
 
 
 def test_service_control_status_action(client: TestClient, mock_admin):
@@ -181,10 +182,15 @@ def test_service_control_restart_allowed_services(
         assert data["service"] == service_key
         assert data["unit"] == expected_unit
 
-        patched_subprocess.assert_called_once_with(
-            ["systemctl", "restart", expected_unit],
-            capture_output=True,
-            text=True,
-            timeout=15,
+        # Exactly one mutating systemctl call; any other calls are read-only
+        # `systemctl show` snapshots taken for the audit record.
+        mutating = [c for c in patched_subprocess.call_args_list if c.args[0][1] != "show"]
+        expected_cmd = (
+            ["systemctl", "--no-block", "restart", expected_unit]
+            if expected_unit == "trading-backend.service"
+            else ["systemctl", "restart", expected_unit]
         )
+        assert len(mutating) == 1
+        assert mutating[0].args[0] == expected_cmd
+        assert mutating[0].kwargs == {"capture_output": True, "text": True, "timeout": 15}
 

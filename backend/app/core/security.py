@@ -77,8 +77,14 @@ def decode_access_token(token: str) -> dict:
     return payload
 
 
-def create_sse_token(user_id: int, expires_minutes: int = 480) -> str:
-    """Create a short-lived, purpose-specific JWT token for SSE streaming."""
+def create_sse_token(
+    user_id: int, expires_minutes: int = 480, session_id: str | None = None
+) -> str:
+    """Create a short-lived, purpose-specific JWT token for SSE streaming.
+
+    ``session_id`` binds the SSE token to the server-side auth session that
+    issued it, so ending that session also invalidates derived SSE tokens.
+    """
     settings = get_settings()
     now = datetime.now(UTC)
     expire = now + timedelta(minutes=expires_minutes)
@@ -90,6 +96,8 @@ def create_sse_token(user_id: int, expires_minutes: int = 480) -> str:
         "iat": int(now.timestamp()),
         "exp": int(expire.timestamp()),
     }
+    if session_id:
+        payload["sid"] = session_id
     
     return jwt.encode(
         payload,

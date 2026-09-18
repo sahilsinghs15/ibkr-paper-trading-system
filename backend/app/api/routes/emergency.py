@@ -11,6 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit.context import AuditActor
+from app.audit.recorder import audit_entry, get_audit_recorder
+from app.audit.taxonomy import AuditAction, AuditResult
 from app.core.config import get_settings
 from app.db.models.account import AccountModel
 from app.db.session import get_db_session
@@ -124,17 +127,48 @@ async def emergency_kill_switch_endpoint(
         order_manager=order_manager,
     )
 
-    try:
-        _op, created_new = await kill_switch_svc.arm_account_kill_switch_only(
-            account_id=account.id,
-            requested_by="emergency_webhook",
+    from app.services.kill_switch import is_account_kill_switch_active
+
+    # The caller is a machine holding the shared emergency secret, not a user.
+    settings = get_settings()
+    actor = AuditActor.service(
+        "emergency_webhook",
+        auth_method="shared-secret" if settings.emergency_killswitch_auth_enabled else "none(auth-disabled)",
+    )
+    entry = audit_entry(
+        request,
+        action=AuditAction.KILL_SWITCH_ARMED_EXTERNAL,
+        actor=actor,
+        summary=f"External emergency webhook armed Kill Switch on {account.ibkr_account}",
+        account_id=account.id,
+        ibkr_account=account.ibkr_account,
+        target_type="ACCOUNT",
+        target_id=account.ibkr_account,
+        parameters={"ibkr_account_id": clean_ibkr_id},
+        before_state={"kill_switch_active": is_account_kill_switch_active(account.id)},
+    )
+    async with get_audit_recorder(request).operation(entry, required=False) as audit_op:
+        try:
+            _op, created_new = await kill_switch_svc.arm_account_kill_switch_only(
+                account_id=account.id,
+                requested_by="emergency_webhook",
+            )
+        except Exception as exc:
+            logger.exception("Failed to arm emergency kill switch for account_id=%s", account.id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to persist emergency kill switch state.",
+            ) from exc
+        audit_op.add_related(operation_id=str(_op.operation_id))
+        audit_op.set_outcome(
+            AuditResult.SUCCEEDED,
+            reason=None if created_new else "Kill switch was already active.",
+            after={
+                "operation_id": str(_op.operation_id),
+                "new_operation_started": created_new,
+                "kill_switch_active": is_account_kill_switch_active(account.id),
+            },
         )
-    except Exception as exc:
-        logger.exception("Failed to arm emergency kill switch for account_id=%s", account.id)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to persist emergency kill switch state.",
-        ) from exc
 
     if created_new:
         message = "Emergency kill switch activated for account"

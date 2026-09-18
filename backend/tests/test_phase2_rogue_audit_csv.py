@@ -600,10 +600,10 @@ async def test_rogue_skips_in_flight_and_one_sweep_noise(
 
 
 @pytest.mark.asyncio
-async def test_audit_logs_api_authorization_and_queries(
+async def test_event_journal_api_authorization_and_queries(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Test /demo/audit-logs authentication, admin authorization, pagination, category filtering, and search."""
+    """Test /demo/event-journal (system event journal, formerly audit-logs) authentication, admin authorization, pagination, category filtering, and search."""
     redis_mock = MagicMock()
     redis_mock.ping = AsyncMock(return_value=True)
     redis_mock.xread = AsyncMock(return_value=[])
@@ -668,21 +668,21 @@ async def test_audit_logs_api_authorization_and_queries(
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # 1. Unauthenticated -> 401
         res_unauth = await client.get(
-            "/demo/audit-logs",
+            "/demo/event-journal",
             headers={"Authorization": "Bearer invalid_token"},
         )
         assert res_unauth.status_code == 401
 
         # 2. Non-admin -> 403
         res_forbidden = await client.get(
-            "/demo/audit-logs",
+            "/demo/event-journal",
             headers={"Authorization": f"Bearer {user_token}"},
         )
         assert res_forbidden.status_code == 403
 
         # 3. Admin -> 200 with server-side pagination
         res_admin = await client.get(
-            "/demo/audit-logs",
+            "/demo/event-journal",
             headers={"Authorization": f"Bearer {admin_token}"},
             params={"limit": 2, "offset": 0},
         )
@@ -695,7 +695,7 @@ async def test_audit_logs_api_authorization_and_queries(
 
         # 4. Search by unique prefix
         res_search = await client.get(
-            "/demo/audit-logs",
+            "/demo/event-journal",
             headers={"Authorization": f"Bearer {admin_token}"},
             params={"search": prefix},
         )
@@ -705,7 +705,7 @@ async def test_audit_logs_api_authorization_and_queries(
 
         # 5. Category filter: signals -> webhook only
         res_signals = await client.get(
-            "/demo/audit-logs",
+            "/demo/event-journal",
             headers={"Authorization": f"Bearer {admin_token}"},
             params={"category": "signals", "search": prefix},
         )
@@ -716,7 +716,7 @@ async def test_audit_logs_api_authorization_and_queries(
 
         # 6. Category filter: reconcile -> ROGUE_TRADE_DETECTED
         res_rec = await client.get(
-            "/demo/audit-logs",
+            "/demo/event-journal",
             headers={"Authorization": f"Bearer {admin_token}"},
             params={"category": "reconcile", "search": prefix},
         )

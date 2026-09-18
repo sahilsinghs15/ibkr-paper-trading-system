@@ -121,3 +121,22 @@ def _clear_flatten_inflight() -> None:  # pyrefly: ignore[bad-return]
     _HELD.clear()
     yield
     _HELD.clear()
+
+
+_APP_STATE_KEYS = ("session_factory", "order_manager")
+
+
+@pytest.fixture(autouse=True)
+def _restore_trading_app_state():  # pyrefly: ignore[bad-return]
+    """Tests assign app.state.session_factory to a per-test engine; restore it so a
+    later test never reuses a factory whose pooled connections belong to a closed
+    event loop."""
+    from app.main import app
+
+    saved = {k: getattr(app.state, k) for k in _APP_STATE_KEYS if hasattr(app.state, k)}
+    yield
+    for key in _APP_STATE_KEYS:
+        if key in saved:
+            setattr(app.state, key, saved[key])
+        elif hasattr(app.state, key):
+            delattr(app.state, key)

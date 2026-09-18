@@ -104,7 +104,8 @@ Under no circumstances may any agent bypass:
 
 - **Alembic is the Sole Schema Authority**: All schema mutations must use versioned Alembic migrations under `backend/alembic/versions/`.
 - **`Base.metadata.create_all()` is FORBIDDEN** in production application code.
-- **Never wipe or truncate tables**: Do not delete historical rows from `orders`, `executions`, `positions`, `trade_executions`, `event_log`, or `manual_audit_events` to satisfy tests or clear UI errors.
+- **Never wipe or truncate tables**: Do not delete historical rows from `orders`, `executions`, `positions`, `trade_executions`, `event_log`, `manual_audit_events`, `audit_events`, or `auth_sessions` to satisfy tests or clear UI errors. `audit_events` is append-only at the database level.
+- **Operator actions must be audited**: New state-changing operator endpoints must record through `app/audit/recorder.py` (`transaction()` or `operation()`), never via `event_log`.
 - **Row-Level Locking**: Mutations of position rows must use `select(...).with_for_update()`.
 - **No Broker Calls inside DB Transactions**: Never hold a database transaction open while awaiting an IBKR network round-trip.
 

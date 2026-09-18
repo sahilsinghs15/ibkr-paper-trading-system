@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -30,6 +31,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import running_under_pytest
 from app.core.security import decode_access_token, decode_sse_token
 from app.db.models.account import AccountModel
+from app.db.models.audit import AuthSessionModel
 from app.db.models.event import EventLogModel
 from app.db.models.notification_read import (
     UserNotificationReadModel,
@@ -107,6 +109,8 @@ async def _get_authenticated_user_from_request(
 
     try:
         user_id = int(token_payload["sub"])
+        sid_raw = token_payload.get("sid")
+        session_uuid = uuid.UUID(str(sid_raw)) if sid_raw is not None else None
     except (ValueError, TypeError):
         return None
 
@@ -117,9 +121,25 @@ async def _get_authenticated_user_from_request(
             .where(UserModel.id == user_id)
         )
         user = result.scalar_one_or_none()
+        if session_uuid is not None:
+            # Tokens bound to a server-side session stop working once it ends.
+            auth_session = await session.get(AuthSessionModel, session_uuid)
+            if (
+                auth_session is None
+                or auth_session.user_id != user_id
+                or auth_session.ended_at is not None
+            ):
+                return None
         if user and user.is_active:
             return user
     return None
+
+
+# Headers that carry client-origin claims. They are never forwarded as sent by
+# the browser; the proxy sets X-Forwarded-For from its own view of the peer.
+_ORIGIN_HEADERS = frozenset(
+    {"x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", "x-real-ip", "forwarded"}
+)
 
 
 def _spa_index() -> FileResponse:
@@ -433,8 +453,8 @@ def create_demo_app(
             },
         )
 
-    @app.get("/demo/audit-logs")
-    async def audit_logs(
+    @app.get("/demo/event-journal")
+    async def event_journal(
         request: Request,
         category: str | None = None,
         process: str | None = None,
@@ -450,7 +470,7 @@ def create_demo_app(
             raise HTTPException(status_code=401, detail="Not authenticated")
         if user.role != "admin":
             raise HTTPException(
-                status_code=403, detail="Admin role required for audit logs"
+                status_code=403, detail="Admin role required for the system event journal"
             )
 
         def _parse_audit_dt(val: str | None) -> datetime | None:
@@ -889,7 +909,14 @@ def create_demo_app(
             k: v
             for k, v in request.headers.items()
             if k.lower() not in ("host", "content-length", "connection")
+            and k.lower() not in _ORIGIN_HEADERS
         }
+        # request.client is this server's own (trusted-proxy aware) view of the
+        # caller. The trading API trusts X-Forwarded-For only from loopback, so
+        # this single hop is the authoritative client IP for audit attribution.
+        if request.client and request.client.host:
+            headers["X-Forwarded-For"] = request.client.host
+        headers["X-Forwarded-Proto"] = request.url.scheme
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 upstream = await client.request(

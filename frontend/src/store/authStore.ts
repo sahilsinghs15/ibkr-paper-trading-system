@@ -1,5 +1,14 @@
 import { create } from 'zustand'
 import axios from 'axios'
+import { APP_VERSION, getClientDeviceId } from '../utils/clientContext'
+
+function clientContextHeaders(): Record<string, string> {
+  const deviceId = getClientDeviceId()
+  return {
+    'X-Client-App-Version': APP_VERSION,
+    ...(deviceId ? { 'X-Client-Device-Id': deviceId } : {}),
+  }
+}
 
 export interface User {
   id: number
@@ -15,7 +24,11 @@ interface AuthState {
   user: User | null
   isAuthenticated: boolean
   login: (token: string, user: User) => void
-  logout: () => void
+  /**
+   * Clear local credentials. With ``revokeServerSession`` the server-side
+   * session is ended too, so the token stops working everywhere (audited).
+   */
+  logout: (options?: { revokeServerSession?: boolean }) => void
   initAuth: () => void
 }
 
@@ -42,7 +55,19 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ token, user, isAuthenticated: true })
   },
 
-  logout: () => {
+  logout: (options) => {
+    const token = localStorage.getItem(TOKEN_KEY)
+    if (options?.revokeServerSession && token) {
+      // fetch (not axios) so the 401 interceptor can never re-enter logout.
+      void fetch('/api/v1/auth/logout', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...clientContextHeaders(),
+        },
+        keepalive: true,
+      }).catch(() => undefined)
+    }
     localStorage.removeItem(TOKEN_KEY)
     localStorage.removeItem(USER_KEY)
     delete axios.defaults.headers.common['Authorization']

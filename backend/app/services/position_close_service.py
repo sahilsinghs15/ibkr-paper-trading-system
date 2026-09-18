@@ -222,6 +222,9 @@ class SinglePairCloseService:
             orders = getattr(res, "orders", [])
 
             fill_orders = [o for o in orders if not getattr(o, "is_compensation", False)]
+            order_ids = [
+                str(o.internal_order_id) for o in orders if getattr(o, "internal_order_id", None)
+            ]
             from app.services.model_blue.persistence import (
                 _commission_from_orders,
                 _exit_marks_from_orders,
@@ -306,6 +309,7 @@ class SinglePairCloseService:
                     status="CLOSED",
                     success=True,
                     message="Pair successfully closed.",
+                    order_ids=order_ids,
                 )
             else:
                 status_str = "PARTIAL" if any_filled else "FAILED"
@@ -324,6 +328,7 @@ class SinglePairCloseService:
                     status=status_str,
                     success=False,
                     message=f"Pair close execution state: {status_str}.",
+                    order_ids=order_ids,
                 )
         except Exception as exc:
             logger.exception("Single pair close execution error: trade_id=%s", trade_id)

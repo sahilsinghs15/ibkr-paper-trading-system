@@ -7,10 +7,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.responses import JSONResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.router import api_router
 from app.api.routes.health import router as health_router
+from app.audit.context import RequestIdMiddleware
+from app.audit.security_events import record_access_denied
 from app.broker.ibkr.gateway_rate_limiter import GatewayRateLimiter
 from app.broker.ibkr.tws_client import TWSClient
 from app.core.config import get_settings, refuse_testing_flag_on_order_process
@@ -388,6 +392,26 @@ def create_app() -> FastAPI:
             status_code=500,
             content={"detail": "Internal server error. Please try again later."},
         )
+
+    @fastapi_app.exception_handler(StarletteHTTPException)
+    async def audited_http_exception_handler(
+        request: Request, exc: StarletteHTTPException
+    ) -> Response:
+        # Authorization denials are security events; record them (throttled,
+        # best-effort) before returning the standard FastAPI error response.
+        if exc.status_code == 403:
+            try:
+                await record_access_denied(
+                    request,
+                    status_code=exc.status_code,
+                    detail=str(exc.detail),
+                )
+            except Exception:
+                logger.exception("Failed to audit access denial for %s", request.url.path)
+        return await http_exception_handler(request, exc)
+
+    # Server-generated request id for audit correlation (echoed as X-Request-ID).
+    fastapi_app.add_middleware(RequestIdMiddleware)
 
     # Register Routers (webhooks live on app.webhook_ingest:app, port 8000)
     fastapi_app.include_router(health_router)
