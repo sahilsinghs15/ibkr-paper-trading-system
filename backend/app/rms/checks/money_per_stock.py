@@ -12,6 +12,7 @@ from app.rms.models import (
     RMSContext,
     RMSOutcome,
     exposure_key,
+    signed_notional,
 )
 
 
@@ -39,11 +40,22 @@ class MoneyPerStockCheck(BaseRMSCheck):
             strategy_cfg.money_limit_per_symbol if strategy_cfg is not None else None
         )
 
+        # Cancel Exposure ON: opposite-side legs net against existing exposure, so
+        # the limit applies to the resulting net position. OFF: gross (unchanged).
+        net_basis = (
+            intent.account_id is not None
+            and intent.account_id in context.cancel_exposure_accounts
+        )
+
         symbol_order_notionals: dict[str, Decimal] = {}
+        symbol_order_net: dict[str, Decimal] = {}
         for leg in intent.legs:
             symbol = normalize_symbol(leg.symbol)
             current_notional = symbol_order_notionals.get(symbol, Decimal(0))
             symbol_order_notionals[symbol] = current_notional + leg.effective_notional
+            symbol_order_net[symbol] = symbol_order_net.get(symbol, Decimal(0)) + signed_notional(
+                leg.side, leg.effective_notional
+            )
 
         if not symbol_order_notionals:
             return CheckResult(
@@ -66,6 +78,26 @@ class MoneyPerStockCheck(BaseRMSCheck):
                     outcome=RMSOutcome.REJECT,
                     reason=f"NO_SYMBOL_LIMIT_CONFIGURED: No per-symbol limit configured for account {intent.account_id} and symbol '{symbol}'",
                 )
+            if net_basis:
+                existing_net = context.symbol_net_exposures.get(
+                    exposure_key(intent, symbol), Decimal(0)
+                )
+                net_after = existing_net + symbol_order_net[symbol]
+                # A trade that shrinks the net position always passes (it reduces
+                # risk), even if the account is already above a lowered limit.
+                if abs(net_after) > limit_per_symbol and abs(net_after) > abs(existing_net):
+                    return CheckResult(
+                        check_number=self.check_number,
+                        check_name=self.check_name,
+                        outcome=RMSOutcome.REJECT,
+                        reason=(
+                            f"MONEY_LIMIT_EXCEEDED: Symbol '{symbol}' net exposure of {abs(net_after)} "
+                            f"(existing net {existing_net} + order net {symbol_order_net[symbol]}) "
+                            f"exceeds limit of {limit_per_symbol} [cancel_exposure=ON, net basis]."
+                        ),
+                    )
+                continue
+
             existing_exposure = context.symbol_exposures.get(
                 exposure_key(intent, symbol), Decimal(0)
             )

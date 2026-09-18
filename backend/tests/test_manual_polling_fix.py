@@ -1,74 +1,89 @@
-"""Tests for ManualTrading polling fix - state-driven vs unconditional."""
+"""Manual Trading order polling must be state-driven, not unconditional.
+
+Since the Manual Trading workspace redesign the order data hook lives in
+frontend/src/components/manual/useManualWorkspace.ts and the page wires
+refreshes in frontend/src/pages/ManualTradePage.tsx. These tests assert the
+same invariants against those files.
+"""
 
 import pathlib
+import re
 
-import pytest
+_FRONTEND = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src"
 
 
-def _get_manual_page_text() -> str:
-    p = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src" / "pages" / "ManualTradePage.tsx"
-    if not p.exists():
-        p = pathlib.Path("/home/dev3/Documents/ibkr-paper-trading-system/frontend/src/pages/ManualTradePage.tsx")
-    return p.read_text()
+def _read(rel: str) -> str:
+    return (_FRONTEND / rel).read_text()
+
+
+def _hook() -> str:
+    return _read("components/manual/useManualWorkspace.ts")
+
+
+def _page() -> str:
+    return _read("pages/ManualTradePage.tsx")
+
+
+def _blotter() -> str:
+    return _read("components/manual/ManualOrdersBlotter.tsx")
+
+
+def _active_statuses() -> list[str]:
+    m = re.search(r"ACTIVE_ORDER_STATUSES\s*=\s*\[([^\]]*)\]", _hook())
+    assert m, "ACTIVE_ORDER_STATUSES must be declared in the order hook"
+    return re.findall(r"'([A-Z_]+)'", m.group(1))
 
 
 def test_no_unconditional_polling():
-    """Should not have unconditional setInterval every 5000ms without active check."""
-    text = _get_manual_page_text()
-    # Old code had unconditional: useEffect(() => { void loadManualOrders(); const t = setInterval(...,5000); return () => clearInterval(t)}, [loadManualOrders])
-    # New code should have hasActiveOrders guard
-    assert "hasActiveOrders" in text, "Polling should be gated by hasActiveOrders"
-    # Should not have old unconditional pattern
-    # Count setInterval occurrences - should be 1 with guard, not 2
-    assert text.count("setInterval") == 1, "Should have exactly one polling interval (state-driven)"
-    assert "if (!hasActiveOrders) return" in text or "if (!hasActiveOrders)" in text
+    """Exactly one interval in the manual trading workspace, gated on working orders."""
+    workspace = _hook() + _page() + _blotter() + _read("components/manual/ManualPositionsPanel.tsx")
+    assert workspace.count("setInterval") == 1, "Exactly one polling interval (state-driven)"
+    hook = _hook()
+    assert "if (!hasActive) return" in hook
+    interval_pos = hook.index("setInterval")
+    assert hook.rfind("if (!hasActive) return", 0, interval_pos) != -1, "Guard must precede the interval"
 
 
 def test_polling_active_states():
-    """Polling should be active for PENDING_SUBMIT, SUBMITTED, PARTIALLY_FILLED."""
-    text = _get_manual_page_text()
-    for status in ["PENDING_SUBMIT", "SUBMITTED", "PARTIALLY_FILLED"]:
-        assert status in text, f"Active status {status} should be checked for polling"
+    """Polling is active exactly for PENDING_SUBMIT, SUBMITTED, PARTIALLY_FILLED."""
+    assert sorted(_active_statuses()) == ["PARTIALLY_FILLED", "PENDING_SUBMIT", "SUBMITTED"]
+    assert "orders.some((o) => ACTIVE_ORDER_STATUSES.includes(o.status))" in _hook()
 
 
 def test_polling_stops_for_terminal():
-    """Polling should stop for FILLED, CANCELLED, REJECTED, ERROR (no interval when all terminal)."""
-    text = _get_manual_page_text()
-    has_active_line = [line for line in text.splitlines() if "hasActiveOrders" in line and "some" in line]
-    assert has_active_line, "hasActiveOrders should use some with active statuses"
-    # Active statuses must be exactly PENDING_SUBMIT, SUBMITTED, PARTIALLY_FILLED
-    assert "PENDING_SUBMIT" in has_active_line[0]
-    assert "SUBMITTED" in has_active_line[0]
-    assert "PARTIALLY_FILLED" in has_active_line[0]
-    # Terminal statuses should not be listed as active (check quoted exact)
-    for term in ['"FILLED"', '"CANCELLED"', '"REJECTED"', '"ERROR"']:
-        # Count occurrences outside of PARTIALLY_FILLED
-        # Remove PARTIALLY_FILLED first to avoid false positive
-        line_without_partial = has_active_line[0].replace("PARTIALLY_FILLED", "")
-        assert term not in line_without_partial, f"Terminal {term} should not trigger polling"
+    """Terminal statuses never keep the interval alive."""
+    statuses = _active_statuses()
+    for terminal in ("FILLED", "CANCELLED", "REJECTED", "ERROR"):
+        assert terminal not in statuses, f"Terminal {terminal} must not trigger polling"
 
 
 def test_manual_refresh_still_works():
-    """Manual Refresh button should still exist and call loadManualOrders."""
-    text = _get_manual_page_text()
-    assert "Refresh" in text
-    assert "loadManualOrders" in text
-    assert "onClick={() => void loadManualOrders()" in text or "onClick={() => void loadManualOrders" in text
+    """A workspace Refresh button reloads orders (and positions)."""
+    page = _page()
+    assert "onClick={refreshAll}" in page
+    refresh_all = page[page.index("const refreshAll"):]
+    refresh_all = refresh_all[: refresh_all.index("}") + 1]
+    assert "orders.reload()" in refresh_all
+    assert "positions.reload()" in refresh_all
 
 
 def test_immediate_refresh_after_submit_and_cancel():
-    """After submit/cancel, should do immediate refresh."""
-    text = _get_manual_page_text()
-    # handleConfirmSubmit and handleCancelOrder should call loadManualOrders
-    assert "void loadManualOrders()" in text
-    # Should be called after submit and cancel
-    assert text.count("void loadManualOrders()") >= 2, "Should refresh after submit and cancel"
+    """Orders refresh immediately after a submit and after a cancel."""
+    page = _page()
+    submitted = page[page.index("onSubmitted={"):]
+    submitted = submitted[: submitted.index("}}") + 2]
+    assert "orders.reload(1)" in submitted
+    cancelled = page[page.index("onCancelled={"):]
+    cancelled = cancelled[: cancelled.index("}}") + 2]
+    assert "orders.reload()" in cancelled
+    blotter = _blotter()
+    assert "onCancelled()" in blotter[blotter.index("const handleCancel"):]
 
 
 def test_cleanup_on_unmount_and_account_change():
-    """Polling timer should be cleaned up on unmount and account change."""
-    text = _get_manual_page_text()
-    assert "return () => clearInterval" in text
-    assert "loadManualOrders" in text
-    # Should depend on hasActiveOrders and loadManualOrders
-    assert "hasActiveOrders" in text and "loadManualOrders" in text
+    """The interval is cleared on unmount and re-created when deps change."""
+    hook = _hook()
+    assert "return () => clearInterval(t)" in hook
+    assert "}, [hasActive, reload, page])" in hook
+    # reload is rebuilt when the account changes, so the interval is recreated per account.
+    assert "[account, page]" in hook

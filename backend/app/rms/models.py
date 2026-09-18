@@ -130,6 +130,11 @@ def exposure_key(intent: OrderIntent, symbol: str) -> str | tuple[int, str]:
     return symbol_key
 
 
+def signed_notional(side: OrderSide, notional: Decimal) -> Decimal:
+    """Direction-signed notional: BUY adds to net exposure, SELL subtracts."""
+    return notional if side == OrderSide.BUY else -notional
+
+
 def model_value_key(intent: OrderIntent) -> tuple[int, str] | None:
     """Account-scoped model market-value key, or None when unaccounted."""
     if intent.account_id is None:
@@ -184,7 +189,14 @@ class RMSContext:
             With account: (account_id, strategy_id, signal_id).
         strategy_configs: Dictionary mapping strategy_id to StrategyConfig.
         open_positions: Counts keyed by strategy_id or (account_id, strategy_id).
-        symbol_exposures: Exposure keyed by symbol or (account_id, symbol).
+        symbol_exposures: Gross exposure (sum of |notional| of every open leg) keyed by
+            symbol or (account_id, symbol). Basis of the per-symbol limit when the
+            account's Cancel Exposure is OFF.
+        symbol_net_exposures: Signed net exposure (BUY +, SELL -) keyed like
+            symbol_exposures. Basis of the per-symbol limit when Cancel Exposure is ON,
+            because opposite-side legs then net against existing exposure.
+        cancel_exposure_accounts: account_ids whose Cancel Exposure setting is ON.
+            Refreshed from routing per signal.
         per_symbol_limits: Account-specific (account_id, symbol) money limits.
         current_time: Evaluation reference timestamp.
         rollover_window_days: Days before contract month expiry during which rollover is active.
@@ -210,6 +222,8 @@ class RMSContext:
     strategy_configs: dict[str, StrategyConfig] = field(default_factory=dict)
     open_positions: dict[str | tuple[int, str], int] = field(default_factory=dict)
     symbol_exposures: dict[str | tuple[int, str], Decimal] = field(default_factory=dict)
+    symbol_net_exposures: dict[str | tuple[int, str], Decimal] = field(default_factory=dict)
+    cancel_exposure_accounts: set[int] = field(default_factory=set)
     per_symbol_limits: dict[tuple[int, str], Decimal] = field(default_factory=dict)
     default_symbol_limits: dict[int, Decimal] = field(default_factory=dict)
     account_open_limits: dict[tuple[int, str], int] = field(default_factory=dict)

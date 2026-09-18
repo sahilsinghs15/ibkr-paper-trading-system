@@ -78,6 +78,7 @@ from app.rms.models import (
     exposure_key,
     model_value_key,
     open_position_key,
+    signed_notional,
 )
 from app.rms.models import (
     OrderSide as RMSOrderSide,
@@ -244,6 +245,7 @@ class OrderManager:
             self._rms_context.processed_signals.clear()
             self._rms_context.open_positions.clear()
             self._rms_context.symbol_exposures.clear()
+            self._rms_context.symbol_net_exposures.clear()
             self._rms_context.model_value_used.clear()
             for strategy_id, signal_id in processed:
                 sid = normalize_strategy_id(strategy_id)
@@ -764,6 +766,10 @@ class OrderManager:
         self._rms_context.symbol_exposures[key_a] = (
             self._rms_context.symbol_exposures.get(key_a, Decimal(0)) + a_notional
         )
+        self._rms_context.symbol_net_exposures[key_a] = (
+            self._rms_context.symbol_net_exposures.get(key_a, Decimal(0))
+            + row.leg_a_signed_qty * row.leg_a_entry_mark
+        )
         if (
             row.leg_b_symbol
             and row.leg_b_signed_qty is not None
@@ -773,6 +779,10 @@ class OrderManager:
             key_b = (row.account_id, normalize_symbol(row.leg_b_symbol))
             self._rms_context.symbol_exposures[key_b] = (
                 self._rms_context.symbol_exposures.get(key_b, Decimal(0)) + b_notional
+            )
+            self._rms_context.symbol_net_exposures[key_b] = (
+                self._rms_context.symbol_net_exposures.get(key_b, Decimal(0))
+                + row.leg_b_signed_qty * row.leg_b_entry_mark
             )
 
         value_key = (row.account_id, normalize_strategy_id(row.strategy_id))
@@ -791,6 +801,7 @@ class OrderManager:
             open_rows = await PositionRepository(session).list_open()
         self._rms_context.open_positions.clear()
         self._rms_context.symbol_exposures.clear()
+        self._rms_context.symbol_net_exposures.clear()
         self._rms_context.model_value_used.clear()
         for row in open_rows:
             pos_key = (row.account_id, normalize_strategy_id(row.strategy_id))
@@ -1112,6 +1123,10 @@ class OrderManager:
         self._rms_context.model_value_limit[(ctx.account_id, ctx.strategy_id)] = (
             ctx.committed_notional * self._settings.market_value_utilisation_cap
         )
+        if getattr(ctx, "cancel_exposure", False):
+            self._rms_context.cancel_exposure_accounts.add(ctx.account_id)
+        else:
+            self._rms_context.cancel_exposure_accounts.discard(ctx.account_id)
         try:
             intent = await handler.build_intent(signal, account=ctx)
             # Cancel Exposure validation — authoritative pre-trade check (earliest point where
@@ -1702,6 +1717,18 @@ class OrderManager:
             )
         return replace(intent, legs=filled_legs)
 
+    def _book_net_exposure(
+        self, key: str | tuple[int, str], side: RMSOrderSide, notional: Decimal
+    ) -> None:
+        """Maintain signed net exposure (BUY +, SELL -) next to the gross figure.
+
+        CLOSE legs carry the reversed side at the original entry price, so a
+        closed pair nets back to zero. Used by the per-symbol limit when the
+        account's Cancel Exposure is ON.
+        """
+        net = self._rms_context.symbol_net_exposures
+        net[key] = net.get(key, Decimal(0)) + signed_notional(side, notional)
+
     def _record_unsettled_exposure(
         self, intent: OrderIntent, orders: list[OMSOrder]
     ) -> None:
@@ -1747,6 +1774,7 @@ class OrderManager:
                     delta,
                 )
             self._rms_context.symbol_exposures[exp_key] = updated
+            self._book_net_exposure(exp_key, leg.side, delta)
             booked.append((exp_key, delta))
 
         self._commit_margin(filled_intent, opening=opening)
@@ -1793,6 +1821,7 @@ class OrderManager:
                         self._rms_context.symbol_exposures.get(exp_key, Decimal(0))
                         + leg.effective_notional
                     )
+                    self._book_net_exposure(exp_key, leg.side, leg.effective_notional)
                 value_key = model_value_key(intent)
                 if value_key is not None:
                     self._rms_context.model_value_used[value_key] = (
@@ -1827,6 +1856,7 @@ class OrderManager:
                     self._rms_context.symbol_exposures[exp_key] = max(
                         Decimal(0), remaining - delta
                     )
+                    self._book_net_exposure(exp_key, leg.side, delta)
                 value_key = model_value_key(intent)
                 if value_key is not None:
                     remaining_value = self._rms_context.model_value_used.get(
