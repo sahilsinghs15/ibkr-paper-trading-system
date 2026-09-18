@@ -63,9 +63,3 @@ export function displayValue(v: unknown): string {
   if (typeof v === 'number' || typeof v === 'boolean') return String(v)
   return JSON.stringify(v)
 }
-
-/** Datetime-local string (browser local time) for "now minus ms". */
-export function localInputValue(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
-}

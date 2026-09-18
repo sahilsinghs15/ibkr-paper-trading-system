@@ -110,39 +110,67 @@ export interface AuditFacets {
   actor_types: AuditActorType[]
   actors: string[]
   roles: string[]
+  browsers: string[]
   target_types: string[]
 }
 
+/**
+ * Search filters, grouped the way the UI presents them:
+ * primary (operator), security (actor/source investigation) and
+ * correlation (technical identifiers).
+ */
 export interface AuditFilters {
-  date_from: string
+  // Primary
+  date_from: string // wall time "YYYY-MM-DDTHH:mm" in the display timezone
   date_to: string
   actor: string
-  role: string
-  ip: string
   categories: string[]
   action: string
-  result: string
   account: string
+  result: string
+  q: string
+  // Advanced / security
+  ip: string
   session_id: string
   device_id: string
-  ref_id: string
-  q: string
+  browser: string
+  role: string
+  // Technical correlation
+  order_id: string
+  trade_id: string
+  position_id: string
+  correlation_id: string
+  ref_id: string // other identifier, set only by pivoting from an event
   provenance: 'all' | 'native' | 'legacy'
 }
+
+export const SECURITY_FILTER_KEYS = ['ip', 'session_id', 'device_id', 'browser', 'role'] as const
+export const CORRELATION_FILTER_KEYS = [
+  'order_id',
+  'trade_id',
+  'position_id',
+  'correlation_id',
+  'ref_id',
+] as const
 
 export const EMPTY_AUDIT_FILTERS: AuditFilters = {
   date_from: '',
   date_to: '',
   actor: '',
-  role: '',
-  ip: '',
   categories: [],
   action: '',
-  result: '',
   account: '',
+  result: '',
+  q: '',
+  ip: '',
   session_id: '',
   device_id: '',
+  browser: '',
+  role: '',
+  order_id: '',
+  trade_id: '',
+  position_id: '',
+  correlation_id: '',
   ref_id: '',
-  q: '',
   provenance: 'all',
 }

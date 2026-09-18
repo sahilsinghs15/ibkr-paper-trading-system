@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { SystemEventJournalSection } from '../components/audit/SystemEventJournalSection'
 import { fetchSystemMonitor, controlService } from '../api/systemMonitorApi'
 import type {
   SystemMonitorResponse,
@@ -735,6 +736,8 @@ export function SystemMonitorPage() {
           </div>
         </div>
       )}
+
+      <SystemEventJournalSection />
 
       {/* Confirmation Modal */}
       {modalState ? (

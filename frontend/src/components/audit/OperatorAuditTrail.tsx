@@ -8,7 +8,7 @@ import {
 import { useActiveIbkrAccount } from '../../hooks/useActiveIbkrAccount'
 import { usePnlStore } from '../../store/pnlStore'
 import { EMPTY_AUDIT_FILTERS, type AuditFilters } from '../../types/audit'
-import { tzShortLabel } from '../../utils/format'
+import { tzLongLabel, tzShortLabel } from '../../utils/format'
 import { AuditEventDrawer } from './AuditEventDrawer'
 import { AuditEventTable } from './AuditEventTable'
 import { AuditFiltersPanel } from './AuditFiltersPanel'
@@ -31,9 +31,13 @@ export function OperatorAuditTrail() {
   })
 
   const searchQuery = useQuery({
-    queryKey: ['audit-events', filters, page, pageSize, sort],
+    queryKey: ['audit-events', filters, page, pageSize, sort, displayTz],
     queryFn: () =>
-      searchAuditEvents(filters, { limit: pageSize, offset: (page - 1) * pageSize, sort }),
+      searchAuditEvents(
+        filters,
+        { limit: pageSize, offset: (page - 1) * pageSize, sort },
+        displayTz,
+      ),
     placeholderData: keepPreviousData,
     staleTime: 0,
   })
@@ -63,14 +67,16 @@ export function OperatorAuditTrail() {
         applied={filters}
         facets={facetsQuery.data}
         activeAccount={activeAccount}
+        displayTz={displayTz}
+        tzLabel={`Times in ${tzLongLabel(displayTz)}`}
         onApply={applyFilters}
         onClear={() => applyFilters(EMPTY_AUDIT_FILTERS)}
       />
 
       {scopedToSession && (
         <div className="audit-callout">
-          Session timeline: every audited action performed with session{' '}
-          <span className="mono">{filters.session_id}</span>, in order.
+          Session timeline: every audited action performed in session{' '}
+          <span className="mono">{filters.session_id}</span>, oldest first.
         </div>
       )}
 

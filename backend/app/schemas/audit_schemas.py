@@ -114,4 +114,5 @@ class AuditFacetsResponse(BaseModel):
     actor_types: list[str]
     actors: list[str]
     roles: list[str]
+    browsers: list[str] = []
     target_types: list[str]

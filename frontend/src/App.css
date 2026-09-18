@@ -4299,16 +4299,17 @@ thead th {
   max-width: 1500px;
   margin: 0 auto;
 }
+.audit-page-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 14px;
+}
 .audit-page-head h1 {
   font-size: 20px;
   font-weight: 700;
   margin: 0 0 2px;
   color: var(--ink);
-}
-.audit-tabs {
-  display: flex;
-  gap: 6px;
-  margin: 14px 0;
 }
 .audit-muted {
   color: var(--muted);
@@ -4363,27 +4364,15 @@ thead th {
   color: var(--ink);
   min-width: 0;
 }
-.audit-quick,
-.audit-chips {
+.audit-quick {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-}
-.audit-chips {
-  flex: 2 1 420px;
 }
 .audit-filter-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.audit-link {
-  background: none;
-  border: none;
-  color: var(--blue);
-  cursor: pointer;
-  font-size: 12px;
-  padding: 0;
 }
 .audit-toolbar,
 .audit-pagination {
@@ -4648,4 +4637,121 @@ thead th {
   word-break: break-word;
   max-height: 360px;
   overflow: auto;
+}
+
+/* Filter tiers ------------------------------------------------------------ */
+.audit-tz {
+  font-size: 11px;
+  color: var(--dim);
+  margin-left: 6px;
+  align-self: center;
+}
+.audit-disclosure {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.audit-disclosure-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink);
+  font-size: 12px;
+}
+.audit-disclosure-caret {
+  color: var(--dim);
+  width: 10px;
+}
+.audit-disclosure-title {
+  font-weight: 600;
+}
+.audit-disclosure-hint {
+  color: var(--dim);
+  font-size: 11px;
+}
+.audit-disclosure-body {
+  margin-top: 8px;
+}
+.audit-count {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--blue);
+  border: 1px solid var(--blue);
+  border-radius: 8px;
+  padding: 0 6px;
+}
+.audit-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 2px 8px;
+  align-self: flex-end;
+}
+.audit-chip button {
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 0;
+}
+
+/* Detail bands ------------------------------------------------------------ */
+.audit-band {
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 12px 0;
+  background: var(--panel-2);
+}
+.audit-band.actor {
+  border-left-color: var(--blue);
+}
+.audit-band.source {
+  border-left-color: var(--amber);
+}
+.audit-band.action {
+  border-left-color: var(--green);
+}
+.audit-band h4 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+}
+.audit-band-note {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.audit-sub-section {
+  margin-top: 10px;
+}
+.audit-sub-section h5 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* System Monitor: event journal ------------------------------------------ */
+.journal-section {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+.journal-body {
+  margin-top: 12px;
 }

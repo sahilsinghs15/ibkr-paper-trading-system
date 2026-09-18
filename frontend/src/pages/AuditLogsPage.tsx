@@ -1,55 +1,26 @@
-import { useSearchParams } from 'react-router-dom'
+import { Navigate, useLocation, useSearchParams } from 'react-router-dom'
 import { OperatorAuditTrail } from '../components/audit/OperatorAuditTrail'
-import { SystemEventJournal } from '../components/audit/SystemEventJournal'
-
-type Tab = 'trail' | 'journal'
 
 export function AuditLogsPage() {
-  const [params, setParams] = useSearchParams()
-  const tab: Tab = params.get('tab') === 'journal' ? 'journal' : 'trail'
+  const [params] = useSearchParams()
+  const location = useLocation()
 
-  const select = (next: Tab) => {
-    const p = new URLSearchParams(params)
-    if (next === 'trail') p.delete('tab')
-    else p.set('tab', next)
-    setParams(p, { replace: true })
+  // The machine/system event journal now lives on the System Monitor page.
+  if (params.get('tab') === 'journal') {
+    const target = location.pathname.replace(/\/audit-logs$/, '/system-monitor')
+    return <Navigate to={`${target}#event-journal`} replace />
   }
 
   return (
     <main className="page audit-page">
       <header className="audit-page-head">
-        <div>
-          <h1>Audit &amp; Accountability</h1>
-          <span className="audit-muted">
-            Server-recorded operator actions that affect trading, risk, configuration, inventory,
-            emergency state, services and security — with authenticated identity and observed
-            session/network context.
-          </span>
-        </div>
+        <h1>Audit &amp; Accountability</h1>
+        <span className="audit-muted">
+          Who did what, to which account, and with what result — recorded by the server for actions
+          that affect trading, risk, settings, inventory, emergency controls, services and security.
+        </span>
       </header>
-
-      <div className="audit-tabs" role="tablist" aria-label="Audit views">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'trail'}
-          className={`history-filter-btn ${tab === 'trail' ? 'active' : ''}`}
-          onClick={() => select('trail')}
-        >
-          Operator Audit Trail
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'journal'}
-          className={`history-filter-btn ${tab === 'journal' ? 'active' : ''}`}
-          onClick={() => select('journal')}
-        >
-          System Event Journal
-        </button>
-      </div>
-
-      {tab === 'trail' ? <OperatorAuditTrail /> : <SystemEventJournal />}
+      <OperatorAuditTrail />
     </main>
   )
 }

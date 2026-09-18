@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.audit import AuditEventModel, AuthSessionModel
 
+ORDER_TARGET_TYPES = ("MANUAL_ORDER", "ENGINE_ORDER")
+
 
 def _like_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -40,6 +42,11 @@ class AuditSearchFilters:
     target_type: str | None = None
     target_id: str | None = None
     ref_id: str | None = None
+    order_id: str | None = None
+    trade_id: str | None = None
+    position_id: str | None = None
+    correlation_id: str | None = None
+    browser: str | None = None
     keyword: str | None = None
     provenance: Literal["all", "native", "legacy"] = "all"
     sort: Literal["newest", "oldest"] = "newest"
@@ -140,6 +147,45 @@ class AuditRepository:
             conds.append(m.target_id == f.target_id.strip())
         if f.ref_id:
             conds.append(m.ref_ids.contains([f.ref_id.strip()]))
+        if f.order_id:
+            oid = f.order_id.strip()
+            # Internal (ORD-/MAN_), broker order id and IBKR perm id are all in ref_ids.
+            conds.append(
+                or_(
+                    m.ref_ids.contains([oid]),
+                    and_(m.target_type.in_(ORDER_TARGET_TYPES), m.target_id == oid),
+                )
+            )
+        if f.trade_id:
+            tid = f.trade_id.strip()
+            conds.append(
+                or_(
+                    m.ref_ids.contains([tid]),
+                    and_(m.target_type == "POSITION", m.target_id == tid),
+                )
+            )
+        if f.position_id:
+            # Engine pairs and manual lots are identified by their trade id.
+            pid = f.position_id.strip()
+            conds.append(
+                or_(
+                    and_(m.target_type == "POSITION", m.target_id == pid),
+                    m.ref_ids.contains([pid]),
+                )
+            )
+        if f.correlation_id:
+            cid = f.correlation_id.strip()
+            conds.append(
+                or_(
+                    m.correlation_id == cid,
+                    m.request_id == cid,
+                    m.ref_ids.contains([cid]),  # e.g. kill-switch operation id
+                )
+            )
+        if f.browser:
+            conds.append(
+                func.lower(m.context["client"]["browser"].astext) == f.browser.strip().lower()
+            )
         if f.keyword:
             pattern = f"%{_like_escape(f.keyword.strip())}%"
             conds.append(
@@ -258,7 +304,16 @@ class AuditRepository:
                 select(m.target_type).where(m.target_type.is_not(None)).distinct().limit(50)
             )
         ).scalars().all()
+        browsers = (
+            await self._session.execute(
+                select(m.context["client"]["browser"].astext)
+                .where(m.context["client"]["browser"].astext.is_not(None))
+                .distinct()
+                .limit(30)
+            )
+        ).scalars().all()
         return {
+            "browsers": sorted(b for b in browsers if b),
             "actors": [a for a in actors if a],
             "roles": sorted(r for r in roles if r),
             "target_types": sorted(t for t in target_types if t),

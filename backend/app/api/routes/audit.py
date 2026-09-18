@@ -58,6 +58,10 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
+def _clean(value: str | None) -> str | None:
+    return value.strip() if value and value.strip() else None
+
+
 def _validated(values: list[str] | None, allowed: set[str], name: str) -> list[str]:
     cleaned = [v.strip().upper() for v in values or [] if v and v.strip()]
     invalid = sorted(set(cleaned) - allowed)
@@ -153,6 +157,11 @@ async def search_audit_events(
     target_type: Annotated[str | None, Query(max_length=48)] = None,
     target_id: Annotated[str | None, Query(max_length=128)] = None,
     ref_id: Annotated[str | None, Query(max_length=128)] = None,
+    order_id: Annotated[str | None, Query(max_length=128)] = None,
+    trade_id: Annotated[str | None, Query(max_length=128)] = None,
+    position_id: Annotated[str | None, Query(max_length=128)] = None,
+    correlation_id: Annotated[str | None, Query(max_length=128)] = None,
+    browser: Annotated[str | None, Query(max_length=64)] = None,
     q: Annotated[str | None, Query(max_length=200, description="Keyword")] = None,
     provenance: Annotated[Literal["all", "native", "legacy"], Query()] = "all",
     sort: Annotated[Literal["newest", "oldest"], Query()] = "newest",
@@ -184,7 +193,12 @@ async def search_audit_events(
         device_id=device_id.strip() if device_id and device_id.strip() else None,
         target_type=target_type.strip().upper() if target_type and target_type.strip() else None,
         target_id=target_id.strip() if target_id and target_id.strip() else None,
-        ref_id=ref_id.strip() if ref_id and ref_id.strip() else None,
+        ref_id=_clean(ref_id),
+        order_id=_clean(order_id),
+        trade_id=_clean(trade_id),
+        position_id=_clean(position_id),
+        correlation_id=_clean(correlation_id),
+        browser=_clean(browser),
         keyword=q.strip() if q and q.strip() else None,
         provenance=provenance,
         sort=sort,
@@ -283,5 +297,6 @@ async def get_audit_facets(
         actor_types=[a.value for a in ActorType],
         actors=known["actors"],
         roles=known["roles"],
+        browsers=known["browsers"],
         target_types=known["target_types"],
     )

@@ -108,10 +108,7 @@ export function SystemEventJournal() {
     <section className="event-journal">
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
         <div>
-          <h2 style={{ fontSize: '15px', fontWeight: 700, margin: 0, color: 'var(--ink)' }}>System Event Journal</h2>
-          <span style={{ fontSize: '12px', color: 'var(--muted)' }}>
-            Machine events from event_log (engine, RMS, reconcile, services). Operator actions are in the Operator Audit Trail tab.
-          </span>
+          <span style={{ fontSize: '12px', color: 'var(--muted)' }}>Newest first.</span>
         </div>
         <button
           type="button"

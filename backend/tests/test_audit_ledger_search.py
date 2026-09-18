@@ -483,3 +483,46 @@ async def test_legacy_search_filter(admin_token):
     res = await _search(admin_token, provenance="native", limit=5)
     assert res.status_code == 200
     assert all(i["provenance"] == "NATIVE" for i in res.json()["items"])
+
+
+async def test_explicit_correlation_and_browser_filters(session_factory, admin_token):
+    tag = uuid.uuid4().hex[:8]
+    recorder = AuditRecorder(session_factory)
+    order_entry = _entry(
+        AuditAction.MANUAL_ORDER_SUBMIT,
+        email=f"corr-{tag}@example.com",
+        ip="10.9.9.9",
+        related={"internal_order_id": f"MAN_{tag}", "trade_id": f"TRD_{tag}"},
+    )
+    order_entry.target_type = "MANUAL_ORDER"
+    order_entry.target_id = f"MAN_{tag}"
+    order_entry.request_ctx = RequestContext(
+        request_id=f"req{tag}",
+        client_ip="10.9.9.9",
+        client={"browser": "Firefox", "os": "Linux"},
+    )
+    close_entry = _entry(
+        AuditAction.CLOSE_PAIR, email=f"corr-{tag}@example.com", ip="10.9.9.9"
+    )
+    close_entry.target_type = "POSITION"
+    close_entry.target_id = f"MBG-{tag}"
+    close_entry.related = {"operation_id": f"op-{tag}"}
+    await recorder.record_committed(order_entry)
+    await recorder.record_committed(close_entry)
+
+    async def actions(**params):
+        res = await _search(admin_token, actor=f"corr-{tag}@example.com", **params)
+        assert res.status_code == 200, res.text
+        return sorted(i["action"] for i in res.json()["items"])
+
+    assert await actions(order_id=f"MAN_{tag}") == ["MANUAL_ORDER_SUBMIT"]
+    assert await actions(trade_id=f"TRD_{tag}") == ["MANUAL_ORDER_SUBMIT"]
+    assert await actions(position_id=f"MBG-{tag}") == ["CLOSE_PAIR"]
+    assert await actions(correlation_id=f"req{tag}") == ["MANUAL_ORDER_SUBMIT"]
+    assert await actions(correlation_id=f"op-{tag}") == ["CLOSE_PAIR"]
+    assert await actions(browser="firefox") == ["MANUAL_ORDER_SUBMIT"]
+    assert await actions(order_id=f"MAN_{tag}", trade_id="nope") == []
+
+    async with client_for() as client:
+        facets = await client.get("/api/v1/audit/facets", headers=auth_headers(admin_token))
+    assert "Firefox" in facets.json()["browsers"]
