@@ -130,9 +130,10 @@ def exposure_key(intent: OrderIntent, symbol: str) -> str | tuple[int, str]:
     return symbol_key
 
 
-def signed_notional(side: OrderSide, notional: Decimal) -> Decimal:
-    """Direction-signed notional: BUY adds to net exposure, SELL subtracts."""
-    return notional if side == OrderSide.BUY else -notional
+def signed_quantity(side: OrderSide, quantity: Decimal | float) -> Decimal:
+    """Direction-signed quantity: BUY adds to the net position, SELL subtracts."""
+    qty = Decimal(str(quantity))
+    return qty if side == OrderSide.BUY else -qty
 
 
 def model_value_key(intent: OrderIntent) -> tuple[int, str] | None:
@@ -192,9 +193,10 @@ class RMSContext:
         symbol_exposures: Gross exposure (sum of |notional| of every open leg) keyed by
             symbol or (account_id, symbol). Basis of the per-symbol limit when the
             account's Cancel Exposure is OFF.
-        symbol_net_exposures: Signed net exposure (BUY +, SELL -) keyed like
-            symbol_exposures. Basis of the per-symbol limit when Cancel Exposure is ON,
-            because opposite-side legs then net against existing exposure.
+        symbol_net_quantities: Signed net quantity (BUY +, SELL -) keyed like
+            symbol_exposures. Basis of the per-symbol limit when Cancel Exposure is ON:
+            opposite-side legs net against existing holdings in shares (as the
+            broker nets them), valued at the incoming order's price.
         cancel_exposure_accounts: account_ids whose Cancel Exposure setting is ON.
             Refreshed from routing per signal.
         per_symbol_limits: Account-specific (account_id, symbol) money limits.
@@ -222,7 +224,7 @@ class RMSContext:
     strategy_configs: dict[str, StrategyConfig] = field(default_factory=dict)
     open_positions: dict[str | tuple[int, str], int] = field(default_factory=dict)
     symbol_exposures: dict[str | tuple[int, str], Decimal] = field(default_factory=dict)
-    symbol_net_exposures: dict[str | tuple[int, str], Decimal] = field(default_factory=dict)
+    symbol_net_quantities: dict[str | tuple[int, str], Decimal] = field(default_factory=dict)
     cancel_exposure_accounts: set[int] = field(default_factory=set)
     per_symbol_limits: dict[tuple[int, str], Decimal] = field(default_factory=dict)
     default_symbol_limits: dict[int, Decimal] = field(default_factory=dict)

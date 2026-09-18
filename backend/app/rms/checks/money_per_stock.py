@@ -12,7 +12,7 @@ from app.rms.models import (
     RMSContext,
     RMSOutcome,
     exposure_key,
-    signed_notional,
+    signed_quantity,
 )
 
 
@@ -48,14 +48,18 @@ class MoneyPerStockCheck(BaseRMSCheck):
         )
 
         symbol_order_notionals: dict[str, Decimal] = {}
-        symbol_order_net: dict[str, Decimal] = {}
+        symbol_order_qty: dict[str, Decimal] = {}
+        symbol_order_net_qty: dict[str, Decimal] = {}
         for leg in intent.legs:
             symbol = normalize_symbol(leg.symbol)
             current_notional = symbol_order_notionals.get(symbol, Decimal(0))
             symbol_order_notionals[symbol] = current_notional + leg.effective_notional
-            symbol_order_net[symbol] = symbol_order_net.get(symbol, Decimal(0)) + signed_notional(
-                leg.side, leg.effective_notional
+            symbol_order_qty[symbol] = symbol_order_qty.get(symbol, Decimal(0)) + abs(
+                Decimal(str(leg.quantity))
             )
+            symbol_order_net_qty[symbol] = symbol_order_net_qty.get(
+                symbol, Decimal(0)
+            ) + signed_quantity(leg.side, leg.quantity)
 
         if not symbol_order_notionals:
             return CheckResult(
@@ -79,20 +83,25 @@ class MoneyPerStockCheck(BaseRMSCheck):
                     reason=f"NO_SYMBOL_LIMIT_CONFIGURED: No per-symbol limit configured for account {intent.account_id} and symbol '{symbol}'",
                 )
             if net_basis:
-                existing_net = context.symbol_net_exposures.get(
+                # Net shares before/after (as the broker nets them), valued at this
+                # order's price for the symbol — a flat position is exactly zero.
+                existing_qty = context.symbol_net_quantities.get(
                     exposure_key(intent, symbol), Decimal(0)
                 )
-                net_after = existing_net + symbol_order_net[symbol]
+                qty_after = existing_qty + symbol_order_net_qty[symbol]
+                order_qty = symbol_order_qty[symbol]
+                ref_price = order_notional / order_qty if order_qty > 0 else Decimal(0)
+                net_after = abs(qty_after) * ref_price
                 # A trade that shrinks the net position always passes (it reduces
                 # risk), even if the account is already above a lowered limit.
-                if abs(net_after) > limit_per_symbol and abs(net_after) > abs(existing_net):
+                if net_after > limit_per_symbol and abs(qty_after) > abs(existing_qty):
                     return CheckResult(
                         check_number=self.check_number,
                         check_name=self.check_name,
                         outcome=RMSOutcome.REJECT,
                         reason=(
-                            f"MONEY_LIMIT_EXCEEDED: Symbol '{symbol}' net exposure of {abs(net_after)} "
-                            f"(existing net {existing_net} + order net {symbol_order_net[symbol]}) "
+                            f"MONEY_LIMIT_EXCEEDED: Symbol '{symbol}' net exposure of {net_after} "
+                            f"(net qty {existing_qty} -> {qty_after} @ {ref_price}) "
                             f"exceeds limit of {limit_per_symbol} [cancel_exposure=ON, net basis]."
                         ),
                     )

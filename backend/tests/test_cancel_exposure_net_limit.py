@@ -1,8 +1,8 @@
 """OrderManager bookkeeping behind the Cancel Exposure net-basis per-symbol limit.
 
-Net exposure (BUY +, SELL -) must be maintained alongside the gross figure at
-every booking point, return to zero when a pair closes, and the per-signal
-account setting must decide which basis check 8 uses.
+Net quantity (BUY +, SELL -) must be maintained alongside the gross figure at
+every booking point, return to zero shares when a pair closes, and the
+per-signal account setting must decide which basis check 8 uses.
 """
 
 from __future__ import annotations
@@ -58,11 +58,11 @@ async def test_rebuild_from_positions_sets_signed_net_exposure(session_factory):
     om = OrderManager(session_factory=session_factory)
     await om.rebuild_rms_from_positions()
     ctx = om._rms_context
-    # AAPL: +10*150 - 4*150 = +900 net ; gross 1500 + 600 = 2100
-    assert ctx.symbol_net_exposures[(acc_id, "AAPL")] == Decimal(900)
+    # AAPL: +10 - 4 = +6 shares net ; gross 1500 + 600 = 2100
+    assert ctx.symbol_net_quantities[(acc_id, "AAPL")] == Decimal(6)
     assert ctx.symbol_exposures[(acc_id, "AAPL")] == Decimal(2100)
-    # EWC: -100*20 + 50*20 = -1000 net ; gross 3000
-    assert ctx.symbol_net_exposures[(acc_id, "EWC")] == Decimal(-1000)
+    # EWC: -100 + 50 = -50 shares net ; gross 3000
+    assert ctx.symbol_net_quantities[(acc_id, "EWC")] == Decimal(-50)
     assert ctx.symbol_exposures[(acc_id, "EWC")] == Decimal(3000)
 
 
@@ -73,9 +73,9 @@ async def test_open_then_close_nets_back_to_zero():
     acc = 42
     opening = _pair(OrderSide.BUY, OrderSide.SELL, OrderAction.OPEN, acc)
     await om._update_runtime_state(opening, MagicMock(), handler=handler, sized_from=MagicMock())
-    net = om._rms_context.symbol_net_exposures
-    assert net[(acc, "AAPL")] == Decimal(1500)
-    assert net[(acc, "EWC")] == Decimal(-2000)
+    net = om._rms_context.symbol_net_quantities
+    assert net[(acc, "AAPL")] == Decimal(10)
+    assert net[(acc, "EWC")] == Decimal(-100)
 
     # CLOSE legs carry the reversed side (as Model Blue builds them).
     closing = _pair(OrderSide.SELL, OrderSide.BUY, OrderAction.CLOSE, acc)
@@ -96,8 +96,33 @@ async def test_opposite_pair_reduces_net_but_adds_gross():
     await om._update_runtime_state(
         _pair(OrderSide.SELL, OrderSide.BUY, OrderAction.OPEN, acc), MagicMock(), handler=handler, sized_from=MagicMock()
     )
-    assert om._rms_context.symbol_net_exposures[(acc, "AAPL")] == Decimal(0)
+    assert om._rms_context.symbol_net_quantities[(acc, "AAPL")] == Decimal(0)
     assert om._rms_context.symbol_exposures[(acc, "AAPL")] == Decimal(3000)
+
+
+async def test_offset_at_different_prices_is_exactly_flat():
+    """Long 100 @ $200 then short 100 @ $250: 0 shares net (no $5k residual)."""
+    om = OrderManager()
+    handler = MagicMock()
+    handler.after_submit = AsyncMock()
+    acc = 44
+
+    def leg_intent(side, price):
+        return OrderIntent(
+            signal_id=f"SIG-{uuid.uuid4().hex[:6]}",
+            strategy_id="model_blue",
+            action=OrderAction.OPEN,
+            account_id=acc,
+            legs=[
+                OrderLeg(symbol="AAPL", side=side, quantity=100, price=Decimal(price)),
+                OrderLeg(symbol=f"H{price}", side=OrderSide.SELL if side == OrderSide.BUY else OrderSide.BUY,
+                         quantity=1, price=Decimal(1)),
+            ],
+        )
+
+    await om._update_runtime_state(leg_intent(OrderSide.BUY, 200), MagicMock(), handler=handler, sized_from=MagicMock())
+    await om._update_runtime_state(leg_intent(OrderSide.SELL, 250), MagicMock(), handler=handler, sized_from=MagicMock())
+    assert om._rms_context.symbol_net_quantities[(acc, "AAPL")] == Decimal(0)
 
 
 @pytest.mark.parametrize("enabled", [True, False])

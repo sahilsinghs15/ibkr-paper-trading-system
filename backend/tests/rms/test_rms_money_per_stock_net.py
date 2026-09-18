@@ -1,8 +1,8 @@
 """CHECK 8 — per-symbol limit basis depends on the account's Cancel Exposure setting.
 
 OFF (default): gross basis — every leg adds its notional, regardless of side.
-ON: net basis — opposite-side legs net against existing exposure; the resulting
-net position must stay within the limit, and net-reducing trades always pass.
+ON: net basis — net shares after the trade (as the broker nets them), valued at
+the order's price, must stay within the limit; net-reducing trades always pass.
 """
 
 from decimal import Decimal
@@ -26,7 +26,11 @@ LIMIT = Decimal(25000)
 
 
 def _context(*, cancel_exposure: bool, gross: Decimal, net: Decimal) -> RMSContext:
-    """Existing AAPL position: gross/net notional as given; AAPL limit $25k."""
+    """Existing AAPL position: gross notional and net value (at $200/share) as given.
+
+    ``net`` is expressed in dollars at $200 for readability and stored as shares.
+    AAPL limit $25k.
+    """
     return RMSContext(
         strategy_configs={
             "model_blue": StrategyConfig(
@@ -36,7 +40,7 @@ def _context(*, cancel_exposure: bool, gross: Decimal, net: Decimal) -> RMSConte
         per_symbol_limits={(ACC, "AAPL"): LIMIT},
         default_symbol_limits={ACC: Decimal(1_000_000)},
         symbol_exposures={(ACC, "AAPL"): gross},
-        symbol_net_exposures={(ACC, "AAPL"): net},
+        symbol_net_quantities={(ACC, "AAPL"): net / Decimal(200)},
         cancel_exposure_accounts={ACC} if cancel_exposure else set(),
     )
 
@@ -95,6 +99,7 @@ def test_on_adding_beyond_limit_is_rejected_on_net_basis():
     res = _eval(ctx, _intent(OrderSide.BUY, 10000))
     assert res.outcome == RMSOutcome.REJECT
     assert "net exposure of 30000" in (res.reason or "")
+    assert "net qty 100 -> 150" in (res.reason or "")
     assert "net basis" in (res.reason or "")
 
 
@@ -158,3 +163,31 @@ def test_close_and_emergency_flatten_are_never_blocked(cancel_exposure):
                              "intent_mode": ExecutionIntentMode.EMERGENCY_FLATTEN})
     assert _eval(ctx, close).outcome == RMSOutcome.PASS
     assert _eval(ctx, flatten).outcome == RMSOutcome.PASS
+
+
+def test_on_values_net_shares_at_order_price_not_historic_entry_prices():
+    """Flat in shares (bought 100 @ $200, sold 100 @ $250) is $0 net exposure.
+
+    Gross is $45k; a new $20k BUY at $200 leaves 100 shares = $20k <= $25k limit.
+    """
+    ctx = _context(cancel_exposure=True, gross=Decimal(45000), net=Decimal(0))
+    assert _eval(ctx, _intent(OrderSide.BUY, 20000)).outcome == RMSOutcome.PASS
+
+
+def test_on_net_value_uses_current_order_price():
+    """100 shares held (bought cheaply). At today's $300 order price, +10 shares =
+    110 * $300 = $33k > $25k -> rejected even though entry-price value was $20k."""
+    ctx = _context(cancel_exposure=True, gross=Decimal(20000), net=Decimal(20000))
+    intent = OrderIntent(
+        signal_id="SIG",
+        strategy_id="model_blue",
+        action=OrderAction.OPEN,
+        account_id=ACC,
+        legs=[
+            OrderLeg(symbol="AAPL", side=OrderSide.BUY, quantity=10, price=Decimal(300)),
+            OrderLeg(symbol="XYZ", side=OrderSide.SELL, quantity=10, price=Decimal(10)),
+        ],
+    )
+    res = _eval(ctx, intent)
+    assert res.outcome == RMSOutcome.REJECT
+    assert "net exposure of 33000" in (res.reason or "")
