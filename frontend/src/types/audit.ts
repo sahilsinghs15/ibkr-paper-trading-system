@@ -134,9 +134,10 @@ export interface AuditFilters {
   date_to: string
   actor: string
   categories: string[]
-  action: string
+  /** OR within the field, AND across fields: widening these can only match more. */
+  actions: string[]
   account: string
-  result: string
+  results: string[]
   q: string
   // Advanced / security
   ip: string
@@ -167,9 +168,9 @@ export const EMPTY_AUDIT_FILTERS: AuditFilters = {
   date_to: '',
   actor: '',
   categories: [],
-  action: '',
+  actions: [],
   account: '',
-  result: '',
+  results: [],
   q: '',
   ip: '',
   session_id: '',

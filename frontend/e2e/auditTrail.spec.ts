@@ -91,4 +91,54 @@ test.describe('operator audit trail', () => {
       expect(categories).toContain(expected)
     }
   })
+
+  test('multiple results are ORed into one request', async ({ page }) => {
+    // "Did anything fail in this window?" spans several result values. Before
+    // multi-select that was one search per value, merged by eye.
+    for (const label of ['Rejected', 'Denied', 'Failed']) {
+      await page.locator('.audit-check', { hasText: new RegExp(`^${label}`) }).locator('input').check()
+    }
+
+    const [request] = await Promise.all([
+      page.waitForRequest((r) => r.url().includes('/api/v1/audit/events?') && r.url().includes('result=')),
+      page.getByRole('button', { name: 'Search' }).click(),
+    ])
+
+    const results = new URL(request.url()).searchParams.getAll('result')
+    expect(results.sort()).toEqual(['DENIED', 'FAILED', 'REJECTED'])
+    // Comma-joining would be rejected server-side as an unknown result.
+    expect(request.url()).not.toContain('%2C')
+  })
+
+  test('the failures shortcut selects every non-success result', async ({ page }) => {
+    await page.getByRole('button', { name: 'failures' }).click()
+    // toHaveCount retries; a bare .count() can read the DOM before React has
+    // flushed the state update, which made this test fail about one run in five.
+    await expect(
+      page.locator('.audit-checkgroup-inline .audit-check input:checked'),
+    ).toHaveCount(4) // PARTIAL, REJECTED, DENIED, FAILED
+  })
+
+  test('selecting a category keeps only the actions it offers', async ({ page }) => {
+    // Pick an action from Emergency, then switch category to Authentication.
+    // The action must be dropped because that category does not offer it, but
+    // the selection mechanism must keep working.
+    await page.locator('.audit-field', { hasText: 'Category' }).locator('select').selectOption('EMERGENCY')
+    const emergencyAction = page
+      .locator('.audit-checkgroup-scroll .audit-check')
+      .filter({ hasText: /Kill Switch \(flatten/ })
+      .locator('input')
+    await emergencyAction.check()
+    await expect(page.locator('.audit-checkgroup-scroll input:checked')).toHaveCount(1)
+
+    await page.locator('.audit-field', { hasText: 'Category' }).locator('select').selectOption('AUTHENTICATION')
+    await expect(page.locator('.audit-checkgroup-scroll input:checked')).toHaveCount(0)
+  })
+
+  test('a whole category can be selected at once', async ({ page }) => {
+    await page.locator('.audit-field', { hasText: 'Category' }).locator('select').selectOption('AUTHENTICATION')
+    await page.getByRole('button', { name: 'Authentication / Security' }).click()
+    // AUTHENTICATION has 4 actions.
+    await expect(page.locator('.audit-checkgroup-scroll input:checked')).toHaveCount(4)
+  })
 })

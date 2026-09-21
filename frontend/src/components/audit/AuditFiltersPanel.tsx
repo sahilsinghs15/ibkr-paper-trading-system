@@ -36,6 +36,10 @@ function resultOptionLabel(result: string): string {
   return title
 }
 
+// Everything that is not a success, for the "failures" shortcut. Asking "did
+// anything fail in this window?" previously meant four separate searches.
+const NON_SUCCESS_RESULTS = ['PARTIAL', 'REJECTED', 'DENIED', 'FAILED'] as const
+
 function activeCount(f: AuditFilters, keys: readonly (keyof AuditFilters)[]): number {
   return keys.filter((k) => String(f[k] ?? '').trim() !== '').length
 }
@@ -109,14 +113,50 @@ export function AuditFiltersPanel({
   const set = <K extends keyof AuditFilters>(key: K, value: AuditFilters[K]) =>
     setDraft((d) => ({ ...d, [key]: value }))
 
+  /** Actions still selectable once `category` narrows the list. */
+  const actionsWithin = (category: string): Set<string> => {
+    const cats = facets?.categories ?? []
+    const scoped = category ? cats.filter((c) => c.category === category) : cats
+    return new Set(scoped.flatMap((c) => c.actions.map((a) => a.action)))
+  }
+
   const setCategory = (next: string) =>
     setDraft((d) => {
-      const stillValid =
-        !d.action ||
-        (facets?.categories ?? []).some(
-          (c) => (!next || c.category === next) && c.actions.some((a) => a.action === d.action),
-        )
-      return { ...d, categories: next ? [next] : [], action: stillValid ? d.action : '' }
+      // Drop only the actions the new category no longer offers. The
+      // single-select version cleared the whole choice; with a multi-select
+      // that would silently discard a set the operator had just built up.
+      const allowed = actionsWithin(next)
+      return {
+        ...d,
+        categories: next ? [next] : [],
+        actions: d.actions.filter((a) => allowed.has(a)),
+      }
+    })
+
+  const toggleIn = (key: 'actions' | 'results', value: string) =>
+    setDraft((d) => {
+      const current = d[key]
+      return {
+        ...d,
+        [key]: current.includes(value)
+          ? current.filter((v) => v !== value)
+          : [...current, value],
+      }
+    })
+
+  const toggleAction = (action: string) => toggleIn('actions', action)
+  const toggleResult = (result: string) => toggleIn('results', result)
+
+  /** Select a whole category's actions, or clear them if all are already on. */
+  const toggleGroup = (actions: string[]) =>
+    setDraft((d) => {
+      const allOn = actions.every((a) => d.actions.includes(a))
+      if (allOn) {
+        return { ...d, actions: d.actions.filter((a) => !actions.includes(a)) }
+      }
+      const merged = new Set(d.actions)
+      actions.forEach((a) => merged.add(a))
+      return { ...d, actions: [...merged] }
     })
 
   const quickRange = (ms: number) =>
@@ -186,21 +226,44 @@ export function AuditFiltersPanel({
             ))}
           </select>
         </label>
-        <label className="audit-field grow">
-          <span>Action</span>
-          <select value={draft.action} onChange={(e) => set('action', e.target.value)}>
-            <option value="">All actions</option>
+        <div className="audit-field grow">
+          <span>
+            Action
+            {draft.actions.length > 0 && (
+              <button type="button" className="audit-chip-clear" onClick={() => set('actions', [])}>
+                clear {draft.actions.length}
+              </button>
+            )}
+          </span>
+          {/* Grouped checkboxes rather than a multi-select: 37 actions in a
+              ctrl-click list is worse than the single-select it replaces. */}
+          <div className="audit-checkgroup audit-checkgroup-scroll">
             {actionOptions.map((c) => (
-              <optgroup key={c.category} label={c.label}>
+              <fieldset key={c.category} className="audit-checkgroup-section">
+                <legend>
+                  <button
+                    type="button"
+                    className="audit-chip-clear"
+                    title={`Select every action in ${c.label}`}
+                    onClick={() => toggleGroup(c.actions.map((a) => a.action))}
+                  >
+                    {c.label}
+                  </button>
+                </legend>
                 {c.actions.map((a) => (
-                  <option key={a.action} value={a.action}>
-                    {a.label}
-                  </option>
+                  <label key={a.action} className="audit-check">
+                    <input
+                      type="checkbox"
+                      checked={draft.actions.includes(a.action)}
+                      onChange={() => toggleAction(a.action)}
+                    />
+                    <span>{a.label}</span>
+                  </label>
                 ))}
-              </optgroup>
+              </fieldset>
             ))}
-          </select>
-        </label>
+          </div>
+        </div>
         <label className="audit-field">
           <span>Account</span>
           <div className="audit-inline">
@@ -222,17 +285,36 @@ export function AuditFiltersPanel({
             )}
           </div>
         </label>
-        <label className="audit-field">
-          <span>Result</span>
-          <select value={draft.result} onChange={(e) => set('result', e.target.value)}>
-            <option value="">Any result</option>
+        <div className="audit-field">
+          <span>
+            Result
+            {draft.results.length > 0 && (
+              <button type="button" className="audit-chip-clear" onClick={() => set('results', [])}>
+                clear {draft.results.length}
+              </button>
+            )}
+            <button
+              type="button"
+              className="audit-chip-clear"
+              title="Everything that did not succeed"
+              onClick={() => set('results', [...NON_SUCCESS_RESULTS])}
+            >
+              failures
+            </button>
+          </span>
+          <div className="audit-checkgroup audit-checkgroup-inline">
             {(facets?.results ?? []).map((r) => (
-              <option key={r} value={r}>
-                {resultOptionLabel(r)}
-              </option>
+              <label key={r} className="audit-check">
+                <input
+                  type="checkbox"
+                  checked={draft.results.includes(r)}
+                  onChange={() => toggleResult(r)}
+                />
+                <span>{resultOptionLabel(r)}</span>
+              </label>
             ))}
-          </select>
-        </label>
+          </div>
+        </div>
         <label className="audit-field grow">
           <span>Keyword</span>
           <input
