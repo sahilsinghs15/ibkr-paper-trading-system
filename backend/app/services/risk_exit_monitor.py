@@ -374,10 +374,19 @@ class RiskExitMonitor:
                 await PositionRepository(session).set_exit_reason(
                     account_id=account_id, reason=decision.reason
                 )
-            op, created = await self._kill_switch.initiate_square_off(
+            # ACCOUNT scope, not ENGINE: a daily target/stop breach is an
+            # account-level event, so it must halt BOTH ledgers -- otherwise the
+            # account blows its daily limit, the engine book auto-flattens, and
+            # the operator can still open fresh manual risk on the same account.
+            # Arming captures an engine+manual snapshot but places no orders.
+            op, created = await self._kill_switch.arm_account_kill_switch_only(
                 account_id, requested_by=REQUESTED_BY
             )
             if created:
+                # Flatten the engine ledger only. Manual lots are blocked from
+                # further trading but never auto-flattened: submitting broker
+                # orders against operator-owned lots is an explicit operator
+                # action (Complete Flatten), per AGENTS.md §7.
                 await self._kill_switch.execute_flatten_operation_background(
                     op.operation_id
                 )

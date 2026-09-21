@@ -289,22 +289,31 @@ class NotificationOrchestrator:
                     )
                     await session.execute(insert_deliv_stmt)
 
-                # Mirror admitted event to event_log so frontend Notification Center and Telegram stay 100% in real-time sync
-                try:
-                    event_row = EventLogModel(
-                        process=str(event.category or "system").lower(),
-                        kind=event.event_type,
-                        detail={
-                            **(event.details or {}),
-                            "title": title,
-                            "message": message,
-                            "severity": event.severity.value,
-                            "notification_id": notif_id,
-                        },
+                # Mirror admitted event to event_log so frontend Notification Center and Telegram stay 100% in real-time sync.
+                # Producers that write their own row (the reconciler writes ROGUE_*
+                # with its own idempotency key) opt out, otherwise the feed shows
+                # and counts the same event twice.
+                if not getattr(event, "mirror_to_event_log", True):
+                    logger.debug(
+                        "Skipped event_log mirror for %s; producer owns its own row",
+                        event.event_type,
                     )
-                    session.add(event_row)
-                except Exception as mirror_err:
-                    logger.warning("Failed mirroring notification to event_log: %s", mirror_err)
+                else:
+                    try:
+                        event_row = EventLogModel(
+                            process=str(event.category or "system").lower(),
+                            kind=event.event_type,
+                            detail={
+                                **(event.details or {}),
+                                "title": title,
+                                "message": message,
+                                "severity": event.severity.value,
+                                "notification_id": notif_id,
+                            },
+                        )
+                        session.add(event_row)
+                    except Exception as mirror_err:  # noqa: BLE001
+                        logger.warning("Failed mirroring notification to event_log: %s", mirror_err)
 
                 # Fetch full persisted model for caller
                 fetch_stmt = (

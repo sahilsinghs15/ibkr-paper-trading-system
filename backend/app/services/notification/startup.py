@@ -16,6 +16,12 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.db.models.notification import NotificationLogModel
 from app.services.notification.orchestrator import NotificationOrchestrator
+from app.services.notification.restart_tracker import (
+    RestartNode,
+    RestartRecord,
+    consume_restarts,
+    expand_restart_chain,
+)
 from app.services.notification.system_state import (
     CANONICAL_STARTUP_COMPONENTS,
     get_realtime_system_state,
@@ -27,6 +33,67 @@ from app.services.notification.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def build_restart_summary(
+    restarts: list[RestartRecord],
+    states: dict[str, bool],
+) -> tuple[str, str, list[str]]:
+    """Build the title label and body for a startup that was actually a restart.
+
+    Returns (primary_label, message, restarted_component_keys).
+
+    The heading names only the service the operator acted on -- the root of the
+    chain -- because that is the answer to "why did this message arrive?".
+    Everything else it dragged with it is shown in the body, indented under its
+    cause. The body then separates *what restarted* from *what is currently
+    true*: an operator reading "System Universe Started Successfully" after
+    restarting one service cannot tell either.
+    """
+    labels = dict(CANONICAL_STARTUP_COMPONENTS)
+    nodes = expand_restart_chain(restarts)
+
+    def label_for(node: RestartNode) -> str:
+        return labels.get(node.component, node.component.replace("_", " ").title())
+
+    by_service = {n.service: n for n in nodes}
+    primary_label = label_for(nodes[0]) if nodes else "Service"
+
+    # Depth is shown by indenting the tree connector. The right-hand column is
+    # padded from the measured prefix width so it stays aligned at any depth.
+    right_column = 30
+    lines: list[str] = ["Restarted"]
+    for node in nodes:
+        indent = "  " * node.depth
+        label = label_for(node)
+        if node.caused_by is None:
+            prefix = f"  {indent}\u27f3 "
+            right = f"({node.service})"
+        else:
+            cause = by_service.get(node.caused_by)
+            cause_label = label_for(cause) if cause else node.caused_by
+            prefix = f"  {indent}\u2514 \u27f3 "
+            right = f"cascaded from {cause_label}"
+        pad = max(1, right_column - len(prefix) - len(label))
+        lines.append(f"{prefix}{label}{' ' * pad}{right}")
+
+    lines.append("")
+    lines.append("Current State")
+    for key, label in CANONICAL_STARTUP_COMPONENTS:
+        mark = "\u2713" if states.get(key, False) else "\u2717"
+        lines.append(f"  {label:<18} {mark}")
+
+    body = "<pre>\n" + "\n".join(lines) + "\n</pre>"
+
+    down = [label for key, label in CANONICAL_STARTUP_COMPONENTS if not states.get(key, False)]
+    if down:
+        footer = "Still down: " + ", ".join(down)
+    elif len(nodes) > 1:
+        footer = "All systems operational \u00b7 no other service was interrupted"
+    else:
+        footer = "All systems operational"
+
+    return primary_label, f"{body}\n{footer}", [n.component for n in nodes]
 
 
 class StartupAggregator:
@@ -289,7 +356,24 @@ class StartupAggregator:
             is_broker_ready = bool(self._components.get("broker_connection", {}).get("ready", False))
             is_broker_recovery = (await self._has_unrecovered_broker_lost()) and is_broker_ready
 
-            if is_broker_recovery:
+            # A restart is not a cold boot. The stop hook suppressed the "Stopped"
+            # alert and left a marker; consuming it lets this report say which
+            # service restarted instead of claiming the universe just started.
+            restarts = consume_restarts()
+            restarted_components: list[str] = []
+
+            if restarts and not is_broker_recovery:
+                primary_label, restart_message, restarted_components = build_restart_summary(
+                    restarts, states
+                )
+                verb = "Restarted Successfully" if is_fully_ready else "Restarted With Warnings"
+                title = f"{'🔄' if is_fully_ready else '⚠️'} {primary_label} {verb}"
+                event_type = "SERVICE_RESTARTED"
+                category = "SYSTEM"
+                correlation_id = f"system_restart_{self._session_id}"
+                severity = NotificationSeverity.INFO if is_fully_ready else NotificationSeverity.WARNING
+                status_summary = restart_message
+            elif is_broker_recovery:
                 title = "🟢 IBKR Broker Connected Successfully"
                 event_type = "BROKER_RECONNECTED"
                 category = "BROKER"
@@ -322,6 +406,11 @@ class StartupAggregator:
                     "failed": failed_components,
                     "missing": list(missing_critical),
                     "is_broker_recovery": is_broker_recovery,
+                    "is_restart": bool(restarts),
+                    "restarted": [
+                        {"service": r.service, "component": r.component} for r in restarts
+                    ],
+                    "restarted_components": restarted_components,
                 },
             )
 

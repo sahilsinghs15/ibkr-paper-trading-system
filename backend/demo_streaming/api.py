@@ -24,7 +24,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from redis.asyncio import Redis
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -60,6 +60,41 @@ from demo_streaming.snapshot import (
 from demo_streaming.stream import PositionStream
 
 logger = logging.getLogger(__name__)
+
+
+def _approved_notification_filter():
+    """Rows the Notification Center is allowed to show.
+
+    Single definition on purpose. The feed and the mark-read endpoint previously
+    computed `unread_count` with different predicates -- mark-read required a
+    `detail.service` in ALLOWED_SERVICES, which silently dropped ROGUE_TRADE_*,
+    STARTUP_AGGREGATION, BROKER_* and LOSS_THRESHOLD_BREACHED, so the badge
+    changed meaning depending on which endpoint answered last.
+    """
+    return and_(
+        EventLogModel.kind.in_(ALLOWED_KINDS),
+        or_(
+            EventLogModel.kind.notin_(("SERVICE_STARTED", "SERVICE_STOPPED")),
+            EventLogModel.detail["service"].astext.in_(ALLOWED_SERVICES),
+        ),
+    )
+
+
+async def _unread_notification_count(
+    session: AsyncSession,
+    last_read_all_id: int,
+    individual_read_ids: set[int],
+) -> int:
+    """Unread approved notifications for one user, counted in SQL."""
+    filters = [_approved_notification_filter(), EventLogModel.id > last_read_all_id]
+    if individual_read_ids:
+        filters.append(EventLogModel.id.notin_(individual_read_ids))
+    return (
+        await session.execute(
+            select(func.count()).select_from(EventLogModel).where(*filters)
+        )
+    ).scalar_one()
+
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 # Vite build output: app/frontend/dist (repo layout: backend/../frontend/dist)
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
@@ -678,32 +713,31 @@ def create_demo_app(
                 (await session.execute(reads_stmt)).scalars().all()
             )
 
-            # 2. Approved historical notifications
-            stmt = (
-                select(EventLogModel)
-                .where(EventLogModel.kind.in_(ALLOWED_KINDS))
-                .order_by(EventLogModel.id.desc())
-            )
-            all_rows = (await session.execute(stmt)).scalars().all()
+            # 2. Approved historical notifications.
+            # Filtering, counting and paging all happen in SQL: this endpoint used
+            # to load every matching event_log row into Python and slice it, which
+            # grows without bound as the journal does.
+            approved_filter = _approved_notification_filter()
 
-            # Filter strictly to approved scope
-            approved_rows = []
-            for r in all_rows:
-                if (
-                    r.kind in ("SERVICE_STARTED", "SERVICE_STOPPED")
-                    and (r.detail or {}).get("service") not in ALLOWED_SERVICES
-                ):
-                    continue
-                approved_rows.append(r)
+            total = (
+                await session.execute(
+                    select(func.count()).select_from(EventLogModel).where(approved_filter)
+                )
+            ).scalar_one()
 
-            total = len(approved_rows)
-            paged_rows = approved_rows[safe_offset : safe_offset + clamped_limit]
+            paged_rows = (
+                await session.execute(
+                    select(EventLogModel)
+                    .where(approved_filter)
+                    .order_by(EventLogModel.id.desc())
+                    .limit(clamped_limit)
+                    .offset(safe_offset)
+                )
+            ).scalars().all()
 
             # 3. Unread count
-            unread_count = sum(
-                1
-                for r in approved_rows
-                if r.id > last_read_all_id and r.id not in individual_read_ids
+            unread_count = await _unread_notification_count(
+                session, last_read_all_id, individual_read_ids
             )
 
             items = []
@@ -771,19 +805,8 @@ def create_demo_app(
                 (await session.execute(reads_stmt)).scalars().all()
             )
 
-            rows_stmt = select(EventLogModel).where(
-                EventLogModel.kind.in_(ALLOWED_KINDS),
-                EventLogModel.id > last_read_all_id,
-            )
-            rows = (await session.execute(rows_stmt)).scalars().all()
-            unread_count = sum(
-                1
-                for r in rows
-                if (
-                    r.kind == "MARKET_CLOSED"
-                    or (r.detail or {}).get("service") in ALLOWED_SERVICES
-                )
-                and r.id not in individual_read_ids
+            unread_count = await _unread_notification_count(
+                session, last_read_all_id, individual_read_ids
             )
 
         return JSONResponse(

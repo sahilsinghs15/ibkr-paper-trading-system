@@ -52,6 +52,7 @@ ALLOWED_KINDS = frozenset(
         "ROGUE_TRADE_RESOLVED",
         "LOSS_THRESHOLD_BREACHED",
         "STARTUP_AGGREGATION",
+        "SERVICE_RESTARTED",
         "BROKER_LOST",
         "BROKER_RECONNECTED",
     }
@@ -99,6 +100,17 @@ def format_canonical_notification(
             "friendly_name": service or "Service",
             "service": service,
             "unit": detail.get("unit") or f"{service}.service",
+        }
+
+    if kind == "SERVICE_RESTARTED":
+        title = detail.get("title") or "🔄 Service Restarted"
+        return {
+            "icon": detail.get("icon") or "🔄",
+            "title": title,
+            "message": detail.get("message") or title,
+            "friendly_name": "Service restart",
+            "service": "system",
+            "unit": "all",
         }
 
     if kind == "STARTUP_AGGREGATION":

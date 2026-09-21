@@ -310,3 +310,78 @@ async def test_orchestrator_frontend_telegram_sync():
             await session.delete(ev)
         await session.commit()
 
+
+
+@pytest.mark.asyncio
+async def test_unread_count_agrees_between_feed_and_mark_read():
+    """The badge must not change meaning depending on which endpoint answered.
+
+    `/demo/notifications` counted every approved kind, while
+    `/demo/notifications/{id}/read` recomputed the count with a different
+    predicate that required `detail.service` to be in ALLOWED_SERVICES. That
+    silently excluded ROGUE_TRADE_*, STARTUP_AGGREGATION, BROKER_* and
+    LOSS_THRESHOLD_BREACHED -- none of which carry a `service` key -- so marking
+    one item read could move the badge by more than one, or not at all.
+    """
+    redis_mock = MagicMock()
+    redis_mock.ping = AsyncMock(return_value=True)
+    redis_mock.xread = AsyncMock(return_value=[])
+
+    demo_app = create_demo_app(
+        session_factory=AsyncSessionLocal,
+        redis=redis_mock,
+        stream_name="positions:stream",
+    )
+
+    prefix = f"unread_sync_{int(datetime.now(UTC).timestamp() * 1000)}"
+    async with AsyncSessionLocal() as session:
+        repo = EventRepository(session)
+        user = UserModel(
+            email=f"{prefix}@example.com",
+            password_hash="mock",
+            role="admin",
+            is_active=True,
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+        # A service event (has detail.service) and a rogue event (does not).
+        # The old mark-read predicate counted only the first.
+        svc = await repo.append(
+            process="systemd",
+            kind="SERVICE_STARTED",
+            detail={"service": "ibgateway", "action": "start"},
+            idempotency_key=f"{prefix}:svc",
+        )
+        rogue = await repo.append(
+            process="reconcile",
+            kind="ROGUE_TRADE_DETECTED",
+            detail={"symbol": "TSLA", "rogue_type": "BROKER_ORPHAN"},
+            idempotency_key=f"{prefix}:rogue",
+        )
+        await session.commit()
+
+    assert svc is not None and rogue is not None
+    token = create_access_token({"sub": str(user.id)})
+    headers = {"Authorization": f"Bearer {token}"}
+
+    transport = ASGITransport(app=demo_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        feed = (await client.get("/demo/notifications", headers=headers)).json()
+        before = feed["unread_count"]
+        # Both events are unread and both must be counted.
+        assert before >= 2
+
+        marked = (
+            await client.post(
+                f"/demo/notifications/{rogue.id}/read", headers=headers
+            )
+        ).json()
+
+        refetched = (await client.get("/demo/notifications", headers=headers)).json()
+
+        # The two endpoints must report the same number, and marking exactly one
+        # item read must decrement by exactly one.
+        assert marked["unread_count"] == refetched["unread_count"]
+        assert marked["unread_count"] == before - 1

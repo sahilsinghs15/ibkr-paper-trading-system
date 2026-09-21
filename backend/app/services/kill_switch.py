@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models.account import AccountModel
@@ -75,6 +75,14 @@ _KILL_SWITCH_ACTIVE_ACCOUNTS: set[int] = set()
 # restart rehydrates to the same answer.
 _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS: set[int] = set()
 
+# In-memory cache of accounts armed at ACCOUNT scope ("Complete Flatten"). Account
+# scope is the only scope that blocks BOTH ledgers, so it arms this set *and*
+# _KILL_SWITCH_ACTIVE_ACCOUNTS. Kept separate because ENGINE scope must not block
+# manual trading: it flattens the engine ledger only and deliberately preserves
+# manual positions, so blocking the manual ticket would strand the operator with
+# exposure they have no way to close.
+_ACCOUNT_SCOPE_KILL_SWITCH_ACCOUNTS: set[int] = set()
+
 # Statuses that leave an account armed for engine/account scopes. Completing a flatten
 # does NOT disarm: only an explicit operator clear moves an operation to CLEARED.
 _ARMED_STATUSES = (
@@ -97,8 +105,30 @@ _MANUAL_FLATTEN_ACTIVE_STATUSES = (
 
 
 def is_account_kill_switch_active(account_id: int) -> bool:
-    """Return True if account is currently in active emergency kill-switch mode."""
+    """Engine-ledger gate: True when ENGINE or ACCOUNT scope is armed.
+
+    This is the predicate that blocks new engine OPENs. It is deliberately NOT the
+    manual-ticket gate -- use is_manual_trading_blocked for that.
+    """
     return account_id in _KILL_SWITCH_ACTIVE_ACCOUNTS
+
+
+def is_account_scope_kill_switch_active(account_id: int) -> bool:
+    """Return True when a whole-account ("Complete Flatten") kill switch is armed."""
+    return account_id in _ACCOUNT_SCOPE_KILL_SWITCH_ACCOUNTS
+
+
+def is_manual_trading_blocked(account_id: int) -> bool:
+    """Manual-ledger gate: ACCOUNT scope armed, or a manual flatten in flight.
+
+    ENGINE scope is excluded by design. Scope semantics:
+      ENGINE  -> blocks engine OPENs only; manual trading stays open.
+      MANUAL  -> blocks manual orders only; engine signals keep trading.
+      ACCOUNT -> blocks both ledgers.
+    """
+    return is_account_scope_kill_switch_active(account_id) or is_manual_kill_switch_active(
+        account_id
+    )
 
 
 def is_manual_kill_switch_active(account_id: int) -> bool:
@@ -143,13 +173,19 @@ async def get_active_manual_kill_switch_operation(
 
 
 def _arm_kill_switch_cache(account_id: int) -> None:
-    """Mark an account blocked in the in-memory cache."""
+    """Mark an account blocked for engine OPENs in the in-memory cache."""
     _KILL_SWITCH_ACTIVE_ACCOUNTS.add(account_id)
 
 
+def _arm_account_scope_cache(account_id: int) -> None:
+    """Mark an account armed at ACCOUNT scope, which blocks the manual ledger too."""
+    _ACCOUNT_SCOPE_KILL_SWITCH_ACCOUNTS.add(account_id)
+
+
 def clear_account_kill_switch_cache(account_id: int) -> None:
-    """Remove an account from the in-memory blocked-account cache."""
+    """Remove an account from every in-memory blocked-account cache."""
     _KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
+    _ACCOUNT_SCOPE_KILL_SWITCH_ACCOUNTS.discard(account_id)
     _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
 
 
@@ -173,6 +209,16 @@ async def hydrate_kill_switch_cache(
         )
         armed = {int(row[0]) for row in result.all()}
 
+        acct_result = await session.execute(
+            select(KillSwitchOperationModel.account_id)
+            .where(
+                KillSwitchOperationModel.status.in_(_ARMED_STATUSES),
+                KillSwitchOperationModel.scope == KILL_SWITCH_SCOPE_ACCOUNT,
+            )
+            .distinct()
+        )
+        account_scope_armed = {int(row[0]) for row in acct_result.all()}
+
         man_result = await session.execute(
             select(KillSwitchOperationModel.account_id)
             .where(
@@ -185,6 +231,8 @@ async def hydrate_kill_switch_cache(
 
     _KILL_SWITCH_ACTIVE_ACCOUNTS.clear()
     _KILL_SWITCH_ACTIVE_ACCOUNTS.update(armed)
+    _ACCOUNT_SCOPE_KILL_SWITCH_ACCOUNTS.clear()
+    _ACCOUNT_SCOPE_KILL_SWITCH_ACCOUNTS.update(account_scope_armed)
     _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.clear()
     _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.update(man_active)
     if armed:
@@ -233,6 +281,8 @@ async def clear_account_kill_switch(
 
     if scope is None or scope in (KILL_SWITCH_SCOPE_ENGINE, KILL_SWITCH_SCOPE_ACCOUNT):
         _KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
+    if scope is None or scope == KILL_SWITCH_SCOPE_ACCOUNT:
+        _ACCOUNT_SCOPE_KILL_SWITCH_ACCOUNTS.discard(account_id)
     if scope is None or scope == KILL_SWITCH_SCOPE_MANUAL:
         _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
     logger.warning(
@@ -411,6 +461,8 @@ class KillSwitchService:
             if existing_op is not None or is_account_kill_switch_active(account_id):
                 _arm_kill_switch_cache(account_id)
                 if existing_op is not None:
+                    # Only a genuine ACCOUNT-scope operation blocks the manual ledger.
+                    _arm_account_scope_cache(account_id)
                     logger.info(
                         "Kill Switch emergency arm requested for account_id=%s (%s), returning existing operation_id=%s status=%s",
                         account_id,
@@ -458,8 +510,9 @@ class KillSwitchService:
             # Capture immutable snapshot for account-flatten reconciliation
             await self._capture_flatten_snapshot(session, operation, open_positions, open_manual)
 
-            # Block NEW opening signals for this account
+            # Account scope blocks both ledgers: engine OPENs and manual submission.
             _arm_kill_switch_cache(account_id)
+            _arm_account_scope_cache(account_id)
 
         logger.warning(
             "EMERGENCY KILL SWITCH ARMED (ACCOUNT SCOPE, NO BROKER FLATTEN): operation_id=%s account_id=%s ibkr_account=%s open_positions=%d (engine %d + manual %d)",
@@ -945,6 +998,8 @@ class KillSwitchService:
         4. If broker confirms close but execution price is delayed, marks FLATTENED_PENDING_PRICE.
         5. Shared-symbol broker check: compares broker signed quantity against
            (engine_signed_qty + remaining_manual_signed_qty). Engine positions are preserved!
+           That comparison mixes a broker snapshot with live engine state, so it is
+           only trusted when both describe the same moment -- see _broker_evidence_ok.
         6. Updates KillSwitchOperationModel status:
            - If 0 unresolved positions -> COMPLETE, releases manual order blocking.
            - If unresolved / pending -> RECONCILING or UNRESOLVED for retry.
@@ -1003,6 +1058,44 @@ class KillSwitchService:
                 if p.leg_b_symbol and p.leg_b_signed_qty is not None:
                     sym_b = p.leg_b_symbol.strip().upper()
                     engine_qty_by_symbol[sym_b] = engine_qty_by_symbol.get(sym_b, Decimal(0)) + Decimal(str(p.leg_b_signed_qty))
+
+            # `replace_snapshot` stamps every row of one sweep with the same time,
+            # so the max is the instant IBKR was observed.
+            snapshot_as_of = max((b.as_of for b in broker_rows), default=None)
+            op_row = await session.get(KillSwitchOperationModel, operation_id)
+            op_created_at = getattr(op_row, "created_at", None)
+
+            # Engine signals keep trading during a manual flatten -- manual scope
+            # never blocks them (scope isolation). So between `snapshot_as_of` and
+            # now, the engine may have opened or closed a leg on a shared symbol,
+            # which makes live engine_qty_by_symbol and snapshot broker_qty_by_symbol
+            # describe different moments. Collect the symbols where that happened;
+            # they are not comparable this pass.
+            engine_moved_symbols: set[str] = set()
+            if snapshot_as_of is not None:
+                moved_rows = list(
+                    (await session.execute(
+                        select(PositionModel).where(
+                            PositionModel.account_id == account_id,
+                            or_(
+                                PositionModel.opened_at >= snapshot_as_of,
+                                PositionModel.closed_at >= snapshot_as_of,
+                            ),
+                        )
+                    )).scalars().all()
+                )
+                for moved in moved_rows:
+                    for leg_symbol in (moved.leg_a_symbol, moved.leg_b_symbol):
+                        if leg_symbol:
+                            engine_moved_symbols.add(leg_symbol.strip().upper())
+                if engine_moved_symbols:
+                    logger.info(
+                        "Manual kill-switch reconcile: engine moved since broker snapshot "
+                        "operation_id=%s as_of=%s symbols=%s",
+                        operation_id,
+                        snapshot_as_of,
+                        sorted(engine_moved_symbols),
+                    )
 
             for snap in snap_rows:
                 cur_pos = (
@@ -1091,11 +1184,45 @@ class KillSwitchService:
                         unresolved += 1
                         continue
 
-                # Broker position check
+                # Broker position check.
+                #
+                # This is the fallback when the close order never reached FILLED:
+                # infer "the lot is gone at the broker" from a per-symbol quantity
+                # comparison. It is only sound when the two sides describe the same
+                # moment and the snapshot is new enough to have observed our own
+                # close order. Both can be false on a shared symbol, because engine
+                # signals keep trading throughout a manual flatten. When the evidence
+                # is untrustworthy, leave the lot unresolved for the next retry rather
+                # than mutating its status on a comparison we cannot stand behind:
+                # marking a still-open position FLATTENED_PENDING_PRICE tells the
+                # operator it is flat when it is not.
                 norm_sym = (snap.symbol or "").strip().upper()
                 broker_actual = broker_qty_by_symbol.get(norm_sym, Decimal(0))
                 engine_sym_qty = engine_qty_by_symbol.get(norm_sym, Decimal(0))
-                if broker_actual == engine_sym_qty and broker_rows:
+                submitted_times = [
+                    o.submitted_at for o in close_orders if o.submitted_at is not None
+                ]
+                # A snapshot taken before our close order was sent cannot be evidence
+                # that it filled. Absent a close order, require it to post-date arming.
+                evidence_floor = max(submitted_times) if submitted_times else op_created_at
+                broker_evidence_ok = (
+                    bool(broker_rows)
+                    and snapshot_as_of is not None
+                    and evidence_floor is not None
+                    and snapshot_as_of >= evidence_floor
+                    and norm_sym not in engine_moved_symbols
+                )
+                if not broker_evidence_ok and broker_actual == engine_sym_qty:
+                    logger.info(
+                        "Manual kill-switch reconcile: broker evidence not trusted for "
+                        "trade_id=%s symbol=%s as_of=%s floor=%s engine_moved=%s — retrying",
+                        snap.trade_id,
+                        norm_sym,
+                        snapshot_as_of,
+                        evidence_floor,
+                        norm_sym in engine_moved_symbols,
+                    )
+                if broker_actual == engine_sym_qty and broker_evidence_ok:
                     exec_stmt = (
                         select(ManualExecutionModel)
                         .join(ManualOrderModel, ManualExecutionModel.manual_order_id == ManualOrderModel.id)

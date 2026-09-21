@@ -26,6 +26,7 @@ from app.broker.ibkr.gateway_rate_limiter import (
 )
 from app.broker.ibkr.tws_client import TWSClient
 from app.db.models.account import AccountModel
+from app.db.models.kill_switch import KILL_SWITCH_SCOPE_ACCOUNT
 from app.db.models.user import UserModel
 from app.db.repositories.manual_repository import (
     ManualAuditRepository,
@@ -46,8 +47,9 @@ from app.schemas.manual_schemas import (
 from app.services.kill_switch import (
     get_active_manual_kill_switch_operation,
     get_armed_kill_switch_operation,
-    is_account_kill_switch_active,
+    is_account_scope_kill_switch_active,
     is_manual_kill_switch_active,
+    is_manual_trading_blocked,
 )
 from app.services.trading_pause import is_account_trading_paused
 
@@ -98,16 +100,24 @@ class ManualTradingService:
                 f"Account {account.ibkr_account} is manually halted: {halt_state.reason or 'No reason provided'}."
             )
 
-        # 4. Kill switch check
-        if is_account_kill_switch_active(account.id):
-            errors.append(f"Account {account.ibkr_account} kill switch is active. Trading is blocked.")
+        # 4. Kill switch check -- scope-aware.
+        # ENGINE scope is deliberately absent: it flattens the engine ledger only and
+        # preserves manual positions, so blocking the manual ticket would leave the
+        # operator holding manual exposure with no way to close it. Only ACCOUNT scope
+        # ("Complete Flatten") blocks both ledgers.
+        if is_account_scope_kill_switch_active(account.id):
+            errors.append(
+                f"Account {account.ibkr_account} account-wide kill switch is active. Trading is blocked."
+            )
         elif is_manual_kill_switch_active(account.id):
             errors.append(f"Account {account.ibkr_account} manual kill switch is active. Manual trading is blocked.")
         else:
-            armed_op = await get_armed_kill_switch_operation(self._session, account.id)
+            armed_op = await get_armed_kill_switch_operation(
+                self._session, account.id, scope=KILL_SWITCH_SCOPE_ACCOUNT
+            )
             if armed_op is not None:
                 errors.append(
-                    f"Account {account.ibkr_account} has an armed emergency kill-switch operation ({armed_op.status})."
+                    f"Account {account.ibkr_account} has an armed account-wide kill-switch operation ({armed_op.status})."
                 )
             else:
                 armed_manual_op = await get_active_manual_kill_switch_operation(self._session, account.id)
@@ -203,7 +213,7 @@ class ManualTradingService:
         connected = self._client is not None and self._client.is_connected()
         halt_state = await self._halt_repo.get_halt_state(account.id)
         manual_halted = bool(halt_state and halt_state.halted)
-        kill_switch_active = is_account_kill_switch_active(account.id) or is_manual_kill_switch_active(account.id)
+        kill_switch_active = is_manual_trading_blocked(account.id)
         trading_paused = is_account_trading_paused(account.id) or account.trading_paused
 
         effective_price: Decimal | None = None

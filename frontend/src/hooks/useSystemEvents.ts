@@ -9,6 +9,8 @@ import type {
 
 const STORAGE_KEY = 'zahnrad_last_seen_event_id'
 const POLL_INTERVAL_MS = 5000
+// Retry cadence when the initial feed load fails; polling stays disarmed until it succeeds.
+const INIT_RETRY_MS = 3000
 
 const CANONICAL_MESSAGES: Record<string, Record<string, string>> = {
   ibgateway: {
@@ -141,6 +143,7 @@ export function useSystemEvents(): void {
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
     let active = true
 
     // 1. Initial load of notification feed & SILENT bootstrap of event cursor
@@ -153,16 +156,25 @@ export function useSystemEvents(): void {
 
         // Find the absolute highest/latest event ID in the system
         const latestHeadId = feed.items && feed.items.length > 0 ? feed.items[0].id : 0
-        
+
         // Fast-forward cursor to head so no historical events are ever toasted
         lastSeenIdRef.current = Math.max(lastSeenIdRef.current, latestHeadId)
         if (typeof sessionStorage !== 'undefined') {
           sessionStorage.setItem(STORAGE_KEY, String(lastSeenIdRef.current))
         }
-      } catch {
-        // Fallback gracefully on network hiccup
-      } finally {
+        // Only now is the cursor known to be at the head; polling may start.
         initializedRef.current = true
+      } catch {
+        // Do NOT start polling. This used to fall through to `finally`, which
+        // armed the poller with the cursor still at 0 whenever the first fetch
+        // failed (a 401 during auth bootstrap, or any network hiccup) — the next
+        // poll then replayed up to 20 historical events as toasts. Retry instead;
+        // an un-bootstrapped cursor must never be used.
+        if (active) {
+          retryTimer = setTimeout(() => {
+            void initFeedAndCursor()
+          }, INIT_RETRY_MS)
+        }
       }
     }
 
@@ -235,6 +247,7 @@ export function useSystemEvents(): void {
     return () => {
       active = false
       if (timer) clearInterval(timer)
+      if (retryTimer) clearTimeout(retryTimer)
     }
   }, [addToast, addNewNotification, setFeed])
 }

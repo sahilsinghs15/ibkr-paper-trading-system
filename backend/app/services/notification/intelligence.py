@@ -45,7 +45,7 @@ class NotificationIntelligenceEngine:
 
     def get_cooldown_seconds(self, severity: NotificationSeverity, event_type: str) -> float:
         """Resolve cooldown duration based on severity and event type."""
-        if event_type in ("STARTUP_AGGREGATION", "BROKER_RECONNECTED"):
+        if event_type in ("STARTUP_AGGREGATION", "SERVICE_RESTARTED", "BROKER_RECONNECTED"):
             return 0.0
         if event_type in ("SERVICE_STOPPED", "SERVICE_STARTED"):
             return 10.0  # Debounce duplicate CLI/watcher emissions without suppressing genuine operator actions
@@ -244,7 +244,9 @@ class NotificationIntelligenceEngine:
                         recovery_filters.append(
                             or_(
                                 NotificationLogModel.correlation_id == "oems_engine",
-                                NotificationLogModel.event_type == "STARTUP_AGGREGATION",
+                                NotificationLogModel.event_type.in_(
+                                    ("STARTUP_AGGREGATION", "SERVICE_RESTARTED")
+                                ),
                             )
                         )
                     elif event.correlation_id:
@@ -267,7 +269,12 @@ class NotificationIntelligenceEngine:
                         )
 
         # 4. Hourly Rate / Volume Limit Check (exempting critical and startup aggregation milestones)
-        if event.event_type != "STARTUP_AGGREGATION" and event.severity != NotificationSeverity.CRITICAL:
+        # A restart summary is a milestone, not routine volume: suppressing it
+        # leaves the operator with no record of an action they just took.
+        if (
+            event.event_type not in ("STARTUP_AGGREGATION", "SERVICE_RESTARTED")
+            and event.severity != NotificationSeverity.CRITICAL
+        ):
             hourly_limit = self.get_hourly_limit(event.severity)
             if hourly_limit > 0:
                 hour_ago = now - timedelta(seconds=3600)

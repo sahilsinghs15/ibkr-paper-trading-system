@@ -63,6 +63,8 @@ from app.broker.ibkr.gateway_rate_limiter import (
 from app.core.security import create_access_token, get_password_hash
 from app.db.models.account import AccountModel
 from app.db.models.kill_switch import (
+    KILL_SWITCH_SCOPE_ACCOUNT,
+    KILL_SWITCH_SCOPE_ENGINE,
     KILL_SWITCH_STATUS_ACTIVATING,
     KillSwitchOperationModel,
 )
@@ -358,7 +360,15 @@ async def test_disabled_account_blocks_preview_and_submit(session_factory):
 
 @pytest.mark.asyncio
 async def test_manual_halt_and_kill_switch_block_order(session_factory):
-    """6 & 7: Manual halt and kill switch both block order preview and submit."""
+    """6 & 7: Manual halt and account-scope kill switch block order preview and submit.
+
+    Scope matters: ENGINE scope flattens the engine ledger and deliberately preserves
+    manual positions, so it must NOT block the manual ticket -- otherwise the operator
+    is left holding manual exposure with no way to close it. Only ACCOUNT scope
+    ("Complete Flatten") blocks both ledgers. Both rows below are written straight to
+    PostgreSQL with no hot-cache arming, so this also covers the DB-fallback branch of
+    the gate.
+    """
     app.dependency_overrides.clear()
     s = uuid.uuid4().hex[:6]
 
@@ -391,18 +401,39 @@ async def test_manual_halt_and_kill_switch_block_order(session_factory):
             assert resp_prev.json()["valid"] is False
             assert "halted" in resp_prev.json()["errors"][0].lower()
 
-            # Disarm halt, arm kill switch
+            # Disarm halt, arm an ENGINE-scope kill switch: manual must stay open.
             async with session_factory() as session:
                 h_repo = ManualHaltRepository(session)
                 await h_repo.set_halt(acc.id, halted=False)
-                # Add armed kill switch row
-                ks_op = KillSwitchOperationModel(
+                engine_op = KillSwitchOperationModel(
                     account_id=acc.id,
                     ibkr_account=acc.ibkr_account,
+                    scope=KILL_SWITCH_SCOPE_ENGINE,
                     status=KILL_SWITCH_STATUS_ACTIVATING,
                     requested_by="operator",
                 )
-                session.add(ks_op)
+                session.add(engine_op)
+                await session.commit()
+
+            resp_engine = await client.post(
+                f"/api/v1/manual/orders/preview?ibkr_account={acc.ibkr_account}",
+                json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            engine_body = resp_engine.json()
+            assert engine_body["valid"] is True, engine_body["errors"]
+            assert not any("kill" in e.lower() for e in engine_body["errors"])
+
+            # Escalate to ACCOUNT scope: now both ledgers are blocked.
+            async with session_factory() as session:
+                account_op = KillSwitchOperationModel(
+                    account_id=acc.id,
+                    ibkr_account=acc.ibkr_account,
+                    scope=KILL_SWITCH_SCOPE_ACCOUNT,
+                    status=KILL_SWITCH_STATUS_ACTIVATING,
+                    requested_by="operator",
+                )
+                session.add(account_op)
                 await session.commit()
 
             resp_prev_ks = await client.post(

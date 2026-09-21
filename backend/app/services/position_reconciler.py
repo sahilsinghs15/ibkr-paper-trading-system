@@ -795,6 +795,10 @@ class PositionReconciler:
                                 correlation_id=f"rogue:{key[0]}:{key[1]}:{key[2]}:{key[3]}",
                                 dedupe_key=idempotency_key,
                                 details=det_payload,
+                                # This method already wrote the event_log row above
+                                # (with its own idempotency key); skip the mirror so
+                                # the Notification Center does not count it twice.
+                                mirror_to_event_log=False,
                             )
                         )
                     )
@@ -842,6 +846,10 @@ class PositionReconciler:
                                 correlation_id=f"rogue:{key[0]}:{key[1]}:{key[2]}:{key[3]}",
                                 dedupe_key=idempotency_key,
                                 details=res_payload,
+                                # This method already wrote the event_log row above
+                                # (with its own idempotency key); skip the mirror so
+                                # the Notification Center does not count it twice.
+                                mirror_to_event_log=False,
                             )
                         )
                     )

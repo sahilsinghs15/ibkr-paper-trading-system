@@ -63,6 +63,11 @@ class NormalizedEvent:
     correlation_id: str | None = None
     details: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # Producers that already write their own `event_log` row (the reconciler
+    # writes ROGUE_* with its own idempotency key) must set this False, or the
+    # orchestrator's mirror creates a second row with the same kind and the
+    # Notification Center counts the event twice.
+    mirror_to_event_log: bool = True
 
 
 @dataclass

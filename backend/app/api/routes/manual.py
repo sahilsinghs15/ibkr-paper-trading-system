@@ -357,9 +357,11 @@ async def submit_manual_order(
         if acc is None:
             raise HTTPException(status_code=404, detail=f"Account {clean_account} not found")
 
-        from app.services.kill_switch import is_account_kill_switch_active
+        from app.services.kill_switch import is_manual_trading_blocked
 
-        before: dict[str, object] = {"kill_switch_active": is_account_kill_switch_active(acc.id)}
+        # Audit the gate that actually applies to a manual order: ACCOUNT scope or an
+        # in-flight manual flatten. ENGINE scope does not block this path.
+        before: dict[str, object] = {"kill_switch_active": is_manual_trading_blocked(acc.id)}
         if payload.trade_id:
             # Separate session: never share identity-map state with the service.
             async with AsyncSessionLocal() as snap_session:

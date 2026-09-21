@@ -218,7 +218,9 @@ async def get_account_by_identifier(
 async def square_off_account_positions(
     account_id: int,
     request: Request,
-    scope: str | None = Query("engine", description="Flatten scope: 'engine' or 'account'"),
+    scope: str | None = Query(
+        "engine", description="Flatten scope: 'engine', 'manual' or 'account'"
+    ),
     session: AsyncSession = Depends(get_db_session),
     current_user: UserModel = Depends(require_authenticated_user),
 ) -> SquareOffResponse:
@@ -1384,9 +1386,10 @@ async def delete_account_api(
     if order_manager is not None:
         await order_manager.reload_rms_limits()
 
-    from app.services.kill_switch import _KILL_SWITCH_ACTIVE_ACCOUNTS
+    from app.services.kill_switch import clear_account_kill_switch_cache
 
-    _KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
+    # A deleted account must not leave stale ids in any scope's hot cache.
+    clear_account_kill_switch_cache(account_id)
 
     logger.info("Config DELETE account id=%s", account_id)
 

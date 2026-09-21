@@ -16,6 +16,7 @@ from typing import Any
 from app.db.session import AsyncSessionLocal
 from app.services.notification.dispatcher import get_default_dispatcher
 from app.services.notification.orchestrator import NotificationOrchestrator
+from app.services.notification.restart_tracker import record_restart
 from app.services.notification.system_state import get_realtime_system_state
 from app.services.notification.types import (
     NormalizedEvent,
@@ -83,6 +84,7 @@ async def report_service_lifecycle(action: str, service: str) -> int:
         auto_restart_flag = Path("/home/tradingapp/storage/state/backend_auto_restarting.flag")
         if auto_restart_flag.exists():
             logger.info("Auto-restart flag active for %s; suppressing stop alert", service)
+            record_restart(service, svc_key)
             return 0
 
         is_restarting = False
@@ -139,6 +141,11 @@ async def report_service_lifecycle(action: str, service: str) -> int:
                 "Service '%s' restart in progress or completed; suppressing stop alert",
                 service,
             )
+            # Suppress the stop alert, but keep the fact. Without this the
+            # startup that follows is indistinguishable from a cold boot and
+            # reports "System Universe Started Successfully", which tells the
+            # operator nothing about why the message arrived.
+            record_restart(service, svc_key)
             return 0
 
     components_override = {svc_key: {"ready": is_start}}

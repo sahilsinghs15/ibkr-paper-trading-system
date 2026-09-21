@@ -94,10 +94,18 @@ class FakeKillSwitch:
     def __init__(self):
         self.initiated: list[tuple] = []
         self.flattened: list = []
+        self.engine_scope_calls: list[tuple] = []
 
-    async def initiate_square_off(self, account_id, requested_by="operator"):
+    async def arm_account_kill_switch_only(self, account_id, requested_by="operator"):
+        # ACCOUNT scope: a daily-risk breach must halt the engine AND manual ledgers.
         self.initiated.append((account_id, requested_by))
         return SimpleNamespace(operation_id="op-1"), True
+
+    async def initiate_square_off(self, account_id, requested_by="operator"):
+        # ENGINE scope would leave manual trading open -- recorded so tests can
+        # assert the monitor never takes this path for an account-level breach.
+        self.engine_scope_calls.append((account_id, requested_by))
+        return SimpleNamespace(operation_id="op-engine"), True
 
     async def execute_flatten_operation_background(self, operation_id):
         self.flattened.append(operation_id)
@@ -331,6 +339,9 @@ async def test_account_precedence_skips_pair_close(repo_patches) -> None:
     await mon.run_once()
     assert ks.initiated == [(1, "auto_risk")]
     assert ks.flattened == ["op-1"]
+    # Account-level breach must arm ACCOUNT scope, never ENGINE scope: engine
+    # scope would auto-flatten the engine book while leaving manual trading open.
+    assert ks.engine_scope_calls == []
     assert closer.calls == []
     assert any(e["kind"] == "ACCOUNT_RISK_BREACH" for e in repo_patches["events"])
     assert repo_patches["exit_reasons"][0][1] == REASON_ACCOUNT_STOP
@@ -397,6 +408,7 @@ async def test_session_realised_uses_rth_open(repo_patches) -> None:
     )
     await mon.run_once()
     assert ks.initiated == [(1, "auto_risk")]
+    assert ks.engine_scope_calls == []
     assert repo_patches["since"]
     since = repo_patches["since"][0]
     assert since == RTH_OPEN.astimezone(UTC)
