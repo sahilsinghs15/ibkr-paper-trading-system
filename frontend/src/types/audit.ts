@@ -35,11 +35,20 @@ export interface AuditEventSummary {
   provenance: string
 }
 
+export interface EmptySearchFilterHint {
+  field: string
+  label: string
+  value: string
+  matches: number
+}
+
 export interface AuditEventsResponse {
   total: number
   limit: number
   offset: number
   items: AuditEventSummary[]
+  /** Set only when nothing matched: how many events each active filter matches alone. */
+  empty_filter_hints?: EmptySearchFilterHint[] | null
 }
 
 export interface FieldChange {

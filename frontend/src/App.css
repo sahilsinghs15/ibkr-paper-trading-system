@@ -5310,3 +5310,20 @@ thead th {
   color: var(--green);
   font-weight: 600;
 }
+
+/* Audit: why a search returned nothing. */
+.audit-empty-hint {
+  margin-top: 10px;
+  text-align: left;
+  display: inline-block;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--dim);
+}
+.audit-empty-hint-lead {
+  color: var(--warning, #d9a441);
+}
+.audit-empty-hint ul {
+  margin: 4px 0 6px;
+  padding-left: 18px;
+}

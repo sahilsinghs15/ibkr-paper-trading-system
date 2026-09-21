@@ -40,6 +40,7 @@ from app.schemas.audit_schemas import (
     AuditEventSummary,
     AuditFacetsResponse,
     AuthSessionInfo,
+    EmptySearchFilterHint,
     FieldChange,
     InvestigationContext,
 )
@@ -205,12 +206,24 @@ async def search_audit_events(
         limit=limit,
         offset=offset,
     )
-    rows, total = await AuditRepository(session).search(filters)
+    repo = AuditRepository(session)
+    rows, total = await repo.search(filters)
+
+    # A search that matched nothing is the one case where the operator needs to
+    # know *why*. Counting each active filter alone turns "no results" into
+    # "Result = PENDING matches 0 events".
+    hints: list[EmptySearchFilterHint] | None = None
+    if total == 0:
+        raw = await repo.explain_empty(filters)
+        if raw:
+            hints = [EmptySearchFilterHint(**h) for h in raw]
+
     return AuditEventsResponse(
         total=total,
         limit=limit,
         offset=offset,
         items=[_summary(r) for r in rows],
+        empty_filter_hints=hints,
     )
 
 

@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import ipaddress
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from sqlalchemy import String, and_, cast, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import INET, insert
@@ -52,6 +52,15 @@ class AuditSearchFilters:
     sort: Literal["newest", "oldest"] = "newest"
     limit: int = 50
     offset: int = 0
+
+
+def _describe_filter_value(value: Any) -> str:
+    """Render a filter value for an operator-facing hint."""
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
 
 
 def parse_ip_filter(value: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
@@ -205,6 +214,78 @@ class AuditRepository:
         elif f.provenance == "legacy":
             conds.append(m.provenance != "NATIVE")
         return conds
+
+    # Human labels for the diagnostic below; keyed by AuditSearchFilters field.
+    _FILTER_LABELS: ClassVar[dict[str, str]] = {
+        "date_from": "From date",
+        "date_to": "To date",
+        "actor": "User",
+        "actor_user_id": "User id",
+        "actor_role": "Role",
+        "client_ip": "Source IP",
+        "categories": "Category",
+        "actions": "Action",
+        "results": "Result",
+        "account": "Account",
+        "session_id": "Session",
+        "device_id": "Device",
+        "target_type": "Target type",
+        "target_id": "Target id",
+        "ref_id": "Reference id",
+        "order_id": "Order id",
+        "trade_id": "Trade id",
+        "position_id": "Position id",
+        "correlation_id": "Correlation id",
+        "browser": "Browser",
+        "keyword": "Keyword",
+        "provenance": "Provenance",
+    }
+
+    def _active_filter_fields(self, f: AuditSearchFilters) -> list[str]:
+        """Filter fields the caller actually set."""
+        active: list[str] = []
+        for name in self._FILTER_LABELS:
+            value = getattr(f, name, None)
+            if name == "provenance":
+                if value != "all":
+                    active.append(name)
+            elif isinstance(value, list):
+                if value:
+                    active.append(name)
+            elif value not in (None, ""):
+                active.append(name)
+        return active
+
+    async def explain_empty(self, f: AuditSearchFilters) -> list[dict[str, Any]]:
+        """For a search that matched nothing, count each active filter on its own.
+
+        A zero-result search otherwise gives the operator no way to tell which
+        criterion excluded everything, so the only recourse is to remove filters
+        one at a time and search again. Reporting the per-filter counts turns
+        that into a single answer. Only runs on the empty path, so the extra
+        queries never affect a search that returned rows.
+        """
+        m = AuditEventModel
+        out: list[dict[str, Any]] = []
+        for name in self._active_filter_fields(f):
+            single = replace(
+                AuditSearchFilters(),
+                **{name: getattr(f, name)},
+            )
+            conds = self._filters(single)
+            stmt = select(func.count()).select_from(m)
+            if conds:
+                stmt = stmt.where(*conds)
+            matches = (await self._session.execute(stmt)).scalar_one()
+            out.append(
+                {
+                    "field": name,
+                    "label": self._FILTER_LABELS[name],
+                    "value": _describe_filter_value(getattr(f, name)),
+                    "matches": int(matches),
+                }
+            )
+        return out
 
     async def search(self, f: AuditSearchFilters) -> tuple[list[AuditEventModel], int]:
         m = AuditEventModel

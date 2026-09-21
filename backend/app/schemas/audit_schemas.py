@@ -34,11 +34,27 @@ class AuditEventSummary(BaseModel):
     provenance: str
 
 
+class EmptySearchFilterHint(BaseModel):
+    """How many events one active filter matches on its own."""
+
+    field: str
+    label: str
+    value: str
+    matches: int
+
+
 class AuditEventsResponse(BaseModel):
     total: int
     limit: int
     offset: int
     items: list[AuditEventSummary]
+    empty_filter_hints: list[EmptySearchFilterHint] | None = None
+    """Present only when the search matched nothing and filters were active.
+
+    Lists each active filter with the number of events it matches in isolation,
+    so the operator can see which criterion excluded everything instead of
+    removing filters one at a time.
+    """
 
 
 class FieldChange(BaseModel):

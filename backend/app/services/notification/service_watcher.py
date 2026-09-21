@@ -20,6 +20,13 @@ from app.services.notification.types import (
 
 logger = logging.getLogger(__name__)
 
+# A health probe that does not answer in time is not evidence of a stop, so a
+# service must fail this many consecutive probes before it is reported down.
+DOWN_CONFIRM_PROBES = 3
+# Generous enough to survive a GC pause or a burst of SSE traffic on the
+# dashboard; the previous 1s timed out under ordinary load.
+PROBE_TIMEOUT_SEC = 3.0
+
 WATCHED_SERVICES = {
     "dashboard_engine": {
         "url": "http://127.0.0.1:8010/health",
@@ -45,12 +52,19 @@ class ServiceLifecycleWatcher:
         client: Any = None,
         *,
         poll_interval_sec: float = 2.0,
+        probe_timeout_sec: float = PROBE_TIMEOUT_SEC,
+        failure_threshold: int = DOWN_CONFIRM_PROBES,
     ) -> None:
         self._orchestrator = orchestrator
         self._client = client
         self._poll_interval = poll_interval_sec
+        self._probe_timeout = probe_timeout_sec
+        self._failure_threshold = max(1, failure_threshold)
         # Service states: None = initial unknown, True = ready, False = stopped
         self._states: dict[str, bool | None] = {svc: None for svc in WATCHED_SERVICES}
+        # Consecutive failed probes per service. A single failure means "no answer",
+        # not "stopped"; only a run of them is evidence the service is down.
+        self._consecutive_failures: dict[str, int] = {svc: 0 for svc in WATCHED_SERVICES}
         self._task: asyncio.Task[None] | None = None
         self._running = False
 
@@ -77,11 +91,32 @@ class ServiceLifecycleWatcher:
 
     async def _probe(self, url: str) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=1.0) as http_client:
+            async with httpx.AsyncClient(timeout=self._probe_timeout) as http_client:
                 res = await http_client.get(url)
                 return res.status_code == 200
         except (httpx.HTTPError, OSError):
             return False
+
+    def _observe(self, svc: str, probe_ok: bool) -> bool | None:
+        """Fold one probe result into a confirmed state, or None while undecided.
+
+        Going *down* needs `failure_threshold` consecutive failures: a probe that
+        times out proves only that no answer arrived within the timeout, which is
+        routine under load. Treating the first failure as a stop produced
+        "Dashboard Engine Stopped" immediately followed by "Started" two seconds
+        later, repeatedly, until the flapping detector throttled the subsystem --
+        for a service systemd never restarted.
+
+        Coming *up* is confirmed by a single success, because a 200 response is
+        positive evidence rather than the absence of one.
+        """
+        if probe_ok:
+            self._consecutive_failures[svc] = 0
+            return True
+        self._consecutive_failures[svc] += 1
+        if self._consecutive_failures[svc] >= self._failure_threshold:
+            return False
+        return None
 
     async def _poll_loop(self) -> None:
         # Give services 5 seconds settle time after backend boot before triggering alerts
@@ -94,12 +129,14 @@ class ServiceLifecycleWatcher:
         while self._running:
             try:
                 for svc, cfg in WATCHED_SERVICES.items():
-                    current_up = await self._probe(cfg["url"])
+                    confirmed = self._observe(svc, await self._probe(cfg["url"]))
+                    if confirmed is None:
+                        continue  # not enough evidence yet; say nothing
                     prev_up = self._states[svc]
 
-                    if prev_up is not None and prev_up != current_up:
-                        self._states[svc] = current_up
-                        await self._handle_transition(svc, cfg, current_up)
+                    if prev_up is not None and prev_up != confirmed:
+                        self._states[svc] = confirmed
+                        await self._handle_transition(svc, cfg, confirmed)
 
                 await asyncio.sleep(self._poll_interval)
             except asyncio.CancelledError:

@@ -114,6 +114,7 @@ export function OperatorAuditTrail() {
         displayTz={displayTz}
         selectedId={selectedId}
         onSelect={setSelectedId}
+        emptyHints={searchQuery.data?.empty_filter_hints}
       />
 
       <div className="audit-pagination">

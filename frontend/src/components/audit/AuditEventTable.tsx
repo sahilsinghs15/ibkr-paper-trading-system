@@ -1,4 +1,4 @@
-import type { AuditEventSummary } from '../../types/audit'
+import type { AuditEventSummary, EmptySearchFilterHint } from '../../types/audit'
 import type { DisplayTimezone } from '../../types/position'
 import { fmtTime } from '../../utils/format'
 import { actorLabel, resultClass } from './auditFormat'
@@ -9,9 +9,21 @@ interface Props {
   displayTz: DisplayTimezone
   selectedId: string | null
   onSelect: (eventId: string) => void
+  /** Per-filter match counts, supplied by the server when nothing matched. */
+  emptyHints?: EmptySearchFilterHint[] | null
 }
 
-export function AuditEventTable({ items, loading, displayTz, selectedId, onSelect }: Props) {
+export function AuditEventTable({
+  items,
+  loading,
+  displayTz,
+  selectedId,
+  onSelect,
+  emptyHints,
+}: Props) {
+  // Filters that match nothing even on their own are the reason the search is
+  // empty; naming them saves removing filters one at a time to find out.
+  const blocking = (emptyHints ?? []).filter((h) => h.matches === 0)
   return (
     <div className="board factory-board scrollable-table-container audit-table-wrap">
       <table className="factory-table audit-table">
@@ -35,7 +47,47 @@ export function AuditEventTable({ items, loading, displayTz, selectedId, onSelec
           ) : items.length === 0 ? (
             <tr>
               <td colSpan={6} className="audit-empty">
-                No audit events match these filters.
+                <div>No audit events match these filters.</div>
+                {blocking.length > 0 && (
+                  <div className="audit-empty-hint">
+                    <span className="audit-empty-hint-lead">
+                      {blocking.length === 1
+                        ? 'This filter matches no events at all:'
+                        : 'These filters match no events at all:'}
+                    </span>
+                    <ul>
+                      {blocking.map((h) => (
+                        <li key={h.field}>
+                          <span className="mono">
+                            {h.label} = {h.value}
+                          </span>{' '}
+                          — 0 events
+                        </li>
+                      ))}
+                    </ul>
+                    <span className="audit-empty-hint-lead">
+                      Clear {blocking.length === 1 ? 'it' : 'them'} and search again.
+                    </span>
+                  </div>
+                )}
+                {emptyHints && emptyHints.length > 0 && blocking.length === 0 && (
+                  <div className="audit-empty-hint">
+                    <span className="audit-empty-hint-lead">
+                      Each filter matches events on its own, so it is the combination that
+                      excludes everything:
+                    </span>
+                    <ul>
+                      {emptyHints.map((h) => (
+                        <li key={h.field}>
+                          <span className="mono">
+                            {h.label} = {h.value}
+                          </span>{' '}
+                          — {h.matches} event{h.matches === 1 ? '' : 's'}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </td>
             </tr>
           ) : (

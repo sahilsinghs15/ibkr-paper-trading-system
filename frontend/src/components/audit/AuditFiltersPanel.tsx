@@ -24,6 +24,18 @@ const QUICK_RANGES: { label: string; ms: number }[] = [
   { label: 'Last 30 days', ms: 30 * 86_400_000 },
 ]
 
+// PENDING and UNKNOWN are outcomes an event normally passes through or never
+// reaches, not states it rests in: the recorder commits PENDING as intent and
+// finalizes it in the same operation, so a finalized row is only PENDING if the
+// process died mid-action. Selecting either usually returns nothing, which reads
+// as a broken filter unless the option says so.
+function resultOptionLabel(result: string): string {
+  const title = result.charAt(0) + result.slice(1).toLowerCase()
+  if (result === 'PENDING') return `${title} (interrupted mid-action)`
+  if (result === 'UNKNOWN') return `${title} (outcome not recorded)`
+  return title
+}
+
 function activeCount(f: AuditFilters, keys: readonly (keyof AuditFilters)[]): number {
   return keys.filter((k) => String(f[k] ?? '').trim() !== '').length
 }
@@ -216,7 +228,7 @@ export function AuditFiltersPanel({
             <option value="">Any result</option>
             {(facets?.results ?? []).map((r) => (
               <option key={r} value={r}>
-                {r.charAt(0) + r.slice(1).toLowerCase()}
+                {resultOptionLabel(r)}
               </option>
             ))}
           </select>

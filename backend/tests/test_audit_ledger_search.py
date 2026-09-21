@@ -526,3 +526,49 @@ async def test_explicit_correlation_and_browser_filters(session_factory, admin_t
     async with client_for() as client:
         facets = await client.get("/api/v1/audit/facets", headers=auth_headers(admin_token))
     assert "Firefox" in facets.json()["browsers"]
+
+
+async def test_empty_search_names_the_filter_that_excluded_everything(seeded, admin_token):
+    """A zero-result search must say which criterion is responsible.
+
+    Observed on the live system: an operator filtered by result=PENDING and got
+    nothing, then changed category, added an action and widened the date range
+    over ten separate searches -- all still empty, because PENDING stayed pinned
+    the whole time. No finalized audit row is ever PENDING (the recorder commits
+    it as intent and finalizes within the same operation), so that filter can
+    only ever match zero. The response now reports per-filter counts, so the
+    culprit is visible in one search instead of ten.
+    """
+    res = await _search(admin_token, result="PENDING", category="AUTHENTICATION", limit=50)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total"] == 0
+
+    hints = {h["field"]: h for h in body["empty_filter_hints"]}
+    assert hints["results"]["matches"] == 0, "result=PENDING should match nothing"
+    assert hints["results"]["label"] == "Result"
+    assert "PENDING" in hints["results"]["value"]
+    # The category is not the problem and must not be blamed for the empty result.
+    assert hints["categories"]["matches"] > 0
+
+
+async def test_empty_search_distinguishes_combination_from_single_culprit(seeded, admin_token):
+    """When every filter matches on its own, the combination is the cause."""
+    res = await _search(
+        admin_token, category="AUTHENTICATION", action="KILL_MANUAL_FLATTEN", limit=50
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total"] == 0
+    hints = {h["field"]: h for h in body["empty_filter_hints"]}
+    assert hints["categories"]["matches"] > 0
+    assert hints["actions"]["matches"] > 0
+
+
+async def test_hints_absent_when_results_found(seeded, admin_token):
+    """The extra counting queries must not run on the normal path."""
+    res = await _search(admin_token, limit=50)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total"] > 0
+    assert body.get("empty_filter_hints") is None
