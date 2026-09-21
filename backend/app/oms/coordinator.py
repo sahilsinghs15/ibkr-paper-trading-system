@@ -826,8 +826,10 @@ class BasketCoordinator:
                         {
                             "trade_id": intent.signal_id,
                             "symbol": orig_leg.symbol,
+                            "leg": f"L{index}",
                             "remaining_qty": remaining,
                             "retry": attempt,
+                            "max_retries": policy.max_retries,
                             "reason": rms_result.reason,
                         },
                         signal_pk=signal_pk,
@@ -880,8 +882,10 @@ class BasketCoordinator:
                     {
                         "trade_id": intent.signal_id,
                         "symbol": orig_leg.symbol,
+                        "leg": f"L{index}",
                         "remaining_qty": remaining,
                         "retry": attempt,
+                        "max_retries": policy.max_retries,
                         "broker_order_id": str(order.ibkr_order_id)
                         if order.ibkr_order_id
                         else None,
@@ -940,18 +944,14 @@ class BasketCoordinator:
         signal_pk: int | None,
         basket: Basket,
     ) -> list[OMSOrder]:
-        from app.services.kill_switch import is_account_kill_switch_active
-
-        if (
-            original.action == OrderAction.OPEN
-            and original.account_id is not None
-            and is_account_kill_switch_active(original.account_id)
-        ):
-            logger.warning(
-                "KILL_SWITCH_ACTIVE: skipping compensation for OPEN trade_id=%s",
-                original.signal_id,
-            )
-            return []
+        # Deliberately NOT gated on is_account_kill_switch_active. Compensation
+        # emits reverse CLOSE legs that unwind fills from a basket that failed to
+        # complete -- it only ever reduces exposure, which is precisely what an
+        # armed kill switch wants. Skipping it stranded the filled leg naked:
+        # an unsettled basket writes no `positions` row, so the kill-switch
+        # flatten snapshot (which reads positions) cannot see it, and the basket
+        # was forced to CRITICAL instead of unwinding itself to COMPENSATED.
+        # _retry_remainder is the one that stays gated -- a retry ADDS exposure.
         created: list[OMSOrder] = []
         now = datetime.now(UTC)
         for orig_index, orig_leg in enumerate(original.legs):

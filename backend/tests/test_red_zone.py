@@ -522,3 +522,107 @@ async def test_no_claim_for_deferred(session_factory):
         claim_repo = ExecutionClaimRepository(session)
         has = await claim_repo.has_claimed("model_blue", "SIG-NOCLAIM")
         assert has is False
+
+
+# ── OrderManager gate ────────────────────────────────────────────────────────
+# `SessionClock` is a DO-NOT-BYPASS gate (AGENTS.md §6.7), but until now only the
+# clock's own arithmetic was covered: nothing asserted that OrderManager actually
+# refuses to fan a signal out while the projected red zone is open. The suite's
+# autouse `_neutralize_red_zone` fixture forces the gate open so execution tests
+# stop depending on the wall clock, which would leave that behaviour untested —
+# these two cases pin it explicitly instead.
+
+
+def _red_zone_payload(trade_id: str) -> dict:
+    return {
+        "market": "SMART",
+        "strategy": "model_blue",
+        "action": "OPEN",
+        "trade_id": trade_id,
+        "direction": 1,
+        "buckets": [
+            {
+                "underlying": "XLE",
+                "legs": [
+                    {"instrument_type": "STK", "side": "BUY", "weight": 0.5, "price": 90.0}
+                ],
+            },
+            {
+                "underlying": "XOP",
+                "legs": [
+                    {"instrument_type": "STK", "side": "SELL", "weight": 0.5, "price": 130.0}
+                ],
+            },
+        ],
+    }
+
+
+async def _fan_out_with_clock(session_factory, *, in_red_zone: bool):
+    """Run one OPEN signal through OrderManager with the gate forced open/closed."""
+    import uuid
+    from datetime import UTC, datetime
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.db.models.account import AccountModel
+    from app.services.model_blue.parser import parse_model_blue_payload
+    from app.services.order_manager import OrderManager
+
+    account_id = 61_000_000 + uuid.uuid4().int % 1_000_000_000
+    ibkr = f"DURZ{uuid.uuid4().hex[:6].upper()}"
+    async with session_factory() as s, s.begin():
+        s.add(
+            AccountModel(
+                id=account_id,
+                name="red-zone-gate",
+                ibkr_account=ibkr,
+                total_margin=Decimal(100000),
+                enabled=True,
+            )
+        )
+
+    manager = OrderManager(strategy_id="model_blue", session_factory=session_factory)
+    signal = parse_model_blue_payload(
+        _red_zone_payload(f"MBG-RZ-{uuid.uuid4().hex[:6]}"),
+        timestamp=datetime.now(UTC),
+        reason="red-zone-gate",
+    )
+
+    clock = MagicMock()
+    clock.projected_in_red_zone.return_value = in_red_zone
+    clock.in_red_zone.return_value = in_red_zone
+    clock.buffer_seconds = 45
+
+    with (
+        patch("app.services.session_clock.get_session_clock", return_value=clock),
+        patch.object(manager, "_persist_inbound_signal", new=AsyncMock(return_value=None)),
+        patch.object(
+            manager, "_process_signal_execution_inner", new=AsyncMock(return_value=None)
+        ) as inner,
+    ):
+        result = await manager.process_signal_execution(signal, account_scope=str(account_id))
+    return result, inner
+
+
+@pytest.mark.real_session_clock
+@pytest.mark.asyncio
+async def test_order_manager_defers_signal_inside_projected_red_zone(session_factory):
+    """A projected red zone parks the signal: no fan-out, no execution attempted."""
+    result, inner = await _fan_out_with_clock(session_factory, in_red_zone=True)
+
+    assert result.deferred_red_zone is True
+    assert result.outcomes == []
+    inner.assert_not_awaited()
+
+
+@pytest.mark.real_session_clock
+@pytest.mark.asyncio
+async def test_order_manager_fans_out_when_red_zone_is_clear(session_factory):
+    """Control: the identical signal reaches execution once the gate is open.
+
+    Asserted via the execution entrypoint rather than the return value, which
+    here belongs to the patched inner call.
+    """
+    _result, inner = await _fan_out_with_clock(session_factory, in_red_zone=False)
+
+    inner.assert_awaited()

@@ -346,6 +346,30 @@ async def test_normal_gateway_restart_does_not_trigger_flapping(session_factory)
         assert not any("FLAPPING" in t for t in titles)
 
 
+async def _await_notification_titles(
+    session_factory, predicate, timeout: float = 5.0
+) -> list[str]:
+    """Poll `notification_log` until `predicate(titles)` holds or `timeout` elapses.
+
+    Returns the last titles seen either way, so the caller's assertion reports
+    what actually arrived rather than an opaque timeout.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    titles: list[str] = []
+    while True:
+        async with session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(NotificationLogModel).order_by(NotificationLogModel.id.asc())
+                )
+            ).scalars().all()
+        titles = [r.title for r in rows]
+        if predicate(titles) or loop.time() >= deadline:
+            return titles
+        await asyncio.sleep(0.02)
+
+
 @pytest.mark.asyncio
 async def test_genuine_broker_oscillation_triggers_flapping(session_factory):
     """12: Genuine rapid broker oscillations (3 full disconnect/reconnect cycles) DO trigger flapping."""
@@ -367,18 +391,17 @@ async def test_genuine_broker_oscillation_triggers_flapping(session_factory):
 
     # Cycle 3: disconnect
     listener.on_connection_closed()
-    await asyncio.sleep(0.05)
 
-    async with session_factory() as session:
-        notifs = (
-            await session.execute(
-                select(NotificationLogModel).order_by(NotificationLogModel.id.asc())
-            )
-        ).scalars().all()
-
-        titles = [n.title for n in notifs]
-        # At least one notification must be the flapping alert
-        assert any("FLAPPING" in t for t in titles)
+    # The listener persists notifications from background tasks, so poll for the
+    # outcome instead of sleeping a fixed amount and hoping the write landed —
+    # that race made this test fail roughly one run in three. Waiting longer
+    # cannot change the verdict: the flapping window is
+    # `notification_flapping_window_sec` (300s by default), orders of magnitude
+    # wider than this test's runtime.
+    titles = await _await_notification_titles(
+        session_factory, lambda ts: any("FLAPPING" in t for t in ts)
+    )
+    assert any("FLAPPING" in t for t in titles), f"no flapping alert in {titles}"
 
 
 @pytest.mark.asyncio

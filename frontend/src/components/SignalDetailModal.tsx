@@ -2,6 +2,14 @@ import { usePnlStore } from '../store/pnlStore'
 import { getCanonicalStatus, type SignalItem } from '../store/signalStore'
 import { displayStrategy, fmtTime } from '../utils/format'
 import { formatRejectReason } from '../utils/rejectReason'
+import {
+  formatRetryLabel,
+  groupLogicalLegs,
+  latestRetryAttempt,
+  RETRY_BLOCKED_EVENT_KIND,
+  RETRY_EVENT_KIND,
+  type LogicalLeg,
+} from '../utils/signalLegs'
 
 function isRejectedSig(sig: SignalItem): boolean {
   const c = getCanonicalStatus(sig)
@@ -104,13 +112,18 @@ function buildUnifiedTimeline(sig: SignalItem): TimelineItem[] {
     const kind = String(ev.kind || '').toUpperCase()
     const detail = (ev.detail || {}) as Record<string, unknown>
 
-    if (kind === 'BASKET_RETRY') {
-      const attempt = detail.attempt ? `Attempt #${detail.attempt} of 3` : 'Retry'
+    if (kind === RETRY_EVENT_KIND || kind === RETRY_BLOCKED_EVENT_KIND) {
+      const cap = Number(detail.max_retries) > 0 ? ` of ${detail.max_retries}` : ''
+      const attempt = detail.retry ? `Attempt #${detail.retry}${cap}` : 'Retry'
+      const leg = detail.symbol ? ` for ${detail.symbol}` : ''
       const rem = detail.remaining_qty !== undefined ? ` (${detail.remaining_qty} remaining)` : ''
+      const blocked = kind === RETRY_BLOCKED_EVENT_KIND
       events.push({
         ts,
-        dotColor: 'amber',
-        description: `Execution Retry Triggered: ${attempt}${rem} — ${detail.reason || 'Fill wait timeout reached'}`,
+        dotColor: blocked ? 'red' : 'amber',
+        description: blocked
+          ? `Execution Retry Blocked${leg}: ${attempt}${rem} — ${detail.reason || 'RMS rejected the retry'}`
+          : `Execution Retry Triggered${leg}: ${attempt}${rem} — ${detail.reason || 'Fill wait timeout reached'}`,
       })
     } else if (kind === 'BASKET_UNWINDING') {
       events.push({
@@ -133,16 +146,11 @@ function buildUnifiedTimeline(sig: SignalItem): TimelineItem[] {
   return events
 }
 
-function computeRetryInfo(sig: SignalItem) {
-  const retryEvents = (sig.events || []).filter((e) => String(e.kind).toUpperCase() === 'BASKET_RETRY')
-  let latestAttempt: number | null = null
-  for (const ev of retryEvents) {
-    const att = Number((ev.detail || {}).attempt)
-    if (att && (!latestAttempt || att > latestAttempt)) {
-      latestAttempt = att
-    }
-  }
-  return { retryEvents, latestAttempt: latestAttempt || retryEvents.length || null }
+function computeRetryInfo(sig: SignalItem, legs: LogicalLeg[]) {
+  const retryEvents = (sig.events || []).filter(
+    (e) => String(e.kind).toUpperCase() === RETRY_EVENT_KIND,
+  )
+  return { retryEvents, retryInfo: latestRetryAttempt(sig.events, legs) }
 }
 
 export function SignalDetailModal({
@@ -162,12 +170,13 @@ export function SignalDetailModal({
   const isAccepted = isAcceptedSig(sig)
   const procDuration = computeProcessingDuration(sig)
   const timeline = buildUnifiedTimeline(sig)
-  const { retryEvents, latestAttempt } = computeRetryInfo(sig)
-
   const orders = sig.orders || []
   const primaryOrders = orders.filter((o) => !o.is_compensation)
   const compensationOrders = orders.filter((o) => o.is_compensation)
-  const incompleteLeg = primaryOrders.find((o) => (Number(o.fill_qty) || 0) < (Number(o.quantity) || 0))
+  // Retries are extra orders on an existing leg, never a new leg.
+  const logicalLegs = groupLogicalLegs(primaryOrders)
+  const { retryEvents, retryInfo } = computeRetryInfo(sig, logicalLegs)
+  const incompleteLeg = logicalLegs.find((l) => !l.isFull)
   const rejectDisplay = isRejected
     ? formatRejectReason(sig.reject_reason, sig.ibkr_account || cleanFilter)
     : null
@@ -221,40 +230,43 @@ export function SignalDetailModal({
             <div className="drawer-section">
               <h5 className="drawer-section-title">LEG-BY-LEG EXECUTION STATE</h5>
               <div className="leg-cards-grid">
-                {primaryOrders.map((ord, idx) => {
-                  const req = Number(ord.quantity) || 0
-                  const fill = Number(ord.fill_qty) || 0
-                  const rem = Math.max(0, req - fill)
-                  const isLegFull = fill >= req && req > 0
-                  const isLegPartial = fill > 0 && fill < req
-                  const execs = ord.executions || []
+                {logicalLegs.map((leg, idx) => {
+                  const rem = Math.max(0, leg.req - leg.fill)
+                  const execs = leg.orders.flatMap((o) => o.executions || [])
 
                   return (
                     <div
-                      key={ord.id || ord.internal_order_id}
-                      className={`leg-execution-card ${isLegFull ? 'full' : isLegPartial ? 'partial' : 'pending'}`}
+                      key={leg.key}
+                      className={`leg-execution-card ${leg.isFull ? 'full' : leg.isPartial ? 'partial' : 'pending'}`}
                     >
                       <div className="leg-card-header">
                         <span className="leg-name font-bold">
-                          LEG {idx + 1} — {ord.symbol} ({ord.buy_sell})
+                          LEG {idx + 1} — {leg.symbol} ({leg.side})
                         </span>
-                        <span className={`leg-status-tag ${isLegFull ? 'full' : isLegPartial ? 'partial' : 'pending'}`}>
-                          {isLegFull ? 'FILLED' : isLegPartial ? 'RETRYING' : 'SUBMITTED'}
+                        <span className={`leg-status-tag ${leg.isFull ? 'full' : leg.isPartial ? 'partial' : 'pending'}`}>
+                          {leg.isFull ? 'FILLED' : leg.isPartial ? 'RETRYING' : 'SUBMITTED'}
                         </span>
                       </div>
 
                       <div className="leg-card-body">
                         <div className="leg-qty-row font-bold">
-                          <span>Filled: {fill} / {req}</span>
+                          <span>Filled: {leg.fill} / {leg.req}</span>
                           {rem > 0 && <span className="txt-warning">Remaining: {rem}</span>}
                         </div>
 
                         <div className="leg-progress-track">
                           <div
-                            className={`leg-progress-bar ${isLegFull ? 'green' : 'amber'}`}
-                            style={{ width: `${Math.min(100, (fill / (req || 1)) * 100)}%` }}
+                            className={`leg-progress-bar ${leg.isFull ? 'green' : 'amber'}`}
+                            style={{ width: `${Math.min(100, (leg.fill / (leg.req || 1)) * 100)}%` }}
                           />
                         </div>
+
+                        {leg.retries > 0 && (
+                          <div className="dim-txt mono">
+                            {leg.retries} retr{leg.retries === 1 ? 'y' : 'ies'} on this leg
+                            {' '}({leg.orders.length} broker orders)
+                          </div>
+                        )}
 
                         {execs.length > 0 && (
                           <div className="fill-history-sublist dim-txt mono">
@@ -281,8 +293,10 @@ export function SignalDetailModal({
                 <div className="retry-status-item">
                   <span className="dim-txt font-bold">Active Retry Policy:</span>{' '}
                   <span className="mono">
-                    {retryEvents.length > 0
-                      ? `${latestAttempt || retryEvents.length} of 3 attempts executed`
+                    {retryInfo
+                      ? `${formatRetryLabel(retryInfo)} executed`
+                      : retryEvents.length > 0
+                      ? `${retryEvents.length} retries executed`
                       : 'Initial fill wait window (10s)'}
                   </span>
                 </div>
@@ -290,7 +304,7 @@ export function SignalDetailModal({
                   <span className="dim-txt font-bold">Current System Action:</span>{' '}
                   <span className={incompleteLeg ? 'txt-warning font-bold' : 'txt-success'}>
                     {incompleteLeg
-                      ? `Waiting for ${incompleteLeg.symbol} to fill (${Math.max(0, Number(incompleteLeg.quantity) - Number(incompleteLeg.fill_qty))} remaining)`
+                      ? `Waiting for ${incompleteLeg.symbol} to fill (${Math.max(0, incompleteLeg.req - incompleteLeg.fill)} remaining)`
                       : 'All legs filled — Completing basket execution'}
                   </span>
                 </div>

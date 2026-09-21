@@ -24,11 +24,14 @@ from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import Settings, get_settings
 from app.db.models.account import AccountModel
 from app.db.models.kill_switch import (
+    KILL_SWITCH_SCOPE_ACCOUNT,
+    KILL_SWITCH_SCOPE_ENGINE,
     KILL_SWITCH_STATUS_ACTIVATING,
     KillSwitchOperationModel,
 )
@@ -363,31 +366,65 @@ async def test_normal_kill_switch_and_emergency_webhook_coexist(
     async_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ):
-    """Normal Kill Switch activation then Emergency Webhook call do not create conflicting state."""
+    """Normal Kill Switch activation then Emergency Webhook call do not create conflicting state.
+
+    Kill-switch operations are scoped (migration k1l2s3w4i5t6 added
+    `kill_switch_operations.scope` and made the armed index `(account_id, scope)`).
+    An operator square-off arms ENGINE scope; the emergency webhook arms ACCOUNT
+    scope via `arm_account_kill_switch_only`, whose idempotency check is scoped.
+    The two therefore coexist as separate operations rather than the webhook
+    collapsing into the engine one — the webhook is only idempotent against a
+    prior ACCOUNT-scope arm, which step 3 asserts.
+    """
     account_id, ibkr_acc = await _create_account_row(session_factory)
     secret = f"secret-{uuid4().hex[:6]}"
 
-    # 1. Normal Kill Switch square-off activation
+    # 1. Normal Kill Switch square-off activation (ENGINE scope)
     svc = KillSwitchService(session_factory=session_factory)
-    _op1, created1 = await svc.initiate_square_off(account_id=account_id, requested_by="operator")
+    op1, created1 = await svc.initiate_square_off(account_id=account_id, requested_by="operator")
     assert created1 is True
     assert is_account_kill_switch_active(account_id) is True
 
-    # 2. Emergency Webhook call for same account
     test_settings = Settings(emergency_killswitch_auth_secret=secret)
     with patch("app.api.routes.emergency.get_settings", return_value=test_settings):
+        # 2. Emergency Webhook arms ACCOUNT scope: a distinct operation, not a
+        # duplicate of the engine-scope one.
         res = await async_client.post(
             "/api/v1/emergency-kill-switch",
             headers={"Authorization": f"Bearer {secret}"},
             json={"ibkr_account_id": ibkr_acc},
         )
         assert res.status_code == 200
-        assert res.json()["message"] == "Kill switch was already active for account"
+        assert res.json()["message"] == "Emergency kill switch activated for account"
+
+        # 3. Replaying the webhook is idempotent within ACCOUNT scope.
+        replay = await async_client.post(
+            "/api/v1/emergency-kill-switch",
+            headers={"Authorization": f"Bearer {secret}"},
+            json={"ibkr_account_id": ibkr_acc},
+        )
+        assert replay.status_code == 200
+        assert replay.json()["message"] == "Kill switch was already active for account"
+
+    # Both scopes are armed for the account, and they are different operations.
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(KillSwitchOperationModel).where(
+                    KillSwitchOperationModel.account_id == account_id
+                )
+            )
+        ).scalars().all()
+    scopes = {r.scope for r in rows}
+    assert scopes == {KILL_SWITCH_SCOPE_ENGINE, KILL_SWITCH_SCOPE_ACCOUNT}
+    account_ops = [r for r in rows if r.scope == KILL_SWITCH_SCOPE_ACCOUNT]
+    assert len(account_ops) == 1, "webhook replay must not create a second ACCOUNT-scope op"
+    assert account_ops[0].operation_id != op1.operation_id
 
     # State remains active and unified
     assert is_account_kill_switch_active(account_id) is True
 
-    # 3. Start Again clears the unified state
+    # 4. Start Again clears every scope.
     cleared = await clear_account_kill_switch(session_factory, account_id, cleared_by="operator")
     assert cleared >= 1
     assert is_account_kill_switch_active(account_id) is False

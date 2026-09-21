@@ -24,6 +24,7 @@ import type { ExecutionSettings, MarginSettings } from '../types/config'
 import { normalizeIbkrAccount } from '../utils/activeAccount'
 import { showFeedbackToast } from '../utils/feedbackToast'
 import { cleanNumberInput, fmtUsd } from '../utils/format'
+import { scheduleFlattenResync } from '../hooks/usePnlStream'
 
 function extractError(err: unknown): string {
   if (typeof err === 'object' && err !== null && 'response' in err) {
@@ -1071,6 +1072,10 @@ export function AccountSettingsPage() {
               showFeedbackToast('success', 'Kill switch executed', text)
               void queryClient.invalidateQueries({ queryKey: ['config', 'kill-switch', account.id] })
               void queryClient.invalidateQueries({ queryKey: ['config', 'account', cleanAccount] })
+              // The flatten is 202 Accepted, so positions are still open when this
+              // resolves. Re-pull the snapshot a few times until the dashboard
+              // converges instead of leaving stale rows for a manual refresh.
+              scheduleFlattenResync()
             }}
           />
           <StartAgainModal

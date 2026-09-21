@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -53,6 +55,45 @@ def _broker_line(
         quantity=qty,
         avg_cost=150.0,
     )
+
+
+def _rogue_orchestrator() -> MagicMock:
+    """Rogue alerts are delivered through the centralized notification
+    orchestrator. `send_canonical_telegram` survives in
+    `position_reconciler` as an importable symbol only (marked deprecated) and
+    is never called, so a reconciler built without an orchestrator raises no
+    alert at all and any assertion on that mock sees zero calls."""
+    orchestrator = MagicMock()
+    orchestrator.ingest_event = AsyncMock(return_value=None)
+    return orchestrator
+
+
+@asynccontextmanager
+async def _notifications(orchestrator: MagicMock):
+    """Capture the notifications raised inside the block.
+
+    Call `await _settle()` after each sweep before asserting: the reconciler
+    dispatches notifications through `asyncio.create_task`, so they are only
+    guaranteed to have run once the loop has been given a chance to.
+    """
+    orchestrator.ingest_event.reset_mock()
+    yield orchestrator.ingest_event
+
+
+async def _settle() -> None:
+    """Let the reconciler's fire-and-forget notification tasks run."""
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+
+def _events_for(mock: AsyncMock, ibkr_account: str) -> list:
+    """NormalizedEvents the orchestrator received for one account."""
+    out = []
+    for call in mock.call_args_list:
+        event = call.args[0] if call.args else None
+        if event is not None and (event.details or {}).get("ibkr_account") == ibkr_account:
+            out.append(event)
+    return out
 
 
 @pytest.mark.asyncio
@@ -141,16 +182,19 @@ async def test_rogue_trade_detection_deduplication_and_resolution(
         return_value=(sweep_1_broker_lines, False)
     )
 
+    orchestrator = _rogue_orchestrator()
     reconciler = PositionReconciler(
-        session_factory, client, interval_sec=9999.0, rogue_confirm_sweeps=1
+        session_factory,
+        client,
+        interval_sec=9999.0,
+        rogue_confirm_sweeps=1,
+        notification_orchestrator=orchestrator,
     )
 
     # First sweep -> Detect all three rogue conditions
-    with patch(
-        "app.services.position_reconciler.send_canonical_telegram",
-        new_callable=AsyncMock,
-    ) as mock_tg:
+    async with _notifications(orchestrator) as mock_tg:
         await reconciler.run_once()
+        await _settle()
 
         async with session_factory() as session:
             events = list(
@@ -180,19 +224,13 @@ async def test_rogue_trade_detection_deduplication_and_resolution(
         assert types_detected.get(MISMATCH_BROKER_ORPHAN) == "TSLA"
         assert types_detected.get(MISMATCH_LEDGER_GHOST) == "MSFT"
 
-        acc_calls = [
-            c
-            for c in mock_tg.call_args_list
-            if c[0][1].get("ibkr_account") == ibkr_account
-        ]
+        acc_calls = _events_for(mock_tg, ibkr_account)
         assert len(acc_calls) == 3
 
     # Second sweep -> Unchanged conditions. Must NOT produce duplicate detection events or telegram alerts!
-    with patch(
-        "app.services.position_reconciler.send_canonical_telegram",
-        new_callable=AsyncMock,
-    ) as mock_tg:
+    async with _notifications(orchestrator) as mock_tg:
         await reconciler.run_once()
+        await _settle()
 
         async with session_factory() as session:
             events = list(
@@ -215,11 +253,7 @@ async def test_rogue_trade_detection_deduplication_and_resolution(
         ]
         # Still exactly 3!
         assert len(detected_events) == 3
-        acc_calls = [
-            c
-            for c in mock_tg.call_args_list
-            if c[0][1].get("ibkr_account") == ibkr_account
-        ]
+        acc_calls = _events_for(mock_tg, ibkr_account)
         assert len(acc_calls) == 0
 
     # Third sweep -> Broker aligns perfectly: AAPL 10, MSFT -5, no TSLA
@@ -235,11 +269,9 @@ async def test_rogue_trade_detection_deduplication_and_resolution(
         return_value=(sweep_3_broker_lines, False)
     )
 
-    with patch(
-        "app.services.position_reconciler.send_canonical_telegram",
-        new_callable=AsyncMock,
-    ) as mock_tg:
+    async with _notifications(orchestrator) as mock_tg:
         await reconciler.run_once()
+        await _settle()
 
         async with session_factory() as session:
             events = list(
@@ -264,11 +296,7 @@ async def test_rogue_trade_detection_deduplication_and_resolution(
         assert len(resolved_events) == 3
         resolved_symbols = {e.detail.get("symbol") for e in resolved_events}
         assert resolved_symbols == {"AAPL", "MSFT", "TSLA"}
-        acc_calls = [
-            c
-            for c in mock_tg.call_args_list
-            if c[0][1].get("ibkr_account") == ibkr_account
-        ]
+        acc_calls = _events_for(mock_tg, ibkr_account)
         assert len(acc_calls) == 3
 
 
@@ -458,20 +486,19 @@ async def test_rogue_requires_confirm_sweeps_before_telegram(
     ]
     client.request_positions_async = AsyncMock(return_value=(orphan_lines, False))
 
+    orchestrator = _rogue_orchestrator()
     reconciler = PositionReconciler(
-        session_factory, client, interval_sec=9999.0, rogue_confirm_sweeps=2
+        session_factory,
+        client,
+        interval_sec=9999.0,
+        rogue_confirm_sweeps=2,
+        notification_orchestrator=orchestrator,
     )
 
-    with patch(
-        "app.services.position_reconciler.send_canonical_telegram",
-        new_callable=AsyncMock,
-    ) as mock_tg:
+    async with _notifications(orchestrator) as mock_tg:
         await reconciler.run_once()
-        acc_calls = [
-            c
-            for c in mock_tg.call_args_list
-            if c[0][1].get("ibkr_account") == ibkr_account
-        ]
+        await _settle()
+        acc_calls = _events_for(mock_tg, ibkr_account)
         assert acc_calls == []
         assert (ibkr_account, "TSLA", "STK", MISMATCH_BROKER_ORPHAN) not in (
             reconciler._active_rogue_keys or {}
@@ -480,18 +507,12 @@ async def test_rogue_requires_confirm_sweeps_before_telegram(
             reconciler._pending_rogue_streaks
         )
 
-    with patch(
-        "app.services.position_reconciler.send_canonical_telegram",
-        new_callable=AsyncMock,
-    ) as mock_tg:
+    async with _notifications(orchestrator) as mock_tg:
         await reconciler.run_once()
-        acc_calls = [
-            c
-            for c in mock_tg.call_args_list
-            if c[0][1].get("ibkr_account") == ibkr_account
-        ]
+        await _settle()
+        acc_calls = _events_for(mock_tg, ibkr_account)
         assert len(acc_calls) == 1
-        assert acc_calls[0][0][0] == "ROGUE_TRADE_DETECTED"
+        assert acc_calls[0].event_type == "ROGUE_TRADE_DETECTED"
         assert (ibkr_account, "TSLA", "STK", MISMATCH_BROKER_ORPHAN) in (
             reconciler._active_rogue_keys or {}
         )

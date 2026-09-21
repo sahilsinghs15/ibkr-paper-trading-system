@@ -7,6 +7,7 @@ import { displayStrategy, fmtTime } from '../utils/format'
 import { formatRejectReason } from '../utils/rejectReason'
 import { sortRows, useTableSortState } from '../utils/tableSort'
 import { SignalDetailModal } from './SignalDetailModal'
+import { formatRetryLabel, groupLogicalLegs, latestRetryAttempt } from '../utils/signalLegs'
 
 export function isRejectedSig(sig: SignalItem): boolean {
   const c = getCanonicalStatus(sig)
@@ -44,7 +45,7 @@ function computeFillSummary(sig: SignalItem): {
   latestAttempt: number | null
 } {
   const orders = sig.orders || []
-  if (!orders || orders.length === 0) {
+  if (orders.length === 0) {
     return {
       summaryText: '',
       isProtectionTriggered: false,
@@ -55,38 +56,24 @@ function computeFillSummary(sig: SignalItem): {
   }
 
   const primaryOrders = orders.filter((o) => !o.is_compensation)
-  const compensationOrders = orders.filter((o) => o.is_compensation)
-  const isProtectionTriggered = compensationOrders.length > 0
+  const isProtectionTriggered = orders.some((o) => o.is_compensation)
 
-  let latestAttempt: number | null = null
-  for (const ev of sig.events || []) {
-    if (String(ev.kind || '').toUpperCase() === 'BASKET_RETRY') {
-      const att = Number((ev.detail || {}).attempt)
-      if (att && (!latestAttempt || att > latestAttempt)) {
-        latestAttempt = att
-      }
-    }
-  }
+  // Retries reuse the same logical leg, so group before summarising: otherwise
+  // a retried two-leg pair renders as three "legs".
+  const legs = groupLogicalLegs(primaryOrders)
+  const retryInfo = latestRetryAttempt(sig.events, legs)
 
-  const legs = primaryOrders.map((o) => {
-    const req = Number(o.quantity) || 0
-    const fill = Number(o.fill_qty) || 0
-    return { symbol: o.symbol, req, fill }
-  })
-
-  const allFilled = legs.length > 0 && legs.every((l) => l.fill >= l.req && l.req > 0)
-  const partiallyFilled = legs.some((l) => l.fill > 0 && l.fill < l.req)
+  const allFilled = legs.length > 0 && legs.every((l) => l.isFull)
+  const partiallyFilled = legs.some((l) => l.isPartial)
 
   const summaryParts = legs.map((l) => {
-    const isFull = l.fill >= l.req && l.req > 0
-    const isPart = l.fill > 0 && l.fill < l.req
-    const mark = isFull ? '✓ ' : isPart ? '⟳ ' : ''
+    const mark = l.isFull ? '✓ ' : l.isPartial ? '⟳ ' : ''
     return `${mark}${l.symbol} ${l.fill}/${l.req}`
   })
 
   let summaryText = summaryParts.join(' · ')
-  if (latestAttempt && !allFilled && !isProtectionTriggered) {
-    summaryText += ` (Retry ${latestAttempt}/3)`
+  if (retryInfo && !allFilled && !isProtectionTriggered) {
+    summaryText += ` (${formatRetryLabel(retryInfo)})`
   }
 
   return {
@@ -94,7 +81,7 @@ function computeFillSummary(sig: SignalItem): {
     isProtectionTriggered,
     allFilled,
     partiallyFilled,
-    latestAttempt,
+    latestAttempt: retryInfo ? retryInfo.attempt : null,
   }
 }
 

@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import asyncpg
 import pytest
@@ -106,12 +107,17 @@ def _redirect_webhook_capture_dir(
 
 @pytest.fixture(autouse=True)
 def _clear_kill_switch_cache() -> None:  # pyrefly: ignore[bad-return]
-    """Process-global kill-switch cache must not leak account ids across tests."""
-    from app.services.kill_switch import _KILL_SWITCH_ACTIVE_ACCOUNTS
+    """Process-global kill-switch caches must not leak account ids across tests."""
+    from app.services.kill_switch import (
+        _KILL_SWITCH_ACTIVE_ACCOUNTS,
+        _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS,
+    )
 
     _KILL_SWITCH_ACTIVE_ACCOUNTS.clear()
+    _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.clear()
     yield
     _KILL_SWITCH_ACTIVE_ACCOUNTS.clear()
+    _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -140,3 +146,59 @@ def _restore_trading_app_state():  # pyrefly: ignore[bad-return]
             setattr(app.state, key, saved[key])
         elif hasattr(app.state, key):
             delattr(app.state, key)
+
+
+@pytest.fixture(autouse=True)
+def _reset_dependency_overrides():  # pyrefly: ignore[bad-return]
+    """Never let a FastAPI dependency override outlive the test that set it.
+
+    Tests that drive the app with `AsyncClient(ASGITransport(app=app))` override
+    `get_db_session` with a closure over their own `session_factory`, which is
+    bound to that test's event loop. Left installed, the next test to use
+    `TestClient(app)` — which runs the app on a different loop in its own thread
+    — gets sessions from the dead engine and fails with
+    "got Future attached to a different loop". That made whole files
+    (`test_position_exit_thresholds`, `test_reconcile_api`, `test_trading_pause_api`)
+    pass alone but fail in a full run, depending purely on collection order.
+    """
+    from app.main import app
+
+    saved = dict(app.dependency_overrides)
+    yield
+    app.dependency_overrides.clear()
+    app.dependency_overrides.update(saved)
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_red_zone(request):  # pyrefly: ignore[bad-return]
+    """Keep execution-path tests off the wall clock.
+
+    `OrderManager` and `WorkerPool` gate every non-emergency signal on
+    `SessionClock.projected_in_red_zone()`, which is true before the RTH open,
+    for `post_open_delay_seconds` after it, inside the pre-close buffer, and all
+    day on a non-trading day. Tests that assert an order was routed therefore
+    only passed when the suite happened to run during a live RTH session, and
+    failed overnight, at weekends and on holidays.
+
+    The real clock is restored for anything marked `@pytest.mark.real_session_clock`.
+    `test_red_zone.py` is unaffected either way: it builds `SessionClock`
+    instances directly with explicit datetimes rather than calling this factory.
+    """
+    if request.node.get_closest_marker("real_session_clock"):
+        yield
+        return
+
+    from app.services import session_clock as session_clock_module
+
+    real_factory = session_clock_module.get_session_clock
+
+    def _open_session_clock() -> session_clock_module.SessionClock:
+        # A real clock, so buffer_seconds/resolved_session_close/etc. keep their
+        # production values; only the two gating predicates are forced open.
+        clock = real_factory()
+        clock.in_red_zone = lambda now: False  # type: ignore[method-assign]
+        clock.projected_in_red_zone = lambda now: False  # type: ignore[method-assign]
+        return clock
+
+    with patch.object(session_clock_module, "get_session_clock", _open_session_clock):
+        yield

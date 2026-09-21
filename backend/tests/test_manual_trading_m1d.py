@@ -22,6 +22,7 @@ Verifies:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -476,6 +477,39 @@ async def test_collect_reconcile_positions_api_breakdown(
 # ── 14: FULL SWEEP & TRANSITION-BASED ROGUE LIFECYCLE ─────────────────
 
 
+async def _drain_notification_tasks() -> None:
+    """The reconciler fires orchestrator notifications via `asyncio.create_task`,
+    so yield until those background tasks have run."""
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+
+async def _rogue_details(
+    session_factory: async_sessionmaker[AsyncSession], kind: str, ibkr_account: str
+) -> list[dict]:
+    """Rogue event_log details for one account, oldest first."""
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(EventLogModel)
+                .where(EventLogModel.process == "reconcile", EventLogModel.kind == kind)
+                .order_by(EventLogModel.id)
+            )
+        ).scalars().all()
+    return [r.detail for r in rows if r.detail.get("ibkr_account") == ibkr_account]
+
+
+def _ingested(orchestrator, event_type: str, symbol: str) -> bool:
+    """True when the orchestrator received a NormalizedEvent for this symbol."""
+    for call in orchestrator.ingest_event.call_args_list:
+        event = call.args[0] if call.args else None
+        if event is None:
+            continue
+        if event.event_type == event_type and (event.details or {}).get("symbol") == symbol:
+            return True
+    return False
+
+
 @pytest.mark.asyncio
 async def test_full_reconcile_sweep_and_rogue_lifecycle(
     session_factory: async_sessionmaker[AsyncSession],
@@ -508,8 +542,19 @@ async def test_full_reconcile_sweep_and_rogue_lifecycle(
     ]
     mock_client.request_positions_async = AsyncMock(return_value=(sweep_1_lines, False))
 
+    # Rogue alerting is delivered through the centralized notification
+    # orchestrator (`notification_log`/`notification_deliveries`). The old
+    # `send_canonical_telegram` path is retained as an importable symbol only and
+    # is never called, so a reconciler built without an orchestrator raises no
+    # alert at all.
+    orchestrator = MagicMock()
+    orchestrator.ingest_event = AsyncMock(return_value=None)
     reconciler = PositionReconciler(
-        session_factory, mock_client, interval_sec=9999.0, rogue_confirm_sweeps=1
+        session_factory,
+        mock_client,
+        interval_sec=9999.0,
+        rogue_confirm_sweeps=1,
+        notification_orchestrator=orchestrator,
     )
 
     # First sweep: MUST BE MATCH, ZERO rogue events for this account!
@@ -549,24 +594,22 @@ async def test_full_reconcile_sweep_and_rogue_lifecycle(
     ]
     mock_client.request_positions_async = AsyncMock(return_value=(sweep_2_lines, False))
 
-    with patch(
-        "app.services.position_reconciler.send_canonical_telegram", new_callable=AsyncMock
-    ) as mock_tg:
-        await reconciler.run_once()
-        assert any("TSLA" in str(c) and acc.ibkr_account in str(c) for c in mock_tg.call_args_list)
+    await reconciler.run_once()
+    await _drain_notification_tasks()
+
+    detected = await _rogue_details(session_factory, "ROGUE_TRADE_DETECTED", acc.ibkr_account)
+    assert [d["symbol"] for d in detected] == ["TSLA"]
+    assert _ingested(orchestrator, "ROGUE_TRADE_DETECTED", "TSLA")
 
     # Third sweep: Untracked trade disappears -> Triggers ROGUE_TRADE_RESOLVED
     mock_client.request_positions_async = AsyncMock(return_value=(sweep_1_lines, False))
-    with patch(
-        "app.services.position_reconciler.send_canonical_telegram", new_callable=AsyncMock
-    ) as mock_tg:
-        await reconciler.run_once()
-        assert any(
-            "ROGUE_TRADE_RESOLVED" in str(c)
-            and "TSLA" in str(c)
-            and acc.ibkr_account in str(c)
-            for c in mock_tg.call_args_list
-        )
+    orchestrator.ingest_event.reset_mock()
+    await reconciler.run_once()
+    await _drain_notification_tasks()
+
+    resolved = await _rogue_details(session_factory, "ROGUE_TRADE_RESOLVED", acc.ibkr_account)
+    assert [d["symbol"] for d in resolved] == ["TSLA"]
+    assert _ingested(orchestrator, "ROGUE_TRADE_RESOLVED", "TSLA")
 
 
 # ── 16: STRICT ACCOUNT ISOLATION ──────────────────────────────────────

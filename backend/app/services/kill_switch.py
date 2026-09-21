@@ -69,7 +69,10 @@ _KILL_SWITCH_ACTIVE_ACCOUNTS: set[int] = set()
 # In-memory cache of accounts where manual positions flatten is actively in flight.
 # Per requirement §11, blocks new manual orders while active (ACTIVATING,
 # FLATTENING, RECONCILING, RETRYING). Released when terminal (COMPLETE, FAILED/UNRESOLVED).
-# Does NOT affect engine order submission.
+# Does NOT affect engine order submission. Armed by initiate_manual_square_off;
+# released by _update_operation_completion, which is the single owner of that
+# transition and keeps this set in step with _MANUAL_FLATTEN_ACTIVE_STATUSES so a
+# restart rehydrates to the same answer.
 _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS: set[int] = set()
 
 # Statuses that leave an account armed for engine/account scopes. Completing a flatten
@@ -721,7 +724,6 @@ class KillSwitchService:
         if not snap_positions:
             logger.info("Manual kill switch: no snapshotted positions for operation_id=%s", operation_id)
             await self._update_operation_completion(operation_id, final_status=KILL_SWITCH_STATUS_COMPLETE, unresolved=0)
-            _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.discard(op.account_id)
             return
 
         # Execute position-specific close orders across all snapshotted positions
@@ -973,7 +975,6 @@ class KillSwitchService:
             if not snap_rows:
                 logger.info("Manual kill-switch reconcile: no snapshot rows for operation_id=%s", operation_id)
                 await self._update_operation_completion(operation_id, final_status=KILL_SWITCH_STATUS_COMPLETE, unresolved=0)
-                _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
                 return
 
             broker_rows = list(
@@ -1131,7 +1132,6 @@ class KillSwitchService:
 
         if unresolved == 0:
             final_status = KILL_SWITCH_STATUS_COMPLETE
-            _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.discard(account_id)
         else:
             final_status = KILL_SWITCH_STATUS_UNRESOLVED
 
@@ -2110,6 +2110,7 @@ class KillSwitchService:
     async def _update_operation_completion(
         self, operation_id: UUID, final_status: str, unresolved: int
     ) -> None:
+        manual_account_id: int | None = None
         async with self._session_factory() as session, session.begin():
             # Lock row to prevent stale worker overwriting newer COMPLETE with UNRESOLVED (last-writer-wins)
             result = await session.execute(
@@ -2135,3 +2136,19 @@ class KillSwitchService:
                 op.unresolved_count = unresolved
                 op.flattened_count = max(0, op.initial_position_count - unresolved)
                 op.updated_at = datetime.now(UTC)
+                if op.scope == KILL_SWITCH_SCOPE_MANUAL:
+                    manual_account_id = op.account_id
+
+        # Single owner of the manual hot cache: it must mirror exactly the DB
+        # predicate used by hydrate_kill_switch_cache and
+        # get_active_manual_kill_switch_operation (_MANUAL_FLATTEN_ACTIVE_STATUSES).
+        # Releasing only on COMPLETE left an UNRESOLVED operation blocking manual
+        # orders in-process while a restart silently unblocked them, and locked the
+        # operator out of the very manual closes needed to resolve it. Engine scope
+        # is deliberately different: UNRESOLVED stays armed until an operator clear.
+        # DB write commits first; the cache is mutated second.
+        if manual_account_id is not None:
+            if final_status in _MANUAL_FLATTEN_ACTIVE_STATUSES:
+                _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.add(manual_account_id)
+            else:
+                _MANUAL_KILL_SWITCH_ACTIVE_ACCOUNTS.discard(manual_account_id)
