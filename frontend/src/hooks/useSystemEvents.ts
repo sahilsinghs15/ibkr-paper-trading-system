@@ -130,7 +130,7 @@ function eventToNotificationItem(evt: SystemEventItem): NotificationItem {
   }
 }
 
-export function useSystemEvents(): void {
+export function useSystemEvents(enabled = true): void {
   const addToast = useNotificationStore((s) => s.addToast)
   const addNewNotification = useNotificationStore((s) => s.addNewNotification)
   const setFeed = useNotificationStore((s) => s.setFeed)
@@ -142,6 +142,10 @@ export function useSystemEvents(): void {
   const initializedRef = useRef(false)
 
   useEffect(() => {
+    // The notification feed is authenticated. Fetching it before login always
+    // 401s, and that failure is what previously armed the poller with an
+    // un-bootstrapped cursor.
+    if (!enabled) return
     let timer: ReturnType<typeof setInterval> | null = null
     let retryTimer: ReturnType<typeof setTimeout> | null = null
     let active = true
@@ -249,5 +253,5 @@ export function useSystemEvents(): void {
       if (timer) clearInterval(timer)
       if (retryTimer) clearTimeout(retryTimer)
     }
-  }, [addToast, addNewNotification, setFeed])
+  }, [addToast, addNewNotification, setFeed, enabled])
 }

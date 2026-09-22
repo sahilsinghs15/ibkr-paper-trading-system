@@ -25,8 +25,10 @@ function App() {
   const user = useAuthStore((s) => s.user)
   const location = useLocation()
 
-  usePnlStream()
-  useSystemEvents()
+  // Both hooks talk to authenticated endpoints; starting them on the login page
+  // only produces 401s.
+  usePnlStream(isAuthenticated)
+  useSystemEvents(isAuthenticated)
 
   const hideHeader = location.pathname === '/login'
 

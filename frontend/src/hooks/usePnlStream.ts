@@ -67,7 +67,7 @@ export function scheduleFlattenResync(): () => void {
  * Snapshot + SSE live updates for the PnL dashboard.
  * Reconnects after error: wait 1s, reload snapshot, reconnect.
  */
-export function usePnlStream(): void {
+export function usePnlStream(enabled = true): void {
   const apply = usePnlStore((s) => s.apply)
   const clearActive = usePnlStore((s) => s.clearActive)
   const setStreamState = usePnlStore((s) => s.setStreamState)
@@ -76,6 +76,10 @@ export function usePnlStream(): void {
   const stopped = useRef(false)
 
   useEffect(() => {
+    // Every request here is authenticated. Mounting before login made the app
+    // fire /demo/positions, /demo/closed-positions and /demo/stream with no
+    // token, producing 401s on the login page for no benefit.
+    if (!enabled) return
     stopped.current = false
 
     async function connect() {
@@ -137,5 +141,5 @@ export function usePnlStream(): void {
         sourceRef.current = null
       }
     }
-  }, [apply, clearActive, setStreamState])
+  }, [apply, clearActive, setStreamState, enabled])
 }
