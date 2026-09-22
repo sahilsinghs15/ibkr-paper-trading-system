@@ -62,3 +62,11 @@ frontend/test-results/
 frontend/playwright-report/
 frontend/blob-report/
 frontend/.playwright/
+
+# ------------------------
+# Shareable code bundles (generated, not source)
+# ------------------------
+# Extracted copies of code that already lives in backend/ and frontend/.
+# Built to hand to someone outside the repo; regenerate rather than commit.
+notification-reference/
+*.zip
